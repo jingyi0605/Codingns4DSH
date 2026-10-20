@@ -140,7 +140,7 @@ test('Command Code ACP 将问题和 DSH 权限映射回传给 Provider', async (
   driver.dispose()
 })
 
-for (const toolName of ['agent_subagent', 'web_search', 'mcp__codingns__web_search'] as const) {
+for (const toolName of ['agent_subagent', 'web_search', 'mcp__codingns__web_search', 'web_fetch', 'mcp__codingns__web_fetch'] as const) {
   test(`Command Code ACP 自动批准 DSH ${toolName}，不弹出重复权限请求`, async () => {
     setSubagentBridge(createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:45999', token: 'agent-tool-token' }))
     const replies = new Map<number | string, Record<string, unknown>>()
@@ -160,7 +160,7 @@ for (const toolName of ['agent_subagent', 'web_search', 'mcp__codingns__web_sear
             promptId = request.id ?? 0
             stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 101, method: 'session/request_permission', params: {
               options: [{ optionId: 'allow-agent', kind: 'allow_once' }, { optionId: 'reject-agent', kind: 'reject_once' }],
-              toolCall: { kind: 'other', title: toolName, toolCallId: 'agent-1', rawInput: toolName.includes('search') ? { queries: ['公开资料'] } : { action: 'start' } },
+              toolCall: { kind: 'other', title: toolName, toolCallId: 'agent-1', rawInput: toolName.includes('search') ? { queries: ['公开资料'] } : toolName.includes('fetch') ? { url: 'https://example.com/' } : { action: 'start' } },
             } })}\n`)
           } else if (request.id === 101) {
             replies.set(101, request as unknown as Record<string, unknown>)

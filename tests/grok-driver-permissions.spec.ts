@@ -76,6 +76,7 @@ test('Grok names the actual injected bridge in the model prompt', { timeout: 3_0
       const prompt = JSON.stringify(request.params.prompt)
       assert.match(prompt, /codingns__agent_subagent/)
       assert.match(prompt, /codingns__web_search/)
+      assert.match(prompt, /codingns__web_fetch/)
       assert.match(prompt, /ordinary final output is also delivered to the parent/)
       connection.reply(request, { stopReason: 'end_turn' })
     }
@@ -99,6 +100,8 @@ for (const scenario of [
   { label: 'an unbound parent report', tool: 'codingns__agent_subagent', admitted: false },
   { label: 'a bound parent web search', tool: 'codingns__web_search', bridge: true, admitted: true },
   { label: 'an unbound web search', tool: 'codingns__web_search', admitted: false },
+  { label: 'a bound parent web fetch', tool: 'codingns__web_fetch', bridge: true, admitted: true },
+  { label: 'an unbound web fetch', tool: 'codingns__web_fetch', admitted: false },
   { label: 'a shell command', tool: 'run_terminal_command', path: 'result.json', admitted: false },
   { label: 'an outside file', tool: 'write', path: '../outside.json', admitted: false },
   { label: 'a symlink escape', tool: 'write', path: 'escape/result.json', admitted: false },

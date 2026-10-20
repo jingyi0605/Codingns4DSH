@@ -6,6 +6,7 @@ import { existsSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
 import { startSubagentBridgeServer } from '../data/build/dist/host/cli-bridge/bridge-server.js'
 import { dispatchBridgeSearch } from '../data/build/dist/host/cli-bridge/search-dispatch.js'
+import { dispatchBridgeFetch } from '../data/build/dist/host/cli-bridge/fetch-dispatch.js'
 import { bridgeMcpEntryPath } from '../data/build/dist/host/cli-bridge/injections.js'
 import { createPiBridgeExtension } from '../data/build/dist/host/cli-bridge/pi-extension.js'
 import commandCodeMod from '../data/build/dist/host/cli-bridge/command-code-mod.js'
@@ -18,7 +19,7 @@ function bridgeEntryArgs(): string[] {
   return ['--import', fileURLToPath(new URL('./register-source-loader.mjs', import.meta.url)), sourceEntry(bridgeMcpEntryPath())]
 }
 
-function stubWeb(queries: string[] = []) {
+function stubWeb(queries: string[] = [], urls: string[] = []) {
   return {
     async search(request: { readonly query: string; readonly maxResults: number }, signal: AbortSignal) {
       signal.throwIfAborted()
@@ -27,6 +28,16 @@ function stubWeb(queries: string[] = []) {
         content: `snippet for ${request.query}`,
         sources: [{ url: `https://example.com/${encodeURIComponent(request.query)}`, title: request.query, snippet: 'hello' }],
         truncated: false,
+      }
+    },
+    async fetch(request: { readonly url: string }, signal: AbortSignal) {
+      signal.throwIfAborted()
+      urls.push(request.url)
+      return {
+        url: request.url,
+        statusCode: 200,
+        truncated: false,
+        body: { kind: 'text', text: `body for ${request.url}` },
       }
     },
   }
@@ -97,15 +108,56 @@ test('dispatchBridgeSearch cancels sibling queries when one search fails', async
   assert.equal(cancelled, true)
 })
 
+test('dispatchBridgeFetch validates public http(s) URLs and marks page content untrusted', async () => {
+  const seen: string[] = []
+  const missing = await dispatchBridgeFetch({ url: 'https://example.com/' }, {})
+  assert.equal(missing.ok, false)
+  assert.match(String(missing.error), /unavailable/u)
+
+  const invalid = await dispatchBridgeFetch({ url: 'not-a-url' }, { web: stubWeb([], seen) })
+  assert.equal(invalid.ok, false)
+  assert.match(String(invalid.error), /http\(s\) URL/u)
+
+  const credentials = await dispatchBridgeFetch({ url: 'https://user:secret@example.com/' }, { web: stubWeb([], seen) })
+  assert.equal(credentials.ok, false)
+
+  const fileUrl = await dispatchBridgeFetch({ url: 'file:///etc/passwd' }, { web: stubWeb([], seen) })
+  assert.equal(fileUrl.ok, false)
+
+  const result = await dispatchBridgeFetch({ url: '  https://example.com/page  ' }, { web: stubWeb([], seen) })
+  assert.equal(result.ok, true)
+  assert.deepEqual(seen, ['https://example.com/page'])
+  assert.match(result.text, /untrusted reference material/u)
+  assert.match(result.text, /https:\/\/example.com\/page/u)
+  assert.equal(result.result?.statusCode, 200)
+})
+
+test('dispatchBridgeFetch reports a non-2xx page as a result', async () => {
+  const result = await dispatchBridgeFetch({ url: 'https://example.com/missing' }, {
+    web: {
+      async fetch() {
+        return { url: 'https://example.com/missing', statusCode: 404, truncated: false, body: { kind: 'text', text: 'not found' } }
+      },
+    },
+  })
+  assert.equal(result.ok, true)
+  assert.equal(result.result?.statusCode, 404)
+  assert.match(result.text, /not found/u)
+})
+
 test('Pi 桥接扩展直接注册 web_search 和 agent_subagent，并调用 Host HTTP 端点', async () => {
   const requests: Array<{ url: string; init: RequestInit }> = []
   const tools: RegisteredPiTool[] = []
   const fetcher: typeof fetch = async (input, init = {}) => {
     const url = String(input)
     requests.push({ url, init })
-    return url.endsWith('/v1/search')
-      ? new Response(JSON.stringify({ ok: true, text: 'untrusted reference material: public result' }), { status: 200 })
-      : new Response(JSON.stringify({ ok: true, status: 'running', childSessionId: 'child-1', text: 'Created child session' }), { status: 200 })
+    if (url.endsWith('/v1/search')) {
+      return new Response(JSON.stringify({ ok: true, text: 'untrusted reference material: public result' }), { status: 200 })
+    }
+    if (url.endsWith('/v1/fetch')) {
+      return new Response(JSON.stringify({ ok: true, text: 'untrusted reference material: page body' }), { status: 200 })
+    }
+    return new Response(JSON.stringify({ ok: true, status: 'running', childSessionId: 'child-1', text: 'Created child session' }), { status: 200 })
   }
   createPiBridgeExtension({ registerTool: (tool) => { tools.push(tool as unknown as RegisteredPiTool) } } as never, mockPiTypeBox() as never, {
     environment: {
@@ -117,9 +169,11 @@ test('Pi 桥接扩展直接注册 web_search 和 agent_subagent，并调用 Host
     fetcher,
   })
 
-  assert.deepEqual(tools.map((tool) => [tool.name, tool.exposure]), [['agent_subagent', 'direct'], ['web_search', 'direct']])
+  assert.deepEqual(tools.map((tool) => [tool.name, tool.exposure]), [['agent_subagent', 'direct'], ['web_search', 'direct'], ['web_fetch', 'direct']])
   const search = await tools.find((tool) => tool.name === 'web_search')!.execute('search-1', { queries: ['public facts'] }, undefined)
   assert.match(search.content[0]!.text, /untrusted reference material/u)
+  const fetched = await tools.find((tool) => tool.name === 'web_fetch')!.execute('fetch-1', { url: 'https://example.com/page' }, undefined)
+  assert.match(fetched.content[0]!.text, /page body/u)
   const subagent = await tools.find((tool) => tool.name === 'agent_subagent')!.execute('dispatch-1', {
     action: 'start', prompt: 'Review the isolated change', description: 'Review',
   }, undefined)
@@ -128,8 +182,10 @@ test('Pi 桥接扩展直接注册 web_search 和 agent_subagent，并调用 Host
   assert.equal(requests[0]?.url, 'http://127.0.0.1:45999/v1/search')
   assert.deepEqual(JSON.parse(String(requests[0]?.init.body)), { queries: ['public facts'] })
   assert.equal((requests[0]?.init.headers as Record<string, string>).authorization, 'Bearer bridge-token')
-  assert.equal(requests[1]?.url, 'http://127.0.0.1:45999/v1/dispatch')
-  assert.deepEqual(JSON.parse(String(requests[1]?.init.body)), {
+  assert.equal(requests[1]?.url, 'http://127.0.0.1:45999/v1/fetch')
+  assert.deepEqual(JSON.parse(String(requests[1]?.init.body)), { url: 'https://example.com/page' })
+  assert.equal(requests[2]?.url, 'http://127.0.0.1:45999/v1/dispatch')
+  assert.deepEqual(JSON.parse(String(requests[2]?.init.body)), {
     sessionId: 'parent-1', prompt: 'Review the isolated change', action: 'start', runInBackground: true, description: 'Review',
   })
 })
@@ -186,8 +242,8 @@ test('Pi Team 扩展按既有角色注册 agent_team 操作集合', async () => 
   const actions = (tool: RegisteredPiTool): string[] => tool.parameters.properties!.action!.anyOf.map((schema: { const: string }) => schema.const)
   const leadTools = makeTeamTool('lead')
   const teammateTools = makeTeamTool('teammate')
-  assert.deepEqual(leadTools.map((tool) => tool.name), ['agent_team', 'web_search'])
-  assert.deepEqual(teammateTools.map((tool) => tool.name), ['agent_team', 'web_search'])
+  assert.deepEqual(leadTools.map((tool) => tool.name), ['agent_team', 'web_search', 'web_fetch'])
+  assert.deepEqual(teammateTools.map((tool) => tool.name), ['agent_team', 'web_search', 'web_fetch'])
   assert.ok(actions(leadTools[0]!).includes('spawn'))
   assert.ok(actions(leadTools[0]!).includes('interrupt'))
   assert.equal(actions(teammateTools[0]!).includes('spawn'), false)
@@ -228,6 +284,7 @@ test('桥接 /v1/search 接受运行时令牌与 Team 令牌，并拒绝未授�
     } : undefined,
     teamDispatch: async () => ({ ok: true, result: {} }),
     search: (input, signal) => dispatchBridgeSearch(input, { web: stubWeb(seen) }, signal),
+    fetch: (input, signal) => dispatchBridgeFetch(input, { web: stubWeb([], seen) }, signal),
   })
   try {
     const unauthorized = await fetch(`${server.runtime.baseUrl}/v1/search`, {
@@ -270,6 +327,16 @@ test('桥接 /v1/search 接受运行时令牌与 Team 令牌，并拒绝未授�
     })
     assert.equal(invalid.status, 200)
     assert.equal((await invalid.json() as { ok: boolean }).ok, false)
+
+    const fetchRuntime = await fetch(`${server.runtime.baseUrl}/v1/fetch`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${server.runtime.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://example.com/page' }),
+    })
+    assert.equal(fetchRuntime.status, 200)
+    const fetchBody = await fetchRuntime.json() as { ok: boolean; text: string }
+    assert.equal(fetchBody.ok, true)
+    assert.match(fetchBody.text, /untrusted reference material/u)
   } finally {
     lifetime.abort()
     await server.close()
@@ -287,6 +354,12 @@ test('桥接 /v1/search 在未装配搜索派发时返回 503', async () => {
       body: JSON.stringify({ queries: ['公开资料'] }),
     })
     assert.equal(response.status, 503)
+    const fetchResponse = await fetch(`${server.runtime.baseUrl}/v1/fetch`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${server.runtime.token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ url: 'https://example.com/' }),
+    })
+    assert.equal(fetchResponse.status, 503)
   } finally {
     await server.close()
   }
@@ -296,6 +369,7 @@ test('MCP web_search 经过 Host /v1/search 返回不可信来源', async () => 
   const server = await startSubagentBridgeServer({
     dispatch: async () => { throw new Error('unexpected dispatch') },
     search: (input, signal) => dispatchBridgeSearch(input, { web: stubWeb() }, signal),
+    fetch: (input, signal) => dispatchBridgeFetch(input, { web: stubWeb() }, signal),
   })
   const child = spawn(process.execPath, bridgeEntryArgs(), {
     env: {
@@ -331,12 +405,17 @@ test('MCP web_search 经过 Host /v1/search 返回不可信来源', async () => 
   try {
     send({ jsonrpc: '2.0', id: 1, method: 'tools/list' })
     send({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'web_search', arguments: { queries: ['公开资料'] } } })
+    send({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'web_fetch', arguments: { url: 'https://example.com/page' } } })
     const tools = await waitFor(1)
     assert.ok(tools.result.tools.some((tool: { name: string }) => tool.name === 'web_search'))
+    assert.ok(tools.result.tools.some((tool: { name: string }) => tool.name === 'web_fetch'))
     const call = await waitFor(2)
     assert.equal(call.result.isError, undefined)
     assert.match(String(call.result.content?.[0]?.text), /untrusted reference material/u)
     assert.match(String(call.result.content?.[0]?.text), /公开资料/u)
+    const fetched = await waitFor(3)
+    assert.equal(fetched.result.isError, undefined)
+    assert.match(String(fetched.result.content?.[0]?.text), /https:\/\/example.com\/page/u)
   } finally {
     child.kill()
     await server.close()
@@ -354,13 +433,14 @@ test('Command Code Mod 在普通会话与 Team 会话都注册 web_search', asyn
     const ordinary: Array<{ schema: { name: string } }> = []
     commandCodeMod({ addTool: (tool: { schema: { name: string } }) => ordinary.push(tool), hooks: () => undefined })
     assert.ok(ordinary.some((tool) => tool.schema.name === 'web_search'))
+    assert.ok(ordinary.some((tool) => tool.schema.name === 'web_fetch'))
 
     process.env.CODINGNS_TEAM_TOKEN = 'team-token'
     process.env.CODINGNS_TEAM_ROLE = 'lead'
     process.env.CODINGNS_TEAM_NAME = 'lead'
     const team: Array<{ schema: { name: string } }> = []
     commandCodeMod({ addTool: (tool: { schema: { name: string } }) => team.push(tool), hooks: () => undefined })
-    assert.deepEqual(team.map((tool) => tool.schema.name), ['agent_team', 'web_search'])
+    assert.deepEqual(team.map((tool) => tool.schema.name), ['agent_team', 'web_search', 'web_fetch'])
   } finally {
     process.env = previous
   }

@@ -149,7 +149,7 @@ test('Command Code Mod exposes a teammate schema, blocks private agents, and cal
     Object.assign(process.env, commandCodeNativeAgentEnvironment('child', 'command-code'))
     const tools: any[] = []; let hooks: any; let active = ['agent', 'agent_output', 'agent_subagent', 'agent_team', 'bash']
     commandCodeMod({ addTool: tool => tools.push(tool), hooks: value => { hooks = value }, getActiveTools: () => active, setActiveTools: names => { active = [...names] } })
-    assert.deepEqual(tools.map((tool: { schema: { name: string } }) => tool.schema.name), ['agent_team', 'web_search'])
+    assert.deepEqual(tools.map((tool: { schema: { name: string } }) => tool.schema.name), ['agent_team', 'web_search', 'web_fetch'])
     assert.equal(tools[0].schema.name, 'agent_team')
     assert.equal(tools[0].schema.input_schema.properties.action.enum.includes('spawn'), false)
     hooks.onSessionStart()
