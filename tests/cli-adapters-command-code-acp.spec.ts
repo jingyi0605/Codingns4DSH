@@ -443,6 +443,38 @@ test('Command Code ACP 把 providers.json 声明的 BYOK 模型并入模型目�
   }
 })
 
+test('Command Code ACP 兼容 1.84.0 的 QD 目录并优先复用原生 BYOK 模型列表', async () => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), 'command-code-native-byok-catalog-'))
+  const previousHome = process.env.HOME
+  try {
+    process.env.HOME = homeDirectory
+    // QD is the minified catalog variable used by Command Code 1.84.0; the
+    // native helper shape is copied from the published bundle.
+    const source = 'const QD={"deepseek/deepseek-v4.1-flash":{id:"deepseek/deepseek-v4.1-flash",name:"V4.1"}};'
+      + 'function getCustomProviderModelsSync(){return[{id:"magpie",name:"Magpie",models:[{id:"auto/deepseek-v4.1-flash",name:"DeepSeek V4.1 Flash"}]}]}'
+      + 'function customModelListOptions(){return getCustomProviderModelsSync().flatMap(e=>e.models.map(n=>({id:`${e.id}/${n.id}`,description:n.name})))}'
+      + 'function catalogModels(){return Object.values(QD).filter(e=>!e.hidden).map(e=>({id:e.id,name:e.name,description:e.description||null}))}'
+      + 'export{catalogModels}'
+    const loaded = await loadCommandCodeAcpLoader(
+      'file:///tmp/node_modules/command-code/dist/cli.mjs',
+      { format: 'module' },
+      async () => ({ format: 'module', source }),
+    )
+    const patched = String(loaded.source)
+    assert.match(patched, /codingNsBuiltinCatalogModels/u)
+    const patchedModule = await import(`data:text/javascript;base64,${Buffer.from(patched).toString('base64')}`)
+    assert.deepEqual(
+      patchedModule.catalogModels().map((model: { id: string }) => model.id),
+      ['deepseek/deepseek-v4.1-flash', 'magpie/auto/deepseek-v4.1-flash'],
+    )
+    assert.equal(patchedModule.catalogModels().at(-1).description, 'DeepSeek V4.1 Flash')
+  } finally {
+    if (previousHome === undefined) delete process.env.HOME
+    else process.env.HOME = previousHome
+    rmSync(homeDirectory, { recursive: true, force: true })
+  }
+})
+
 /** 按 CLI 的落盘节奏把 assistant 用量记录追加进 canonical transcript。 */
 function createCommandCodeUsageFixture(homeDirectory: string, sessionId: string) {
   const transcriptPath = join(homeDirectory, 'projects', 'tmp-command-code-acp-workspace', `${sessionId}.jsonl`)
