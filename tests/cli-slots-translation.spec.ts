@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { registerCliConversationSlots, useCliSessionTranslationEnabled } from '../src/client/cli-slots.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import { SESSION_TRANSLATION_ADAPTER_IDS } from '../src/shared/contracts/session-translation.js'
+import type { CodingNsCliModelGroup } from '../src/shared/contracts/cli-adapter.js'
 import { notifyNativeTranslationDefaultChanged, readNativeTranslationDefault, setNativeTranslationDefaultReader } from '../src/client/native-translation-default.js'
 import { watchNativeModelMenu } from '../src/client/native-model-translation-menu.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
@@ -19,20 +20,39 @@ const locale = {
   register: () => () => undefined,
 } as never
 
-function createProbe(adapterId = 'dsh', options: { readDefault?: () => boolean | undefined; translationEnabled?: boolean | undefined } = {}) {
+function createProbe(adapterId = 'dsh', options: {
+  readDefault?: () => boolean | undefined
+  translationEnabled?: boolean | undefined
+  magpieModels?: boolean
+  magpieSetOk?: boolean
+  failSessionSet?: boolean
+  modelGroups?: readonly CodingNsCliModelGroup[]
+  modelId?: string
+} = {}) {
   const registered = new Map<string, { component: (props: any) => ReactElement | null; props: Record<string, unknown> }>()
-  let selection = { adapterId, modelId: 'test-model', effortId: 'high', translationEnabled: 'translationEnabled' in options ? options.translationEnabled : true }
+  let selection = { adapterId, modelId: options.modelId ?? 'test-model', effortId: 'high', translationEnabled: 'translationEnabled' in options ? options.translationEnabled : true }
   const calls: Array<{ endpoint: string; payload: any }> = []
   const rpc = {
     async call(_channel: string, endpoint: string, payload: any) {
       calls.push({ endpoint, payload })
       let value: unknown
       if (endpoint === 'cli/session/get') value = selection
-      else if (endpoint === 'cli/session/set') value = selection = { ...selection, ...payload }
+      else if (endpoint === 'cli/session/set') {
+        if (options.failSessionSet) throw new Error('session update failed')
+        value = selection = { ...selection, ...payload }
+      }
+      else if (endpoint === 'cli/magpie/models') value = options.magpieModels ? {
+        status: 'available',
+        catalog: {
+          groups: [{ id: 'magpie', name: 'Magpie', models: [{ id: 'example-provider/magpie-one', name: 'Magpie One', source: 'magpie', efforts: [] }] }],
+          currentModel: null, currentEffort: null,
+        },
+      } : { status: 'unavailable' }
+      else if (endpoint === 'cli/magpie/set-model') value = { ok: options.magpieSetOk !== false, modelId: payload.modelId }
       else if (endpoint === 'cli/catalog') value = SESSION_TRANSLATION_ADAPTER_IDS.map((id) => ({ id, name: id, installed: true, enabled: true }))
       else if (endpoint === 'cli/models') value = {
-        groups: [{ id: adapterId, name: adapterId, models: [{ id: 'test-model', name: 'Test model', efforts: ['high'] }] }],
-        currentModel: 'test-model', currentEffort: 'high',
+        groups: options.modelGroups ?? [{ id: adapterId, name: adapterId, models: [{ id: 'test-model', name: 'Test model', efforts: ['high'] }] }],
+        currentModel: options.modelId ?? 'test-model', currentEffort: 'high',
       }
       else throw new Error(`Unexpected RPC: ${endpoint}`)
       return { ok: true as const, value }
@@ -181,6 +201,88 @@ test('所有外部 Agent 从默认 DSH 状态加载配置后都能渲染模型�
       assert.ok(elementWhere(menu, (element) => element.key === 'effort'), adapterId)
     } finally { renderer.dispose(); probe.dispose() }
   }
+})
+
+test('Magpie 模型需二次确认，先保存到 Magpie 成功后才更新当前会话', async () => {
+  const probe = createProbe('codex', { magpieModels: true })
+  const slot = probe.registered.get('codingns4dsh-model')!
+  const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
+  try {
+    renderer.render(); await flush(); renderer.render(); await flush()
+    elementWhere(renderer.render(), element => element.type === 'button')!.props.onClick()
+    elementWhere(renderer.render(), element => element.key === 'model')!.props.onClick()
+    renderer.render(); await flush()
+    const magpieItem = elementWhere(renderer.render(), element => element.key === 'magpie:example-provider/magpie-one')!
+    magpieItem.props.onClick()
+    let tree = renderer.render()
+    assert.ok(elementWhere(tree, element => element.props.children === t('cli.magpieConfirmTitle', { model: 'Magpie One' })))
+    assert.equal(probe.calls.some(call => call.endpoint === 'cli/magpie/set-model'), false)
+    assert.equal(probe.calls.some(call => call.endpoint === 'cli/session/set'), false)
+
+    elementWhere(tree, element => element.props.children === t('cli.magpieSaveAndUse'))!.props.onClick()
+    await flush(); tree = renderer.render()
+    await flush(); tree = renderer.render()
+    assert.ok(probe.calls.some(call => call.endpoint === 'cli/magpie/set-model' && call.payload.modelId === 'example-provider/magpie-one'))
+    assert.ok(probe.calls.some(call => call.endpoint === 'cli/session/set' && call.payload.modelId === 'example-provider/magpie-one'))
+    assert.equal(elementWhere(tree, element => element.props.children === t('cli.magpieSwitchSuccess')) !== undefined, true)
+  } finally { renderer.dispose(); probe.dispose() }
+})
+
+test('Magpie 写入失败不改当前会话；部分成功的重试只写当前会话', async () => {
+  const failed = createProbe('codex', { magpieModels: true, magpieSetOk: false })
+  const failedSlot = failed.registered.get('codingns4dsh-model')!
+  const failedRenderer = createHookRenderer(failedSlot.component, failedSlot.props)
+  try {
+    failedRenderer.render(); await flush(); failedRenderer.render(); await flush()
+    elementWhere(failedRenderer.render(), element => element.type === 'button')!.props.onClick()
+    elementWhere(failedRenderer.render(), element => element.key === 'model')!.props.onClick()
+    failedRenderer.render(); await flush()
+    elementWhere(failedRenderer.render(), element => element.key === 'magpie:example-provider/magpie-one')!.props.onClick()
+    let tree = failedRenderer.render()
+    elementWhere(tree, element => element.props.children === t('cli.magpieSaveAndUse'))!.props.onClick()
+    await flush(); tree = failedRenderer.render()
+    assert.equal(failed.calls.some(call => call.endpoint === 'cli/session/set'), false)
+    assert.ok(elementWhere(tree, element => element.props.children === t('cli.magpieSwitchUnavailable')))
+  } finally { failedRenderer.dispose(); failed.dispose() }
+
+  const partial = createProbe('codex', { magpieModels: true, failSessionSet: true })
+  const partialSlot = partial.registered.get('codingns4dsh-model')!
+  const partialRenderer = createHookRenderer(partialSlot.component, partialSlot.props)
+  try {
+    partialRenderer.render(); await flush(); partialRenderer.render(); await flush()
+    elementWhere(partialRenderer.render(), element => element.type === 'button')!.props.onClick()
+    elementWhere(partialRenderer.render(), element => element.key === 'model')!.props.onClick()
+    partialRenderer.render(); await flush()
+    elementWhere(partialRenderer.render(), element => element.key === 'magpie:example-provider/magpie-one')!.props.onClick()
+    let tree = partialRenderer.render()
+    elementWhere(tree, element => element.props.children === t('cli.magpieSaveAndUse'))!.props.onClick()
+    await flush(); tree = partialRenderer.render()
+    await flush(); tree = partialRenderer.render()
+    assert.ok(elementWhere(tree, element => element.props.children === t('cli.magpieSwitchPartial')))
+    const writesBeforeRetry = partial.calls.filter(call => call.endpoint === 'cli/magpie/set-model').length
+    const retries = elementWhere(tree, element => element.props.children === t('cli.magpieRetrySession'))
+    assert.ok(retries)
+    partial.rpc.call = async (_channel, endpoint, payload) => {
+      partial.calls.push({ endpoint, payload })
+      if (endpoint === 'cli/session/set') return { ok: true, value: { adapterId: 'codex', ...payload } }
+      if (endpoint === 'cli/magpie/models') return { ok: true, value: null }
+      if (endpoint === 'cli/magpie/set-model') return { ok: true, value: { ok: true, modelId: payload.modelId } }
+      if (endpoint === 'cli/session/get') return { ok: true, value: { adapterId: 'codex', modelId: 'test-model' } }
+      if (endpoint === 'cli/catalog') return { ok: true, value: [] }
+      if (endpoint === 'cli/models') return { ok: true, value: { groups: [{ id: 'codex', name: 'codex', models: [{ id: 'test-model', name: 'Test model', efforts: ['high'] }] }], currentModel: 'test-model', currentEffort: 'high' } }
+      throw new Error(`Unexpected RPC: ${endpoint}`)
+    }
+    retries!.props.onClick()
+    await flush()
+    assert.equal(partial.calls.filter(call => call.endpoint === 'cli/magpie/set-model').length, writesBeforeRetry)
+    assert.ok(partial.calls.some(call => call.endpoint === 'cli/session/set' && call.payload.modelId === 'example-provider/magpie-one'))
+
+    const nextSessionProps = { ...partialSlot.props, sessionId: 'different-session' }
+    tree = partialRenderer.render(nextSessionProps)
+    await flush(); tree = partialRenderer.render(nextSessionProps)
+    assert.equal(elementWhere(tree, element => element.props.children === t('cli.magpieRetrySession')), undefined,
+      'a partial result for the prior session must not offer a retry in the next session')
+  } finally { partialRenderer.dispose(); partial.dispose() }
 })
 
 test('同一输入框在外部 Agent 与 DSH 之间来回切换后，模型选择器仍可使用', async () => {
@@ -357,3 +459,148 @@ test('同一个模型槽位进入已缓存的新 DSH 会话时，采用该会话
     assert.equal((renderer.render()!.props.children as any)[0].children.props.checked, true, '不能沿用上一会话的关闭状态')
   } finally { renderer.dispose(); previous.dispose(); next.dispose() }
 })
+
+const searchModelGroups: readonly CodingNsCliModelGroup[] = [
+  {
+    id: 'alpha', name: 'Alpha provider', models: [
+      { id: 'alpha-one', name: 'Alpha One', efforts: ['high'] },
+      { id: 'alpha-two', name: 'Alpha Two', efforts: ['high'] },
+      { id: 'beta-one', name: 'Beta One', efforts: ['high'] },
+    ],
+  },
+  {
+    id: 'beta', name: 'Beta provider', models: [
+      { id: 'gamma-one', name: 'Gamma One', efforts: ['high'] },
+      { id: 'delta-one', name: 'Delta One', efforts: ['high'] },
+      { id: 'epsilon-one', name: 'Epsilon One', efforts: ['high'] },
+    ],
+  },
+]
+
+/** 打开外部 Agent 的模型列表子面板，返回当前渲染树。 */
+async function openModelPane(renderer: ReturnType<typeof createHookRenderer>): Promise<ReactNode> {
+  renderer.render()
+  await flush()
+  renderer.render()
+  await flush()
+  elementWhere(renderer.render(), (element) => element.type === 'button' && element.props['aria-haspopup'] === 'menu')!.props.onClick()
+  elementWhere(renderer.render(), (element) => element.key === 'model')!.props.onClick()
+  return renderer.render()
+}
+
+function modelOptions(node: ReactNode): Array<ReactElement<any>> {
+  const found: Array<ReactElement<any>> = []
+  const visit = (child: ReactNode): void => {
+    if (Array.isArray(child)) { child.forEach(visit); return }
+    if (child === null || typeof child !== 'object' || !('props' in child)) return
+    const element = child as ReactElement<any>
+    if (element.props.role === 'menuitemradio' && typeof element.key === 'string' && element.key.includes(':')) found.push(element)
+    visit(element.props.children)
+  }
+  visit(node)
+  return found
+}
+
+function searchBox(node: ReactNode): ReactElement<any> | undefined {
+  return elementWhere(node, (element) => element.props.role === 'searchbox')
+}
+
+test('外部 Agent 模型超过 4 个时提供与内置模型选择器一致的搜索、清空与空结果状态', async () => {
+  const probe = createProbe('codex', { modelGroups: searchModelGroups, modelId: 'alpha-one' })
+  const slot = probe.registered.get('codingns4dsh-model')!
+  const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
+  try {
+    let tree = await openModelPane(renderer)
+    const search = searchBox(tree)!
+    assert.ok(search, '超过 4 个模型必须出现搜索框')
+    assert.equal(search.props.placeholder, t('cli.modelSearch'))
+    assert.equal(search.props['aria-label'], t('cli.modelSearch'))
+    assert.equal(search.props.value, '')
+    assert.match(search.props.className, /codingns4dsh-model-search/u)
+    assert.equal(elementWhere(tree, (element) => element.key === 'clear'), undefined, '空查询不显示清除按钮')
+    assert.equal(modelOptions(tree).length, 6)
+    assert.equal(elementWhere(tree, (element) => element.props.role === 'group' && element.props['aria-label'] === 'Alpha provider') !== undefined, true)
+    assert.equal(elementWhere(tree, (element) => element.props.role === 'group' && element.props['aria-label'] === 'Beta provider') !== undefined, true)
+
+    search.props.onChange({ currentTarget: { value: 'beta' } })
+    tree = renderer.render()
+    assert.equal(modelOptions(tree).length, 1, '查询只保留匹配模型')
+    assert.ok(elementWhere(tree, (element) => element.key === 'alpha:beta-one'))
+    assert.equal(elementWhere(tree, (element) => element.props.role === 'group' && element.props['aria-label'] === 'Beta provider'), undefined, '空分组必须隐藏')
+    assert.match(searchBox(tree)!.props.className, /codingns4dsh-model-search-with-query/u)
+
+    elementWhere(tree, (element) => element.key === 'clear')!.props.onClick()
+    tree = renderer.render()
+    assert.equal(searchBox(tree)!.props.value, '')
+    assert.equal(modelOptions(tree).length, 6, '清空查询恢复完整目录')
+    assert.equal(elementWhere(tree, (element) => element.key === 'clear'), undefined)
+
+    searchBox(tree)!.props.onChange({ currentTarget: { value: 'zzz' } })
+    tree = renderer.render()
+    await flush()
+    tree = renderer.render()
+    assert.equal(modelOptions(tree).length, 0)
+    assert.ok(elementWhere(tree, (element) => element.props.role === 'status' && element.props.children === t('cli.modelSearchEmpty')),
+      '无匹配时显示与内置选择器相同的空结果文案')
+  } finally { renderer.dispose(); probe.dispose() }
+})
+
+test('模型搜索按内置选择器的名称排名过滤，Enter 选中当前高亮模型', async () => {
+  const probe = createProbe('codex', { modelGroups: searchModelGroups, modelId: 'alpha-one' })
+  const slot = probe.registered.get('codingns4dsh-model')!
+  const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
+  try {
+    let tree = await openModelPane(renderer)
+    const search = searchBox(tree)!
+    // 子序列匹配：'gmo' 命中 Gamma One，前缀命中优先于目录顺序。
+    search.props.onChange({ currentTarget: { value: 'gmo' } })
+    tree = renderer.render()
+    assert.deepEqual(modelOptions(tree).map((element) => element.key), ['beta:gamma-one'])
+    assert.equal(elementWhere(tree, (element) => element.props['data-highlighted'] === 'true')?.key, 'beta:gamma-one')
+
+    searchBox(tree)!.props.onKeyDown({ key: 'Enter', preventDefault() {} })
+    await flush()
+    assert.ok(probe.calls.some((call) => call.endpoint === 'cli/session/set' && call.payload.modelId === 'gamma-one'),
+      'Enter 应提交当前高亮的搜索命中项')
+  } finally { renderer.dispose(); probe.dispose() }
+})
+
+test('模型不超过 4 个时不显示搜索框，达到 5 个才显示', async () => {
+  for (const [count, expected] of [[4, false], [5, true]] as const) {
+    const groups: readonly CodingNsCliModelGroup[] = [{
+      id: 'codex', name: 'codex',
+      models: Array.from({ length: count }, (_, index) => ({ id: `model-${index}`, name: `Model ${index}`, efforts: ['high'] })),
+    }]
+    const probe = createProbe('codex', { modelGroups: groups, modelId: 'model-0' })
+    const slot = probe.registered.get('codingns4dsh-model')!
+    const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
+    try {
+      const tree = await openModelPane(renderer)
+      assert.equal(searchBox(tree) !== undefined, expected, `${count} 个模型`)
+    } finally { renderer.dispose(); probe.dispose() }
+  }
+})
+
+test('搜索组件注入的样式复用内置模型选择器的结构与主题令牌', () => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  let css = ''
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: {
+    querySelector: () => null,
+    createElement: () => ({ dataset: {}, textContent: '' }),
+    head: { appendChild: (style: { textContent: string }) => { css = style.textContent } },
+  } })
+  try {
+    const dispose = registerCliConversationSlots({ inject: () => () => undefined } as never, {} as never, { bind: () => (key: string) => key } as never)
+    dispose()
+  } finally {
+    if (original === undefined) Reflect.deleteProperty(globalThis, 'document')
+    else Object.defineProperty(globalThis, 'document', original)
+  }
+  assert.match(css, /\.codingns4dsh-model-search-row\{[^}]*position:relative/u)
+  assert.match(css, /\.codingns4dsh-model-search-row \.codingns4dsh-model-search\{[^}]*border-radius:var\(--dsw-radius-md/u)
+  assert.match(css, /\.codingns4dsh-model-search-clear\{[^}]*width:24px;height:24px/u)
+  assert.match(css, /\.codingns4dsh-model-groups\{[^}]*overflow-y:auto/u)
+  assert.match(css, /\.codingns4dsh-model-search-row \.codingns4dsh-model-search input\{[^}]*font-size:/u)
+  assert.match(css, /::placeholder\{color:var\(--dsw-alias-label-caption/u)
+})
+

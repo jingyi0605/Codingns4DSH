@@ -86,6 +86,8 @@ export interface CodingNsCliServiceTier {
 export interface CodingNsCliModel {
   readonly id: string
   readonly name: string
+  /** Identifies a model supplied by the Host-owned Magpie catalog, not its display name. */
+  readonly source?: 'magpie'
   readonly description?: string
   readonly efforts: readonly string[]
   /** 思考强度的展示名称；键仍是 Provider 实际接受的 effortId。 */
@@ -98,6 +100,30 @@ export interface CodingNsCliModel {
    */
   readonly serviceTiers?: readonly CodingNsCliServiceTier[]
 }
+
+/** Host-confirmed source of the model selected for a DSH session. */
+export type CodingNsCliModelProvenance =
+  | {
+      readonly kind: 'magpie'
+      /** Filled by Host after catalog validation; omitted only in a Client hint. */
+      readonly agent?: string
+      /** Verified loopback Gateway origin used for later read-only usage calls. */
+      readonly gatewayOrigin?: string
+      /** Exact `provider/model` ID from `magpie models <agent>`. */
+      readonly catalogModelId?: string
+    }
+  | { readonly kind: 'other' }
+  | { readonly kind: 'unknown' }
+
+/** Sanitized result of an explicit Magpie model-switch request. */
+export type MagpieModelSwitchResult =
+  | { readonly ok: true; readonly modelId: string }
+  | { readonly ok: false; readonly reason: 'unsupported' | 'unavailable' | 'invalid-model' | 'busy' | 'write-failed' | 'verification-failed' }
+
+/** Keeps an unsupported adapter quiet while reporting an unavailable Magpie CLI for supported Agents. */
+export type MagpieModelCatalogResult =
+  | { readonly status: 'available'; readonly catalog: CodingNsCliModelCatalog }
+  | { readonly status: 'unavailable' | 'unsupported' }
 
 export interface CodingNsCliModelGroup {
   readonly id: string
@@ -163,6 +189,8 @@ export interface CodingNsCliTeamDiagnostic {
 export interface CodingNsCliSessionConfig {
   readonly adapterId: CodingNsCliAdapterId
   readonly modelId?: string
+  /** Host-confirmed model source; omitted on old records means unknown. */
+  readonly modelProvenance?: CodingNsCliModelProvenance
   readonly effortId?: string
   /**
    * Provider 服务档位（例如 Codex 的 `priority` = Fast）。
@@ -287,6 +315,7 @@ export interface CodingNsCliTurnInput {
   /** 传给外部 CLI 的受控运行时环境；不会写入会话索引。 */
   readonly runtimeEnv?: Readonly<Record<string, string>>
   readonly modelId?: string
+  readonly modelProvenance?: CodingNsCliModelProvenance
   readonly effortId?: string
   /** Provider 服务档位；`default` 表示标准速度，缺省表示不下发、沿用 Provider 默认。 */
   readonly serviceTierId?: string

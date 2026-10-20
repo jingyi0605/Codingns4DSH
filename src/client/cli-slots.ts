@@ -1,9 +1,9 @@
 import { watchAdapterCatalog, subscribeAdapterCatalogChanged } from './adapter-catalog-watch.js'
-import { createElement, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { createElement, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import type { ReactElement } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ChangeEvent as ReactChangeEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CodingNsCliAdapterDescriptor, CodingNsCliModel, CodingNsCliModelCatalog, CodingNsCliSessionConfig } from '../shared/contracts/cli-adapter.js'
 import type { CodingNsClientServices, CodingNsRpcClient } from './features/types.js'
@@ -17,7 +17,7 @@ import {
   needsServiceTierRevalidation,
   toggledServiceTierId,
 } from './service-tier.js'
-import { resolveAssistantControlIcon, resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
+import { DshInput, rankModelByName, resolveAssistantControlIcon, resolveCloseFillIcon, resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 import { composerSlotSelector } from '../dsh-capabilities/client/composer-slot-selectors.js'
 import { providerIconUrl } from './provider-icons.js'
 import { publishSessionSelection } from './session-adapter-cache.js'
@@ -106,6 +106,19 @@ function installComposerStyles(): void {
     '.codingns4dsh-agent-trigger:hover:not(:disabled){background:color-mix(in srgb,currentColor 7%,transparent)}',
     '.codingns4dsh-agent-option:hover:not(:disabled){background:color-mix(in srgb,currentColor 7%,transparent)!important}',
     '.codingns4dsh-agent-option[data-selected="true"]{background:color-mix(in srgb,currentColor 10%,transparent)!important}',
+    // 模型搜索与内置 DSH 模型选择器（ui-model-selection 的 ModelSelect）使用同一套
+    // 结构与令牌：固定在菜单顶部、透明无边框的 12px 输入框，右侧 24px 圆形清除按钮，
+    // 下方模型分组独立滚动。内联样式无法表达 :hover/:focus-within，因此放在这里。
+    '.codingns4dsh-model-search-row{flex:none;margin:2px 0 3px;position:relative}',
+    '.codingns4dsh-model-search-row .codingns4dsh-model-search{border-radius:var(--dsw-radius-md,8px);background:transparent;border:0 solid transparent;height:auto;padding:5px 7px;display:flex}',
+    '.codingns4dsh-model-search-row .codingns4dsh-model-search-with-query{padding-right:34px}',
+    `.codingns4dsh-model-search-row .codingns4dsh-model-search input{padding:0;font-size:${uiFontSize(12)};line-height:normal}`,
+    '.codingns4dsh-model-search-row .codingns4dsh-model-search input::placeholder{color:var(--dsw-alias-label-caption,GrayText)}',
+    '.codingns4dsh-model-search-row .codingns4dsh-model-search:focus-within{border-color:transparent}',
+    '.codingns4dsh-model-search-clear{corner-shape:round;width:24px;height:24px;color:var(--dsw-alias-label-secondary,GrayText);cursor:pointer;background:transparent;border:none;border-radius:50%;justify-content:center;align-items:center;padding:0;display:inline-flex;position:absolute;top:50%;right:4px;transform:translateY(-50%)}',
+    '.codingns4dsh-model-search-clear:hover,.codingns4dsh-model-search-clear:focus-visible{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08));outline:none}',
+    '.codingns4dsh-model-groups{min-height:0;overflow-y:auto}',
+    '.codingns4dsh-model-option[data-highlighted="true"]{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}',
     '@media (prefers-reduced-motion:reduce){.codingns4dsh-cli-spinner{animation-duration:1.6s}.codingns4dsh-model-name[data-overflow="true"]>span{animation:none;transform:translateX(0)}}',
   ].join('')
   document.head.appendChild(style)
@@ -164,7 +177,7 @@ export function useCliSessionTranslationState(sessionId: string | undefined, rpc
 }
 
 /** 在 Agent 和模型两个 Slot 之间共享当前会话选择。 */
-function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [SelectionState, (next: SelectionState) => void] {
+function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [SelectionState, (next: SelectionState) => Promise<boolean>] {
   const [selection, setSelection] = useState<SelectionState>(() => sessionId ? selections.get(sessionId) ?? DEFAULT_SELECTION : DEFAULT_SELECTION)
 
   useEffect(() => {
@@ -204,19 +217,24 @@ function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [S
     }
   }, [rpc, sessionId])
 
-  const update = (next: SelectionState): void => {
-    if (sessionId === undefined || sessionId.trim() === '') return
+  const update = (next: SelectionState): Promise<boolean> => {
+    if (sessionId === undefined || sessionId.trim() === '') return Promise.resolve(false)
+    const previous = selections.get(sessionId) ?? selection
     publishSelection(sessionId, next)
     const revision = (selectionRevisions.get(sessionId) ?? 0) + 1
     selectionRevisions.set(sessionId, revision)
     const promise = callCliRpc<CodingNsCliSessionConfig>(rpc, 'session/set', { sessionId, ...next })
     selectionUpdates.set(sessionId, { revision, promise })
-    void promise
+    return promise
       .then((normalized) => {
         rememberCliSessionConfig(rpc, sessionId, normalized)
         if (selectionUpdates.get(sessionId)?.revision === revision) publishSelection(sessionId, normalized)
+        return true
       })
-      .catch(() => undefined)
+      .catch(() => {
+        if (selectionUpdates.get(sessionId)?.revision === revision) publishSelection(sessionId, previous)
+        return false
+      })
       .finally(() => {
         if (selectionUpdates.get(sessionId)?.revision === revision) selectionUpdates.delete(sessionId)
       })
@@ -417,12 +435,24 @@ const agentOptionLabelStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden
 const agentStatusStyle = { flex: '0 0 auto', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), whiteSpace: 'nowrap' as const }
 const agentFallbackIconStyle = { flexGrow: 0, flexShrink: 0, borderRadius: 5, color: '#fff', background: dshThemeColor.labelTertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: uiFontSize(11), fontWeight: 600, lineHeight: 1 }
 
-type ModelPane = 'root' | 'model' | 'effort'
+type ModelPane = 'root' | 'model' | 'effort' | 'magpie-confirm'
 
 interface ModelCatalogState {
   readonly sessionId: string | undefined
   readonly adapterId: string
   readonly value: CodingNsCliModelCatalog
+}
+
+interface MagpiePendingChoice {
+  readonly sessionId: string
+  readonly adapterId: string
+  readonly model: CodingNsCliModel
+}
+
+interface MagpieSessionRetry {
+  readonly sessionId: string
+  readonly adapterId: string
+  readonly selection: SelectionState
 }
 
 interface ModelNameProps {
@@ -478,7 +508,37 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const [catalogRetry, setCatalogRetry] = useState(0)
   const [open, setOpen] = useState(false)
   const [pane, setPane] = useState<ModelPane>('root')
+  const [magpieCatalogState, setMagpieCatalogState] = useState<ModelCatalogState | null>(null)
+  const [magpieCatalogStatus, setMagpieCatalogStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable' | 'unsupported'>('idle')
+  const [pendingMagpieChoice, setPendingMagpieChoice] = useState<MagpiePendingChoice | null>(null)
+  const [magpieSwitching, setMagpieSwitching] = useState(false)
+  const [magpieFeedbackState, setMagpieFeedbackState] = useState<{
+    readonly sessionId: string
+    readonly adapterId: string
+    readonly value: 'success' | 'unavailable' | 'invalid' | 'verification' | 'partial'
+  } | null>(null)
+  const [magpieRetryState, setMagpieRetryState] = useState<MagpieSessionRetry | null>(null)
+  const magpieCatalogRef = useRef<ModelCatalogState | null>(null)
+  magpieCatalogRef.current = magpieCatalogState
+  const pendingMagpieModel = pendingMagpieChoice !== null && pendingMagpieChoice.sessionId === sessionId && pendingMagpieChoice.adapterId === selection.adapterId
+    ? pendingMagpieChoice.model : null
+  const magpieRetrySelection = magpieRetryState !== null && magpieRetryState.sessionId === sessionId && magpieRetryState.adapterId === selection.adapterId
+    ? magpieRetryState.selection : null
+  const magpieFeedback = magpieFeedbackState !== null && magpieFeedbackState.sessionId === sessionId && magpieFeedbackState.adapterId === selection.adapterId
+    ? magpieFeedbackState.value : null
+  const setMagpieFeedback = (value: typeof magpieFeedback): void => {
+    if (value === null || sessionId === undefined) {
+      setMagpieFeedbackState(null)
+      return
+    }
+    setMagpieFeedbackState({ sessionId, adapterId: selection.adapterId, value })
+  }
   const [translationSettingsOpen, setTranslationSettingsOpen] = useState(false)
+  const [modelQuery, setModelQuery] = useState('')
+  const [highlightedModelIndex, setHighlightedModelIndex] = useState<number | null>(null)
+  const modelSearchRef = useRef<HTMLInputElement | null>(null)
+  const modelOptionRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const modelGroupsId = useId()
   const rootRef = useRef<HTMLDivElement | null>(null)
 
   useDismissOnOutsidePointer(rootRef, open, () => { setOpen(false); setPane('root') })
@@ -500,6 +560,14 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   // 目录必须和当前会话、适配器绑定；跨 Host 切换时不能短暂展示上一会话的目录。
   // 有 stale 目录时直接可用，后台刷新不应阻塞模型/思考强度选择。
   const loading = catalog === null && refreshingAdapterId === selection.adapterId
+  // 模型列表包含普通目录与 Magpie 目录；搜索阈值与内置模型选择器一致：
+  // 超过 4 个可选模型才出现搜索框，目录较少时保持原来的直接选择体验。
+  const activeMagpieCatalog = magpieCatalogState?.adapterId === selection.adapterId && magpieCatalogState.sessionId === sessionId
+    ? magpieCatalogState.value
+    : null
+  const modelChoiceCount = (catalog?.groups ?? []).reduce((count, group) => count + group.models.length, 0)
+    + (activeMagpieCatalog?.groups ?? []).reduce((count, group) => count + group.models.length, 0)
+  const showModelSearch = modelChoiceCount > 4
   useEffect(() => {
     if (selection.adapterId === DSH_NATIVE_SESSION_ADAPTER_ID) {
       setCatalogState(null)
@@ -528,7 +596,16 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
             ? selection
             : selections.get(sessionId) ?? selection
           if (currentSelection.adapterId !== adapterId) return
-          const model = findModel(value, currentSelection.modelId) ?? firstModel(value)
+          const currentMagpieCatalog = magpieCatalogRef.current
+          if (currentMagpieCatalog?.adapterId === adapterId
+            && currentMagpieCatalog.sessionId === sessionId
+            && findModel(currentMagpieCatalog.value, currentSelection.modelId)?.source === 'magpie') return
+          // An ID absent from the driver's catalog may be a confirmed Magpie
+          // model. Preserve it instead of silently replacing it with the first
+          // ordinary model while the separate Magpie catalog is not open.
+          const model = currentSelection.modelId === undefined
+            ? firstModel(value)
+            : findModel(value, currentSelection.modelId)
           if (model === undefined) return
           const effort = model.efforts.includes(currentSelection.effortId ?? '') ? currentSelection.effortId : defaultEffort(model.efforts)
           // 目录就绪后的补默认值同样是“部分更新”：必须把档位一起带上，否则用户
@@ -569,10 +646,63 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     }
   }, [props.rpc, selection.adapterId, sessionId, catalogRetry])
 
+  useEffect(() => {
+    setPane('root')
+    setPendingMagpieChoice(null)
+    setMagpieFeedbackState(null)
+    setMagpieRetryState(null)
+  }, [sessionId, selection.adapterId])
+
+  useEffect(() => {
+    if (pane !== 'model') return
+    if (sessionId === undefined || sessionId.trim() === '') {
+      setMagpieCatalogStatus('unsupported')
+      return
+    }
+    const controller = new AbortController()
+    let active = true
+    const adapterId = selection.adapterId
+    setMagpieCatalogState(null)
+    setMagpieCatalogStatus('loading')
+    void callCliRpc<{ readonly status: 'available' | 'unavailable' | 'unsupported'; readonly catalog?: CodingNsCliModelCatalog }>(props.rpc, 'magpie/models', {
+      adapterId,
+      sessionId,
+    }, controller.signal)
+      .then((value) => {
+        if (!active) return
+        if (value.status !== 'available' || value.catalog === undefined) {
+          setMagpieCatalogStatus(value.status === 'unsupported' ? 'unsupported' : 'unavailable')
+          return
+        }
+        setMagpieCatalogState({ sessionId, adapterId, value: value.catalog })
+        setMagpieCatalogStatus('ready')
+      })
+      .catch(() => {
+        if (active && !controller.signal.aborted) setMagpieCatalogStatus('unavailable')
+      })
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [props.rpc, selection.adapterId, sessionId, pane])
+
   // 手动重新检测后刷新目录；日常读取沿用缓存，不定时重启探测。
   useEffect(() => subscribeAdapterCatalogChanged(props.rpc, () => setCatalogRetry((value) => value + 1)), [props.rpc])
 
   useEffect(() => { if (selection.adapterId === 'dsh') setOpen(false) }, [selection.adapterId])
+
+  // 进入模型列表、目录从少变多或重新打开菜单时，把焦点交给搜索框（与内置选择器一致）。
+  useEffect(() => {
+    if (!open || pane !== 'model' || !showModelSearch) return
+    modelSearchRef.current?.focus()
+  }, [open, pane, showModelSearch])
+
+  // 离开模型列表、搜索被关闭或关闭菜单后清空查询，下一次打开从完整目录开始。
+  useEffect(() => {
+    if (open && pane === 'model' && showModelSearch) return
+    setModelQuery('')
+    setHighlightedModelIndex(null)
+  }, [open, pane, showModelSearch])
 
   // 所有 Hooks 都先执行；原生与外部适配器切换不能改变 Hook 调用顺序。
   const translationSettings = translationSettingsOpen && props.settings !== undefined
@@ -599,7 +729,10 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     )
   }
 
-  const model = catalog === null ? undefined : findModel(catalog, selection.modelId) ?? firstModel(catalog)
+  const magpieCatalog = activeMagpieCatalog
+  const model = (magpieCatalog === null ? undefined : findModel(magpieCatalog, selection.modelId))
+    ?? (catalog === null ? undefined : findModel(catalog, selection.modelId))
+    ?? (selection.modelId ? { id: selection.modelId, name: selection.modelId, efforts: [] } : catalog === null ? undefined : firstModel(catalog))
   const efforts = model?.efforts ?? []
   // 目录已经加载、但当前模型不声明该档位时不能再沿用旧值：切到 Claude 这类没有
   // 思考档位的模型后，残留的 Gemini 档位既会显示错，也会被下发成 `--effort`，
@@ -611,8 +744,17 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const modelLabel = model?.name ?? (loading ? t('cli.loadingModel') : t('cli.noModelsAvailable'))
   const effortLabel = effortDisplayName(model, effortValue, t('cli.defaultEffort'))
   const modelUnavailable = model === undefined
-  const triggerDisabled = !loading && modelUnavailable
+  const canTryMagpie = selection.adapterId === 'claude-code' || selection.adapterId === 'codex'
+  const triggerDisabled = !loading && modelUnavailable && !canTryMagpie
   const chooseModel = (next: CodingNsCliModel): void => {
+    if (next.source === 'magpie') {
+      if (sessionId === undefined || sessionId.trim() === '') return
+      setPendingMagpieChoice({ sessionId, adapterId: selection.adapterId, model: next })
+      setMagpieFeedback(null)
+      setMagpieRetryState(null)
+      setPane('magpie-confirm')
+      return
+    }
     const nextEffort = next.efforts.includes(effortValue) ? effortValue : defaultEffort(next.efforts)
     // 档位必须随模型切换一起携带：新模型不声明该档位时显式回落 `default`，
     // 不能省略——省略会让 Host 保留旧档位，继续下发该模型不支持的 serviceTier。
@@ -621,12 +763,78 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     update({
       adapterId: selection.adapterId,
       modelId: next.id,
+      modelProvenance: { kind: 'other' },
       effortId: nextEffort ?? 'default',
       translationEnabled: selection.translationEnabled === true,
       ...(nextTier ? { serviceTierId: nextTier } : {}),
     })
     setOpen(false)
     setPane('root')
+  }
+  const makeSelectionForModel = (next: CodingNsCliModel): SelectionState => {
+    const nextEffort = next.efforts.includes(effortValue) ? effortValue : defaultEffort(next.efforts)
+    const nextTier = carriedServiceTierId(next, selection.serviceTierId)
+    return {
+      adapterId: selection.adapterId,
+      modelId: next.id,
+      modelProvenance: { kind: 'magpie' },
+      effortId: nextEffort ?? 'default',
+      translationEnabled: selection.translationEnabled === true,
+      ...(nextTier ? { serviceTierId: nextTier } : {}),
+    }
+  }
+  const confirmMagpieModel = async (): Promise<void> => {
+    const pendingChoice = pendingMagpieChoice
+    if (pendingChoice === null || pendingChoice.sessionId !== sessionId || pendingChoice.adapterId !== selection.adapterId
+      || pendingChoice.model.source !== 'magpie' || sessionId === undefined || magpieSwitching) return
+    const pending = pendingChoice.model
+    setMagpieSwitching(true)
+    setMagpieFeedback(null)
+    const nextSelection = makeSelectionForModel(pending)
+    const selectionRevision = cliSessionSelectionRevision(sessionId)
+    try {
+      const result = await callCliRpc<{ readonly ok: boolean; readonly reason?: string }>(props.rpc, 'magpie/set-model', {
+        adapterId: selection.adapterId,
+        sessionId,
+        modelId: pending.id,
+      })
+      if (!result.ok) {
+        setMagpieFeedback(result.reason === 'invalid-model' ? 'invalid' : result.reason === 'verification-failed' ? 'verification' : 'unavailable')
+        return
+      }
+      if (cliSessionSelectionRevision(sessionId) !== selectionRevision) {
+        setMagpieRetryState({ sessionId, adapterId: selection.adapterId, selection: nextSelection })
+        setMagpieFeedback('partial')
+        return
+      }
+      if (await update(nextSelection)) {
+        setMagpieRetryState(null)
+        setMagpieFeedback('success')
+        setPendingMagpieChoice(null)
+        setPane('model')
+      } else {
+        setMagpieRetryState({ sessionId, adapterId: selection.adapterId, selection: nextSelection })
+        setMagpieFeedback('partial')
+      }
+    } catch {
+      setMagpieFeedback('unavailable')
+    } finally {
+      setMagpieSwitching(false)
+    }
+  }
+  const retryMagpieSessionSelection = async (): Promise<void> => {
+    const retry = magpieRetryState
+    if (retry === null || retry.sessionId !== sessionId || retry.adapterId !== selection.adapterId || magpieSwitching) return
+    setMagpieSwitching(true)
+    if (await update(retry.selection)) {
+      setMagpieRetryState(null)
+      setMagpieFeedback('success')
+      setPendingMagpieChoice(null)
+      setPane('model')
+    } else {
+      setMagpieFeedback('partial')
+    }
+    setMagpieSwitching(false)
   }
   const chooseEffort = (effort: string): void => {
     if (model === undefined) return
@@ -635,6 +843,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     update({
       adapterId: selection.adapterId,
       modelId: model.id,
+      modelProvenance: model.source === 'magpie' ? { kind: 'magpie' } : { kind: 'other' },
       effortId: effort,
       translationEnabled: selection.translationEnabled === true,
       ...(tier ? { serviceTierId: tier } : {}),
@@ -651,7 +860,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     if (model === undefined) return
     const serviceTierId = toggledServiceTierId(model, next)
     if (serviceTierId === undefined) return
-    update({ adapterId: selection.adapterId, modelId: model.id, ...(selection.effortId ? { effortId: selection.effortId } : {}), serviceTierId, translationEnabled: selection.translationEnabled === true })
+    update({ adapterId: selection.adapterId, modelId: model.id, modelProvenance: model.source === 'magpie' ? { kind: 'magpie' } : { kind: 'other' }, ...(selection.effortId ? { effortId: selection.effortId } : {}), serviceTierId, translationEnabled: selection.translationEnabled === true })
   }
   const translationAvailable = supportsSessionTranslation(selection.adapterId)
   const toggleTranslation = (next: boolean): void => {
@@ -659,10 +868,54 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     update({
       adapterId: selection.adapterId,
       modelId: model.id,
+      modelProvenance: model.source === 'magpie' ? { kind: 'magpie' } : { kind: 'other' },
       ...(selection.effortId ? { effortId: selection.effortId } : {}),
       ...(selection.serviceTierId ? { serviceTierId: selection.serviceTierId } : {}),
       translationEnabled: next,
     })
+  }
+  const modelGroups = [
+    ...(catalog?.groups ?? []),
+    ...(magpieCatalog?.groups ?? []),
+  ]
+  // 搜索只在模型较多时启用；过滤按 Provider 分组进行，空分组直接隐藏，
+  // 与内置模型选择器的 rankByName 分组结果一致。
+  const modelQueryText = showModelSearch ? modelQuery.trim() : ''
+  const visibleModelGroups = modelQueryText === ''
+    ? modelGroups
+    : modelGroups
+      .map((group) => ({ ...group, models: rankModelByName(group.models, modelQueryText) }))
+      .filter((group) => group.models.length > 0)
+  const visibleModels = visibleModelGroups.flatMap((group) => group.models)
+  const currentVisibleModelIndex = visibleModels.findIndex((item) => item.id === model?.id)
+  const activeModelIndex = visibleModels.length === 0
+    ? -1
+    : Math.min(highlightedModelIndex ?? Math.max(0, currentVisibleModelIndex), visibleModels.length - 1)
+  // 每次渲染重建可见模型的可聚焦引用，键盘高亮移动时把目标滚入可视区。
+  modelOptionRefs.current = []
+  let modelOptionIndex = 0
+  const changeModelQuery = (next: string): void => {
+    setModelQuery(next)
+    setHighlightedModelIndex(0)
+  }
+  const moveModelHighlight = (offset: number): void => {
+    if (visibleModels.length === 0) return
+    const next = (activeModelIndex + offset + visibleModels.length) % visibleModels.length
+    setHighlightedModelIndex(next)
+    modelOptionRefs.current[next]?.scrollIntoView?.({ block: 'nearest' })
+  }
+  // 搜索框聚焦时 ↑/↓ 在可见模型间移动高亮，Enter 直接选中；与内置选择器同一套键盘路径。
+  const onModelSearchKeyDown = (event: ReactKeyboardEvent<HTMLInputElement>): void => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault()
+      moveModelHighlight(event.key === 'ArrowDown' ? 1 : -1)
+      return
+    }
+    if (event.key !== 'Enter') return
+    const highlighted = visibleModels[activeModelIndex]
+    if (highlighted === undefined) return
+    event.preventDefault()
+    chooseModel(highlighted)
   }
   const menu = loading
     ? [
@@ -696,7 +949,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
                 }),
               )]
             : []),
-          createElement('button', { key: 'model', type: 'button', role: 'menuitem', disabled: modelUnavailable, onClick: () => setPane('model'), style: nativeMenuCellStyle },
+          createElement('button', { key: 'model', type: 'button', role: 'menuitem', disabled: modelUnavailable && !canTryMagpie, onClick: () => setPane('model'), style: nativeMenuCellStyle },
           createElement('span', { style: nativeMenuLabelStyle }, t('cli.model')), createElement('span', { style: nativeMenuValueStyle }, modelLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
         createElement('button', { key: 'effort', type: 'button', role: 'menuitem', disabled: modelUnavailable, onClick: () => setPane('effort'), style: nativeMenuCellStyle },
           createElement('span', undefined, t('cli.thinking')), createElement('span', { style: nativeMenuValueStyle }, effortLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
@@ -704,14 +957,92 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     : pane === 'model'
       ? [
           createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, t('cli.back')),
-          ...((catalog?.groups ?? []).map((group) => createElement('section', { key: group.id, role: 'group', 'aria-label': group.name, style: { marginTop: 4 } },
-            createElement('div', { style: nativeGroupTitleStyle }, group.name),
-            ...group.models.map((item) => createElement('button', { key: `${group.id}:${item.id}`, type: 'button', role: 'menuitemradio', 'aria-checked': item.id === model?.id, onClick: () => chooseModel(item), style: nativeOptionStyle },
-              createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.name),
-              item.id === model?.id && createElement('span', { 'aria-hidden': true }, '✓'),
+          // 搜索行固定在菜单顶部，模型分组在下方独立滚动，与内置选择器结构一致。
+          showModelSearch && createElement('div', { key: 'model-search', className: 'codingns4dsh-model-search-row' },
+            createElement(DshInput, {
+              ref: modelSearchRef,
+              className: `codingns4dsh-model-search${modelQuery !== '' ? ' codingns4dsh-model-search-with-query' : ''}`,
+              type: 'text',
+              role: 'searchbox',
+              'aria-label': t('cli.modelSearch'),
+              'aria-controls': modelGroupsId,
+              'aria-activedescendant': activeModelIndex < 0 ? undefined : `${modelGroupsId}-${String(activeModelIndex)}`,
+              placeholder: t('cli.modelSearch'),
+              value: modelQuery,
+              onChange: (event: ReactChangeEvent<HTMLInputElement>) => changeModelQuery(event.currentTarget.value),
+              onKeyDown: onModelSearchKeyDown,
+            }),
+            modelQuery !== '' && createElement('button', {
+              key: 'clear',
+              type: 'button',
+              className: 'codingns4dsh-model-search-clear',
+              'aria-label': t('cli.modelSearchClear'),
+              onClick: () => { changeModelQuery(''); modelSearchRef.current?.focus() },
+            }, createElement(resolveCloseFillIcon(), {})),
+          ),
+          createElement('div', { key: 'model-groups', id: modelGroupsId, className: 'codingns4dsh-model-groups' },
+            ...visibleModelGroups.map((group) => createElement('section', { key: group.id, role: 'group', 'aria-label': group.name, style: { marginTop: 4 } },
+              createElement('div', { style: nativeGroupTitleStyle }, group.id === 'magpie' ? t('cli.magpieGroup') : group.name),
+              ...group.models.map((item) => {
+                const index = modelOptionIndex++
+                return createElement('button', {
+                  key: `${group.id}:${item.id}`,
+                  ref: (element: HTMLButtonElement | null) => { modelOptionRefs.current[index] = element },
+                  id: `${modelGroupsId}-${String(index)}`,
+                  type: 'button',
+                  role: 'menuitemradio',
+                  'aria-checked': item.id === model?.id,
+                  'data-highlighted': showModelSearch && index === activeModelIndex ? 'true' : undefined,
+                  tabIndex: showModelSearch ? -1 : undefined,
+                  className: 'codingns4dsh-model-option',
+                  onMouseMove: () => { if (showModelSearch && index !== activeModelIndex) setHighlightedModelIndex(index) },
+                  onClick: () => chooseModel(item),
+                  style: nativeOptionStyle,
+                },
+                  createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.name),
+                  item.source === 'magpie' && createElement('span', { style: magpieMutedTextStyle }, t('cli.magpieSavedChoice')),
+                  item.id === model?.id && createElement('span', { 'aria-hidden': true }, '✓'),
+                )
+              }),
             )),
-          )))
+            visibleModelGroups.length === 0 && magpieCatalogStatus !== 'loading' && createElement('div', { key: 'model-empty', role: 'status', style: modelSearchEmptyStyle },
+              t(modelGroups.length === 0 ? 'cli.noModelsAvailable' : 'cli.modelSearchEmpty')),
+            magpieCatalogStatus === 'loading' && createElement('div', { key: 'magpie-loading', role: 'status', style: magpieMessageStyle }, t('cli.magpieLoading')),
+            magpieCatalogStatus === 'unavailable' && createElement('div', { key: 'magpie-unavailable', role: 'status', style: magpieMessageStyle }, t('cli.magpieUnavailable')),
+            magpieFeedback !== null && createElement('div', { key: 'magpie-feedback', role: magpieFeedback === 'success' ? 'status' : 'alert', style: magpieMessageStyle }, t(magpieFeedback === 'success'
+              ? 'cli.magpieSwitchSuccess'
+              : magpieFeedback === 'partial' ? 'cli.magpieSwitchPartial'
+                : magpieFeedback === 'invalid' ? 'cli.magpieSwitchInvalid'
+                  : magpieFeedback === 'verification' ? 'cli.magpieSwitchVerification'
+                    : 'cli.magpieSwitchUnavailable')),
+            magpieFeedback === 'partial' && magpieRetrySelection !== null && createElement('button', {
+              key: 'magpie-retry-session', type: 'button', role: 'menuitem', disabled: magpieSwitching,
+              onClick: () => { void retryMagpieSessionSelection() }, style: nativeMenuCellStyle,
+            }, t('cli.magpieRetrySession')),
+          ),
         ]
+      : pane === 'magpie-confirm'
+        ? [
+            createElement('button', { key: 'back', type: 'button', disabled: magpieSwitching, onClick: () => { setPane('model'); setMagpieFeedback(null) }, style: nativeBackStyle }, t('cli.back')),
+            createElement('div', { key: 'title', style: nativeGroupTitleStyle }, t('cli.magpieConfirmTitle', { model: pendingMagpieModel?.name ?? '' })),
+            createElement('p', { key: 'description', style: magpieMessageStyle }, t('cli.magpieConfirmDescription', {
+              agent: t(selection.adapterId === 'codex' ? 'cli.magpieAgentCodex' : 'cli.magpieAgentClaudeCode'),
+              model: pendingMagpieModel?.id ?? '',
+            })),
+            magpieFeedback !== null && createElement('div', { key: 'magpie-feedback', role: magpieFeedback === 'partial' ? 'alert' : 'status', style: magpieMessageStyle }, t(magpieFeedback === 'partial'
+              ? 'cli.magpieSwitchPartial'
+              : magpieFeedback === 'invalid' ? 'cli.magpieSwitchInvalid'
+                : magpieFeedback === 'verification' ? 'cli.magpieSwitchVerification'
+                  : 'cli.magpieSwitchUnavailable')),
+            magpieFeedback === 'partial' && magpieRetrySelection !== null && createElement('button', {
+              key: 'magpie-retry-session', type: 'button', role: 'menuitem', disabled: magpieSwitching,
+              onClick: () => { void retryMagpieSessionSelection() }, style: nativeMenuCellStyle,
+            }, t('cli.magpieRetrySession')),
+            createElement('button', {
+              key: 'save', type: 'button', role: 'menuitem', disabled: magpieSwitching || pendingMagpieModel === null,
+              onClick: () => { void confirmMagpieModel() }, style: nativeMenuCellStyle,
+            }, magpieSwitching ? t('cli.magpieSaving') : t('cli.magpieSaveAndUse')),
+          ]
       : [
           createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, t('cli.back')),
           createElement('div', { key: 'title', style: nativeGroupTitleStyle }, t('cli.thinkingLevelTitle', { model: modelLabel })),
@@ -727,7 +1058,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       !loading && createElement('span', { className: 'codingns4dsh-model-effort', style: { color: dshThemeColor.labelCaption, whiteSpace: 'nowrap' } }, effortLabel),
       !loading && createElement(NativeDropdownChevron, { open }),
     ),
-    open && createElement('div', { role: 'menu', 'aria-label': t('cli.chooseModelMenu'), style: nativeMenuStyle }, ...menu),
+    open && createElement('div', { role: 'menu', 'aria-label': t('cli.chooseModelMenu'), style: pane === 'model' ? nativeModelMenuStyle : nativeMenuStyle }, ...menu),
     translationSettings,
   )
 }
@@ -740,6 +1071,9 @@ function effortDisplayName(model: CodingNsCliModel | undefined, effort: string, 
 const nativeTriggerStyle = { width: '100%', minWidth: 0, maxWidth: 'min(360px, 45cqw)', height: 28, color: dshThemeColor.labelSecondary, cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 24, padding: '0 4px 0 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: uiFontSize(13), lineHeight: '20px' }
 const modelNameStyle = { minWidth: 0, maxWidth: 150, flex: '0 1 150px', display: 'block', overflow: 'hidden', whiteSpace: 'nowrap' as const }
 const nativeMenuStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1100, right: 0, bottom: 'calc(100% + 8px)', minWidth: 240, maxWidth: 'min(420px, calc(100vw - 32px))', maxHeight: 'min(360px, calc(100vh - 96px))', overflowX: 'hidden' as const, overflowY: 'auto' as const, padding: 4, border: 0, borderRadius: 20 }
+// 模型列表菜单改为列布局：搜索行固定在顶部，只有模型分组区域滚动，
+// 与内置模型选择器的 MenuSurface + groups 结构一致。
+const nativeModelMenuStyle = { ...nativeMenuStyle, display: 'flex' as const, flexDirection: 'column' as const, overflowY: 'hidden' as const }
 // 菜单行同时用于 <button> 和 <div>：button 由 DSH 全局样式给了 border-box，
 // div 没有，若只写 width:100%+padding，div 会按 content-box 多出左右各 10px，
 // 把整行撑出面板并触发横向滚动条（档位开关因此被推到贴住右边缘）。
@@ -753,9 +1087,12 @@ const nativeMenuValueStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden'
 const nativeChevronStyle = { flex: 'none', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(20), lineHeight: 1 }
 const nativeBackStyle = { width: '100%', height: 30, color: dshThemeColor.labelSecondary, cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 8, padding: '0 8px', fontSize: uiFontSize(13) }
 const nativeGroupTitleStyle = { position: 'sticky' as const, top: 0, zIndex: 1, padding: '5px 8px 3px', color: dshThemeColor.labelTertiary, background: dshThemeColor.menuBackground, fontSize: uiFontSize(12), fontWeight: 500, lineHeight: '18px' }
+const magpieMutedTextStyle = { flex: 'none', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), whiteSpace: 'nowrap' as const }
+const magpieMessageStyle = { margin: 0, padding: '8px 10px', color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: '18px', whiteSpace: 'normal' as const }
 const nativeOptionStyle = { width: '100%', minHeight: 38, color: 'inherit', cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 10, padding: '6px 8px', display: 'flex', alignItems: 'center', gap: 8, fontSize: uiFontSize(14), lineHeight: '20px' }
 const modelSpinnerStyle = { width: 12, height: 12, flex: '0 0 12px', boxSizing: 'border-box' as const, border: '2px solid currentColor', borderRightColor: 'transparent', borderRadius: '50%' }
 const modelLoadingMenuStyle = { minHeight: 56, padding: '0 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(13) }
+const modelSearchEmptyStyle = { margin: 0, padding: 8, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: '18px' }
 
 function defaultEffort(efforts: readonly string[]): string | undefined {
   if (efforts.length === 0) return undefined

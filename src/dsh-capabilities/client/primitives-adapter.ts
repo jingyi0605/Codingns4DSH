@@ -45,6 +45,8 @@ type PrimitiveExports = typeof primitives & {
   readonly IconSendOutlineMedium?: IconComponent
   readonly IconCloseOutlineRegular?: IconComponent
   readonly IconCloseOutlineMedium?: IconComponent
+  readonly IconCloseFillRegular?: IconComponent
+  readonly IconCloseFillMedium?: IconComponent
   readonly IconChatOutlineRegular?: IconComponent
   readonly IconChatOutlineMedium?: IconComponent
   readonly IconStopFillRegular?: IconComponent
@@ -166,4 +168,77 @@ export function resolveDelegateIcon(): IconComponent {
     ?? value.IconSendOutlineRegular
     ?? value.IconSendOutlineMedium
     ?? resolveDataIcon()
+}
+
+/**
+ * 模型搜索框的清除按钮图标，与内置模型选择器的搜索清除按钮同一字形；
+ * 旧版 DSH 缺少该导出时退化为不回退图标，清除按钮的文字标签仍然可用。
+ */
+export function resolveCloseFillIcon(): IconComponent {
+  const value = primitives as PrimitiveExports
+  return value.IconCloseFillRegular ?? value.IconCloseFillMedium ?? unavailableIcon
+}
+
+/**
+ * 模型搜索的模糊排序。
+ *
+ * 内置模型选择器用 primitives 的 `rankByName` 排名搜索结构：查询必须是名称的
+ * 大小写不敏感子序列，前缀命中优先，其次按对齐分数。插件模型选择器复用同一
+ * 排序，保证同一查询在内置与外部 Agent 两个选择器里得到相同的顺序；旧版 DSH
+ * 缺少该导出时退回等价的本地实现，行为不变。
+ */
+export type RankModelByName = <T extends { readonly name: string }>(items: readonly T[], rawQuery: string) => readonly T[]
+
+export const rankModelByName: RankModelByName = (items, rawQuery) => {
+  const exported = (primitives as Partial<typeof primitives>).rankByName
+  if (typeof exported === 'function') return exported(items, rawQuery) as readonly (typeof items)[number][]
+  return rankByNameFallback(items, rawQuery)
+}
+
+/** 名称起始与 `-`/`_` 分隔处额外加分，与宿主实现保持一致。 */
+function boundaryBonus(name: string, index: number): number {
+  return index === 0 || name.charAt(index - 1) === '-' || name.charAt(index - 1) === '_' ? 8 : 0
+}
+
+/** 有序子序列的最强对齐分数；查询不是子序列时返回 undefined。 */
+function alignmentScore(name: string, query: string): number | undefined {
+  if (query.length > name.length) return undefined
+  const noMatch = Number.NEGATIVE_INFINITY
+  let previous = Array.from({ length: name.length }, () => noMatch).map((_, index) => name.charAt(index) === query.charAt(0) ? 1 + boundaryBonus(name, index) - index : noMatch)
+  for (let queryIndex = 1; queryIndex < query.length; queryIndex++) {
+    const current = Array.from({ length: name.length }, () => noMatch)
+    let left = noMatch
+    let leftLeft = noMatch
+    let bestGapped = noMatch
+    for (const [index, prior] of previous.entries()) {
+      if (leftLeft !== noMatch) bestGapped = Math.max(bestGapped, leftLeft + index - 2)
+      if (name.charAt(index) === query.charAt(queryIndex)) {
+        const bonus = 1 + boundaryBonus(name, index)
+        let score = noMatch
+        if (left !== noMatch) score = left + bonus + 4
+        if (bestGapped !== noMatch) score = Math.max(score, bestGapped + bonus + 1 - index)
+        current[index] = score
+      }
+      leftLeft = left
+      left = prior
+    }
+    previous = current
+  }
+  let best = noMatch
+  for (const score of previous) best = Math.max(best, score)
+  return best === noMatch ? undefined : best
+}
+
+function rankByNameFallback<T extends { readonly name: string }>(items: readonly T[], rawQuery: string): readonly T[] {
+  const query = rawQuery.toLowerCase()
+  if (query === '') return items
+  const ranked: Array<{ item: T; index: number; prefix: boolean; score: number }> = []
+  items.forEach((item, index) => {
+    const lower = item.name.toLowerCase()
+    const score = alignmentScore(lower, query)
+    if (score === undefined) return
+    ranked.push({ item, index, prefix: lower.startsWith(query), score })
+  })
+  ranked.sort((left, right) => Number(right.prefix) - Number(left.prefix) || right.score - left.score || left.index - right.index)
+  return ranked.map((match) => match.item)
 }
