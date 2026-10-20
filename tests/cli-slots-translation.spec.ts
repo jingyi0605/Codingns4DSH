@@ -511,6 +511,10 @@ test('外部 Agent 模型超过 4 个时提供与内置模型选择器一致的�
   const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
   try {
     let tree = await openModelPane(renderer)
+    assert.equal(elementWhere(tree, (element) => element.key === 'back'), undefined, '搜索组件上方不能有返回按钮')
+    const menu = elementWhere(tree, (element) => element.props.role === 'menu')!
+    const menuChildren = Array.isArray(menu.props.children) ? menu.props.children : [menu.props.children]
+    assert.equal(menuChildren[0]?.key, 'model-search', '搜索行必须是模型子面板的第一项')
     const search = searchBox(tree)!
     assert.ok(search, '超过 4 个模型必须出现搜索框')
     assert.equal(search.props.placeholder, t('cli.modelSearch'))
@@ -604,3 +608,52 @@ test('搜索组件注入的样式复用内置模型选择器的结构与主题�
   assert.match(css, /::placeholder\{color:var\(--dsw-alias-label-caption/u)
 })
 
+test('模型与思考档位子面板不提供返回按钮，Escape 先回根菜单再关闭弹层', async () => {
+  const listeners = new Map<string, Set<(event: any) => void>>()
+  const document = {
+    querySelector: () => null,
+    createElement: () => ({ dataset: {}, textContent: '' }),
+    head: { appendChild: () => undefined },
+    addEventListener(type: string, listener: (event: any) => void) {
+      if (!listeners.has(type)) listeners.set(type, new Set())
+      listeners.get(type)!.add(listener)
+    },
+    removeEventListener(type: string, listener: (event: any) => void) {
+      listeners.get(type)?.delete(listener)
+    },
+    dispatch(type: string, event: any) {
+      for (const listener of [...(listeners.get(type) ?? [])]) listener(event)
+    },
+  }
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: document })
+  const probe = createProbe('codex', { modelGroups: searchModelGroups, modelId: 'alpha-one' })
+  const slot = probe.registered.get('codingns4dsh-model')!
+  const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
+  try {
+    let tree = await openModelPane(renderer)
+    assert.equal(elementWhere(tree, (element) => element.key === 'back'), undefined)
+    const escape = () => document.dispatch('keydown', { key: 'Escape', preventDefault() {}, stopPropagation() {} })
+
+    escape()
+    tree = renderer.render()
+    assert.ok(elementWhere(tree, (element) => element.key === 'model' && element.props.role === 'menuitem'), 'Escape 应从模型列表回到根菜单')
+    assert.equal(searchBox(tree), undefined)
+
+    // 思考档位子面板同样没有返回按钮。
+    elementWhere(tree, (element) => element.key === 'effort')!.props.onClick()
+    tree = renderer.render()
+    assert.equal(elementWhere(tree, (element) => element.key === 'back'), undefined, '思考档位子面板不能有返回按钮')
+
+    escape()
+    tree = renderer.render()
+    assert.ok(elementWhere(tree, (element) => element.key === 'model' && element.props.role === 'menuitem'))
+    escape()
+    tree = renderer.render()
+    assert.equal(elementWhere(tree, (element) => element.props.role === 'menu'), undefined, '根菜单再按 Escape 关闭弹层')
+  } finally {
+    renderer.dispose(); probe.dispose()
+    if (original === undefined) Reflect.deleteProperty(globalThis, 'document')
+    else Object.defineProperty(globalThis, 'document', original)
+  }
+})

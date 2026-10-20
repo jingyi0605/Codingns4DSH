@@ -541,7 +541,9 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const modelGroupsId = useId()
   const rootRef = useRef<HTMLDivElement | null>(null)
 
-  useDismissOnOutsidePointer(rootRef, open, () => { setOpen(false); setPane('root') })
+  // 模型列表与思考档位和内置选择器一样没有返回按钮：Escape 只退出当前子面板，
+  // 回到根菜单；根菜单再按 Escape 才关闭整个弹层。
+  useDismissOnOutsidePointer(rootRef, open, () => { setOpen(false); setPane('root') }, { escape: pane === 'root' })
 
   const nativeDefault = useSyncExternalStore(
     subscribeNativeTranslationDefault,
@@ -703,6 +705,25 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     setModelQuery('')
     setHighlightedModelIndex(null)
   }, [open, pane, showModelSearch])
+
+  // 模型列表与思考档位不再提供返回按钮：Escape 退回根菜单，Magpie 确认页退回模型列表。
+  useEffect(() => {
+    if (!open || pane === 'root' || typeof document === 'undefined') return
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      event.stopPropagation()
+      if (pane === 'magpie-confirm') {
+        if (magpieSwitching) return
+        setPane('model')
+        setMagpieFeedbackState(null)
+        return
+      }
+      setPane('root')
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => document.removeEventListener('keydown', onKeyDown, true)
+  }, [open, pane, magpieSwitching])
 
   // 所有 Hooks 都先执行；原生与外部适配器切换不能改变 Hook 调用顺序。
   const translationSettings = translationSettingsOpen && props.settings !== undefined
@@ -956,7 +977,8 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       ]
     : pane === 'model'
       ? [
-          createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, t('cli.back')),
+          // 与内置模型选择器一致：搜索行就是子面板第一项，上方不放返回按钮；
+          // 返回根菜单由 Escape 完成。
           // 搜索行固定在菜单顶部，模型分组在下方独立滚动，与内置选择器结构一致。
           showModelSearch && createElement('div', { key: 'model-search', className: 'codingns4dsh-model-search-row' },
             createElement(DshInput, {
@@ -1044,7 +1066,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
             }, magpieSwitching ? t('cli.magpieSaving') : t('cli.magpieSaveAndUse')),
           ]
       : [
-          createElement('button', { key: 'back', type: 'button', onClick: () => setPane('root'), style: nativeBackStyle }, t('cli.back')),
+          // 思考档位同样是原生式下钻面板，没有返回按钮；Escape 回到根菜单。
           createElement('div', { key: 'title', style: nativeGroupTitleStyle }, t('cli.thinkingLevelTitle', { model: modelLabel })),
           ...(efforts.length > 0 ? efforts : ['default']).map((effort) => createElement('button', { key: effort, type: 'button', role: 'menuitemradio', 'aria-checked': effort === effortValue, onClick: () => chooseEffort(effort), style: nativeOptionStyle },
             createElement('span', { style: { flex: '1 1 auto' } }, effortDisplayName(model, effort, t('cli.defaultEffort'))), effort === effortValue && createElement('span', { 'aria-hidden': true }, '✓'),
