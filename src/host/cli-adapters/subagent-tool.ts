@@ -1,3 +1,4 @@
+import { AGENT_SUBAGENT_DESCRIPTIONS } from './subagent-tool-descriptions.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { getNativeSubagents } from './native-subagent-holder.js'
 import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS, hasNativeSubagentStart } from './native-team-subagent.js'
@@ -7,18 +8,18 @@ import { getDelegationModel, isDelegationTargetAllowed } from './delegation-auth
 export function createAgentSubagentTool(options: { readonly nativeSessions?: CodingNsNativeSessionBridge | undefined } = {}): Record<string, unknown> {
   return {
     name: 'agent_subagent',
-    description: '异步并行执行外部 Agent 子任务。action=start 默认立即返回 child session；action=wait 等待指定 child session 终态；action=read 读取当前状态和结果；父代理用 action=send 向子代理补充指令，子代理可用自己的 parent session id（或省略 child_session_id）把报告回传父代理，子代理不能再次 start 创建嵌套代理。failed 子代理必须先 read/wait 查看并评估是否重新创建或接管；需要同步等待时显式传 run_in_background=false；依赖步骤必须先 wait/read 前置会话。',
+    description: AGENT_SUBAGENT_DESCRIPTIONS.tool.zh,
     parameters: {
       type: 'object',
       properties: {
       agent: { type: 'string', enum: [...EXTERNAL_SUBAGENT_IDS] },
-      prompt: { type: 'string', description: '完整、自包含的子任务说明。' },
+      prompt: { type: 'string', description: AGENT_SUBAGENT_DESCRIPTIONS.prompt.zh },
       model: { type: 'string' },
-      cwd: { type: 'string', description: '子代理的起始目录；相对路径相对父会话当前目录解析，缺省继承父会话目录。仅在 DSH 0.2.1-alpha.2 及以上生效。' },
+      cwd: { type: 'string', description: AGENT_SUBAGENT_DESCRIPTIONS.cwd.zh },
       run_in_background: { type: 'boolean' },
       action: { type: 'string', enum: ['start', 'read', 'wait', 'send'] },
-      child_session_id: { type: 'string', description: '父代理发送时填子会话 ID；子代理回传时可填父会话 ID，也可省略。' },
-      message: { type: 'string', description: '发送给已创建子代理的后续消息。' },
+      child_session_id: { type: 'string', description: AGENT_SUBAGENT_DESCRIPTIONS.childSessionId.zh },
+      message: { type: 'string', description: AGENT_SUBAGENT_DESCRIPTIONS.message.zh },
       timeout_ms: { type: 'number' },
       depends_on: { type: 'array', items: { type: 'string' } },
     },

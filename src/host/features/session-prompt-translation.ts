@@ -5,6 +5,7 @@ import { isSessionTranslationInputEnabled, type SessionTranslationService } from
 import { SessionTranslationCancelled } from './session-translation-recovery.js'
 import { createTranslationQueue, translationFailure } from './session-translation-runtime.js'
 import type { TextProtectionOptions } from './session-translation-protection.js'
+import { localizeAgentSubagentDescription } from '../cli-adapters/subagent-tool-descriptions.js'
 
 const schemaMaps = new Set(['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas'])
 const schemaChildren = new Set(['items', 'additionalProperties', 'additionalItems', 'contains', 'not', 'if', 'then', 'else', 'propertyNames', 'unevaluatedProperties', 'unevaluatedItems'])
@@ -42,7 +43,10 @@ export function createSessionPromptTranslation(
     const pending = new Map<string, Promise<SessionTranslationRecord>>()
     let failed = false
     const translate = (text: string, protection: TextProtectionOptions = {}): Promise<SessionTranslationRecord> => {
-      const options = { ...protection, literals: [...new Set([...scope.literals, ...(protection.literals ?? [])])] }
+      // Unused workspace/tool literals cannot affect protection, and must not
+      // prevent identical descriptions from sharing a translation.
+      const options = { ...protection, literals: [...new Set([...scope.literals, ...(protection.literals ?? [])])]
+        .filter(literal => literal !== '' && text.includes(literal)).sort() }
       const key = JSON.stringify([generation, adapterId, text, options])
       const previous = cache.get(key)
       if (previous !== undefined) return Promise.resolve(previous)
@@ -53,6 +57,8 @@ export function createSessionPromptTranslation(
         // Internal descriptions never become pending user messages. Stop queued
         // attempts after a failure instead of prompting for every schema field.
         if (failed) return { ...fallback, failed: true }
+        const ready = cache.get(key)
+        if (ready !== undefined) return ready
         let result: SessionTranslationRecord
         try {
           result = { ...fallback, ...(service.translateInputDetailed !== undefined
@@ -102,21 +108,34 @@ export function createSessionPromptTranslation(
   return {
     dispose() { lifetime.abort(new SessionTranslationCancelled()); clear(); removeDeactivate?.() },
     translateAssembly(assembly: SessionPromptAssembly, scope: SessionPromptScope): Promise<SessionPromptAssembly> {
-      return run(scope, assembly, async translate => ({
-        ...assembly,
-        sections: await Promise.all(assembly.sections.map(async section => ({
-          ...section, text: (await translate(section.text, { promptMarkup: true })).translated,
-        }))),
-        tools: await Promise.all(assembly.tools.map(async tool => {
-          const literals = [tool.name, ...schemaLiterals(tool.parameters)]
-          const description = async (text: string): Promise<string> => (await translate(text, { literals })).translated
-          return {
-            ...tool,
-            ...(tool.description === undefined ? {} : { description: await description(tool.description) }),
-            ...(tool.parameters === undefined ? {} : { parameters: await translateSchema(tool.parameters, description) }),
-          }
-        })),
-      }))
+      return run(scope, assembly, async translate => {
+        const [sections, tools] = await Promise.all([
+          Promise.all(assembly.sections.map(async section => ({
+            ...section, text: (await translate(section.text, { promptMarkup: true })).translated,
+          }))),
+          Promise.all(assembly.tools.map(async tool => {
+            const literals = [tool.name, ...schemaLiterals(tool.parameters)]
+            const translateDescription = async (text: string): Promise<string> => {
+              const localized = service?.inputLanguage === 'en' && service.customRulesEnabled === false
+                ? localizeAgentSubagentDescription(tool.name, text) : undefined
+              // A downstream schema can introduce additional protected values.
+              // Keep those on the normal placeholder-preserving translation path.
+              if (localized !== undefined && [...scope.literals, ...literals].every(literal => !text.includes(literal) || localized.includes(literal))) return localized
+              return (await translate(text, { literals })).translated
+            }
+            const [description, parameters] = await Promise.all([
+              tool.description === undefined ? undefined : translateDescription(tool.description),
+              tool.parameters === undefined ? undefined : translateSchema(tool.parameters, translateDescription),
+            ])
+            return {
+              ...tool,
+              ...(description === undefined ? {} : { description }),
+              ...(tool.parameters === undefined ? {} : { parameters }),
+            }
+          })),
+        ])
+        return { ...assembly, sections, tools }
+      })
     },
     translateMessages(messages: readonly CodingNsCliMessage[], scope: SessionPromptScope): Promise<readonly CodingNsCliMessage[]> {
       return run(scope, messages, async translate => Promise.all(messages.map(async message => {

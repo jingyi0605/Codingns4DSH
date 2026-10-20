@@ -18,6 +18,10 @@ Translation applies to newly assembled prompts and emitted messages. Existing se
 
 A bounded cache stores successful context-field translations by source, protected literals, adapter, language, and translator cache key. Failed internal translations retain their original text without entering user-message recovery or being cached. After a failure, remaining queued fields in that assembly retain their originals without further model calls. Retry/send/cancel decisions apply only to actual user submissions. Disable/dispose clears retained translations and cancels outstanding work.
 
+Independent system sections, tool descriptions, and parameter descriptions enter the same four-slot queue without waiting for the preceding category to finish. Cache keys sort and retain only configured literals present in the source text, so unrelated workspace paths and tool/schema names do not cause duplicate translations. Queued fields recheck the successful cache before calling the provider to reuse work completed by another session while waiting. Active requests retain their own cancellation scope; model calls already in progress are not shared across sessions.
+
+The plugin-owned `agent_subagent` description and its four parameter descriptions share a Chinese/English catalog with their producer. When input translation targets English and the service explicitly reports no custom rules, unchanged descriptions use the local English version without a provider request. Modified descriptions, other tools, other languages, and custom rules retain the existing translation path. Additional protected schema/workspace literals must still appear unchanged in the local version or force the normal placeholder-preserving path. Translation opt-in, input settings, subagent exclusion, invalidation, and cancellation still gate the entire assembly; user messages never use this catalog.
+
 ## Compatibility and verification
 
 Unknown capability versions degrade only assembled prompt coverage. Attachment/message translation still works. Legacy versions 0.1.5-rc.3, 0.1.6-alpha.2, and 0.1.7-rc.2 must produce explicit unsupported diagnostics.
