@@ -6,6 +6,7 @@ import type { SubagentBridgeRuntime } from './bridge-holder.js'
 import type { TeamSessionAccess } from './bridge-holder.js'
 import type { TeamBridgeResult } from './team-dispatch.js'
 import type { BridgeSearchResult } from './search-dispatch.js'
+import type { BridgeFetchResult } from './fetch-dispatch.js'
 
 /** 外部 CLI 发起的一次子代理托管请求。 */
 export interface SubagentBridgeDispatchRequest {
@@ -60,6 +61,7 @@ export async function startSubagentBridgeServer(options: {
   readonly teamAccess?: (sessionId: string) => TeamSessionAccess | undefined
   readonly teamDispatch?: (sessionId: string, input: unknown, signal: AbortSignal) => Promise<TeamBridgeResult>
   readonly search?: (input: unknown, signal: AbortSignal) => Promise<BridgeSearchResult>
+  readonly fetch?: (input: unknown, signal: AbortSignal) => Promise<BridgeFetchResult>
 }): Promise<SubagentBridgeServer> {
   const token = randomBytes(24).toString('hex')
   const lifetime = new AbortController()
@@ -101,6 +103,7 @@ async function handleRequest(
     readonly dispatch: (input: SubagentBridgeDispatchRequest) => Promise<SubagentBridgeDispatchResult>
     readonly teamDispatch?: (sessionId: string, input: unknown, signal: AbortSignal) => Promise<TeamBridgeResult>
     readonly search?: (input: unknown, signal: AbortSignal) => Promise<BridgeSearchResult>
+    readonly fetch?: (input: unknown, signal: AbortSignal) => Promise<BridgeFetchResult>
   },
   lifetime: AbortSignal,
 ): Promise<void> {
@@ -109,12 +112,13 @@ async function handleRequest(
     respondJson(response, 200, { ok: true, service: 'codingns-subagent-bridge' })
     return
   }
-  if (request.method !== 'POST' || (url !== '/v1/dispatch' && url !== '/v1/team' && url !== '/v1/search')) {
+  const webRoute = url === '/v1/search' || url === '/v1/fetch'
+  if (request.method !== 'POST' || (url !== '/v1/dispatch' && url !== '/v1/team' && !webRoute)) {
     respondJson(response, 404, { ok: false, error: 'not found' })
     return
   }
-  const teamSession = url === '/v1/team' || url === '/v1/search' ? runtime.authorizeTeam?.(bearerToken(request)) : undefined
-  if (url === '/v1/search') {
+  const teamSession = url === '/v1/team' || webRoute ? runtime.authorizeTeam?.(bearerToken(request)) : undefined
+  if (webRoute) {
     if (!authorize(request, runtime.token) && teamSession === undefined) {
       respondJson(response, 401, { ok: false, error: 'unauthorized' })
       return
@@ -135,9 +139,10 @@ async function handleRequest(
     respondJson(response, 400, { ok: false, error: 'invalid JSON body' })
     return
   }
-  if (url === '/v1/search') {
-    if (options.search === undefined) {
-      respondJson(response, 503, { ok: false, error: 'search is unavailable' })
+  if (webRoute) {
+    const handler = url === '/v1/search' ? options.search : options.fetch
+    if (handler === undefined) {
+      respondJson(response, 503, { ok: false, error: url === '/v1/search' ? 'search is unavailable' : 'fetch is unavailable' })
       return
     }
     if (teamSession !== undefined && runtime.authorizeTeam?.(bearerToken(request)) !== teamSession) {
@@ -148,7 +153,7 @@ async function handleRequest(
     const disconnect = (): void => { if (!response.writableEnded) cancellation.abort() }
     response.once('close', disconnect)
     try {
-      respondJson(response, 200, await options.search(parsed, AbortSignal.any([lifetime, cancellation.signal])))
+      respondJson(response, 200, await handler(parsed, AbortSignal.any([lifetime, cancellation.signal])))
     } finally { response.off('close', disconnect) }
     return
   }

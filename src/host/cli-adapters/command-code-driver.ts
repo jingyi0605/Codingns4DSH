@@ -2096,6 +2096,7 @@ function commandCodeAcpPermissionDecision(message: JsonRpcMessage, input: Coding
   if (canWrite && metadata.risk === undefined && subagentBridgeActive(input.sessionId)
     && (toolName === 'agent_subagent' || toolName === 'mcp__codingns__agent_subagent'
       || toolName === 'web_search' || toolName === 'mcp__codingns__web_search'
+      || toolName === 'web_fetch' || toolName === 'mcp__codingns__web_fetch'
       || toolName === 'agent_team' && teamBridgeToken(input.sessionId) !== undefined)) return 'allow'
   // never 允许已有授权范围内的工作，但不允许把剩余审批升级成交互弹窗。
   return permission?.approvalPolicy === 'never' ? 'reject' : undefined

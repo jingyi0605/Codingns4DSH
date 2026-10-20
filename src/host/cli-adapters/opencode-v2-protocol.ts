@@ -419,6 +419,7 @@ function openCodePermissions(
   if (bridge !== undefined) {
     permissions.push({ action: bridge.toolName, resource: '*', effect: 'allow' })
     permissions.push({ action: `${bridge.serverName}_web_search`, resource: '*', effect: 'allow' })
+    permissions.push({ action: `${bridge.serverName}_web_fetch`, resource: '*', effect: 'allow' })
   }
   return permissions
 }
