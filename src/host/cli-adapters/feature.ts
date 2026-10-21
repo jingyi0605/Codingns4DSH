@@ -24,6 +24,7 @@ import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
 import { CommandCodeSubscriptionService } from './command-code-subscription.js'
 import { ProviderSubscriptionService } from './provider-subscription.js'
 import { MagpieUsageService, magpieAgentForAdapter } from './magpie-usage.js'
+import { createMagpieSessionRouting } from './magpie-session-routing.js'
 import { normalizeSubagentBridgeSettings, normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsHostServices } from '../features/types.js'
 import { setAdapterRegistry } from './registry-holder.js'
@@ -82,6 +83,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
     },
     async start(context) {
       const lifetime = new AbortController()
+      const magpieSessionRouting = createMagpieSessionRouting()
+      context.resources.add(() => magpieSessionRouting.dispose())
       // 用量查询超时对所有适配器统一生效：同一个 timeoutMs 下发给全部网络读取器，
       // 设置变更时整体重建，避免旧超时继续生效。
       const buildSubscriptions = (settings: CodingNsSettings | undefined): ProviderSubscriptionService => {
@@ -523,14 +526,14 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
               && !isAssistantSession(sessionId)
               && readNativeSessionHeader(nativeSessions, sessionId)?.origin !== 'subagent') {
               yield* guardDshNativeStream(() => translateNativeStream(
-                next(),
+                magpieSessionRouting.wrap(sessionId, next()),
                 translation,
                 translation.bilingual === true,
                 isAbortSignal(value?.signal) ? value.signal : undefined,
               ))
               return
             }
-            yield* guardDshNativeStream(next)
+            yield* guardDshNativeStream(() => magpieSessionRouting.wrap(sessionId, next()))
             return
           }
           const cwd = resolveSessionCwd(context.services.nativeSessions, sessionId, value)
