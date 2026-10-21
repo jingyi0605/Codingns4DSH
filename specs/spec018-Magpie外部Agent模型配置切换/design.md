@@ -4,7 +4,7 @@ Status: Usage/catalog recognition is implemented. This amendment adds bounded mo
 
 ## 1. Design decision
 
-Magpie already integrates configured provider/model choices into each Agent's model catalog. CodingNS does not create a second model-selection source in the Client and does not write Agent configuration. For a model already present in the Agent's normal catalog, the Host may enrich its metadata only after its exact ID, or a unique exact normalized display label, is confirmed by `magpie models <agent>` and Magpie's `/v1/models` record.
+Magpie exposes configured provider/model choices through its Agent catalogs. CodingNS does not create a second model-selection UI or write Agent configuration. The Host enriches existing exact matches as before. Codex has one narrow catalog exception: exact model IDs from the validated `magpie models codex` output are added to the ordinary Codex group when Codex `model/list` omits them. `/v1/models` metadata enriches those rows when available; a validated CLI display label is the fallback.
 
 CodingNS also uses the verified Magpie record to supply context-window and related metadata. The exact Codex Magpie model `auto/gpt-6.1-sol` must use Magpie's 500,000-token context window before usage anchoring and compaction. A missing or invalid record never disables the normal catalog or usage path.
 
@@ -77,11 +77,19 @@ Responses are size-limited and normalized to the shared `MagpieUsageSnapshot` co
 - Add a bounded, read-only `GET /v1/models` reader on the Host, reusing the validated loopback origin and the existing response-size and timeout safeguards.
 - Normalize only known public fields: `id`, `display_name`/`magpie_label`, `context_window`/`context_length`, `max_input_tokens`, `max_output_tokens`, `modalities.input`/`modalities.output`, `reasoning`, `reasoning_levels`, `supported_reasoning_levels`, `service_tiers`, and explicitly supported capability/description fields.
 - Require the exact model ID in the mapped `magpie models <agent>` output, or a unique exact normalized display-label alias, and an exact matching `/v1/models` `id`. Apply only documented adapter-specific ID normalization; Command Code's `magpie/` prefix is the existing exception.
-- Enrich existing Agent model entries; do not synthesize models from unrelated records or change model-selection semantics. On exact Magpie matches, Magpie's declared value wins. An absent field preserves the Agent's own known value; explicit `reasoning: false` removes stale efforts.
-- Cache parsed metadata per Magpie Agent for a short bounded TTL and clear it when its catalog/origin changes. A failed metadata read degrades to the unmodified Agent catalog.
+- Enrich existing Agent model entries; do not add models from unrelated records or change selection semantics. The Codex-only addition is limited to exact IDs in the validated Codex CLI catalog. On exact Magpie matches, Magpie's declared value wins. An absent field preserves the Agent's own known value; explicit `reasoning: false` removes stale efforts.
+- Cache parsed metadata per Magpie Agent for a short bounded TTL and clear it when its catalog/origin changes. A failed metadata read leaves existing rows unchanged; Codex additions may still use their validated CLI labels without inferred metadata.
 - Never return the raw Magpie document, ownership secrets, or unrecognized fields to the Client.
 
-### 3.5 Codex context correction
+### 3.5 Codex model catalog additions
+
+- Only `adapterId === 'codex'` uses this behavior; no Magpie model is copied into another Agent's catalog.
+- Use the validated `magpie models codex` IDs as the allowlist. Add only IDs not already present in the Codex catalog and append them to its existing Codex group.
+- Prefer the exact `/v1/models` display name and normalized metadata. If the metadata request is unavailable or has no row for an allowed ID, retain the Magpie CLI label (or the model ID when no label exists) and expose no inferred effort options.
+- Do not change Codex-native rows, the current model, or the current effort. The existing model picker and `session/set` flow remain the only selection path.
+- If Magpie catalog validation fails, return the original Codex catalog unchanged.
+
+### 3.6 Codex context correction
 
 - For an exact Codex model ID confirmed by both the `codex` CLI catalog and Magpie, the Host associates the validated Magpie `context_window` with the model before Codex usage events are stabilized.
 - The trusted context value is carried through a Host-owned model metadata lookup or turn input, not a Client payload. `codexUsageChunk`/the Codex event boundary applies it before `stabilizeCodexUsage`; a contradictory `258400` event cannot become the anchor for `auto/gpt-6.1-sol`.
@@ -134,6 +142,7 @@ The Magpie usage popover labels aggregate totals, current-session totals, and ro
 | --- | --- |
 | `/v1/models` response bounds, parser, metadata normalization, and exact Magpie catalog matching | Focused tests in `tests/magpie-usage.spec.ts` or a dedicated Magpie metadata test |
 | Enrichment for each verified external Agent except Codex, including effort labels/modalities/token limits | Host catalog merge tests covering all fixed adapter mappings |
+| Magpie-only Codex models appear in the ordinary Codex group without replacing native choices | `tests/magpie-usage.spec.ts` |
 | Magpie metadata failures preserve the original Agent catalog | Fake API timeout/schema/ID-mismatch tests |
 | `auto/gpt-6.1-sol` corrects stale Codex `258400` before stabilization and compaction | Codex and registry tests for ratio, anchored window, and exact-ID isolation |
 | Read-only live model metadata evidence | `docs/20261021-Magpie模型元数据实机读取与上下文纠正验证.md` |

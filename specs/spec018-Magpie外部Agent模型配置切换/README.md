@@ -1,6 +1,6 @@
 # Spec018: Read-only Magpie model metadata, usage, and route integration
 
-Status: Complete. This Spec adds read-only Magpie model metadata to mapped external Agent catalogs other than Codex, and corrects Codex's context window for the exact model `auto/gpt-6.1-sol` before usage stabilization. The ordinary Agent model catalog remains the only model-selection path.
+Status: Complete. This Spec adds read-only Magpie model metadata to mapped Agent catalogs, makes exact Magpie Codex models selectable when Codex `model/list` omits them, and corrects Codex's context window for `auto/gpt-6.1-sol` before usage stabilization. The ordinary Agent model picker remains the only model-selection path.
 
 Magpie already integrates its configured provider/model choices into each Agent. CodingNS therefore does not switch, persist, restore, or otherwise write Magpie model configuration. No `cli/magpie/models` or `cli/magpie/set-model` RPC exists in the current implementation, and no Client model provenance is persisted.
 

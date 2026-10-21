@@ -44,12 +44,15 @@ test('Magpie catalog keeps only unique normalized display-name aliases', () => {
     'provider/one    Shared Label',
     'provider/two    shared label',
     'provider/three    Unique Label',
+    'provider/four    \u001b[31mUnsafe Label',
     "claude is shown every provider's models · magpie visible claude",
     'http://127.0.0.1:3425/v1',
   ].join('\n'), 'claude')
   assert.ok(catalog)
   assert.equal(catalog.names.has('shared label'), false, 'ambiguous labels must not select a provider')
   assert.equal(catalog.names.get('unique label'), 'provider/three')
+  assert.equal(catalog.displayNames.get('provider/three'), 'Unique Label')
+  assert.equal(catalog.displayNames.has('provider/four'), false, 'control characters must not reach the model picker')
 })
 
 test('Magpie catalog retains valid model IDs when the CLI omits their display name', () => {
@@ -368,6 +371,62 @@ test('Magpie metadata uses only exact CLI/API IDs and leaves unsupported catalog
     ] }], currentModel: null, currentEffort: null,
   })
   assert.deepEqual(exactCatalog.groups[0]!.models.map((model) => model.source), ['magpie', undefined, undefined])
+})
+
+test('Codex catalog includes verified Magpie-only models missing from model/list', async () => {
+  const service = new MagpieUsageService({
+    readModels: async () => [
+      'Routing groups',
+      'auto/gpt-6.1-sol    GPT-6.1 Sol-Auto',
+      'sub2api/deepseek-v4.1-flash    DeepSeek V4.1 Flash',
+      'workbuddy/another-model    WorkBuddy Model',
+      "codex is shown every provider's models · magpie visible codex",
+      'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async (url) => {
+      assert.equal(String(url), 'http://127.0.0.1:3425/v1/models')
+      return Response.json({ data: [
+        { id: 'auto/gpt-6.1-sol', display_name: 'GPT-6.1 Sol-Auto', context_window: 500000, reasoning_levels: ['low', 'high'] },
+        { id: 'sub2api/deepseek-v4.1-flash', display_name: 'DeepSeek V4.1 Flash', context_window: 1048576, reasoning_levels: ['low', 'high', 'max'] },
+      ] })
+    }) as typeof fetch,
+  })
+  const catalog = await service.enrichModelCatalog('codex', {
+    groups: [{ id: 'codex', name: 'Codex', models: [
+      { id: 'provider-default', name: 'Follow Codex default', efforts: [] },
+      { id: 'gpt-5.4', name: 'gpt-5.4', efforts: ['low', 'high'] },
+    ] }],
+    currentModel: 'gpt-5.4', currentEffort: 'high',
+  })
+
+  const models = catalog.groups[0]!.models
+  assert.deepEqual(models.map((model) => model.id), [
+    'provider-default', 'gpt-5.4', 'auto/gpt-6.1-sol', 'sub2api/deepseek-v4.1-flash', 'workbuddy/another-model',
+  ])
+  assert.equal(models[1]!.source, undefined, 'native Codex choices remain native')
+  assert.equal(models[2]!.name, 'GPT-6.1 Sol-Auto')
+  assert.equal(models[2]!.contextWindow, 500000)
+  assert.deepEqual(models[2]!.efforts, ['low', 'high'])
+  assert.equal(models[3]!.contextWindow, 1048576)
+  assert.deepEqual(models[3]!.efforts, ['low', 'high', 'max'])
+  assert.equal(models[4]!.name, 'WorkBuddy Model', 'CLI label remains available if Gateway metadata omits a row')
+  assert.deepEqual(catalog.groups[0]!.models.at(-1), {
+    id: 'workbuddy/another-model', name: 'WorkBuddy Model', efforts: [], source: 'magpie',
+  })
+  assert.equal(catalog.currentModel, 'gpt-5.4')
+  assert.equal(catalog.currentEffort, 'high')
+
+  const alreadyListed = await service.enrichModelCatalog('codex', {
+    groups: [{ id: 'codex', name: 'Codex', models: [
+      { id: 'auto/gpt-6.1-sol', name: 'Existing Magpie model', efforts: [] },
+    ] }],
+    currentModel: 'auto/gpt-6.1-sol', currentEffort: null,
+  })
+  assert.equal(alreadyListed.groups[0]!.models.filter((model) => model.id === 'auto/gpt-6.1-sol').length, 1)
+
+  const unavailableMagpie = new MagpieUsageService({ readModels: async () => null })
+  const original = { groups: [{ id: 'codex', name: 'Codex', models: [{ id: 'gpt-5.4', name: 'gpt-5.4', efforts: [] }] }], currentModel: 'gpt-5.4', currentEffort: null }
+  assert.equal(await unavailableMagpie.enrichModelCatalog('codex', original), original)
 })
 
 test('Magpie metadata joins unique display names when Agent model IDs differ', async () => {

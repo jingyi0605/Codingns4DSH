@@ -60,6 +60,8 @@ export type MagpieAgent = string
 
 interface MagpieModelCatalog {
   readonly models: ReadonlySet<string>
+  /** Display labels from the exact Magpie CLI rows, keyed by model ID. */
+  readonly displayNames: ReadonlyMap<string, string>
   /** Unique normalized CLI labels; duplicate labels are intentionally omitted. */
   readonly names: ReadonlyMap<string, string>
   /** Origin only; requests are restricted to the local loopback gateway. */
@@ -182,11 +184,12 @@ export class MagpieUsageService {
     if (agent === null || agentCatalog === null) return resolvedCatalog
     const hasMatch = resolvedCatalog.groups.some((group) => group.models.some((model) =>
       resolveCatalogModelId(agent, model.id, agentCatalog, model.name) !== null))
-    if (!hasMatch) return resolvedCatalog
+    const exposeMissingCodexModels = adapterId === 'codex'
+    if (!hasMatch && !exposeMissingCodexModels) return resolvedCatalog
     const metadata = await this.loadModelMetadata(agentCatalog, signal)
 
     let changed = false
-    const groups = resolvedCatalog.groups.map((group) => {
+    let groups = resolvedCatalog.groups.map((group) => {
       let groupChanged = false
       const models = group.models.map((model) => {
         const id = resolveCatalogModelId(agent, model.id, agentCatalog, model.name)
@@ -203,6 +206,34 @@ export class MagpieUsageService {
       changed = true
       return { ...group, models }
     })
+
+    if (exposeMissingCodexModels) {
+      const existingModelIds = new Set(groups.flatMap((group) => group.models.map((model) => model.id)))
+      const missingModels = [...agentCatalog.models]
+        .filter((id) => !existingModelIds.has(id))
+        .map((id): CodingNsCliModel => {
+          const record = metadata?.get(id)
+          const model: CodingNsCliModel = {
+            id,
+            name: record?.name ?? agentCatalog.displayNames.get(id) ?? id,
+            efforts: record?.efforts ?? [],
+            source: 'magpie',
+          }
+          return record === undefined ? model : mergeMagpieModelMetadata(model, record)
+        })
+      if (missingModels.length > 0) {
+        const codexGroupIndex = groups.findIndex((group) => group.id === 'codex')
+        const targetIndex = codexGroupIndex >= 0 ? codexGroupIndex : groups.length > 0 ? 0 : -1
+        if (targetIndex >= 0) {
+          groups = groups.map((group, index) => index === targetIndex
+            ? { ...group, models: [...group.models, ...missingModels] }
+            : group)
+        } else {
+          groups = [{ id: 'codex', name: 'Codex', models: missingModels }]
+        }
+        changed = true
+      }
+    }
     return changed ? { ...resolvedCatalog, groups } : resolvedCatalog
   }
 
@@ -447,6 +478,7 @@ function awaitWithSignal<T>(task: Promise<T>, signal?: AbortSignal): Promise<T> 
 export function parseMagpieModelOutput(output: string, agent: MagpieAgent): MagpieModelCatalog | null {
   if (!isMagpieAgentId(agent) || Buffer.byteLength(output, 'utf8') > MAX_MAGPIE_CLI_OUTPUT_BYTES) return null
   const models = new Set<string>()
+  const displayNames = new Map<string, string>()
   const nameCandidates = new Map<string, string[]>()
   const gatewayUrls: string[] = []
   const lines = output.split(/\r?\n/u)
@@ -464,9 +496,11 @@ export function parseMagpieModelOutput(output: string, agent: MagpieAgent): Magp
       && new RegExp(`^${MAGPIE_MODEL_ID_PATTERN}$`, 'u').test(model)
       && model.length <= 512 && models.size < 10_000) {
       models.add(model)
-      const name = label === undefined || label === '' || label.length > 200
+      const displayName = label === undefined || !safeMetadataText(label, 200)
         ? null
-        : normalizeMagpieModelName(label)
+        : label.trim().replace(/\s+/gu, ' ')
+      if (displayName !== null && !displayNames.has(model)) displayNames.set(model, displayName)
+      const name = displayName === null ? null : normalizeMagpieModelName(displayName)
       if (name !== null) {
         const candidates = nameCandidates.get(name) ?? []
         if (!candidates.includes(model)) candidates.push(model)
@@ -483,7 +517,7 @@ export function parseMagpieModelOutput(output: string, agent: MagpieAgent): Magp
   for (const [name, candidates] of nameCandidates) {
     if (candidates.length === 1) names.set(name, candidates[0]!)
   }
-  return { models, names, gatewayOrigin: origins[0]! }
+  return { models, displayNames, names, gatewayOrigin: origins[0]! }
 }
 
 /** Parse a bounded OpenAI-compatible `/v1/models` response into a safe allowlist. */

@@ -1,10 +1,10 @@
 # Requirements: Read-only Magpie metadata, usage, and route integration
 
-Status: The existing scope is read-only. This amendment adds Magpie model metadata for mapped external Agents other than Codex, and uses Magpie's exact model metadata to correct the Codex context window for `auto/gpt-6.1-sol`. Model selection remains entirely in the Agent's ordinary catalog; CodingNS does not switch or persist Magpie model configuration.
+Status: The existing scope is read-only. This amendment adds Magpie model metadata for mapped external Agents, corrects the Codex context window for `auto/gpt-6.1-sol`, and exposes exact Codex Magpie catalog entries that Codex `model/list` omits. Model selection remains in the ordinary Agent model picker; CodingNS does not switch or persist Magpie model configuration.
 
 ## Summary
 
-Magpie already exposes configured provider/model choices through each Agent. CodingNS does not need a CC-Switch-like configuration writer. It reads the complete mapped Agent catalog, including account-backed entries, and the standard read-only `/v1/models` response on the owning Host, then safely enriches matching model records with Magpie's metadata. For Codex, that same source corrects the context window before usage is stabilized. Usage and route data remain read-only and sanitized.
+Magpie exposes configured provider/model choices through its Agent catalog. CodingNS does not need a CC-Switch-like configuration writer. It reads the complete mapped Agent catalog, including account-backed entries, and the standard read-only `/v1/models` response on the owning Host, then safely enriches matching records. Codex additionally receives missing, exact-ID entries from `magpie models codex`, so models omitted by Codex `model/list` remain selectable. Magpie metadata also corrects Codex context size before usage is stabilized. Usage and route data remain read-only and sanitized.
 
 ## Terms
 
@@ -22,6 +22,7 @@ Magpie already exposes configured provider/model choices through each Agent. Cod
 - Recognize a Magpie model only when its exact ID appears in the mapped Agent catalog, or when its display label maps uniquely to one catalog ID. Command Code may use its documented `magpie/provider/model` normalization.
 - Read aggregate Magpie usage through the documented local Gateway API.
 - Read model metadata through the Gateway's standard OpenAI-compatible `/v1/models` endpoint and expose it to external Agent catalogs using exact verified model IDs.
+- Add exact, validated Magpie Codex model IDs missing from Codex `model/list` to the existing Codex model group; keep Codex-native entries and selection behavior unchanged.
 - Correct Codex context sizing from Magpie metadata for the exact Magpie model in use.
 - Read the current Agent session usage and route only when the Host has a distinct Provider session ID and Magpie confirms the exact Agent/session pair.
 - Display Magpie aggregate, session, and route information separately in the existing usage section.
@@ -131,10 +132,23 @@ Magpie already exposes configured provider/model choices through each Agent. Cod
 2. Unsupported or ordinary Agent models keep their existing effort, catalog, turn, subscription, and session behavior.
 3. A remote Agent's model metadata is read only on its owning Host; local Magpie is never used as a remote fallback.
 
+### R9: Show Magpie Codex models omitted by Codex `model/list`
+
+**User story:** As a Codex user, I want models listed by my configured Magpie Codex catalog to be selectable even when Codex's own app-server model list omits them.
+
+#### Acceptance criteria
+
+1. The Host adds a Codex model only when its exact ID appears in the validated `magpie models codex` output. Models from other Magpie Agents are never added to Codex.
+2. A model is added to the existing Codex group only when that exact ID is not already present; native Codex rows, current selection, and current effort are preserved.
+3. Prefer the exact `/v1/models` display label and metadata when available; otherwise use the label from the validated Magpie CLI row and leave unknown efforts empty rather than guessing.
+4. If Magpie is missing, unsupported, or its Codex catalog cannot be validated, the original Codex catalog is returned unchanged.
+5. Tests cover a Codex catalog containing only native fallback rows, exact Magpie additions, metadata and CLI-label fallback, and unchanged native selection fields.
+
 ## Success definition
 
 - The ordinary Agent model selector remains the only model-selection UI and path.
 - DSH and mapped external adapters can be recognized as Magpie-backed only through exact catalog membership.
 - Mapped external Agent catalogs expose Magpie's verified model metadata, and Codex reports the exact 500,000-token window for `auto/gpt-6.1-sol` before usage stabilization.
+- Codex's ordinary model picker includes exact Magpie Codex entries missing from `model/list`, without replacing native entries.
 - The usage section displays sanitized Magpie aggregate/session/route data when available and preserves ordinary provider usage otherwise.
 - No current source or RPC path can switch or persist a Magpie model configuration.

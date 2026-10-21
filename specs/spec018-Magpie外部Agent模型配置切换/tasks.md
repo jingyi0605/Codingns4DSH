@@ -1,6 +1,6 @@
 # Tasks: Read-only Magpie model metadata, usage, and route integration
 
-Status: COMPLETE — the read-only Host usage service, subscription display, exact model metadata merge, Codex context correction, real-device read, focused tests, and final Spec review are complete.
+Status: COMPLETE — the read-only Host usage service, subscription display, exact model metadata merge, Codex context correction, and verified Magpie-only Codex model listing are complete.
 
 The former model-switching tasks are intentionally retired. Magpie model selection is supplied by each Agent's ordinary model catalog and is not a CodingNS responsibility.
 
@@ -87,7 +87,16 @@ The former model-switching tasks are intentionally retired. Magpie model selecti
   - Does not do: Build, start servers, change Magpie/Agent configuration, operate Desktop, release, or publish.
 
 - [x] 5.2 Final Spec review.
-  - Status: DONE — requirements, design, tasks, README, tests, and the dated report agree on exact mappings, read-only behavior, metadata precedence, and Codex context correction.
+  - Status: DONE — requirements, design, tasks, README, tests, and the dated report agree on exact mappings, read-only behavior, metadata precedence, Codex context correction, and Codex model-list additions.
+
+## Stage 6: Show Magpie-only models in the Codex picker
+
+- [x] 6.1 Add validated Magpie Codex IDs missing from the native model list.
+  - Status: DONE — Codex's existing model group now includes exact IDs from `magpie models codex` when absent from `model/list`; Gateway metadata is preferred, and the verified CLI label is used when a Gateway row is unavailable.
+  - Done when: Focused tests prove native choices and selection stay intact, Magpie-only models appear once by exact ID, and no unverified Agent models are added.
+  - Verify: `node --import ./tests/register-source-loader.mjs --test tests/magpie-usage.spec.ts`; `pnpm run typecheck`; `git diff --check`.
+  - Does not do: Change Magpie configuration, start Magpie, call model inference, or operate Desktop.
+  - Requirements: R9.
 
 ## Verification constraints
 
