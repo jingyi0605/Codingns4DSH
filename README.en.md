@@ -282,7 +282,7 @@ The WeChat and QQ groups are for questions, feedback and release announcements â
   </table>
 </div>
 
-The WeChat QR code is generated dynamically by WeChat and is **valid for 7 days** (this image was captured on 2026-10-15 and states it expires on October 21); re-open the group's share page for a fresh code once it lapses, or ask in [GitHub Issues](https://github.com/jingyi0605/Codingns4DSH/issues). The QQ group QR code and group number do not expire.
+The WeChat QR code is generated dynamically by WeChat and is **valid for 7 days** (this image was captured on 2026-10-21 and states it expires on October 28); re-open the group's share page for a fresh code once it lapses, or ask in [GitHub Issues](https://github.com/jingyi0605/Codingns4DSH/issues). The QQ group QR code and group number do not expire.
 
 ---
 

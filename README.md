@@ -303,7 +303,7 @@ dsh codingns
   </table>
 </div>
 
-微信群二维码由微信动态生成，**7 天内有效**（本图截取自 2026-10-15，标注「10 月 21 日前」有效），过期后重新进入群分享页会得到新码，也可在 [GitHub Issues](https://github.com/jingyi0605/Codingns4DSH/issues) 留言索取；QQ 群二维码与群号长期有效。
+微信群二维码由微信动态生成，**7 天内有效**（本图截取自 2026-10-21，标注「10 月 28 日前」有效），过期后重新进入群分享页会得到新码，也可在 [GitHub Issues](https://github.com/jingyi0605/Codingns4DSH/issues) 留言索取；QQ 群二维码与群号长期有效。
 
 ---
 
