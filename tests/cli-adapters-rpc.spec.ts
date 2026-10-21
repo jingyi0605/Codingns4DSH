@@ -1415,6 +1415,7 @@ test('Pi 优先使用 RPC thinkingLevelMap 返回模型真实思维强度', asyn
 })
 
 test('Codex app-server 读取 model/list 的模型和思维强度元数据', async () => {
+  let clientInfo: unknown
   const driver = new CodexAppServerDriver({
     binaries: ['fake-codex'],
     spawnSync: (() => ({ status: 0, stdout: 'codex 0.154.0', stderr: '' })) as never,
@@ -1425,7 +1426,14 @@ test('Codex app-server 读取 model/list 的模型和思维强度元数据', asy
         stdout,
         stderr,
         stdin: { write(data: string): void {
-          const request = JSON.parse(data) as { id: number; method: string }
+          const request = JSON.parse(data) as { id: number; method: string; params?: { clientInfo?: { name?: unknown; version?: unknown } } }
+          if (request.method === 'initialize') {
+            clientInfo = request.params?.clientInfo
+            if (typeof request.params?.clientInfo?.version !== 'string' || request.params.clientInfo.version === '') {
+              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32600, message: "Invalid request: missing field `version`" } })}\n`)
+              return
+            }
+          }
           const result = request.method === 'model/list'
             ? { models: [{ model: 'gpt-5.5', displayName: 'GPT-5.5', supportedReasoningEfforts: [{ reasoningEffort: 'low', description: 'Low' }, { reasoningEffort: 'high', description: 'High' }], isDefault: true }] }
             : {}
@@ -1440,6 +1448,7 @@ test('Codex app-server 读取 model/list 的模型和思维强度元数据', asy
     currentModel: null,
     currentEffort: null,
   })
+  assert.deepEqual(clientInfo, { name: 'Codex', version: '0.1.1' })
 })
 
 test('RPC 执行收到取消信号时结束为 cancel 并清理进程', async () => {

@@ -247,6 +247,24 @@ test('Codex 重置携带幂等键且不指定具体重置券', async () => {
   })
 })
 
+test('Codex 订阅与重置请求保留 CodingNS 客户端标识和必填版本', async () => {
+  await withoutOpenAiBaseUrl(async () => {
+    const identities: unknown[] = []
+    const service = createCodexService((request) => {
+      if (request.method === 'initialize') identities.push(request.params?.clientInfo)
+      return request.method === 'account/rateLimitResetCredit/consume' ? { outcome: 'reset' } : {}
+    })
+
+    await service.read()
+    await service.reset()
+
+    assert.deepEqual(identities, [
+      { name: 'codingns4dsh', version: '0.1.1' },
+      { name: 'codingns4dsh', version: '0.1.1' },
+    ])
+  })
+})
+
 test('Codex 重置遇到未知结果或缺少方法时报稳定错误', async () => {
   await withoutOpenAiBaseUrl(async () => {
     const unknown = createCodexService((request) => request.method === 'account/rateLimitResetCredit/consume' ? { outcome: 'mystery' } : {})
