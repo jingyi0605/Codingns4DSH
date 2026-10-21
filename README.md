@@ -11,7 +11,7 @@
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.1-beta.15`** · DSH **`>=0.2.0-rc.2 <=0.2.1-rc.2`**（已验证 `0.2.1-rc.2`）· Node **`>= 22.19`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.1-rc.2`** · DSH **`>=0.2.0-rc.2 <=0.2.1-rc.2`**（已验证 `0.2.1-rc.2`）· Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965** · **[微信群 / QQ 群二维码](#交流群)**
 
@@ -244,7 +244,7 @@ DSH 原生会话的翻译默认关闭，可在会话模型选择菜单中开启�
 ### 使用内置 Web 配置
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.1-beta.15
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.1-rc.2
 dsh web
 ```
 
@@ -254,7 +254,7 @@ dsh web
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.1-beta.15
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.1-rc.2
 dsh codingns
 ```
 
