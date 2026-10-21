@@ -251,6 +251,16 @@ test('CLI 不支持 --effort 时不展示任何档位，避免出现切换后无
   }
 })
 
+test('Claude Code driver 将 Magpie provider/model ID 原样传给 --model', () => {
+  const driver = new ClaudeCodeDriver({ binaries: ['fake-claude'] })
+  const args = (driver as unknown as { buildArgs(value: Record<string, unknown>): readonly string[] }).buildArgs({
+    sessionId: 'magpie-model', messages: [], prompt: '继续', modelId: 'example-provider/model-one',
+  })
+  const index = args.indexOf('--model')
+  assert.notEqual(index, -1)
+  assert.equal(args[index + 1], 'example-provider/model-one')
+})
+
 test('--help 探测异常时不清空目录，也不下发 --effort', async () => {
   const root = mkdtempSync(join(tmpdir(), 'codingns-claude-help-failed-'))
   const configDir = join(root, '.claude')

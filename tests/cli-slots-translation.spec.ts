@@ -23,8 +23,6 @@ const locale = {
 function createProbe(adapterId = 'dsh', options: {
   readDefault?: () => boolean | undefined
   translationEnabled?: boolean | undefined
-  magpieModels?: boolean
-  magpieSetOk?: boolean
   failSessionSet?: boolean
   modelGroups?: readonly CodingNsCliModelGroup[]
   modelId?: string
@@ -41,14 +39,6 @@ function createProbe(adapterId = 'dsh', options: {
         if (options.failSessionSet) throw new Error('session update failed')
         value = selection = { ...selection, ...payload }
       }
-      else if (endpoint === 'cli/magpie/models') value = options.magpieModels ? {
-        status: 'available',
-        catalog: {
-          groups: [{ id: 'magpie', name: 'Magpie', models: [{ id: 'example-provider/magpie-one', name: 'Magpie One', source: 'magpie', efforts: [] }] }],
-          currentModel: null, currentEffort: null,
-        },
-      } : { status: 'unavailable' }
-      else if (endpoint === 'cli/magpie/set-model') value = { ok: options.magpieSetOk !== false, modelId: payload.modelId }
       else if (endpoint === 'cli/catalog') value = SESSION_TRANSLATION_ADAPTER_IDS.map((id) => ({ id, name: id, installed: true, enabled: true }))
       else if (endpoint === 'cli/models') value = {
         groups: options.modelGroups ?? [{ id: adapterId, name: adapterId, models: [{ id: 'test-model', name: 'Test model', efforts: ['high'] }] }],
@@ -201,88 +191,6 @@ test('所有外部 Agent 从默认 DSH 状态加载配置后都能渲染模型�
       assert.ok(elementWhere(menu, (element) => element.key === 'effort'), adapterId)
     } finally { renderer.dispose(); probe.dispose() }
   }
-})
-
-test('Magpie 模型需二次确认，先保存到 Magpie 成功后才更新当前会话', async () => {
-  const probe = createProbe('codex', { magpieModels: true })
-  const slot = probe.registered.get('codingns4dsh-model')!
-  const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
-  try {
-    renderer.render(); await flush(); renderer.render(); await flush()
-    elementWhere(renderer.render(), element => element.type === 'button')!.props.onClick()
-    elementWhere(renderer.render(), element => element.key === 'model')!.props.onClick()
-    renderer.render(); await flush()
-    const magpieItem = elementWhere(renderer.render(), element => element.key === 'magpie:example-provider/magpie-one')!
-    magpieItem.props.onClick()
-    let tree = renderer.render()
-    assert.ok(elementWhere(tree, element => element.props.children === t('cli.magpieConfirmTitle', { model: 'Magpie One' })))
-    assert.equal(probe.calls.some(call => call.endpoint === 'cli/magpie/set-model'), false)
-    assert.equal(probe.calls.some(call => call.endpoint === 'cli/session/set'), false)
-
-    elementWhere(tree, element => element.props.children === t('cli.magpieSaveAndUse'))!.props.onClick()
-    await flush(); tree = renderer.render()
-    await flush(); tree = renderer.render()
-    assert.ok(probe.calls.some(call => call.endpoint === 'cli/magpie/set-model' && call.payload.modelId === 'example-provider/magpie-one'))
-    assert.ok(probe.calls.some(call => call.endpoint === 'cli/session/set' && call.payload.modelId === 'example-provider/magpie-one'))
-    assert.equal(elementWhere(tree, element => element.props.children === t('cli.magpieSwitchSuccess')) !== undefined, true)
-  } finally { renderer.dispose(); probe.dispose() }
-})
-
-test('Magpie 写入失败不改当前会话；部分成功的重试只写当前会话', async () => {
-  const failed = createProbe('codex', { magpieModels: true, magpieSetOk: false })
-  const failedSlot = failed.registered.get('codingns4dsh-model')!
-  const failedRenderer = createHookRenderer(failedSlot.component, failedSlot.props)
-  try {
-    failedRenderer.render(); await flush(); failedRenderer.render(); await flush()
-    elementWhere(failedRenderer.render(), element => element.type === 'button')!.props.onClick()
-    elementWhere(failedRenderer.render(), element => element.key === 'model')!.props.onClick()
-    failedRenderer.render(); await flush()
-    elementWhere(failedRenderer.render(), element => element.key === 'magpie:example-provider/magpie-one')!.props.onClick()
-    let tree = failedRenderer.render()
-    elementWhere(tree, element => element.props.children === t('cli.magpieSaveAndUse'))!.props.onClick()
-    await flush(); tree = failedRenderer.render()
-    assert.equal(failed.calls.some(call => call.endpoint === 'cli/session/set'), false)
-    assert.ok(elementWhere(tree, element => element.props.children === t('cli.magpieSwitchUnavailable')))
-  } finally { failedRenderer.dispose(); failed.dispose() }
-
-  const partial = createProbe('codex', { magpieModels: true, failSessionSet: true })
-  const partialSlot = partial.registered.get('codingns4dsh-model')!
-  const partialRenderer = createHookRenderer(partialSlot.component, partialSlot.props)
-  try {
-    partialRenderer.render(); await flush(); partialRenderer.render(); await flush()
-    elementWhere(partialRenderer.render(), element => element.type === 'button')!.props.onClick()
-    elementWhere(partialRenderer.render(), element => element.key === 'model')!.props.onClick()
-    partialRenderer.render(); await flush()
-    elementWhere(partialRenderer.render(), element => element.key === 'magpie:example-provider/magpie-one')!.props.onClick()
-    let tree = partialRenderer.render()
-    elementWhere(tree, element => element.props.children === t('cli.magpieSaveAndUse'))!.props.onClick()
-    await flush(); tree = partialRenderer.render()
-    await flush(); tree = partialRenderer.render()
-    assert.ok(elementWhere(tree, element => element.props.children === t('cli.magpieSwitchPartial')))
-    const writesBeforeRetry = partial.calls.filter(call => call.endpoint === 'cli/magpie/set-model').length
-    const retries = elementWhere(tree, element => element.props.children === t('cli.magpieRetrySession'))
-    assert.ok(retries)
-    partial.rpc.call = async (_channel, endpoint, payload) => {
-      partial.calls.push({ endpoint, payload })
-      if (endpoint === 'cli/session/set') return { ok: true, value: { adapterId: 'codex', ...payload } }
-      if (endpoint === 'cli/magpie/models') return { ok: true, value: null }
-      if (endpoint === 'cli/magpie/set-model') return { ok: true, value: { ok: true, modelId: payload.modelId } }
-      if (endpoint === 'cli/session/get') return { ok: true, value: { adapterId: 'codex', modelId: 'test-model' } }
-      if (endpoint === 'cli/catalog') return { ok: true, value: [] }
-      if (endpoint === 'cli/models') return { ok: true, value: { groups: [{ id: 'codex', name: 'codex', models: [{ id: 'test-model', name: 'Test model', efforts: ['high'] }] }], currentModel: 'test-model', currentEffort: 'high' } }
-      throw new Error(`Unexpected RPC: ${endpoint}`)
-    }
-    retries!.props.onClick()
-    await flush()
-    assert.equal(partial.calls.filter(call => call.endpoint === 'cli/magpie/set-model').length, writesBeforeRetry)
-    assert.ok(partial.calls.some(call => call.endpoint === 'cli/session/set' && call.payload.modelId === 'example-provider/magpie-one'))
-
-    const nextSessionProps = { ...partialSlot.props, sessionId: 'different-session' }
-    tree = partialRenderer.render(nextSessionProps)
-    await flush(); tree = partialRenderer.render(nextSessionProps)
-    assert.equal(elementWhere(tree, element => element.props.children === t('cli.magpieRetrySession')), undefined,
-      'a partial result for the prior session must not offer a retry in the next session')
-  } finally { partialRenderer.dispose(); partial.dispose() }
 })
 
 test('同一输入框在外部 Agent 与 DSH 之间来回切换后，模型选择器仍可使用', async () => {
@@ -500,6 +408,28 @@ function modelOptions(node: ReactNode): Array<ReactElement<any>> {
   visit(node)
   return found
 }
+
+test('external Agent 模型列表只为 Host 确认的 Magpie 模型显示来源标签', async () => {
+  const groups: readonly CodingNsCliModelGroup[] = [{
+    id: 'codex', name: 'Codex', models: [
+      { id: 'auto/gpt-6.1-sol', name: 'GPT-6.1 Sol-Auto', efforts: ['low', 'high'], source: 'magpie' },
+      { id: 'codex/gpt-6.1-sol', name: 'GPT-6.1 Sol', efforts: ['low', 'high'] },
+    ],
+  }]
+  const probe = createProbe('codex', { modelGroups: groups, modelId: 'auto/gpt-6.1-sol' })
+  const slot = probe.registered.get('codingns4dsh-model')!
+  const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
+  try {
+    const tree = await openModelPane(renderer)
+    const magpieRow = modelOptions(tree).find((element) => element.key === 'codex:auto/gpt-6.1-sol')
+    const ordinaryRow = modelOptions(tree).find((element) => element.key === 'codex:codex/gpt-6.1-sol')
+    assert.ok(magpieRow)
+    assert.ok(ordinaryRow)
+    assert.match(renderToStaticMarkup(magpieRow), /data-codingns-magpie-model-tag/u)
+    assert.match(renderToStaticMarkup(magpieRow), />Magpie</u)
+    assert.doesNotMatch(renderToStaticMarkup(ordinaryRow), /data-codingns-magpie-model-tag/u)
+  } finally { renderer.dispose(); probe.dispose() }
+})
 
 function searchBox(node: ReactNode): ReactElement<any> | undefined {
   return elementWhere(node, (element) => element.props.role === 'searchbox')

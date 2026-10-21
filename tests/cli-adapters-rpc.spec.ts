@@ -405,12 +405,12 @@ test('Codex 恢复线程后按 DSH 选择纠正线程模型，避免沿用被污
     messages: [],
     prompt: '继续',
     providerSessionId: 'resumed-thread',
-    modelId: 'gpt-6.1-sol',
+    modelId: 'example-provider/model-one',
   })) chunks.push(chunk)
 
   const correction = calls.find((call) => call.method === 'thread/settings/update')
   assert.notEqual(correction, undefined)
-  assert.deepEqual(correction?.params, { threadId: 'resumed-thread', model: 'gpt-6.1-sol' })
+  assert.deepEqual(correction?.params, { threadId: 'resumed-thread', model: 'example-provider/model-one' })
   // 纠正必须发生在 turn/start 之前，否则本轮仍会用旧模型发出请求。
   assert.equal(calls.findIndex((call) => call.method === 'thread/settings/update')
     < calls.findIndex((call) => call.method === 'turn/start'), true)
@@ -714,7 +714,7 @@ test('Codex app-server 解析 tokenUsage.last 并传递上下文窗口占用', a
   driver.dispose()
 })
 
-test('Codex 同一会话第二轮的冲突 usage 窗口不会覆盖首轮 256K', async () => {
+test('Codex Magpie context metadata overrides stale 258400 usage before the session window is anchored', async () => {
   let turnCount = 0
   const driver = new CodexAppServerDriver({
     binaries: ['fake-codex'],
@@ -746,12 +746,22 @@ test('Codex 同一会话第二轮的冲突 usage 窗口不会覆盖首轮 256K',
   })
 
   const first = []
-  for await (const chunk of driver.executeTurn({ sessionId: 'codex-stable-window', messages: [], prompt: '第一轮' })) first.push(chunk)
+  for await (const chunk of driver.executeTurn({
+    sessionId: 'codex-stable-window', messages: [], prompt: '第一轮',
+    modelId: 'auto/gpt-6.1-sol', modelContextWindow: 500000,
+  })) first.push(chunk)
   const second = []
-  for await (const chunk of driver.executeTurn({ sessionId: 'codex-stable-window', messages: [], prompt: '第二轮' })) second.push(chunk)
+  for await (const chunk of driver.executeTurn({
+    sessionId: 'codex-stable-window', messages: [], prompt: '第二轮',
+    modelId: 'auto/gpt-6.1-sol', modelContextWindow: 500000,
+  })) second.push(chunk)
 
-  assert.equal(first.find((chunk) => chunk.type === 'usage')?.contextWindow, 258400)
-  assert.equal(second.find((chunk) => chunk.type === 'usage')?.contextWindow, 258400)
+  const firstUsage = first.find((chunk) => chunk.type === 'usage')
+  const secondUsage = second.find((chunk) => chunk.type === 'usage')
+  assert.equal(firstUsage?.contextWindow, 500000)
+  assert.equal(firstUsage?.contextUsageRatio, 0.516)
+  assert.equal(secondUsage?.contextWindow, 500000)
+  assert.equal(secondUsage?.contextUsageRatio, 0.516)
   assert.equal(second.at(-1)?.type, 'finish')
   assert.equal(second.at(-1)?.reason, 'stop')
   driver.dispose()

@@ -1,0 +1,5 @@
+  Example provider
+  example-provider/model-one    Model One  low/medium/high
+  example-provider/model-two    Model Two  none/low/high
+  claude is shown every provider's models · magpie visible claude <family>,… narrows it
+  http://127.0.0.1:3425/v1

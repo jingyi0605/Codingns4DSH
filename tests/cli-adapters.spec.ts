@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { createCliAdaptersFeature } from '../data/build/dist/host/cli-adapters/feature.js'
+import type { CodingNsCliModelCatalog } from '../src/shared/contracts/cli-adapter.js'
 import { AcpCliDriver } from '../data/build/dist/host/cli-adapters/acp-cli-driver.js'
 import { CommandCodeDriver } from '../data/build/dist/host/cli-adapters/command-code-driver.js'
 import { CommandCodeHistory } from '../data/build/dist/host/cli-adapters/command-code-history.js'
@@ -15,6 +16,7 @@ import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
 import { FeatureRegistry } from '../data/build/dist/features/registry.js'
 import { CommandCodeSubscriptionService } from '../data/build/dist/host/cli-adapters/command-code-subscription.js'
 import { ClaudeCodeSubscriptionService, DeepseekSubscriptionService, OpenCodeSubscriptionService, ProviderSubscriptionService, Sub2ApiUsageService } from '../data/build/dist/host/cli-adapters/provider-subscription.js'
+import { MagpieUsageService } from '../data/build/dist/host/cli-adapters/magpie-usage.js'
 import { identifyModelProvider, normalizeProviderBaseUrl } from '../data/build/dist/host/cli-adapters/provider-registry.js'
 import { knownCodexContextWindow, knownCommandCodeContextWindow, knownOpenCodeContextWindow } from '../data/build/dist/host/cli-adapters/model-catalog.js'
 
@@ -1907,6 +1909,188 @@ test('CLI 功能模块登记 cli RPC，停用后注销命名空间', async () =>
   assert.deepEqual(table.namespaces(), [])
 })
 
+test('Host 的普通 cli/models RPC 返回精确 Magpie 模型元数据', async (t) => {
+  const table = new CodingNsRpcTable()
+  const catalog: CodingNsCliModelCatalog = {
+    groups: [{ id: 'claude', name: 'Claude', models: [{ id: 'example-provider/model-one', name: 'Original', efforts: ['old'] }] }],
+    currentModel: 'example-provider/model-one', currentEffort: 'old',
+  }
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'claude-code', name: 'Claude Code' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'claude' } },
+    async listModels() { return catalog },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } as const },
+  }])
+  const magpieUsage = new MagpieUsageService({
+    readModels: async () => [
+      'Example provider', 'example-provider/model-one    Original',
+      "claude is shown every provider's models · magpie visible claude", 'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async () => Response.json({ data: [{
+      id: 'example-provider/model-one', display_name: 'Magpie Model One', context_window: 500000,
+      max_input_tokens: 500000, max_output_tokens: 128000, reasoning: true,
+      reasoning_levels: ['low', 'high'], modalities: { input: ['text', 'image'] },
+    }] })) as typeof fetch,
+  })
+  const features = new FeatureRegistry({ rpc: table })
+  features.register(createCliAdaptersFeature({ registry, magpieUsage }))
+  await features.start('cliAdapters')
+  t.after(() => features.disable('cliAdapters'))
+
+  const result = await table.resolve('cli/models')?.handler('models', { adapterId: 'claude-code' }) as CodingNsCliModelCatalog
+  const model = result.groups[0]!.models[0]!
+  assert.equal(model.name, 'Magpie Model One')
+  assert.equal(model.contextWindow, 500000)
+  assert.equal(model.maxInputTokens, 500000)
+  assert.equal(model.maxOutputTokens, 128000)
+  assert.equal(model.source, 'magpie')
+  assert.deepEqual(model.inputModalities, ['text', 'image'])
+  assert.deepEqual(model.efforts, ['low', 'high'])
+})
+
+test('Native DSH cli/models catalog receives exact Magpie metadata and source markers', async (t) => {
+  const table = new CodingNsRpcTable()
+  const dshContext = {
+    get(name: string) {
+      if (name !== 'sessionController') return undefined
+      return {
+        async modelCatalog() {
+          return {
+            groups: [{ id: 'codex', name: 'Codex', models: [
+              { id: 'auto/gpt-6.1-sol', name: 'Original Auto', reasoning: { efforts: [{ id: 'low' }, { id: 'high' }] } },
+              { id: 'codex/gpt-6.1-sol', name: 'Codex native', reasoning: { efforts: [{ id: 'medium' }] } },
+            ] }],
+            default: { provider: 'codex', model: 'auto/gpt-6.1-sol', reasoningEffort: 'high' },
+          }
+        },
+      }
+    },
+  }
+  const magpieUsage = new MagpieUsageService({
+    readModels: async (agent) => [
+      'Routing groups', 'auto/gpt-6.1-sol    GPT-6.1 Sol-Auto',
+      `${agent} is shown every provider's models · magpie visible ${agent}`,
+      'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async () => Response.json({ data: [{
+      id: 'auto/gpt-6.1-sol', display_name: 'GPT-6.1 Sol-Auto', context_window: 500000,
+      max_input_tokens: 500000, max_output_tokens: 128000, reasoning: true,
+      reasoning_levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+      service_tiers: [{ id: 'priority', name: 'Fast' }],
+    }] })) as typeof fetch,
+  })
+  const features = new FeatureRegistry({ rpc: table, dshContext: dshContext as never })
+  features.register(createCliAdaptersFeature({ registry: new CodingNsCliAdapterRegistry([]), magpieUsage }))
+  await features.start('cliAdapters')
+  t.after(() => features.disable('cliAdapters'))
+
+  const result = await table.resolve('cli/models')?.handler('models', { adapterId: 'dsh' }) as CodingNsCliModelCatalog
+  const models = result.groups[0]!.models
+  assert.equal(models[0]!.source, 'magpie')
+  assert.equal(models[0]!.name, 'GPT-6.1 Sol-Auto')
+  assert.equal(models[0]!.contextWindow, 500000)
+  assert.equal(models[0]!.maxInputTokens, 500000)
+  assert.equal(models[0]!.maxOutputTokens, 128000)
+  assert.deepEqual(models[0]!.efforts, ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+  assert.deepEqual(models[0]!.serviceTiers, [{ id: 'priority', name: 'Fast' }])
+  assert.equal(models[1]!.source, undefined, 'same family/name must not infer Magpie provenance')
+})
+
+test('Host 通过只读 Magpie 用量检测显示快照，否则回退普通订阅读取', async (t) => {
+  const table = new CodingNsRpcTable()
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'claude-code', name: 'Claude Code' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'fake-codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } as const },
+  }])
+  const reads: unknown[] = []
+  const magpieUsage = {
+    async read(session: unknown, signal: unknown, includeRoute: boolean, dshSessionId: string) {
+      reads.push({ session, signal, includeRoute, dshSessionId })
+      return includeRoute ? {
+        agent: 'claude', modelId: 'example-provider/model-one', capturedAt: '2026-10-21T00:00:00.000Z',
+        usageStatus: 'available', aggregate: { calls: 1, errors: 0, inputTokens: 2, outputTokens: 3, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.01 },
+        sessionId: 'provider-session', session: null, routeStatus: 'not-requested', route: null,
+      } : null
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table })
+  features.register(createCliAdaptersFeature({ registry, magpieUsage: magpieUsage as never }))
+  await features.start('cliAdapters')
+  t.after(() => features.disable('cliAdapters'))
+  registry.setSession('magpie-rpc-session', { adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'provider-session' })
+
+  const target = table.resolve('cli/subscription')!
+  const magpieResult = await target.handler(target.action, { sessionId: 'magpie-rpc-session', adapterId: 'claude-code', modelId: 'example-provider/model-one', includeRoute: true })
+  assert.equal((magpieResult as { magpie?: unknown }).magpie !== null, true)
+  assert.equal((magpieResult as { providerUsage?: unknown }).providerUsage, null)
+  assert.deepEqual(reads.map((entry) => ({ includeRoute: (entry as { includeRoute: boolean }).includeRoute, dshSessionId: (entry as { dshSessionId: string }).dshSessionId })), [{ includeRoute: true, dshSessionId: 'magpie-rpc-session' }])
+
+  const fallback = await target.handler(target.action, { sessionId: 'magpie-rpc-session', adapterId: 'claude-code', modelId: 'ordinary-model' })
+  assert.deepEqual(fallback, { providerUsage: null, magpie: null })
+})
+
+test('Host 从 Magpie 读取 Codex 模型上下文并在稳定化前传给驱动', async (t) => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  const executedWindows: Array<number | undefined> = []
+  const projectedContexts: unknown[] = []
+  const nativeSessions = {
+    available: true,
+    store: undefined,
+    controller: undefined,
+    get() { return { header: { cwd: '/workspace' } } },
+    list() { return [] },
+    async ensure(sessionId: string) { return sessionId },
+    async flush() {},
+    appendRequestContext(_sessionId: string, context: unknown) { projectedContexts.push(context); return true },
+    subscribe() { return () => {} },
+  }
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn(input) {
+      executedWindows.push(input.modelContextWindow)
+      yield { type: 'finish', reason: 'stop' } as const
+    },
+  }], {}, { nativeSessions })
+  const magpieUsage = {
+    async readModelMetadata(adapterId: string, modelId: string) {
+      assert.equal(adapterId, 'codex')
+      assert.equal(modelId, 'auto/gpt-6.1-sol')
+      return { id: modelId, contextWindow: 500000 }
+    },
+    async read() { return null },
+  }
+  const events = {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+      listener = next
+      return () => { listener = undefined }
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table, events, nativeSessions })
+  features.register(createCliAdaptersFeature({ registry, magpieUsage: magpieUsage as never }))
+  await features.start('cliAdapters')
+  t.after(() => features.disable('cliAdapters'))
+  await table.resolve('cli/session/set')?.handler('session/set', {
+    sessionId: 'codex-magpie-context', adapterId: 'codex', modelId: 'auto/gpt-6.1-sol',
+  })
+
+  const chunks = []
+  for await (const chunk of listener!({
+    sessionId: 'codex-magpie-context', messages: [{ role: 'user', content: '读取上下文' }],
+  }, async function* () {})) chunks.push(chunk)
+
+  assert.deepEqual(executedWindows, [500000])
+  assert.deepEqual(projectedContexts, [{
+    provider: 'codingns-cli-codex', model: 'auto/gpt-6.1-sol',
+    contextWindow: 500000, confirmed: true, source: 'catalog',
+  }])
+  assert.equal(chunks.at(-1)?.type, 'finish')
+})
+
 test('CLI 功能模块向 DSH 注册外部 Provider 的图片能力，流仍由 llm/stream 接管', async () => {
   const table = new CodingNsRpcTable()
   let registeredProviders: string[] = []
@@ -2809,7 +2993,7 @@ test('Codex 连续 50 个工具事件后仍可接收第二条用户消息且不�
   await features.disable('cliAdapters')
 })
 
-test('Codex 新会话在首个 usage 到达前也使用 256K 上下文窗口', async () => {
+test('Codex 新会话在首个 usage 前使用 Host 提供的 Magpie 500K 上下文窗口', async () => {
   const contexts: unknown[] = []
   const nativeSessions = {
     available: true,
@@ -2839,15 +3023,16 @@ test('Codex 新会话在首个 usage 到达前也使用 256K 上下文窗口', a
   for await (const chunk of registry.execute({
     adapterId: 'codex',
     sessionId: 'codex-new-context',
-    modelId: 'gpt-5.6-sol',
+    modelId: 'auto/gpt-6.1-sol',
+    modelContextWindow: 500000,
     messages: [],
     prompt: '第一句话',
   })) chunks.push(chunk)
 
   assert.deepEqual(contexts, [{
     provider: 'codingns-cli-codex',
-    model: 'gpt-5.6-sol',
-    contextWindow: 258400,
+    model: 'auto/gpt-6.1-sol',
+    contextWindow: 500000,
     confirmed: true,
     source: 'catalog',
   }])
@@ -2856,7 +3041,10 @@ test('Codex 新会话在首个 usage 到达前也使用 256K 上下文窗口', a
 
 test('Codex 已知模型表覆盖当前主力模型并容忍大小写与空白', () => {
   assert.equal(knownCodexContextWindow('gpt-5.6-sol'), 258400)
-  assert.equal(knownCodexContextWindow('gpt-6.1-sol'), 258400)
+  assert.equal(knownCodexContextWindow('gpt-6.1-sol'), 500000)
+  assert.equal(knownCodexContextWindow('auto/gpt-6.1-sol'), 500000)
+  assert.equal(knownCodexContextWindow('codex/gpt-6.1-sol'), undefined)
+  assert.equal(knownCodexContextWindow('glorinfo-api-platform/gpt-6.1-sol'), undefined)
   assert.equal(knownCodexContextWindow(' GPT-6-Astra '), 258400)
   assert.equal(knownCodexContextWindow('unknown-model'), undefined)
   assert.equal(knownCodexContextWindow(undefined), undefined)

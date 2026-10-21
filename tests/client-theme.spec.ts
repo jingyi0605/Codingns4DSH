@@ -211,7 +211,7 @@ test('Antigravity 与 CodeBuddy 会话启用订阅用量查询并显示底部入
   }
   // 查询经共享加载器合并并发请求，组件与加载器两端都必须接通。
   assert.match(source, /loadUsage\(props\.rpc, cacheKey,/u)
-  assert.match(source, /callCliRpc<CliSubscriptionUsage \| null>\(rpc, 'subscription'/u)
+  assert.match(source, /callCliRpc<unknown>\(props\.rpc, 'subscription'/u)
   // 当前 Provider/模型变化后必须跳过配置短缓存，不能把旧上游继续投影到订阅入口。
   assert.match(source, /loadCliSessionConfig\(props\.rpc, sessionId, \{ force: true \}\)/u)
 })
@@ -225,8 +225,8 @@ test('订阅弹层展示账号名并按会话模型区分配额组', async () =>
   assert.match(source, /const paidPlanLabel = usage\.paidPlanType\?\.trim\(\) \|\| null/u)
   assert.match(source, /planText !== null && createElement\('span'/u)
   // Antigravity 的 Gemini 与 Claude/GPT 是两个独立配额组：读取键与请求都必须带模型
-  assert.match(source, /const cacheKey = `\$\{adapterId\}\|\$\{selection\.providerId \?\? ''\}\|\$\{selection\.modelId \?\? ''\}\|\$\{sessionId\}`/u)
-  assert.match(source, /callCliRpc<CliSubscriptionUsage \| null>\(rpc, 'subscription', payload/u)
+  assert.match(source, /const cacheKey = JSON\.stringify\(\[adapterId, selection\.providerId \?\? '', selection\.modelId \?\? '', sessionId, selection\.providerSessionId \?\? ''\]\)/u)
+  assert.match(source, /callCliRpc<unknown>\(props\.rpc, 'subscription', payload/u)
   assert.match(source, /sessionId,\n\s+adapterId,/u)
   assert.match(source, /\.\.\.\(selection\.modelId \? \{ modelId: selection\.modelId \} : \{\}\)/u)
 })

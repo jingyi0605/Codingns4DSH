@@ -30,6 +30,7 @@ async function withDesktopNavigation(run: (page: ReturnType<typeof createNavigat
   transport: ReturnType<typeof createPeerHostPageTransport>
   call(method: string, payload?: unknown): Promise<unknown>
   cli(action: string, payload: unknown): Promise<unknown>
+  rawCli(action: string, payload: unknown): Promise<unknown>
   models(adapterId: string, sessionId: string): Promise<ReturnType<typeof catalog>>
   open(method: string, payload: unknown): AsyncIterable<unknown>
   calls: RoutedCall[]
@@ -87,6 +88,7 @@ async function withDesktopNavigation(run: (page: ReturnType<typeof createNavigat
     await run({ ...navigation, transport, calls, resets, stop,
       call: (method, payload = { args: {} }) => rpc.call('/api', method, payload),
       cli: (action, payload) => callCliRpc(rpc as never, action, payload),
+      rawCli: (action, payload) => rpc.call('/codingns', `cli/${action}`, payload),
       models: (adapterId, sessionId) => loadModelCatalog(rpc as never, adapterId, sessionId),
       open: (method, payload) => remote.openRemoteStream(method, payload),
     })
