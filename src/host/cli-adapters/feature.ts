@@ -1430,13 +1430,7 @@ interface NativeStreamBlock {
   closed: boolean
 }
 
-/**
- * DSH 原生会话的输出翻译。
- *
- * 原生回复由 DSH 自己组装成 `assistant/message`，插件只能在 Provider 流边界改写：
- * 文本与思考增量先缓存，块结束时一次性发出原文，并把译文放进记录供客户端显示；
- * 工具调用、usage 与 finish 原样透传。翻译失败、流中断或异常都会补发原文块，保证回复不丢失。
- */
+/** Translate completed native output blocks without buffering their visible deltas. */
 async function* translateNativeStream(
   stream: AsyncIterable<unknown>,
   translation: NonNullable<CodingNsHostServices['sessionTranslation']>,
@@ -1456,9 +1450,9 @@ async function* translateNativeStream(
     return created
   }
 
-  const translateBlock = async (block: NativeStreamBlock): Promise<readonly unknown[]> => {
+  const translateBlock = async (block: NativeStreamBlock): Promise<SessionTranslationRecord | undefined> => {
     const original = block.text
-    if (original.trim() === '') return []
+    if (original.trim() === '') return undefined
     const kind = block.kind === 'reasoning' ? 'reasoning' as const : 'assistant' as const
     let record: SessionTranslationRecord | undefined
     try {
@@ -1480,15 +1474,10 @@ async function* translateNativeStream(
     } catch {
       record = { original, translated: original, targetLanguage: translation.outputLanguage ?? 'zh', outputKind: kind, bilingual, failed: true }
     }
-    if (record === undefined) return []
+    if (record === undefined) return undefined
     const visible = formatSessionTranslationOutput(record)
-    if (visible.trim() === '' || visible === original && record.failed !== true) return []
-    return [
-      // Keep the provider text in the native history. The client chooses the translated
-      // text for display from codingnsTranslation.translated.
-      { type: `${block.kind}-delta`, index: block.index, text: original, codingnsTranslation: record },
-      { type: 'block-end', index: block.index, block: { type: block.kind, text: original, codingnsTranslation: record }, codingnsTranslation: record },
-    ]
+    if (visible.trim() === '' || visible === original && record.failed !== true) return undefined
+    return record
   }
 
   try {
@@ -1504,6 +1493,8 @@ async function* translateNativeStream(
         // or drop a prefix that was already buffered.
         if (block === undefined || !block.translate) { yield chunk; continue }
         block.text += record.text
+        // Keep provider deltas visible while the completed block is being translated.
+        yield chunk
         continue
       }
       if (type === 'block-end' && index !== undefined) {
@@ -1511,10 +1502,21 @@ async function* translateNativeStream(
         if (block !== undefined && !block.closed) {
           block.closed = true
           if (block.text.trim() !== '') {
-            const emitted = await translateBlock(block)
-            for (const item of emitted) yield item
-            if (emitted.length > 0) continue
-            yield { type: `${block.kind}-delta`, index: block.index, text: block.text }
+            const translationRecord = await translateBlock(block)
+            if (translationRecord !== undefined) {
+              const finalBlock = asRecord(record?.block)
+              yield {
+                ...(record ?? {}),
+                block: {
+                  ...(finalBlock ?? {}),
+                  type: block.kind,
+                  text: block.text,
+                  codingnsTranslation: translationRecord,
+                },
+                codingnsTranslation: translationRecord,
+              }
+              continue
+            }
           }
         }
         yield chunk
@@ -1530,7 +1532,7 @@ async function* translateNativeStream(
   for (const item of flushBuffered()) yield item
 
   /**
-   * Provider 未发送 block-end（中断或异常）时，把缓存正文按原文补发。
+   * Provider 未发送 block-end（中断或异常）时，结束已透传的原文块。
    *
    * 不能用 `finally` 里的 `yield`：异常正在传播时生成器已经结束，后续 yield 会被
    * 直接丢弃，用户会看不到已经生成的半截回复。
@@ -1539,7 +1541,6 @@ async function* translateNativeStream(
     for (const block of [...blocks.values()]) {
       if (block.closed || block.text.trim() === '') continue
       block.closed = true
-      yield { type: `${block.kind}-delta`, index: block.index, text: block.text }
       yield { type: 'block-end', index: block.index, block: { type: block.kind, text: block.text } }
     }
   }

@@ -534,26 +534,63 @@ test('DSH 原生会话输出保留原文并挂上客户端译文记录', async (
   })) chunks.push(chunk)
 
   assert.deepEqual(chunks.map((chunk) => chunk.type), [
-    'block-start', 'reasoning-delta', 'block-end',
+    'block-start', 'reasoning-delta', 'reasoning-delta', 'block-end',
     'block-start', 'text-delta', 'block-end',
     'finish',
   ])
-  const reasoning = chunks[1]
-  assert.equal(reasoning.text, 'Checking code')
+  assert.deepEqual(chunks.slice(1, 3), [
+    { type: 'reasoning-delta', index: 0, text: 'Check' },
+    { type: 'reasoning-delta', index: 0, text: 'ing code' },
+  ], 'provider reasoning is forwarded before translation completes')
+  const reasoning = chunks[3]
+  assert.equal(reasoning.block.text, 'Checking code')
   assert.equal(reasoning.codingnsTranslation.original, 'Checking code')
   assert.equal(reasoning.codingnsTranslation.translated, '[zh]Checking code')
   assert.equal(reasoning.codingnsTranslation.outputKind, 'reasoning')
-  const text = chunks[4]
-  assert.equal(text.text, 'Hello')
+  assert.deepEqual(chunks[5], { type: 'text-delta', index: 1, text: 'Hello' }, 'provider reply is forwarded without waiting for translation')
+  const text = chunks[6]
+  assert.equal(text.block.text, 'Hello')
   assert.equal(text.codingnsTranslation.outputKind, 'assistant')
   // DSH history keeps the provider text; the client renders the translated field.
-  assert.equal(chunks[5].block.text, 'Hello')
-  assert.equal(chunks[5].block.codingnsTranslation.original, text.codingnsTranslation.original)
-  assert.equal(chunks[5].block.codingnsTranslation.translated, text.codingnsTranslation.translated)
+  assert.equal(text.block.codingnsTranslation.original, 'Hello')
+  assert.equal(text.block.codingnsTranslation.translated, '[zh]Hello')
   await harness.features.disable('cliAdapters')
 })
 
-test('DSH 原生会话输出翻译失败或流中断时补发原文', async () => {
+test('DSH 原生会话先透传原文，翻译完成后才附加译文记录', async () => {
+  let resolveTranslation!: (record: Record<string, unknown> | null) => void
+  const translation = createTranslation()
+  translation.translateOutput = () => new Promise(resolve => { resolveTranslation = resolve })
+  const harness = createHarness({ translation }) as Harness & { start(): Promise<void> }
+  await harness.start()
+  const iterator = harness.llmListener({ sessionId: 'native-session', messages: [] }, async function* () {
+    yield { type: 'block-start', index: 1, blockType: 'text' }
+    yield { type: 'text-delta', index: 1, text: 'Hello' }
+    yield { type: 'block-end', index: 1, block: { type: 'text', text: 'Hello' } }
+    yield { type: 'tool-call-delta', index: 2, id: 'call-1', name: 'read_file', argumentsDelta: '{}' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })[Symbol.asyncIterator]()
+  try {
+    assert.equal((await iterator.next()).value.type, 'block-start')
+    assert.deepEqual((await iterator.next()).value, { type: 'text-delta', index: 1, text: 'Hello' })
+
+    let blockEndReady = false
+    const pendingBlockEnd = iterator.next().then(value => { blockEndReady = true; return value })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(blockEndReady, false, 'translation is still pending after the original delta is visible')
+
+    resolveTranslation({ original: 'Hello', translated: '你好', targetLanguage: 'zh', bilingual: false })
+    const blockEnd = await pendingBlockEnd
+    assert.equal(blockEnd.value.block.text, 'Hello', 'native history retains the original text')
+    assert.equal(blockEnd.value.codingnsTranslation.translated, '你好')
+    assert.deepEqual((await iterator.next()).value, { type: 'tool-call-delta', index: 2, id: 'call-1', name: 'read_file', argumentsDelta: '{}' })
+  } finally {
+    await iterator.return?.()
+    await harness.features.disable('cliAdapters')
+  }
+})
+
+test('DSH 原生会话输出翻译失败或流中断时保留已透传原文', async () => {
   const failing = createTranslation({ translateOutput: () => { throw new Error('translation unavailable') } })
   const failingHarness = createHarness({ translation: failing }) as Harness & { start(): Promise<void> }
   await failingHarness.start()
@@ -564,13 +601,13 @@ test('DSH 原生会话输出翻译失败或流中断时补发原文', async () =
     yield { type: 'finish', reason: { kind: 'stop' } }
   })) failingChunks.push(chunk)
   assert.deepEqual(failingChunks, [
-    { type: 'text-delta', index: 1, text: 'Hello', codingnsTranslation: failingChunks[0].codingnsTranslation },
-    { type: 'block-end', index: 1, block: { type: 'text', text: 'Hello', codingnsTranslation: failingChunks[0].codingnsTranslation }, codingnsTranslation: failingChunks[0].codingnsTranslation },
+    { type: 'text-delta', index: 1, text: 'Hello' },
+    { type: 'block-end', index: 1, block: { type: 'text', text: 'Hello', codingnsTranslation: failingChunks[1].codingnsTranslation }, codingnsTranslation: failingChunks[1].codingnsTranslation },
     { type: 'finish', reason: { kind: 'stop' } },
   ])
-  assert.equal(failingChunks[0].codingnsTranslation.failed, true)
-  assert.equal(failingChunks[0].codingnsTranslation.original, 'Hello')
-  assert.equal(failingChunks[0].codingnsTranslation.outputKind, 'assistant')
+  assert.equal(failingChunks[1].codingnsTranslation.failed, true)
+  assert.equal(failingChunks[1].codingnsTranslation.original, 'Hello')
+  assert.equal(failingChunks[1].codingnsTranslation.outputKind, 'assistant')
   await failingHarness.features.disable('cliAdapters')
 
   const interrupted = createTranslation()

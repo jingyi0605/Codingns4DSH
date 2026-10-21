@@ -391,6 +391,32 @@ test('会话翻译渲染器在无翻译记录时仍渲染用户消息与 AI 正�
   assert.equal(assistantHtml.includes('data-codingns-translation-action'), false)
 })
 
+test('streaming assistant text stays original until its translation record arrives', () => {
+  const assistantView = captureRenderers().get('assistant-step')!.component
+  const node = {
+    id: 'assistant-streaming-translation',
+    location: { kind: 'step', turn: { status: 'open' } },
+    data: { status: 'running', turn: 1, step: 1, blocks: [{ kind: 'text', text: 'Checking code' }] },
+  }
+  const props = { node, sessionId: 'streaming-translation', services: {}, t: chatT, translationT }
+  const renderer = createHookRenderer(assistantView, props)
+  try {
+    const originalHtml = renderToStaticMarkup(renderer.render())
+    assert.ok(originalHtml.includes('Checking code'))
+    assert.equal(originalHtml.includes('正在检查代码'), false)
+
+    const translationRecord = { ...outputRecord, original: 'Checking code', translated: '正在检查代码' }
+    const translatedNode = {
+      ...node,
+      data: { ...node.data, blocks: [{ kind: 'text', text: 'Checking code', codingnsTranslation: translationRecord }] },
+    }
+    const translatedHtml = renderToStaticMarkup(renderer.render({ ...props, node: translatedNode } as typeof props))
+    assert.ok(translatedHtml.includes('正在检查代码'))
+    assert.equal(translatedHtml.includes('Checking code'), false)
+    assert.ok(translatedHtml.includes('data-codingns-translation-action'))
+  } finally { renderer.dispose() }
+})
+
 test('会话翻译渲染器在有翻译记录时保留翻译入口与引用汇总', () => {
   const renderers = captureRenderers()
   const userView = renderers.get('user')!.component
