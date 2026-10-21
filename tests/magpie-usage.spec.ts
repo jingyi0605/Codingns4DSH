@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { setImmediate } from 'node:timers/promises'
 import test from 'node:test'
 import { MagpieUsageService, magpieAgentForAdapter, parseMagpieCliVersion, parseMagpieModelMetadata, parseMagpieModelOutput, parseMagpieQuotas } from '../src/host/cli-adapters/magpie-usage.js'
+import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js'
 import { calculateMagpiePopoverPlacement, registerSubscriptionSlot } from '../src/client/subscription-slot.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 
@@ -775,6 +776,42 @@ test('原生 DSH 使用 DSH 会话 ID 关联 Magpie 用量、路由和上游配�
   assert.equal(result?.route?.routeId, 42)
   assert.deepEqual(result?.upstreamProviders, ['glorinfo-api-platform'])
   assert.deepEqual(result?.quotas.map((quota) => quota.provider), ['glorinfo-api-platform'])
+})
+
+test('原生 DSH 的待用模型优先于上次使用模型以识别 Magpie 用量', async () => {
+  const sessionId = 'native-dsh-next-model'
+  const registry = new CodingNsCliAdapterRegistry([], {}, {
+    nativeSessions: {
+      get: () => ({
+        modelSelection: {
+          lastUsed: { provider: 'deepseek', model: 'deepseek-v4.1-flash' },
+          next: { provider: 'magpie', model: 'auto/deepseek-v4.1-flash' },
+        },
+      }),
+    } as never,
+  })
+  try {
+    registry.setSession(sessionId, {
+      adapterId: 'dsh',
+      providerId: 'deepseek',
+      modelId: 'deepseek-v4.1-flash',
+    })
+    const session = registry.getSession(sessionId)
+    assert.equal(session.modelId, 'auto/deepseek-v4.1-flash')
+    assert.equal(session.providerId, 'magpie')
+
+    const service = new MagpieUsageService({
+      readModels: async (agent) => [
+        'Routing groups', 'auto/deepseek-v4.1-flash    DeepSeek V4.1 Flash Auto',
+        `${agent} is shown every provider's models · magpie visible ${agent}`,
+        'http://127.0.0.1:3425/v1',
+      ].join('\n'),
+      fetch: (async () => Response.json({})) as typeof fetch,
+    })
+    assert.notEqual(await service.read(session, undefined, false, sessionId), null)
+  } finally {
+    await registry.dispose()
+  }
 })
 
 test('尚无路由时不把 auto 模型别名冒充成上游提供商', async () => {

@@ -1274,12 +1274,12 @@ function preferenceSnapshot(
   return Object.fromEntries([...preferences.entries()].map(([adapterId, preference]) => [adapterId, { ...preference }]))
 }
 
-/** 从 DSH 原生会话快照补齐当前模型提供商，供订阅分流使用。 */
+/** Overlay DSH's current native route so subscription checks use the selected model. */
 function mergeDshNativeSelection(
   config: CodingNsCliSessionConfig,
   session: unknown,
 ): CodingNsCliSessionConfig {
-  if (config.adapterId !== 'dsh' || config.providerId !== undefined && config.modelId !== undefined) return config
+  if (config.adapterId !== 'dsh') return config
   const root = asRecord(session)
   const rows = asRecord(root?.record)?.rows
   const selectionRow = asRecord(asRecord(rows)?.modelSelection)
@@ -1287,16 +1287,19 @@ function mergeDshNativeSelection(
   const value = asRecord(selection?.val) ?? selection
   const lastUsed = asRecord(value?.lastUsed)
   const next = asRecord(value?.next)
-  const candidate = lastUsed ?? next
+  const pending = asRecord(value?.pending)
+  // Prefer the explicit pending/next route; lastUsed can describe a previous
+  // model until DSH consumes the newly selected one.
+  const candidate = pending ?? next ?? lastUsed
   if (candidate === null) return config
   const providerId = stringValue(candidate.provider)
   const modelId = stringValue(candidate.model)
   const effortId = stringValue(candidate.reasoningEffort)
   return {
     ...config,
-    ...(config.providerId === undefined && providerId !== undefined ? { providerId } : {}),
-    ...(config.modelId === undefined && modelId !== undefined ? { modelId } : {}),
-    ...(config.effortId === undefined && effortId !== undefined ? { effortId } : {}),
+    ...(providerId === undefined ? {} : { providerId }),
+    ...(modelId === undefined ? {} : { modelId }),
+    ...(effortId === undefined ? {} : { effortId }),
   }
 }
 

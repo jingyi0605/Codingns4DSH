@@ -2265,8 +2265,8 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   assert.deepEqual(dshSelection, [{ type: 'text-delta', text: '默认 DSH' }])
   assert.deepEqual(registry.getSession('dsh-selection'), {
     adapterId: 'dsh',
-    modelId: 'deepseek-chat',
-    effortId: 'high',
+    modelId: 'deepseek-next',
+    effortId: 'low',
     providerId: 'deepseek',
   })
   await features.disable('cliAdapters')

@@ -1162,7 +1162,7 @@ function readCliRuntimeEnv(value: Record<string, any> | null): Readonly<Record<s
   return entries.length === 0 ? undefined : Object.fromEntries(entries)
 }
 
-/** DSH Session 快照把最近选择放在 modelSelection.lastUsed/next。 */
+/** Prefer the pending/next DSH route because lastUsed may still be stale. */
 function readModelSelectionCandidates(value: Record<string, any> | null): Record<string, any>[] {
   const result: Record<string, any>[] = []
   for (const candidate of [value, asRecord(value?.request), asRecord(value?.config), asRecord(value?.header), asRecord(asRecord(value?.record)?.rows)]) {
@@ -1171,9 +1171,9 @@ function readModelSelectionCandidates(value: Record<string, any> | null): Record
     const lastUsed = asRecord(selection?.lastUsed)
     const next = asRecord(selection?.next)
     const pending = asRecord(selection?.pending)
-    if (lastUsed !== null) result.push(lastUsed)
-    if (next !== null) result.push(next)
     if (pending !== null) result.push(pending)
+    if (next !== null) result.push(next)
+    if (lastUsed !== null) result.push(lastUsed)
   }
   return result
 }
