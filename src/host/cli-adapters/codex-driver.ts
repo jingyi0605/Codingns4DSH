@@ -1971,8 +1971,10 @@ function codexTurnStartParams(input: CodingNsCliTurnInput, threadId: string, ski
     threadId,
     input: inputBlocks,
     cwd,
+    responsesapiClientMetadata: { workspace_kind: 'project' },
     sandboxPolicy: codexSandboxPolicy(input, cwd),
     approvalPolicy: codexApprovalPolicy(input),
+    ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}),
     ...(input.effortId ? { effort: input.effortId } : {}),
   }
 }
