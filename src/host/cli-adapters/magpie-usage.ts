@@ -50,6 +50,8 @@ export type MagpieAgent = string
 
 interface MagpieModelCatalog {
   readonly models: ReadonlySet<string>
+  /** Unique normalized CLI labels; duplicate labels are intentionally omitted. */
+  readonly names: ReadonlyMap<string, string>
   /** Origin only; requests are restricted to the local loopback gateway. */
   readonly gatewayOrigin: string | null
 }
@@ -137,7 +139,7 @@ export class MagpieUsageService {
     if (agent === null || requestedModelId === null) return null
 
     const catalog = await this.loadCatalog(agent, signal)
-    const modelId = resolveCatalogModelId(agent, requestedModelId, catalog)
+    const modelId = resolveCatalogModelId(agent, requestedModelId, catalog, requestedModelId)
     if (catalog === null || modelId === null) return null
 
     const providerSessionId = cleanText(session.providerSessionId)
@@ -150,7 +152,7 @@ export class MagpieUsageService {
   }
 
   /**
-   * Mark exact Magpie model IDs and enrich their public metadata. The marker is
+   * Mark Magpie models and enrich their public metadata. The marker is
    * transient catalog data used by model-list UIs, not session provenance.
    */
   async enrichModelCatalog(adapterId: CodingNsCliAdapterId, catalog: CodingNsCliModelCatalog, signal?: AbortSignal): Promise<CodingNsCliModelCatalog> {
@@ -158,19 +160,19 @@ export class MagpieUsageService {
     if (agent === null) return catalog
     const agentCatalog = await this.loadCatalog(agent, signal)
     if (agentCatalog === null) return catalog
-    const hasExactMatch = catalog.groups.some((group) => group.models.some((model) => {
-      const id = catalogModelIdForRequested(agent, model.id)
-      return id !== null && agentCatalog.models.has(id)
+    const hasMatch = catalog.groups.some((group) => group.models.some((model) => {
+      const id = resolveCatalogModelId(agent, model.id, agentCatalog, model.name)
+      return id !== null
     }))
-    if (!hasExactMatch) return catalog
+    if (!hasMatch) return catalog
     const metadata = await this.loadModelMetadata(agent, agentCatalog, signal)
 
     let changed = false
     const groups = catalog.groups.map((group) => {
       let groupChanged = false
       const models = group.models.map((model) => {
-        const id = catalogModelIdForRequested(agent, model.id)
-        if (id === null || !agentCatalog.models.has(id)) return model
+        const id = resolveCatalogModelId(agent, model.id, agentCatalog, model.name)
+        if (id === null) return model
         const record = metadata?.get(id)
         const enriched = record === undefined
           ? model.source === 'magpie' ? model : { ...model, source: 'magpie' as const }
@@ -194,8 +196,8 @@ export class MagpieUsageService {
     if (agent === null || requestedModelId === null) return null
     const catalog = await this.loadCatalog(agent, signal)
     if (catalog === null) return null
-    const id = catalogModelIdForRequested(agent, requestedModelId)
-    if (id === null || !catalog.models.has(id)) return null
+    const id = resolveCatalogModelId(agent, requestedModelId, catalog, requestedModelId)
+    if (id === null) return null
     const metadata = await this.loadModelMetadata(agent, catalog, signal)
     return metadata?.get(id) ?? null
   }
@@ -379,6 +381,7 @@ function awaitWithSignal<T>(task: Promise<T>, signal?: AbortSignal): Promise<T> 
 export function parseMagpieModelOutput(output: string, agent: MagpieAgent): MagpieModelCatalog | null {
   if (!isMagpieAgentId(agent) || Buffer.byteLength(output, 'utf8') > MAX_MAGPIE_CLI_OUTPUT_BYTES) return null
   const models = new Set<string>()
+  const nameCandidates = new Map<string, string[]>()
   const gatewayUrls: string[] = []
   const lines = output.split(/\r?\n/u)
   const expectedFooter = `${agent} is shown every provider's models`
@@ -391,10 +394,18 @@ export function parseMagpieModelOutput(output: string, agent: MagpieAgent): Magp
     const columns = text.split(/\s{2,}/u)
     const model = columns[0]
     const label = columns[1]?.trim()
-    if (model !== undefined && label !== undefined && label !== ''
+    if (model !== undefined
       && new RegExp(`^${MAGPIE_MODEL_ID_PATTERN}$`, 'u').test(model)
-      && model.length <= 512 && label.length <= 200 && models.size < 10_000) {
+      && model.length <= 512 && models.size < 10_000) {
       models.add(model)
+      const name = label === undefined || label === '' || label.length > 200
+        ? null
+        : normalizeMagpieModelName(label)
+      if (name !== null) {
+        const candidates = nameCandidates.get(name) ?? []
+        if (!candidates.includes(model)) candidates.push(model)
+        nameCandidates.set(name, candidates)
+      }
     }
     const url = text.match(/https?:\/\/[^\s]+/u)?.[0]?.replace(/[),.;]+$/u, '')
     if (url !== undefined && gatewayUrls.length < 4) gatewayUrls.push(url)
@@ -402,7 +413,11 @@ export function parseMagpieModelOutput(output: string, agent: MagpieAgent): Magp
   if (!hasExpectedAgentFooter || models.size === 0 || gatewayUrls.length !== 1) return null
   const origins = [...new Set(gatewayUrls.map(normalizeLoopbackGatewayOrigin).filter((origin): origin is string => origin !== null))]
   if (origins.length !== 1) return null
-  return { models, gatewayOrigin: origins[0]! }
+  const names = new Map<string, string>()
+  for (const [name, candidates] of nameCandidates) {
+    if (candidates.length === 1) names.set(name, candidates[0]!)
+  }
+  return { models, names, gatewayOrigin: origins[0]! }
 }
 
 /** Parse a bounded OpenAI-compatible `/v1/models` response into a safe allowlist. */
@@ -565,13 +580,19 @@ async function readMagpieVersion(signal?: AbortSignal): Promise<string | null> {
 async function runMagpieCommand(args: readonly string[], signal?: AbortSignal): Promise<{ readonly status: number | null; readonly stdout: string } | null> {
   const command = await resolveCommandPath('magpie')
   if (command === null) return null
+  const environment = commandEnvironment(command)
+  // An inherited flag must not silently hide account-backed catalog entries;
+  // this integration reads the complete Magpie catalog but never writes it.
+  delete environment.MAGPIE_NO_ACCOUNTS
   const run = (): Promise<{ readonly status: number | null; readonly stdout: string }> => runAsyncCommand(spawnSync, command, args, {
     timeout: MAGPIE_CLI_TIMEOUT_MS,
     maxBuffer: MAX_MAGPIE_CLI_OUTPUT_BYTES,
     shell: WINDOWS && /\.(?:cmd|bat)$/iu.test(command),
     env: {
-      ...commandEnvironment(command),
-      MAGPIE_NO_ACCOUNTS: '1',
+      ...environment,
+      // Account-backed providers are part of Magpie's model catalog. Filtering
+      // them out makes the CLI catalog disagree with /v1/models and hides valid
+      // models such as the WorkBuddy-backed Auto entries.
       NO_COLOR: '1',
       FORCE_COLOR: '0',
     },
@@ -739,15 +760,23 @@ function cleanText(value: unknown): string | null {
  * The prefix is an adapter-specific, verified spelling from Magpie's
  * Command Code integration; no generic slash-prefix inference is allowed.
  */
-function resolveCatalogModelId(agent: MagpieAgent, requestedModelId: string, catalog: MagpieModelCatalog | null): string | null {
+function resolveCatalogModelId(agent: MagpieAgent, requestedModelId: string, catalog: MagpieModelCatalog | null, modelName?: string): string | null {
   if (catalog === null) return null
   const catalogModelId = catalogModelIdForRequested(agent, requestedModelId)
-  return catalogModelId !== null && catalog.models.has(catalogModelId) ? catalogModelId : null
+  if (catalogModelId !== null && catalog.models.has(catalogModelId)) return catalogModelId
+  const normalizedName = normalizeMagpieModelName(modelName)
+  return normalizedName === null ? null : catalog.names.get(normalizedName) ?? null
 }
 
 function catalogModelIdForRequested(agent: MagpieAgent, requestedModelId: string): string | null {
   if (agent === 'commandcode' && requestedModelId.startsWith('magpie/')) return requestedModelId.slice('magpie/'.length)
   return requestedModelId
+}
+
+function normalizeMagpieModelName(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const name = value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-US')
+  return name === '' || name.length > 200 ? null : name
 }
 
 function safeCount(value: unknown): number | null {

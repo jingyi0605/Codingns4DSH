@@ -21,6 +21,7 @@ test('Magpie 0.1.1295 目录输出按准确 Agent ID 和模型 ID 解析', async
     const catalog = parseMagpieModelOutput(output, agent)
     assert.ok(catalog, `${agent} output should match the captured CLI format`)
     assert.deepEqual([...catalog.models], ['example-provider/model-one', 'example-provider/model-two'])
+    assert.deepEqual([...catalog.names], [['model one', 'example-provider/model-one'], ['model two', 'example-provider/model-two']])
     assert.equal(catalog.gatewayOrigin, 'http://127.0.0.1:3425')
   }
   assert.equal(parseMagpieModelOutput('new unrecognized output\nexample-provider/model-one\n', 'claude'), null)
@@ -28,6 +29,32 @@ test('Magpie 0.1.1295 目录输出按准确 Agent ID 和模型 ID 解析', async
   assert.equal(parseMagpieModelOutput('example-provider/model-one  Model One\nhttp://127.0.0.1:3425/v1\nhttp://127.0.0.1:3426/v1\n', 'claude'), null)
   assert.equal(parseMagpieModelOutput('example-provider/model-one  Model One\nclaudex is shown every provider\'s models\nhttp://127.0.0.1:3425/v1\n', 'claude'), null)
   assert.equal(parseMagpieModelOutput('example-provider/model-one  Model One\n', '../claude'), null)
+})
+
+test('Magpie catalog keeps only unique normalized display-name aliases', () => {
+  const catalog = parseMagpieModelOutput([
+    'Example provider',
+    'provider/one    Shared Label',
+    'provider/two    shared label',
+    'provider/three    Unique Label',
+    "claude is shown every provider's models · magpie visible claude",
+    'http://127.0.0.1:3425/v1',
+  ].join('\n'), 'claude')
+  assert.ok(catalog)
+  assert.equal(catalog.names.has('shared label'), false, 'ambiguous labels must not select a provider')
+  assert.equal(catalog.names.get('unique label'), 'provider/three')
+})
+
+test('Magpie catalog retains valid model IDs when the CLI omits their display name', () => {
+  const catalog = parseMagpieModelOutput([
+    'Routing groups',
+    'sub2api/deepseek-v4.1-flash',
+    "claude is shown every provider's models · magpie visible claude",
+    'http://127.0.0.1:3425/v1',
+  ].join('\n'), 'claude')
+  assert.ok(catalog)
+  assert.equal(catalog.models.has('sub2api/deepseek-v4.1-flash'), true)
+  assert.equal(catalog.names.size, 0, 'an absent display label must not create a name alias')
 })
 
 test('DSH、OpenCode 和全部外部 Agent 适配器按目录确认 Magpie Agent 身份', async () => {
@@ -202,6 +229,104 @@ test('Magpie metadata uses only exact CLI/API IDs and leaves unsupported catalog
     ] }], currentModel: null, currentEffort: null,
   })
   assert.deepEqual(exactCatalog.groups[0]!.models.map((model) => model.source), ['magpie', undefined, undefined])
+})
+
+test('Magpie metadata joins unique display names when Agent model IDs differ', async () => {
+  let metadataReads = 0
+  const service = new MagpieUsageService({
+    readModels: async () => [
+      'Routing groups',
+      'auto/gpt-6.1-sol    GPT-6.1 Sol-Auto',
+      'auto/deepseek-v4.1-flash    Deepseek-V4.1-Flash-Auto',
+      "codex is shown every provider's models · magpie visible codex",
+      'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async (url) => {
+      assert.equal(String(url), 'http://127.0.0.1:3425/v1/models')
+      metadataReads += 1
+      return Response.json({ data: [
+        { id: 'auto/gpt-6.1-sol', display_name: 'GPT-6.1 Sol-Auto', context_window: 500000, max_input_tokens: 500000, max_output_tokens: 128000, reasoning_levels: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'] },
+        { id: 'auto/deepseek-v4.1-flash', display_name: 'Deepseek-V4.1-Flash-Auto', context_window: 1048576, reasoning_levels: ['low', 'high', 'max'] },
+      ] })
+    }) as typeof fetch,
+  })
+  const catalog = await service.enrichModelCatalog('codex', {
+    groups: [{ id: 'codex', name: 'Codex', models: [
+      { id: 'native/sol-auto', name: 'GPT-6.1 Sol-Auto', efforts: [] },
+      { id: 'native/deepseek-auto', name: 'Deepseek-V4.1-Flash-Auto', efforts: [] },
+      { id: 'native/unknown', name: 'Unlisted model', efforts: [] },
+    ] }], currentModel: null, currentEffort: null,
+  })
+  const models = catalog.groups[0]!.models
+  assert.equal(metadataReads, 1)
+  assert.equal(models[0]!.source, 'magpie')
+  assert.equal(models[0]!.contextWindow, 500000)
+  assert.equal(models[0]!.maxInputTokens, 500000)
+  assert.deepEqual(models[0]!.efforts, ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'])
+  assert.equal(models[1]!.source, 'magpie')
+  assert.equal(models[1]!.contextWindow, 1048576)
+  assert.deepEqual(models[1]!.efforts, ['low', 'high', 'max'])
+  assert.equal(models[2]!.source, undefined)
+})
+
+test('Magpie display-name aliases enrich every verified Agent catalog', async () => {
+  const adapters = [
+    ['dsh', 'dsh'], ['codex', 'codex'], ['claude-code', 'claude'], ['command-code', 'commandcode'],
+    ['kimi', 'kimi'], ['gemini', 'gemini'], ['pi', 'pi'], ['opencode', 'opencode'], ['grok', 'grok'],
+    ['mcode', 'minimax-code'], ['zcode', 'zcode'], ['codebuddy', 'codebuddy'], ['workbuddy', 'workbuddy'],
+    ['cursor-cli', 'cursor'], ['qoder', 'qoder'], ['qoder-cn', 'qoder-cn'], ['antigravity', 'agy'],
+  ] as const
+  for (const [adapterId, agent] of adapters) {
+    const service = new MagpieUsageService({
+      readModels: async (requestedAgent) => [
+        'Routing groups', 'provider/magpie-model    Magpie Model',
+        `${requestedAgent} is shown every provider's models · magpie visible ${requestedAgent}`,
+        'http://127.0.0.1:3425/v1',
+      ].join('\n'),
+      fetch: (async () => Response.json({ data: [{
+        id: 'provider/magpie-model', display_name: 'Magpie Model', context_window: 500000,
+        reasoning_levels: ['low', 'high'],
+      }] })) as typeof fetch,
+    })
+    const result = await service.enrichModelCatalog(adapterId, {
+      groups: [{ id: agent, name: agent, models: [{ id: `native/${agent}/model`, name: 'Magpie Model', efforts: [] }] }],
+      currentModel: null, currentEffort: null,
+    })
+    const model = result.groups[0]!.models[0]!
+    assert.equal(model.source, 'magpie', adapterId)
+    assert.equal(model.contextWindow, 500000, adapterId)
+    assert.deepEqual(model.efforts, ['low', 'high'], adapterId)
+  }
+})
+
+test('Magpie enriches ID-only CLI rows from the exact /v1/models record', async () => {
+  const service = new MagpieUsageService({
+    readModels: async () => [
+      'Routing groups', 'sub2api/deepseek-v4.1-flash',
+      "claude is shown every provider's models · magpie visible claude", 'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async () => Response.json({ data: [{
+      id: 'sub2api/deepseek-v4.1-flash', display_name: 'DeepSeek V4.1 Flash',
+      context_window: 1048576, max_input_tokens: 1048576, max_output_tokens: 65536,
+      reasoning_levels: [],
+    }] })) as typeof fetch,
+  })
+
+  const metadata = await service.readModelMetadata('claude-code', 'sub2api/deepseek-v4.1-flash')
+  assert.equal(metadata?.contextWindow, 1048576)
+  assert.deepEqual(metadata?.efforts, [])
+
+  const catalog = await service.enrichModelCatalog('claude-code', {
+    groups: [{ id: 'claude', name: 'Claude', models: [{
+      id: 'sub2api/deepseek-v4.1-flash', name: 'Original label', efforts: ['stale'],
+    }] }], currentModel: null, currentEffort: null,
+  })
+  const model = catalog.groups[0]!.models[0]!
+  assert.equal(model.source, 'magpie')
+  assert.equal(model.name, 'DeepSeek V4.1 Flash')
+  assert.equal(model.contextWindow, 1048576)
+  assert.equal(model.maxInputTokens, 1048576)
+  assert.deepEqual(model.efforts, [])
 })
 
 test('Magpie 标记依赖准确的 Agent 目录匹配，不因 Gateway 元数据不可用而丢失', async () => {
