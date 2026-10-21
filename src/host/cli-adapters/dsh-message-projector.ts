@@ -1,6 +1,7 @@
 import { toCliProviderId } from '../../shared/cli-provider-route.js'
 import type {
   CodingNsAgentEvent,
+  CodingNsAgentQuestion,
   CodingNsAgentQuestionResponse,
   CodingNsAgentPermissionResponse,
   CodingNsCliPermissionState,
@@ -29,6 +30,8 @@ export interface CodingNsDshMessageProjectorOptions {
   readonly translation?: SessionTranslationService
   /** 会话模型选择器中的“翻译对话”状态；缺省按未开启处理。 */
   readonly translationEnabled?: boolean
+  /** Warm structured question translations before the native question UI is opened. */
+  readonly prefetchQuestionTranslation?: (questions: readonly CodingNsAgentQuestion[]) => void
 }
 
 /** DSH `llm/stream` 接受的最小结构；具体协议只允许在本文件构造。 */
@@ -394,6 +397,7 @@ export class CodingNsDshMessageProjector {
     this.options.signal?.throwIfAborted()
     const responder = this.options.respondQuestion
     if (responder === undefined) throw new Error('外部 Agent 发送了问题请求，但适配器没有问题回复接口')
+    try { this.options.prefetchQuestionTranslation?.(event.questions) } catch { /* Translation is a side channel. */ }
     // Provider 的 question.asked 往往先于工具结果抵达，且工具输入快照可能是空对象。
     // 先用原生问题事件补齐同一个 tool/call 的可审计输入，避免历史里只显示 `{}`。
     if (event.callId !== undefined) {

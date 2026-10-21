@@ -47,6 +47,7 @@ import {
   type SessionTranslationInputRecord,
   type SessionTranslationRecord,
 } from '../../shared/contracts/session-translation.js'
+import { questionTranslationFields } from '../../shared/contracts/interaction-translation.js'
 import { createInteractionTranslation } from '../features/interaction-translation.js'
 import { createSessionTranslationRecovery, SessionTranslationCancelled } from '../features/session-translation-recovery.js'
 import { isSessionTranslationInputEnabled } from '../features/session-translation-service.js'
@@ -614,6 +615,11 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             respondQuestion: (response) => registry.respondQuestion(sessionId, response),
             ...(translation === undefined ? {} : { translation }),
             ...(translation === undefined ? {} : { translationEnabled: config.translationEnabled === true }),
+            prefetchQuestionTranslation: questions => {
+              const fields = questionTranslationFields(questions)
+              if (fields.length === 0) return
+              interactionTranslation.prefetch({ sessionId, direction: 'output', fields })
+            },
           })
           const discardSuspendedTurn = (): void => registry.discardSegmentedTurn(sessionId)
           input.signal?.addEventListener('abort', discardSuspendedTurn, { once: true })

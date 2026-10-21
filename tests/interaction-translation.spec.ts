@@ -89,6 +89,59 @@ test('completed fields are cached per session and configuration; failures are re
   assert.equal((await f.engine.translate(request)).records['todo.0']?.translated, '检查文件')
 })
 
+test('question translations warm the cache before the native interaction opens', async () => {
+  const f = fixture()
+  const order: string[] = []
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'codex',
+    sessionId: 's1',
+    translationEnabled: true,
+    prefetchQuestionTranslation: questions => {
+      order.push('prefetch')
+      f.engine.prefetch({ sessionId: 's1', direction: 'output', fields: questionTranslationFields(questions) })
+    },
+    nativeSessions: {
+      async askQuestions(_sessionId, request) {
+        order.push('open')
+        return { requestId: request.requestId, answers: [] }
+      },
+    },
+    respondQuestion: () => undefined,
+  })
+  await projector.push({ type: 'question-request', requestId: 'question-1', questions })
+  assert.deepEqual(order, ['prefetch', 'open'])
+
+  // The background request is independent of the UI lifecycle. A later client
+  // request reuses its records instead of starting a second model call.
+  await new Promise<void>(resolve => setImmediate(resolve))
+  const before = f.calls.length
+  const result = await f.engine.translate(f.request())
+  assert.equal(f.calls.length, before)
+  assert.equal(result.records['q.0.question']?.translated, '译文:Which mode?')
+})
+
+test('an opened question joins its still-running background translations', async () => {
+  const f = fixture()
+  let release!: () => void
+  let started!: () => void
+  const translationStarted = new Promise<void>(resolve => { started = resolve })
+  const blocked = new Promise<void>(resolve => { release = resolve })
+  f.service.translateOutput = async (_adapter, _kind, text) => {
+    f.calls.push({ direction: 'output', text })
+    if (text === 'Which mode?') { started(); await blocked }
+    return makeRecord(text)
+  }
+  f.engine.prefetch({ sessionId: 's1', direction: 'output', fields: [{ key: 'q.0.question', text: 'Which mode?' }] })
+  await translationStarted
+
+  const opened = f.engine.translate({ sessionId: 's1', direction: 'output', fields: [{ key: 'text.0', text: 'Which mode?' }] })
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(f.calls.length, 1, 'opening the component does not start a duplicate model request')
+  release()
+  const result = await opened
+  assert.equal(result.records['text.0']?.translated, '译文:Which mode?')
+})
+
 test('batch workers cap concurrent fields and a settings change discards stale results', async () => {
   const f = fixture()
   let active = 0, peak = 0
