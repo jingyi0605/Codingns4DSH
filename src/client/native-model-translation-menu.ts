@@ -15,6 +15,7 @@ export function watchNativeModelMenu(
   anchor: HTMLElement,
   onTarget: (target: HTMLElement | null) => void,
   readModels: () => readonly NativeModelCatalogEntry[] = () => [],
+  enableTranslationTarget = true,
 ): () => void {
   const document = anchor.ownerDocument
   const view = document.defaultView
@@ -48,10 +49,12 @@ export function watchNativeModelMenu(
       && menu?.getAttribute('role') === 'menu'
       && menu.querySelector(':scope > [role="menuitem"]') !== null
       ? menu : null
-    if (target !== null && target.parentElement === rootMenu && rootMenu !== null) return
+    const shouldMountTarget = enableTranslationTarget && rootMenu !== null
+    if (shouldMountTarget && target?.parentElement === rootMenu) return
+    if (!shouldMountTarget && target === null) return
     sizeObserver?.disconnect()
     target?.remove()
-    target = rootMenu === null ? null : document.createElement('div')
+    target = shouldMountTarget ? document.createElement('div') : null
     if (target !== null) {
       target.dataset.codingnsNativeTranslation = ''
       target.addEventListener('keydown', closeOnEscape)
@@ -112,10 +115,14 @@ export function decorateMagpieModels(menu: HTMLElement, models: readonly NativeM
       existing?.remove()
       continue
     }
-    if (existing?.dataset.modelId === model.id) continue
+    if (existing?.dataset.modelId === model.id) {
+      existing.style.marginInlineStart = 'auto'
+      continue
+    }
     existing?.remove()
     const label = findModelLabel(row, model.name)
     const tag = createMagpieModelTagNode(document, model.id)
+    tag.style.marginInlineStart = 'auto'
     if (label === row) row.append(tag)
     else label.after(tag)
   }

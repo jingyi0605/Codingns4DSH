@@ -526,8 +526,8 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const nativeMagpieModelRevision = JSON.stringify(nativeModels)
   useEffect(() => {
     setNativeMenu(null)
-    if (selection.adapterId !== DSH_NATIVE_SESSION_ADAPTER_ID || !nativeAvailable || rootRef.current === null) return
-    return watchNativeModelMenu(rootRef.current, setNativeMenu, () => nativeMagpieModelsRef.current)
+    if (selection.adapterId !== DSH_NATIVE_SESSION_ADAPTER_ID || rootRef.current === null) return
+    return watchNativeModelMenu(rootRef.current, setNativeMenu, () => nativeMagpieModelsRef.current, nativeAvailable)
   }, [selection.adapterId, sessionId, nativeAvailable, nativeMagpieModelRevision])
 
   // 目录必须和当前会话、适配器绑定；跨 Host 切换时不能短暂展示上一会话的目录。

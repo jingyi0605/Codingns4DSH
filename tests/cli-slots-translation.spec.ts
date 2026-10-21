@@ -309,6 +309,22 @@ test('翻译行容器只进入当前会话的原生模型主菜单，关闭、�
   assert.equal(current.resizeCount, 1)
 })
 
+test('原生翻译目标禁用时仍读取模型目录，但不向菜单插入空容器', () => {
+  const current = createNativeMenuProbe()
+  let modelReads = 0
+  const dispose = watchNativeModelMenu(current.anchor, () => undefined, () => {
+    modelReads++
+    return []
+  }, false)
+  try {
+    assert.equal(modelReads, 1)
+    assert.equal(current.menu.children.length, 0)
+    current.mutate()
+    assert.equal(modelReads, 2, 'Magpie tagging keeps observing even without translation UI')
+    assert.equal(current.menu.children.length, 0)
+  } finally { dispose() }
+})
+
 test('原生菜单中的共享翻译开关跟随设置更新、写回会话覆盖值，停用模块后立即移除', async () => {
   let enabled = true
   setNativeTranslationDefaultReader(() => enabled)

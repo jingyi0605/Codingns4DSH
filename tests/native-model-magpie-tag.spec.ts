@@ -121,7 +121,12 @@ test('native DSH model options tag exact Magpie IDs and avoid ambiguous labels',
   assert.equal(tags[1]!.dataset.modelId, 'alias/provider-model')
   for (const tag of tags) {
     assert.equal(tag.children.length, 1, 'the badge contains one logo only')
+    assert.equal(tag.style.width, '18px')
+    assert.equal(tag.style.height, '18px')
+    assert.equal(tag.style.marginInlineStart, 'auto', 'native badges align to the trailing side of the model row')
     assert.equal(tag.children[0]!.tagName, 'img')
+    assert.equal(tag.children[0]!.style.width, '16px')
+    assert.equal(tag.children[0]!.style.height, '16px')
     assert.equal(tag.children[0]!.getAttribute('src'), MAGPIE_MODEL_LOGO_URL)
   }
   assert.equal(ordinarySameName.querySelector('[data-codingns-magpie-model-tag]'), null)

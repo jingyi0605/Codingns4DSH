@@ -8,19 +8,19 @@ const tagStyle = {
   flex: 'none',
   alignItems: 'center',
   justifyContent: 'center',
-  width: 18,
-  height: 18,
+  width: '18px',
+  height: '18px',
   whiteSpace: 'nowrap',
   verticalAlign: 'middle',
 } as const
 
 const tagLogoStyle = {
   display: 'block',
-  width: 16,
-  height: 16,
+  width: '16px',
+  height: '16px',
   flex: '0 0 16px',
   objectFit: 'contain',
-  borderRadius: 4,
+  borderRadius: '4px',
 } as const
 
 /** Compact visual source marker shared by every model-list surface. */
