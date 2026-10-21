@@ -115,6 +115,122 @@ test('Magpie CLI 版本检查只接受已验证的精确版本输出', () => {
   assert.equal(parseMagpieCliVersion('version 0.1.1295\n'), false)
 })
 
+test('模型目录查询并行启动适配器目录、Magpie 版本和 Magpie 模型命令', async () => {
+  const modelOutput = await fixture('magpie-models-claude.txt')
+  let releaseAdapterCatalog!: (catalog: { groups: []; currentModel: null; currentEffort: null }) => void
+  let releaseVersion!: (version: string) => void
+  let adapterStarted = false
+  let versionStarted = false
+  let modelsStarted = false
+  const adapterCatalog = new Promise<{ groups: []; currentModel: null; currentEffort: null }>((resolve) => { releaseAdapterCatalog = resolve })
+  const version = new Promise<string>((resolve) => { releaseVersion = resolve })
+  const service = new MagpieUsageService({
+    readVersion: async () => { versionStarted = true; return version },
+    readModels: async () => { modelsStarted = true; return modelOutput },
+  })
+
+  const result = service.enrichModelCatalog('claude-code', (async () => {
+    adapterStarted = true
+    return adapterCatalog
+  })())
+  await setImmediate()
+  assert.equal(adapterStarted, true)
+  assert.equal(versionStarted, true)
+  assert.equal(modelsStarted, true)
+
+  releaseAdapterCatalog({ groups: [], currentModel: null, currentEffort: null })
+  releaseVersion('magpie 0.1.1295')
+  assert.deepEqual(await result, { groups: [], currentModel: null, currentEffort: null })
+})
+
+test('Magpie 目录和元数据的失败结果只短暂缓存', async () => {
+  let now = 1
+  let catalogCalls = 0
+  const catalogService = new MagpieUsageService({
+    now: () => now,
+    readVersion: async () => 'magpie 0.1.1295',
+    readModels: async () => { catalogCalls++; return null },
+  })
+  const ordinaryCatalog = { groups: [], currentModel: null, currentEffort: null }
+  await catalogService.enrichModelCatalog('claude-code', ordinaryCatalog)
+  await catalogService.enrichModelCatalog('claude-code', ordinaryCatalog)
+  assert.equal(catalogCalls, 1, 'repeat failures within the short cache window should not rerun Magpie')
+  now += 5_001
+  await catalogService.enrichModelCatalog('claude-code', ordinaryCatalog)
+  assert.equal(catalogCalls, 2, 'failed catalog reads should become retryable')
+
+  now = 1
+  let metadataCalls = 0
+  const modelOutput = await fixture('magpie-models-claude.txt')
+  const metadataService = new MagpieUsageService({
+    now: () => now,
+    readVersion: async () => 'magpie 0.1.1295',
+    readModels: async () => modelOutput,
+    fetch: (async () => { metadataCalls++; return Response.json({ data: [] }) }) as typeof fetch,
+  })
+  const matchingCatalog = {
+    groups: [{ id: 'claude', name: 'Claude', models: [{ id: 'example-provider/model-one', name: 'Model One', efforts: [] }] }],
+    currentModel: null,
+    currentEffort: null,
+  }
+  await metadataService.enrichModelCatalog('claude-code', matchingCatalog)
+  await metadataService.enrichModelCatalog('claude-code', matchingCatalog)
+  assert.equal(metadataCalls, 1, 'unavailable metadata should not retry on every model-list request')
+  now += 5_001
+  await metadataService.enrichModelCatalog('claude-code', matchingCatalog)
+  assert.equal(metadataCalls, 2, 'failed metadata reads should become retryable')
+})
+
+test('不同 Agent 分别确认 Magpie 目录，但共用同一组 Gateway 模型元数据缓存', async () => {
+  let now = 1
+  const agents: string[] = []
+  let metadataCalls = 0
+  const service = new MagpieUsageService({
+    now: () => now,
+    readVersion: async () => 'magpie 0.1.1295',
+    readModels: async (agent) => {
+      agents.push(agent)
+      return [
+        'Routing groups',
+        'provider/shared-model    Shared Model',
+        `${agent} is shown every provider's models · magpie visible ${agent}`,
+        'http://127.0.0.1:3425/v1',
+      ].join('\n')
+    },
+    fetch: (async (url) => {
+      assert.equal(String(url), 'http://127.0.0.1:3425/v1/models')
+      metadataCalls += 1
+      return Response.json({ data: [{ id: 'provider/shared-model', display_name: 'Shared Model', context_window: 500000 }] })
+    }) as typeof fetch,
+  })
+  const claudeCatalog = {
+    groups: [{ id: 'claude', name: 'Claude', models: [{ id: 'provider/shared-model', name: 'Shared Model', efforts: [] }] }],
+    currentModel: null, currentEffort: null,
+  }
+  const codexCatalog = {
+    groups: [{ id: 'codex', name: 'Codex', models: [{ id: 'provider/shared-model', name: 'Shared Model', efforts: [] }] }],
+    currentModel: null, currentEffort: null,
+  }
+
+  const claude = await service.enrichModelCatalog('claude-code', claudeCatalog)
+  const codex = await service.enrichModelCatalog('codex', codexCatalog)
+  assert.deepEqual(agents, ['claude', 'codex'], 'a successful Agent-specific CLI footer must not verify another Agent')
+  assert.equal(metadataCalls, 1, 'the identical Gateway catalog is fetched only once')
+  assert.equal(claude.groups[0]!.models[0]!.source, 'magpie')
+  assert.equal(codex.groups[0]!.models[0]!.contextWindow, 500000)
+
+  await service.enrichModelCatalog('claude-code', claudeCatalog)
+  await service.enrichModelCatalog('codex', codexCatalog)
+  assert.deepEqual(agents, ['claude', 'codex'], 'successful Agent catalogs are cached for the TTL')
+  assert.equal(metadataCalls, 1)
+
+  now += 60_001
+  await service.enrichModelCatalog('claude-code', claudeCatalog)
+  await service.enrichModelCatalog('codex', codexCatalog)
+  assert.deepEqual(agents, ['claude', 'codex', 'claude', 'codex'])
+  assert.equal(metadataCalls, 2, 'the shared Gateway metadata is refreshed once after expiry')
+})
+
 test('Magpie /v1/models 解析上下文、token 限制、模态、推理等级和服务档位', () => {
   const metadata = parseMagpieModelMetadata({
     data: [{

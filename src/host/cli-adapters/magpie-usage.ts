@@ -16,6 +16,8 @@ import { commandEnvironment, resolveCommandPath, runAsyncCommand, WINDOWS, withC
 
 const MAGPIE_CATALOG_TTL_MS = 60_000
 const MAGPIE_MODEL_METADATA_TTL_MS = 60_000
+const MAGPIE_FAILURE_CACHE_TTL_MS = 5_000
+const MAX_MAGPIE_MODEL_METADATA_CACHE_ENTRIES = 4
 const MAGPIE_MINIMUM_CLI_VERSION = [0, 1, 1295] as const
 const MAGPIE_CLI_TIMEOUT_MS = 10_000
 const MAGPIE_HTTP_TIMEOUT_MS = 3_000
@@ -57,7 +59,7 @@ interface MagpieModelCatalog {
 }
 
 interface CatalogCacheEntry {
-  readonly catalog: MagpieModelCatalog
+  readonly catalog: MagpieModelCatalog | null
   readonly loadedAt: number
 }
 
@@ -80,7 +82,7 @@ export interface MagpieModelMetadata {
 interface ModelMetadataCacheEntry {
   readonly origin: string
   readonly catalogFingerprint: string
-  readonly models: ReadonlyMap<string, MagpieModelMetadata>
+  readonly models: ReadonlyMap<string, MagpieModelMetadata> | null
   readonly loadedAt: number
 }
 
@@ -107,9 +109,11 @@ export class MagpieUsageService {
   private readonly now: () => number
   private readonly timeoutMs: number
   private readonly lifetimeSignal: AbortSignal | undefined
+  /** Agent CLI verification remains isolated; model metadata below is Gateway-wide and shared. */
   private readonly catalogs = new Map<MagpieAgent, CatalogCacheEntry>()
   private readonly catalogLoads = new Map<MagpieAgent, Promise<MagpieModelCatalog | null>>()
-  private readonly modelMetadata = new Map<MagpieAgent, ModelMetadataCacheEntry>()
+  /** `/v1/models` is Gateway-wide, so adapters with the same model set share one normalized response. */
+  private readonly modelMetadata = new Map<string, ModelMetadataCacheEntry>()
   private readonly modelMetadataLoads = new Map<string, Promise<ReadonlyMap<string, MagpieModelMetadata> | null>>()
   private versionCheck: { readonly supported: boolean; readonly checkedAt: number } | undefined
   private versionLoad: Promise<boolean> | undefined
@@ -155,20 +159,20 @@ export class MagpieUsageService {
    * Mark Magpie models and enrich their public metadata. The marker is
    * transient catalog data used by model-list UIs, not session provenance.
    */
-  async enrichModelCatalog(adapterId: CodingNsCliAdapterId, catalog: CodingNsCliModelCatalog, signal?: AbortSignal): Promise<CodingNsCliModelCatalog> {
+  async enrichModelCatalog(adapterId: CodingNsCliAdapterId, catalog: CodingNsCliModelCatalog | Promise<CodingNsCliModelCatalog>, signal?: AbortSignal): Promise<CodingNsCliModelCatalog> {
     const agent = magpieAgentForAdapter(adapterId)
-    if (agent === null) return catalog
-    const agentCatalog = await this.loadCatalog(agent, signal)
-    if (agentCatalog === null) return catalog
-    const hasMatch = catalog.groups.some((group) => group.models.some((model) => {
-      const id = resolveCatalogModelId(agent, model.id, agentCatalog, model.name)
-      return id !== null
-    }))
-    if (!hasMatch) return catalog
-    const metadata = await this.loadModelMetadata(agent, agentCatalog, signal)
+    const [resolvedCatalog, agentCatalog] = await Promise.all([
+      Promise.resolve(catalog),
+      agent === null ? Promise.resolve(null) : this.loadCatalog(agent, signal),
+    ])
+    if (agent === null || agentCatalog === null) return resolvedCatalog
+    const hasMatch = resolvedCatalog.groups.some((group) => group.models.some((model) =>
+      resolveCatalogModelId(agent, model.id, agentCatalog, model.name) !== null))
+    if (!hasMatch) return resolvedCatalog
+    const metadata = await this.loadModelMetadata(agentCatalog, signal)
 
     let changed = false
-    const groups = catalog.groups.map((group) => {
+    const groups = resolvedCatalog.groups.map((group) => {
       let groupChanged = false
       const models = group.models.map((model) => {
         const id = resolveCatalogModelId(agent, model.id, agentCatalog, model.name)
@@ -185,7 +189,7 @@ export class MagpieUsageService {
       changed = true
       return { ...group, models }
     })
-    return changed ? { ...catalog, groups } : catalog
+    return changed ? { ...resolvedCatalog, groups } : resolvedCatalog
   }
 
   /** Return an exact, CLI-confirmed Magpie model record for trusted Host use. */
@@ -198,7 +202,7 @@ export class MagpieUsageService {
     if (catalog === null) return null
     const id = resolveCatalogModelId(agent, requestedModelId, catalog, requestedModelId)
     if (id === null) return null
-    const metadata = await this.loadModelMetadata(agent, catalog, signal)
+    const metadata = await this.loadModelMetadata(catalog, signal)
     return metadata?.get(id) ?? null
   }
 
@@ -242,58 +246,65 @@ export class MagpieUsageService {
 
   private async loadCatalog(agent: MagpieAgent, signal?: AbortSignal): Promise<MagpieModelCatalog | null> {
     const cached = this.catalogs.get(agent)
-    if (cached !== undefined && this.now() - cached.loadedAt < MAGPIE_CATALOG_TTL_MS) {
+    const cacheTtl = cached?.catalog === null ? MAGPIE_FAILURE_CACHE_TTL_MS : MAGPIE_CATALOG_TTL_MS
+    if (cached !== undefined && this.now() - cached.loadedAt < cacheTtl) {
       return awaitWithSignal(Promise.resolve(cached.catalog), signal)
     }
     const pending = this.catalogLoads.get(agent)
     if (pending !== undefined) return awaitWithSignal(pending, signal)
 
-    if (!await this.supportedCli(signal)) return null
-    const catalogLoadedWhileCheckingVersion = this.catalogs.get(agent)
-    if (catalogLoadedWhileCheckingVersion !== undefined
-      && this.now() - catalogLoadedWhileCheckingVersion.loadedAt < MAGPIE_CATALOG_TTL_MS) {
-      return catalogLoadedWhileCheckingVersion.catalog
-    }
-    const catalogPendingWhileCheckingVersion = this.catalogLoads.get(agent)
-    if (catalogPendingWhileCheckingVersion !== undefined) return awaitWithSignal(catalogPendingWhileCheckingVersion, signal)
-
-    const request = this.readModels(agent, this.lifetimeSignal)
-      .then((output) => output === null ? null : parseMagpieModelOutput(output, agent))
-      .then((catalog) => {
-        if (catalog !== null) this.catalogs.set(agent, { catalog, loadedAt: this.now() })
-        return catalog
-      })
+    const request = Promise.resolve().then(async () => {
+      // These checks are independent. Do not make every cold model-catalog
+      // request wait for the version subprocess before starting Magpie's
+      // model-list subprocess.
+      const supportedRequest = this.supportedCli(this.lifetimeSignal)
+      const catalogRequest = this.hasFreshUnsupportedVersion()
+        ? Promise.resolve(null)
+        : Promise.resolve().then(() => this.readModels(agent, this.lifetimeSignal))
+          .then((output) => output === null ? null : parseMagpieModelOutput(output, agent))
+          .catch(() => null)
+      const [supported, catalog] = await Promise.all([supportedRequest, catalogRequest])
+      const result = supported ? catalog : null
+      this.catalogs.set(agent, { catalog: result, loadedAt: this.now() })
+      return result
+    })
       .catch(() => null)
       .finally(() => { if (this.catalogLoads.get(agent) === request) this.catalogLoads.delete(agent) })
     this.catalogLoads.set(agent, request)
     return awaitWithSignal(request, signal)
   }
 
-  private async loadModelMetadata(agent: MagpieAgent, catalog: MagpieModelCatalog, signal?: AbortSignal): Promise<ReadonlyMap<string, MagpieModelMetadata> | null> {
+  private async loadModelMetadata(catalog: MagpieModelCatalog, signal?: AbortSignal): Promise<ReadonlyMap<string, MagpieModelMetadata> | null> {
     signal?.throwIfAborted()
     if (catalog.gatewayOrigin === null) return null
     const catalogFingerprint = [...catalog.models].sort().join('\u0000')
-    const cached = this.modelMetadata.get(agent)
+    const loadKey = `${catalog.gatewayOrigin}\u0000${catalogFingerprint}`
+    const cached = this.modelMetadata.get(loadKey)
     if (cached !== undefined
       && cached.origin === catalog.gatewayOrigin
       && cached.catalogFingerprint === catalogFingerprint
-      && this.now() - cached.loadedAt < MAGPIE_MODEL_METADATA_TTL_MS) {
+      && this.now() - cached.loadedAt < (cached.models === null ? MAGPIE_FAILURE_CACHE_TTL_MS : MAGPIE_MODEL_METADATA_TTL_MS)) {
       return awaitWithSignal(Promise.resolve(cached.models), signal)
     }
 
-    const loadKey = `${agent}\u0000${catalog.gatewayOrigin}\u0000${catalogFingerprint}`
     const pending = this.modelMetadataLoads.get(loadKey)
     if (pending !== undefined) return awaitWithSignal(pending, signal)
 
     const request = this.readGatewayJson(catalog.gatewayOrigin, '/v1/models', this.lifetimeSignal)
       .then((response) => response.ok ? parseMagpieModelMetadata(response.value) : null)
       .then((models) => {
-        if (models !== null) this.modelMetadata.set(agent, {
+        this.modelMetadata.delete(loadKey)
+        this.modelMetadata.set(loadKey, {
           origin: catalog.gatewayOrigin!,
           catalogFingerprint,
           models,
           loadedAt: this.now(),
         })
+        while (this.modelMetadata.size > MAX_MAGPIE_MODEL_METADATA_CACHE_ENTRIES) {
+          const oldest = this.modelMetadata.keys().next().value as string | undefined
+          if (oldest === undefined) break
+          this.modelMetadata.delete(oldest)
+        }
         return models
       })
       .catch(() => null)
@@ -320,6 +331,12 @@ export class MagpieUsageService {
       .finally(() => { if (this.versionLoad === load) this.versionLoad = undefined })
     this.versionLoad = load
     return awaitWithSignal(load, signal)
+  }
+
+  private hasFreshUnsupportedVersion(): boolean {
+    return this.versionCheck !== undefined
+      && !this.versionCheck.supported
+      && this.now() - this.versionCheck.checkedAt < MAGPIE_CATALOG_TTL_MS
   }
 
   private async readGatewayJson(origin: string, path: string, signal?: AbortSignal): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false }> {
