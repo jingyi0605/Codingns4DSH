@@ -44,6 +44,26 @@ test('Command Code ACP Mod initialization preserves standalone and unknown upstr
   } finally { if (previous !== undefined) process.env.CODINGNS_DISABLE_NATIVE_AGENT = previous }
 })
 
+test('Command Code ACP attaches its session ID to loopback Magpie model requests', async () => {
+  const source = [
+    'const NT="x-opencode-session",FT=new Set(["opencode.ai"]);',
+    'function isSessionRoutedHost(e){try{return FT.has(new URL(e).hostname)}catch{return false}}',
+    'function sessionRoutingHeaders(e){return e.threadId&&isSessionRoutedHost(e.baseURL)?Object.keys(e.headers??{}).some(e=>e.toLowerCase()===NT)?{}:{[NT]:e.threadId}:{}}',
+    'export{sessionRoutingHeaders}',
+  ].join('')
+  const loaded = await loadCommandCodeAcpLoader('file:///tmp/node_modules/command-code/dist/cli.mjs',
+    { format: 'module' }, async () => ({ format: 'module', source }))
+  const module = await import(`data:text/javascript;base64,${Buffer.from(String(loaded.source)).toString('base64')}`)
+  assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'http://127.0.0.1:3425/v1', headers: {}, threadId: 'command-session' }), {
+    'x-magpie-session': 'command-session',
+  })
+  assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'http://127.0.0.1:3425/v1', headers: {}, threadId: undefined }), {})
+  assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'https://opencode.ai/v1', headers: {}, threadId: 'open-code-session' }), {
+    'x-opencode-session': 'open-code-session',
+  })
+  assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'http://127.0.0.1:3425/v1', headers: { 'X-Magpie-Session': 'configured' }, threadId: 'command-session' }), {})
+})
+
 test('Command Code ACP 将问题和 DSH 权限映射回传给 Provider', async () => {
   let promptId = 0
   const replies = new Map<number | string, Record<string, unknown>>()

@@ -11,7 +11,8 @@
  * 把 BYOK 模型补进内存中的目录，使 ACP 会话能切换并真正路由到对应提供者。
  *
  * 这个 loader 只改写内存中的 cli.mjs，不修改用户安装的 npm 包或 Desktop
- * The model catalog patch depends only on the stable catalogModels function entry,
+ * The model catalog and Magpie session patches depend only on stable function
+ * entries,
  * not on minified catalog variable names or the complete function text. If the
  * upstream entry point disappears, the original module is left unchanged.
  */
@@ -39,7 +40,7 @@ export async function load(url: string, context: LoaderContext, nextLoad: NextLo
   const loaded = await nextLoad(url, context)
   if (!url.endsWith(COMMAND_CODE_CLI_SUFFIX) || loaded.format !== 'module' || loaded.source === undefined) return loaded
   const source = typeof loaded.source === 'string' ? loaded.source : new TextDecoder().decode(loaded.source)
-  const patched = patchCommandCodeAcpMod(patchCommandCodeAcpByokModels(patchCommandCodeAcpQuestion(source)))
+  const patched = patchCommandCodeAcpMod(patchCommandCodeAcpMagpieSession(patchCommandCodeAcpByokModels(patchCommandCodeAcpQuestion(source))))
   return patched === source ? loaded : { ...loaded, source: patched, shortCircuit: true }
 }
 
@@ -71,6 +72,20 @@ function patchCommandCodeAcpQuestion(source: string): string {
   // 使原 requestQuestion 中的 await 失去合法上下文，导致整个 CLI 无法加载。
   patched = patched.replace(questionDeclaration, `${helper}${questionDeclaration}`)
   return patched
+}
+
+/**
+ * Magpie associates usage and route records through `X-Magpie-Session`.
+ * Command Code already passes its ACP session as `threadId` to the model
+ * transport, but its built-in session-header helper only handles OpenCode.
+ * Add the Magpie header for loopback OpenAI-compatible `/v1` gateways.
+ */
+function patchCommandCodeAcpMagpieSession(source: string): string {
+  const original = 'function sessionRoutingHeaders(e){return e.threadId&&isSessionRoutedHost(e.baseURL)?Object.keys(e.headers??{}).some(e=>e.toLowerCase()===NT)?{}:{[NT]:e.threadId}:{}}'
+  if (!source.includes(original) || source.includes('codingNsMagpieBaseUrl')) return source
+  const helper = 'function codingNsMagpieBaseUrl(e){try{const t=new URL(e);return(t.hostname==="127.0.0.1"||t.hostname==="localhost"||t.hostname==="::1"||t.hostname==="[::1]")&&(/^\\/v1(?:\\/|$)/u.test(t.pathname))}catch{return false}}'
+  const replacement = `${helper}function sessionRoutingHeaders(e){const t=Object.keys(e.headers??{});if(e.threadId&&isSessionRoutedHost(e.baseURL))return t.some(e=>e.toLowerCase()===NT)?{}:{[NT]:e.threadId};return e.threadId&&codingNsMagpieBaseUrl(e.baseURL)&&!t.some(e=>e.toLowerCase()==="x-magpie-session")?{"x-magpie-session":e.threadId}:{}}`
+  return source.replace(original, replacement)
 }
 
 /**
