@@ -53,6 +53,9 @@ const MAGPIE_AGENT_BY_ADAPTER: Readonly<Record<string, string>> = {
 // the public client identity `codingns4dsh` in Magpie usage and trace data.
 const MAGPIE_USAGE_AGENT_ALIASES: Readonly<Record<string, readonly string[]>> = {
   dsh: ['dsh', 'codingns4dsh'],
+  // Command Code ACP identifies its client as `codingns4dsh` in Magpie's
+  // usage ledger, while its verified model catalog uses `commandcode`.
+  commandcode: ['commandcode', 'codingns4dsh'],
 }
 
 /** Magpie's agent IDs are verified from the matching catalog output. */

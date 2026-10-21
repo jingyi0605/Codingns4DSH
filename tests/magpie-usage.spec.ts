@@ -794,6 +794,48 @@ test('Command Code 的 magpie/provider/model 拼法按 Magpie 目录精确匹配
   assert.equal(result?.session?.id, 'command-session-1')
 })
 
+test('Command Code 使用 CodingNS 网关 Agent 身份时仍能关联会话、路由和配额', async () => {
+  const sessionId = 'command-code-codingns-session'
+  const modelOutput = [
+    'Example provider',
+    'example-provider/model-one    Model One',
+    "commandcode is shown every provider's models · magpie visible commandcode",
+    'http://127.0.0.1:3425/v1',
+  ].join('\n')
+  const service = new MagpieUsageService({
+    readModels: async () => modelOutput,
+    fetch: (async (url) => {
+      const target = new URL(String(url))
+      if (target.pathname.endsWith('/quotas')) return Response.json({ data: [{
+        provider: 'example-provider', name: 'Example Provider', user: null, windows: [{ name: 'Credits', remaining: 73 }],
+      }] })
+      if (target.pathname.endsWith('/route')) return Response.json({
+        session: sessionId,
+        route: { id: 42, asked: 'example-provider/model-one', model: 'example-provider/model-one', served: 'model-one', done: true, status: 200, tries: [] },
+      })
+      if (target.pathname.endsWith('/usage/requests')) return Response.json({ rows: [{
+        route_id: 42, t: '2026-10-21T14:00:00Z', agent: 'codingns4dsh', session: sessionId,
+        provider: 'example-provider', model: 'model-one', served: 'model-one', status: 200,
+      }] })
+      return Response.json(usageReply([{
+        agent: 'codingns4dsh', id: sessionId, input: 8, output: 2, cost: 0.001,
+      }]))
+    }) as typeof fetch,
+  })
+
+  const result = await service.read({
+    adapterId: 'command-code',
+    modelId: 'magpie/example-provider/model-one',
+    providerSessionId: sessionId,
+  }, undefined, true)
+  assert.equal(result?.session?.agent, 'codingns4dsh')
+  assert.equal(result?.session?.id, sessionId)
+  assert.equal(result?.routeStatus, 'available')
+  assert.equal(result?.route?.routeId, 42)
+  assert.deepEqual(result?.upstreamProviders, ['example-provider'])
+  assert.deepEqual(result?.quotas.map((quota) => quota.provider), ['example-provider'])
+})
+
 test('Magpie 不把与 DSH 会话 ID 相同的回退值当作 Agent 会话', async () => {
   const modelOutput = await fixture('magpie-models-codex.txt')
   const urls: string[] = []
