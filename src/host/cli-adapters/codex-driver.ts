@@ -243,7 +243,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     const timer = setTimeout(() => controller.abort(), 12_000)
     try {
       await rpc.request('initialize', {
-        clientInfo: { name: 'codingns4dsh', version: '0.1.1' },
+        clientInfo: { name: 'Codex', version: '0.1.1' },
         capabilities: {},
       }, { signal: controller.signal })
       rpc.notify('initialized', {})
@@ -1082,7 +1082,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       session.skills.clear()
       session.skillsCwd = undefined
     })
-    await rpc.request('initialize', { clientInfo: { name: 'codingns4dsh', version: '0.1.1' }, capabilities: { experimentalApi: true } }, { signal: input.signal, killOnAbort: false })
+    await rpc.request('initialize', { clientInfo: { name: 'Codex', version: '0.1.1' }, capabilities: { experimentalApi: true } }, { signal: input.signal, killOnAbort: false })
     rpc.notify('initialized', {})
     rpc.setServerRequestHandler((request) => {
       const requestId = readRequestId(request)
