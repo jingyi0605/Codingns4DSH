@@ -7,6 +7,8 @@ import type {
   CodingNsCliSessionConfig,
 } from '../../shared/contracts/cli-adapter.js'
 import type {
+  MagpieQuota,
+  MagpieQuotaWindow,
   MagpieRouteUsage,
   MagpieSessionUsage,
   MagpieUsageSnapshot,
@@ -47,6 +49,12 @@ const MAGPIE_AGENT_BY_ADAPTER: Readonly<Record<string, string>> = {
   dsh: 'dsh',
 }
 
+// The DSH catalog uses `dsh`, while its gateway requests are recorded under
+// the public client identity `codingns4dsh` in Magpie usage and trace data.
+const MAGPIE_USAGE_AGENT_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  dsh: ['dsh', 'codingns4dsh'],
+}
+
 /** Magpie's agent IDs are verified from the matching catalog output. */
 export type MagpieAgent = string
 
@@ -84,6 +92,12 @@ interface ModelMetadataCacheEntry {
   readonly catalogFingerprint: string
   readonly models: ReadonlyMap<string, MagpieModelMetadata> | null
   readonly loadedAt: number
+}
+
+interface MagpieSessionRouteRecord {
+  readonly route: MagpieRouteUsage
+  readonly provider: string
+  readonly account: string | null
 }
 
 export interface MagpieUsageServiceOptions {
@@ -209,7 +223,10 @@ export class MagpieUsageService {
   private async readFromGateway(agent: MagpieAgent, modelId: string, gatewayOrigin: string | null, sessionId: string | null, signal: AbortSignal | undefined, includeRoute: boolean): Promise<MagpieUsageSnapshot> {
     const capturedAt = new Date(this.now()).toISOString()
     if (gatewayOrigin === null) return unavailableMagpieSnapshot(agent, modelId, sessionId, this.now(), capturedAt)
-    const usageResult = await this.readGatewayJson(gatewayOrigin, '/v1/magpie/usage?period=today', signal)
+    const [usageResult, quotaResult] = await Promise.all([
+      this.readGatewayJson(gatewayOrigin, '/v1/magpie/usage?period=today', signal),
+      this.readGatewayJson(gatewayOrigin, '/v1/magpie/quotas', signal),
+    ])
     const aggregate = usageResult.ok ? readTotals(usageResult.value) : null
     const sessionUsage = usageResult.ok && sessionId !== null
       ? readSession(usageResult.value, agent, sessionId)
@@ -218,9 +235,13 @@ export class MagpieUsageService {
     // session. Require the exact Agent + ID pair in Magpie's own usage result
     // before asking the route endpoint, and then verify its echoed identity.
     const canReadRoute = includeRoute && sessionId !== null && sessionId.length <= 128 && sessionUsage !== null
-    const routeResult = canReadRoute
-      ? await this.readGatewayJson(gatewayOrigin, `/v1/magpie/route?session=${encodeURIComponent(sessionId)}`, signal)
-      : { ok: false as const }
+    const routeResultPromise = canReadRoute
+      ? this.readGatewayJson(gatewayOrigin, `/v1/magpie/route?session=${encodeURIComponent(sessionId)}`, signal)
+      : Promise.resolve({ ok: false as const })
+    const routeHistoryResultPromise = canReadRoute
+      ? this.readGatewayJson(gatewayOrigin, `/v1/magpie/usage/requests?period=today&q=${encodeURIComponent(sessionId)}&limit=100`, signal)
+      : Promise.resolve({ ok: false as const })
+    const [routeResult, routeHistoryResult] = await Promise.all([routeResultPromise, routeHistoryResultPromise])
     const routeRead = sessionId === null
       ? { status: 'session-unavailable' as const, route: null }
       : !includeRoute
@@ -230,6 +251,27 @@ export class MagpieUsageService {
         : !routeResult.ok
           ? { status: 'unavailable' as const, route: null }
           : readRoute(routeResult.value, sessionId)
+    const routeHistory = routeHistoryResult.ok && sessionId !== null && sessionUsage !== null
+      ? readSessionRouteHistory(routeHistoryResult.value, agent, sessionId)
+      : []
+    const route = routeRead.route === null
+      ? routeHistory[0]?.route ?? null
+      : enrichRouteWithHistory(routeRead.route, routeHistory)
+    const routeStatus = route !== null
+      ? 'available' as const
+      : routeRead.status
+    const allQuotas = quotaResult.ok ? parseMagpieQuotas(quotaResult.value) : null
+    const routeProviders = [...new Set([
+      providerFromRoute(route),
+      ...routeHistory.map((record) => record.provider),
+    ].filter((provider): provider is string => provider !== null))]
+    const upstreamProviders = routeProviders.length > 0
+      ? routeProviders
+      : [providerFromModelId(modelId, agent)].filter((provider): provider is string => provider !== null)
+    const upstreamProvider = upstreamProviders[0] ?? null
+    const quotas = allQuotas === null
+      ? []
+      : filterSessionQuotas(allQuotas, upstreamProviders, routeHistory)
 
     return {
       agent,
@@ -239,8 +281,12 @@ export class MagpieUsageService {
       aggregate,
       sessionId,
       session: sessionUsage,
-      routeStatus: routeRead.status,
-      route: routeRead.route,
+      routeStatus,
+      route,
+      upstreamProvider,
+      upstreamProviders,
+      quotaStatus: allQuotas === null ? 'unavailable' : upstreamProviders.length === 0 ? 'provider-unavailable' : 'available',
+      quotas,
     }
   }
 
@@ -374,6 +420,9 @@ function unavailableMagpieSnapshot(agent: string, modelId: string, sessionId: st
     session: null,
     routeStatus: sessionId === null ? 'session-unavailable' : 'unavailable',
     route: null,
+    upstreamProvider: providerFromModelId(modelId, agent),
+    quotaStatus: 'unavailable',
+    quotas: [],
   }
 }
 
@@ -703,13 +752,16 @@ function readTotals(value: unknown): MagpieUsageTotals | null {
 function readSession(value: unknown, agent: MagpieAgent, sessionId: string): MagpieSessionUsage | null {
   const sessions = asRecord(value)?.sessions
   if (!Array.isArray(sessions)) return null
+  const usageAgents = MAGPIE_USAGE_AGENT_ALIASES[agent] ?? [agent]
   const row = sessions.find((item) => {
     const record = asRecord(item)
-    return cleanText(record?.id) === sessionId && cleanText(record?.agent) === agent
+    const usageAgent = cleanText(record?.agent)
+    return cleanText(record?.id) === sessionId && usageAgent !== null && usageAgents.includes(usageAgent)
   })
   const record = asRecord(row)
   const totals = readTotals(record)
-  return record !== null && totals !== null ? { id: sessionId, agent, ...totals } : null
+  const usageAgent = cleanText(record?.agent)
+  return record !== null && usageAgent !== null && totals !== null ? { id: sessionId, agent: usageAgent, ...totals } : null
 }
 
 function readRoute(value: unknown, expectedSessionId: string): { readonly status: 'available' | 'no-route' | 'unavailable'; readonly route: MagpieRouteUsage | null } {
@@ -742,8 +794,160 @@ function readRoute(value: unknown, expectedSessionId: string): { readonly status
       done: typeof record.done === 'boolean' ? record.done : null,
       status: routeStatusText(record.status),
       served: routeText(record.served),
+      routeId: safeRouteId(record.id),
+      time: routeText(record.time),
+      providerAccount: routeText(record.providerAccount),
     },
   }
+}
+
+/** Read the durable request ledger when Magpie's short in-memory trace has expired. */
+function readSessionRouteHistory(value: unknown, agent: MagpieAgent, sessionId: string): readonly MagpieSessionRouteRecord[] {
+  const rows = asRecord(value)?.rows
+  if (!Array.isArray(rows) || rows.length > 500) return []
+  const usageAgents = MAGPIE_USAGE_AGENT_ALIASES[agent] ?? [agent]
+  return rows.slice(0, 100).flatMap((item) => {
+    const record = asRecord(item)
+    const rowAgent = cleanText(record?.agent)
+    const session = cleanText(record?.session)
+    const nativeSession = cleanText(record?.native_session)
+    const provider = routeText(record?.provider)
+    if (record === null || rowAgent === null || !usageAgents.includes(rowAgent)
+      || (session !== sessionId && nativeSession !== sessionId) || provider === null) return []
+
+    const requested = routeText(record.req)
+    const model = routeText(record.model)
+    const served = routeText(record.served)
+    const status = routeStatusText(record.status)
+    const rowModel = model === null
+      ? null
+      : model.startsWith(`${provider}/`) ? model : `${provider}/${model}`
+    const group = routeText(record.group) ?? (requested?.startsWith('group/') ? requested.slice('group/'.length) : null)
+    const route: MagpieRouteUsage = {
+      asked: requested,
+      group,
+      rule: readRule(record.rule),
+      model: rowModel,
+      effort: routeText(record.effort),
+      tries: [],
+      done: true,
+      status,
+      served,
+      routeId: safeRouteId(record.route_id),
+      time: routeText(record.t),
+      providerAccount: routeText(record.providerAccount),
+    }
+    return [{ route, provider, account: routeText(record.providerAccount) }]
+  }).sort((left, right) => routeTime(right.route.time) - routeTime(left.route.time))
+}
+
+function routeTime(value: string | null | undefined): number {
+  if (value === null || value === undefined) return 0
+  const time = Date.parse(value)
+  return Number.isFinite(time) ? time : 0
+}
+
+function enrichRouteWithHistory(route: MagpieRouteUsage, history: readonly MagpieSessionRouteRecord[]): MagpieRouteUsage {
+  if (route.routeId === undefined || route.routeId === null) return route
+  const record = history.find((item) => item.route.routeId === route.routeId)
+  if (record === undefined) return route
+  return {
+    ...route,
+    time: route.time ?? record.route.time ?? null,
+    providerAccount: route.providerAccount ?? record.account,
+  }
+}
+
+function filterSessionQuotas(
+  quotas: readonly MagpieQuota[],
+  providers: readonly string[],
+  history: readonly MagpieSessionRouteRecord[],
+): readonly MagpieQuota[] {
+  return providers.flatMap((provider) => {
+    const candidates = quotas.filter((quota) => quota.provider === provider)
+    const accounts = new Set(history
+      .filter((record) => record.provider === provider && record.account !== null)
+      .map((record) => record.account!))
+    if (accounts.size === 0) return candidates
+    return candidates.filter((quota) => quota.user !== null && accounts.has(quota.user))
+  })
+}
+
+function safeRouteId(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : null
+}
+
+/** Parse the bounded `/v1/magpie/quotas` envelope without exposing raw provider records. */
+export function parseMagpieQuotas(value: unknown): readonly MagpieQuota[] | null {
+  const root = asRecord(value)
+  const rows = Array.isArray(value) ? value : Array.isArray(root?.data) ? root.data : null
+  if (rows === null || rows.length > 512) return null
+  const quotas: MagpieQuota[] = []
+  for (const row of rows) {
+    const record = asRecord(row)
+    const provider = routeText(record?.provider)
+    const name = routeText(record?.name)
+    if (record === null || provider === null || name === null) return null
+    const windowsValue = record.windows
+    if (!Array.isArray(windowsValue) || windowsValue.length > 64) return null
+    const windows = windowsValue.flatMap((item) => {
+      const window = asRecord(item)
+      const windowName = routeText(window?.name)
+      return window === null || windowName === null ? [] : [readQuotaWindow(window, windowName)]
+    })
+    if (windows.length !== windowsValue.length) return null
+    quotas.push({
+      provider,
+      name,
+      kind: routeText(record.kind),
+      user: routeText(record.user),
+      plan: routeText(record.plan),
+      alias: routeText(record.alias),
+      balance: routeText(record.balance),
+      readAt: routeText(record.readAt),
+      windows,
+    })
+  }
+  return quotas
+}
+
+function readQuotaWindow(record: Record<string, unknown>, name: string): MagpieQuotaWindow {
+  return {
+    name,
+    usedPercent: safePercent(record.used),
+    remainingPercent: safePercent(record.remaining),
+    resetsAt: routeText(record.resetsAt),
+    display: routeText(record.display),
+    amount: safeDecimal(record.amount),
+    limit: safeDecimal(record.limit),
+    unit: routeText(record.unit),
+    holdsWhy: routeText(record.holdsWhy),
+  }
+}
+
+function providerFromRoute(route: MagpieRouteUsage | null): string | null {
+  if (route === null) return null
+  const models = [route.model, route.served, ...route.tries.map((attempt) => attempt.model)]
+  for (const model of models) {
+    const provider = providerFromModel(model)
+    if (provider !== null) return provider
+  }
+  return null
+}
+
+function providerFromModelId(modelId: string, agent: MagpieAgent): string | null {
+  const normalized = agent === 'commandcode' && modelId.startsWith('magpie/') ? modelId.slice('magpie/'.length) : modelId
+  return providerFromModel(normalized)
+}
+
+function providerFromModel(value: string | null): string | null {
+  if (value === null) return null
+  const slash = value.indexOf('/')
+  if (slash <= 0) return null
+  const provider = value.slice(0, slash)
+  return provider === 'group' || provider === 'auto'
+    ? null
+    : /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(provider) ? provider : null
 }
 
 function readRule(value: unknown): string | null {
@@ -763,6 +967,14 @@ function routeText(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const text = value.trim().replace(/[\u0000-\u001f\u007f]/gu, '').slice(0, 240)
   return text === '' ? null : text
+}
+
+function safePercent(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100 ? value : null
+}
+
+function safeDecimal(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= Number.MAX_SAFE_INTEGER ? value : null
 }
 
 function cleanText(value: unknown): string | null {
@@ -786,8 +998,12 @@ function resolveCatalogModelId(agent: MagpieAgent, requestedModelId: string, cat
 }
 
 function catalogModelIdForRequested(agent: MagpieAgent, requestedModelId: string): string | null {
-  if (agent === 'commandcode' && requestedModelId.startsWith('magpie/')) return requestedModelId.slice('magpie/'.length)
-  return requestedModelId
+  const normalized = agent === 'commandcode' && requestedModelId.startsWith('magpie/')
+    ? requestedModelId.slice('magpie/'.length)
+    : requestedModelId
+  // Claude appends this context-window marker to model IDs returned by its
+  // initialize protocol; Magpie's verified catalog keeps the canonical ID.
+  return agent === 'claude' ? normalized.replace(/\[1m\]$/u, '') : normalized
 }
 
 function normalizeMagpieModelName(value: unknown): string | null {

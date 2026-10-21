@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { setImmediate } from 'node:timers/promises'
 import test from 'node:test'
-import { MagpieUsageService, magpieAgentForAdapter, parseMagpieCliVersion, parseMagpieModelMetadata, parseMagpieModelOutput } from '../src/host/cli-adapters/magpie-usage.js'
+import { MagpieUsageService, magpieAgentForAdapter, parseMagpieCliVersion, parseMagpieModelMetadata, parseMagpieModelOutput, parseMagpieQuotas } from '../src/host/cli-adapters/magpie-usage.js'
 import { calculateMagpiePopoverPlacement, registerSubscriptionSlot } from '../src/client/subscription-slot.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 
@@ -266,6 +266,22 @@ test('Magpie /v1/models 解析上下文、token 限制、模态、推理等级�
   assert.deepEqual(noReasoning?.get('provider/model')?.efforts, [])
 })
 
+test('Magpie /v1/magpie/quotas 只保留安全的提供商配额字段', () => {
+  const quotas = parseMagpieQuotas({ data: [{
+    provider: 'workbuddy', name: 'WorkBuddy', kind: 'subscription', user: 'account@example.com', plan: 'Free',
+    alias: 'Primary', balance: '$12.50', readAt: '2026-10-21T12:00:00Z',
+    windows: [{ name: 'Credits', used: 2.5, remaining: 97.5, display: '46.94 / 2300', amount: 46.94, limit: 2300, unit: 'credits', holdsWhy: 'low' }],
+    secret: 'must not pass through',
+  }] })
+  assert.deepEqual(quotas, [{
+    provider: 'workbuddy', name: 'WorkBuddy', kind: 'subscription', user: 'account@example.com', plan: 'Free', alias: 'Primary',
+    balance: '$12.50', readAt: '2026-10-21T12:00:00Z',
+    windows: [{ name: 'Credits', usedPercent: 2.5, remainingPercent: 97.5, resetsAt: null, display: '46.94 / 2300', amount: 46.94, limit: 2300, unit: 'credits', holdsWhy: 'low' }],
+  }])
+  assert.doesNotMatch(JSON.stringify(quotas), /must not pass through/u)
+  assert.equal(parseMagpieQuotas({ data: [{ provider: 'workbuddy', name: 'WorkBuddy', windows: 'invalid' }] }), null)
+})
+
 test('Magpie metadata enriches exact model matches for DSH and every verified external Agent', async () => {
   const adapters = [
     ['dsh', 'dsh'], ['codex', 'codex'],
@@ -512,6 +528,7 @@ test('Magpie API 只在目录精确命中后读取，并把汇总、当前会话
           },
         })
       }
+      if (String(url).includes('/quotas')) return Response.json({ data: [{ provider: 'example-provider', name: 'Example Provider', windows: [] }] })
       return Response.json(usageReply())
     }) as typeof fetch,
   })
@@ -519,7 +536,9 @@ test('Magpie API 只在目录精确命中后读取，并把汇总、当前会话
   const result = await service.read({ adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, undefined, true)
   assert.deepEqual(calls.map((call) => call.url), [
     'http://127.0.0.1:3425/v1/magpie/usage?period=today',
+    'http://127.0.0.1:3425/v1/magpie/quotas',
     'http://127.0.0.1:3425/v1/magpie/route?session=agent-session-1',
+    'http://127.0.0.1:3425/v1/magpie/usage/requests?period=today&q=agent-session-1&limit=100',
   ])
   assert.ok(calls.every((call) => call.authorization === 'Bearer magpie'))
   assert.equal(result?.usageStatus, 'available')
@@ -528,7 +547,151 @@ test('Magpie API 只在目录精确命中后读取，并把汇总、当前会话
   assert.equal(result?.routeStatus, 'available')
   assert.equal(result?.route?.rule, 'primary')
   assert.equal(result?.route?.tries[0]?.failed, false)
+  assert.equal(result?.upstreamProvider, 'example-provider')
+  assert.deepEqual(result?.upstreamProviders, ['example-provider'])
+  assert.deepEqual(result?.quotas, [{ provider: 'example-provider', name: 'Example Provider', kind: null, user: null, plan: null, alias: null, balance: null, readAt: null, windows: [] }])
   assert.doesNotMatch(JSON.stringify(result), /Bearer|Authorization|prompt|response body/u)
+})
+
+test('Magpie 的持久请求记录补足过期路由，并只关联此会话用过的上游账号配额', async () => {
+  const modelOutput = [
+    'Routing groups', 'auto/deepseek-v4.1-flash    Deepseek-V4.1-Flash-Auto',
+    "claude is shown every provider's models · magpie visible claude", 'http://127.0.0.1:3425/v1',
+  ].join('\n')
+  const sessionId = 'claude-history-session'
+  const service = new MagpieUsageService({
+    readModels: async () => modelOutput,
+    fetch: (async (url) => {
+      const target = new URL(String(url))
+      if (target.pathname.endsWith('/quotas')) return Response.json({ data: [
+        { provider: 'workbuddy', name: 'WorkBuddy', user: 'Account A', windows: [{ name: 'Credits', remaining: 70 }] },
+        { provider: 'workbuddy', name: 'WorkBuddy', user: 'Account B', windows: [{ name: 'Credits', remaining: 80 }] },
+        { provider: 'workbuddy', name: 'WorkBuddy', user: 'Unrelated account', windows: [{ name: 'Credits', remaining: 99 }] },
+        { provider: 'workbuddy-ai', name: 'WorkBuddy AI', user: 'AI account', windows: [{ name: 'Credits', remaining: 90 }] },
+      ] })
+      if (target.pathname.endsWith('/route')) return Response.json({ session: sessionId, seq: 0, route: null })
+      if (target.pathname.endsWith('/usage/requests')) {
+        assert.equal(target.searchParams.get('q'), sessionId)
+        assert.equal(target.searchParams.get('period'), 'today')
+        return Response.json({ rows: [
+          { route_id: 110, t: '2026-10-21T14:00:00Z', agent: 'claude', session: sessionId, req: 'group/auto-deepseek-v4-1-flash', provider: 'workbuddy', providerAccount: 'Account B', model: 'deepseek-v4.1-flash', served: 'deepseek-v4.1-flash', effort: 'high', status: 200 },
+          { route_id: 109, t: '2026-10-21T13:00:00Z', agent: 'claude', session: sessionId, req: 'group/auto-deepseek-v4-1-flash', provider: 'workbuddy-ai', providerAccount: 'AI account', model: 'deepseek-v4.1-flash', served: 'deepseek-v4.1-flash', status: 200 },
+          { route_id: 108, t: '2026-10-21T12:00:00Z', agent: 'claude', session: sessionId, req: 'group/auto-deepseek-v4-1-flash', provider: 'workbuddy', providerAccount: 'Account A', model: 'deepseek-v4.1-flash', served: 'deepseek-v4.1-flash', status: 200 },
+          { route_id: 107, t: '2026-10-21T11:00:00Z', agent: 'claude', session: 'another-session', req: 'group/auto-deepseek-v4-1-flash', provider: 'workbuddy', providerAccount: 'Unrelated account', model: 'deepseek-v4.1-flash', served: 'deepseek-v4.1-flash', status: 200 },
+        ] })
+      }
+      return Response.json(usageReply([{ agent: 'claude', id: sessionId, input: 8, output: 2, cost: 0.001 }]))
+    }) as typeof fetch,
+  })
+
+  const result = await service.read({
+    adapterId: 'claude-code', modelId: 'auto/deepseek-v4.1-flash[1m]', providerSessionId: sessionId,
+  }, undefined, true)
+  assert.equal(result?.routeStatus, 'available')
+  assert.equal(result?.route?.asked, 'group/auto-deepseek-v4-1-flash')
+  assert.equal(result?.route?.group, 'auto-deepseek-v4-1-flash')
+  assert.equal(result?.route?.model, 'workbuddy/deepseek-v4.1-flash')
+  assert.equal(result?.route?.providerAccount, 'Account B')
+  assert.equal(result?.route?.routeId, 110)
+  assert.deepEqual(result?.upstreamProviders, ['workbuddy', 'workbuddy-ai'])
+  assert.deepEqual(result?.quotas.map((quota) => [quota.provider, quota.user]), [
+    ['workbuddy', 'Account A'], ['workbuddy', 'Account B'], ['workbuddy-ai', 'AI account'],
+  ])
+})
+
+test('Magpie 不会在账号不匹配时回退显示该提供商唯一的其他账号配额', async () => {
+  const sessionId = 'claude-account-mismatch-session'
+  const modelOutput = [
+    'Routing groups', 'workbuddy/deepseek-v4.1-flash    Deepseek-V4.1-Flash',
+    "claude is shown every provider's models · magpie visible claude", 'http://127.0.0.1:3425/v1',
+  ].join('\n')
+  const service = new MagpieUsageService({
+    readModels: async () => modelOutput,
+    fetch: (async (url) => {
+      const target = new URL(String(url))
+      if (target.pathname.endsWith('/quotas')) return Response.json({ data: [
+        { provider: 'workbuddy', name: 'WorkBuddy', user: 'Different account', windows: [{ name: 'Credits', remaining: 95 }] },
+      ] })
+      if (target.pathname.endsWith('/route')) return Response.json({ session: sessionId, seq: 0, route: null })
+      if (target.pathname.endsWith('/usage/requests')) return Response.json({ rows: [
+        { route_id: 80, t: '2026-10-21T14:00:00Z', agent: 'claude', session: sessionId, req: 'workbuddy/deepseek-v4.1-flash', provider: 'workbuddy', providerAccount: 'Session account', model: 'deepseek-v4.1-flash', served: 'deepseek-v4.1-flash', status: 200 },
+      ] })
+      return Response.json(usageReply([{ agent: 'claude', id: sessionId, input: 4, output: 2, cost: 0.001 }]))
+    }) as typeof fetch,
+  })
+
+  const result = await service.read({ adapterId: 'claude-code', modelId: 'workbuddy/deepseek-v4.1-flash', providerSessionId: sessionId }, undefined, true)
+  assert.equal(result?.routeStatus, 'available')
+  assert.deepEqual(result?.upstreamProviders, ['workbuddy'])
+  assert.equal(result?.quotaStatus, 'available')
+  assert.deepEqual(result?.quotas, [], 'a different account quota must not be attributed to this session')
+})
+
+test('Claude [1m] model markers do not block verified Magpie usage', async () => {
+  const service = new MagpieUsageService({
+    readModels: async () => [
+      'Routing groups', 'auto/deepseek-v4.1-flash    Deepseek-V4.1-Flash-Auto',
+      "claude is shown every provider's models · magpie visible claude", 'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async (url) => String(url).includes('/quotas')
+      ? Response.json({ data: [{ provider: 'sub2api', name: 'sub2api', windows: [], alias: 'DeepSeek' }] })
+      : Response.json(usageReply([{ agent: 'claude', id: 'claude-session-1', input: 8, output: 2, cost: 0.001 }]))) as typeof fetch,
+  })
+
+  const result = await service.read({
+    adapterId: 'claude-code',
+    modelId: 'auto/deepseek-v4.1-flash[1m]',
+    providerSessionId: 'claude-session-1',
+  })
+  assert.ok(result, 'Claude model IDs with the context marker should match Magpie')
+  assert.equal(result.usageStatus, 'available')
+  assert.equal(result.session?.id, 'claude-session-1')
+})
+
+test('DSH 用 Magpie 的实际网关 client 身份关联会话、路由和上游配额', async () => {
+  const modelOutput = [
+    'Routing groups', 'auto/gpt-6.1-sol    GPT-6.1 Sol-Auto',
+    "dsh is shown every provider's models · magpie visible dsh", 'http://127.0.0.1:3425/v1',
+  ].join('\n')
+  const urls: string[] = []
+  const service = new MagpieUsageService({
+    readModels: async () => modelOutput,
+    fetch: (async (url) => {
+      const target = String(url)
+      urls.push(target)
+      if (target.includes('/route?')) return Response.json({
+        session: 'dsh-provider-session',
+        route: { asked: 'group/auto-gpt-6-1-sol', model: 'glorinfo-api-platform/gpt-6.1-sol', served: 'gpt-6.1-sol', done: true, status: 200, tries: [] },
+      })
+      if (target.includes('/quotas')) return Response.json({ data: [{ provider: 'glorinfo-api-platform', name: 'GAP-Codex', windows: [] }] })
+      return Response.json(usageReply([{ agent: 'codingns4dsh', id: 'dsh-provider-session', input: 12, output: 4, cost: 0.001 }]))
+    }) as typeof fetch,
+  })
+
+  const result = await service.read({ adapterId: 'dsh', modelId: 'auto/gpt-6.1-sol', providerSessionId: 'dsh-provider-session' }, undefined, true)
+  assert.equal(result?.session?.agent, 'codingns4dsh')
+  assert.equal(result?.session?.inputTokens, 12)
+  assert.equal(result?.routeStatus, 'available')
+  assert.equal(result?.upstreamProvider, 'glorinfo-api-platform')
+  assert.deepEqual(result?.upstreamProviders, ['glorinfo-api-platform'])
+  assert.equal(result?.quotas[0]?.name, 'GAP-Codex')
+  assert.ok(urls.includes('http://127.0.0.1:3425/v1/magpie/route?session=dsh-provider-session'))
+  assert.ok(urls.includes('http://127.0.0.1:3425/v1/magpie/usage/requests?period=today&q=dsh-provider-session&limit=100'))
+})
+
+test('尚无路由时不把 auto 模型别名冒充成上游提供商', async () => {
+  const service = new MagpieUsageService({
+    readModels: async () => [
+      'Routing groups', 'auto/gpt-6.1-sol    GPT-6.1 Sol-Auto',
+      "dsh is shown every provider's models · magpie visible dsh", 'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async (url) => String(url).includes('/quotas')
+      ? Response.json({ data: [] })
+      : Response.json(usageReply([{ agent: 'codingns4dsh', id: 'dsh-auto-session', input: 1, output: 1, cost: 0 }])) ) as typeof fetch,
+  })
+  const result = await service.read({ adapterId: 'dsh', modelId: 'auto/gpt-6.1-sol', providerSessionId: 'dsh-auto-session' })
+  assert.equal(result?.upstreamProvider, null)
+  assert.equal(result?.quotaStatus, 'provider-unavailable')
 })
 
 test('Codex 仅使用 Codex 目录与精确匹配的 Codex 会话', async () => {
@@ -544,7 +707,10 @@ test('Codex 仅使用 Codex 目录与精确匹配的 Codex 会话', async () => 
   })
   const result = await service.read({ adapterId: 'codex', modelId: 'example-provider/model-one', providerSessionId: 'codex-thread-7' })
   assert.deepEqual(agents, ['codex'])
-  assert.deepEqual(urls, ['http://127.0.0.1:3425/v1/magpie/usage?period=today'])
+  assert.deepEqual(urls, [
+    'http://127.0.0.1:3425/v1/magpie/usage?period=today',
+    'http://127.0.0.1:3425/v1/magpie/quotas',
+  ])
   assert.equal(result?.agent, 'codex')
   assert.equal(result?.session?.id, 'codex-thread-7')
   assert.equal(result?.routeStatus, 'not-requested')
@@ -589,7 +755,10 @@ test('Magpie 不把与 DSH 会话 ID 相同的回退值当作 Agent 会话', asy
   assert.equal(result?.sessionId, null)
   assert.equal(result?.session, null)
   assert.equal(result?.routeStatus, 'session-unavailable')
-  assert.deepEqual(urls, ['http://127.0.0.1:3425/v1/magpie/usage?period=today'])
+  assert.deepEqual(urls, [
+    'http://127.0.0.1:3425/v1/magpie/usage?period=today',
+    'http://127.0.0.1:3425/v1/magpie/quotas',
+  ])
 })
 
 test('非 Magpie 模型、其他适配器和未匹配的 Agent 会话都不会查询路由', async () => {
@@ -598,7 +767,7 @@ test('非 Magpie 模型、其他适配器和未匹配的 Agent 会话都不会�
   let listed: string[] = []
   const service = new MagpieUsageService({
     readModels: async (agent) => { listed.push(agent); return modelOutput },
-    fetch: (async () => { requests++; return Response.json(usageReply([{ agent: 'codex', id: 'some-other-session', input: 1, output: 1, cost: 0 }])) }) as typeof fetch,
+    fetch: (async (url) => { if (!String(url).includes('/quotas')) requests++; return Response.json(usageReply([{ agent: 'codex', id: 'some-other-session', input: 1, output: 1, cost: 0 }])) }) as typeof fetch,
   })
 
   assert.equal(await service.read({ adapterId: 'claude-code', modelId: 'example-provider/not-listed', providerSessionId: 'agent-session-1' }, undefined, true), null)
