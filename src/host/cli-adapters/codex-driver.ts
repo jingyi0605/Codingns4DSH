@@ -1149,13 +1149,18 @@ function stabilizeCodexEvent(session: CodexSession, event: CodingNsAgentEvent): 
 }
 
 function prepareCodexSession(session: CodexSession, input: CodingNsCliTurnInput): void {
-  // 未提供 modelId 表示沿用当前 Codex thread 的模型，不能因为配置字段缺省
-  // 就把已经确认的上下文容量清空。
-  if (input.modelId === undefined || session.modelId === input.modelId) return
-  // 模型切换意味着上下文容量可能改变；只有这类明确路由变化才允许重置
-  // 稳定窗口，同一模型的迟到 usage 不能触发重置。
-  session.modelId = input.modelId
-  session.contextWindow = undefined
+  if (input.modelId !== undefined && session.modelId !== input.modelId) {
+    // A model change may change context capacity, so discard the old anchor first.
+    session.modelId = input.modelId
+    session.contextWindow = undefined
+  }
+  // Host-validated Magpie metadata is authoritative for this model and must be
+  // applied before the first usage event can anchor a stale provider value.
+  if (typeof input.modelContextWindow === 'number'
+    && Number.isSafeInteger(input.modelContextWindow)
+    && input.modelContextWindow > 0) {
+    session.contextWindow = input.modelContextWindow
+  }
 }
 
 function parseCodexCatalog(value: unknown): CodingNsCliModelCatalog {

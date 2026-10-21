@@ -87,6 +87,63 @@ export interface CliSubscriptionUsage {
   readonly providerBalance?: ProviderBalanceUsage
 }
 
+/** Magpie 汇总用量窗口中的请求总数与 Token/费用统计。 */
+export interface MagpieUsageTotals {
+  readonly calls: number | null
+  readonly errors: number | null
+  readonly inputTokens: number | null
+  readonly outputTokens: number | null
+  readonly cacheReadTokens: number | null
+  readonly cacheWriteTokens: number | null
+  readonly costUsd: number | null
+}
+
+/** Magpie 里与当前 Agent 会话完全匹配的用量摘要。 */
+export interface MagpieSessionUsage extends MagpieUsageTotals {
+  readonly id: string
+  readonly agent: string
+}
+
+export interface MagpieRouteAttempt {
+  readonly model: string | null
+  readonly failed: boolean
+}
+
+/** 从 Magpie 路由响应中筛出的安全字段，不包含请求正文或原始错误。 */
+export interface MagpieRouteUsage {
+  readonly asked: string | null
+  readonly group: string | null
+  readonly rule: string | null
+  readonly model: string | null
+  readonly effort: string | null
+  readonly tries: readonly MagpieRouteAttempt[]
+  readonly done: boolean | null
+  readonly status: string | null
+  readonly served: string | null
+}
+
+export type MagpieUsageRouteStatus = 'available' | 'no-route' | 'not-requested' | 'unavailable' | 'session-unavailable'
+
+/** Magpie 只读快照。汇总和单个会话分开，不能把网关总量说成会话用量。 */
+export interface MagpieUsageSnapshot {
+  /** Exact Magpie Agent ID returned by its verified model catalog. */
+  readonly agent: string
+  readonly modelId: string
+  readonly capturedAt: string
+  readonly usageStatus: 'available' | 'unavailable'
+  readonly aggregate: MagpieUsageTotals | null
+  readonly sessionId: string | null
+  readonly session: MagpieSessionUsage | null
+  readonly routeStatus: MagpieUsageRouteStatus
+  readonly route: MagpieRouteUsage | null
+}
+
+/** 新版 Host 的用量响应；Client 仍兼容旧版直接返回订阅对象的 Host。 */
+export interface CliSubscriptionSnapshot {
+  readonly providerUsage: CliSubscriptionUsage | null
+  readonly magpie: MagpieUsageSnapshot | null
+}
+
 /** 订阅归属的模型提供商，不包含任何凭据。 */
 export interface CliSubscriptionProvider {
   readonly id: string

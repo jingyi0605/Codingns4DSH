@@ -148,12 +148,12 @@ export const CODEX_CATALOG = staticCatalog('codex', 'Codex', [
 ])
 
 /**
- * Codex app-server 不提供模型容量的目录接口（model/list 不含 contextWindow，
- * config/read 的 model_context_window 默认也是 null），首个 tokenUsage 到达前
- * DSH 的分母只能靠已知模型提示。这里只列本机 rollout `token_count` 事件
- * （payload.info.model_context_window）验证过的模型；该值会随服务端变化
- * （gpt-5.6-sol 曾从 353400 调整为 258400），因此提示只用于首个 Provider
- * usage 到达前的占位，与已确认 usage 冲突时不会被写入。
+ * Codex app-server does not expose context capacity in model/list, and
+ * config/read usually returns a null model_context_window. Before the first
+ * tokenUsage event, DSH therefore needs a known-model fallback. Magpie's exact
+ * `auto/gpt-6.1-sol` record confirms 500000; keep that value if the read-only
+ * Gateway is unavailable. Other entries remain rollout-confirmed hints and do
+ * not override a trusted Host-supplied Magpie context window.
  */
 const CODEX_CONTEXT_WINDOWS = new Map<string, number>([
   ['codex-auto-review', 258400],
@@ -165,7 +165,8 @@ const CODEX_CONTEXT_WINDOWS = new Map<string, number>([
   ['gpt-6-astra', 258400],
   ['gpt-6-luna', 258400],
   ['gpt-6-sol', 258400],
-  ['gpt-6.1-sol', 258400],
+  ['auto/gpt-6.1-sol', 500000],
+  ['gpt-6.1-sol', 500000],
 ])
 
 export function knownCodexContextWindow(modelId: string | undefined): number | undefined {

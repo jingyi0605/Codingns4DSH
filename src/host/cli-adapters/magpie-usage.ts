@@ -1,0 +1,763 @@
+import { spawnSync } from 'node:child_process'
+import type {
+  CodingNsCliAdapterId,
+  CodingNsCliModel,
+  CodingNsCliModelCatalog,
+  CodingNsCliServiceTier,
+  CodingNsCliSessionConfig,
+} from '../../shared/contracts/cli-adapter.js'
+import type {
+  MagpieRouteUsage,
+  MagpieSessionUsage,
+  MagpieUsageSnapshot,
+  MagpieUsageTotals,
+} from '../../shared/contracts/subscription.js'
+import { commandEnvironment, resolveCommandPath, runAsyncCommand, WINDOWS, withCommandSignal } from './process-utils.js'
+
+const MAGPIE_CATALOG_TTL_MS = 60_000
+const MAGPIE_MODEL_METADATA_TTL_MS = 60_000
+const MAGPIE_MINIMUM_CLI_VERSION = [0, 1, 1295] as const
+const MAGPIE_CLI_TIMEOUT_MS = 10_000
+const MAGPIE_HTTP_TIMEOUT_MS = 3_000
+const MAX_MAGPIE_CLI_OUTPUT_BYTES = 512 * 1024
+const MAX_MAGPIE_RESPONSE_BYTES = 2 * 1024 * 1024
+const MAX_MAGPIE_MODELS = 10_000
+const MAX_MODEL_TOKEN_LIMIT = 1_000_000_000
+const MAGPIE_MODEL_ID_PATTERN = '[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._:/-]*)+'
+
+const MAGPIE_AGENT_BY_ADAPTER: Readonly<Record<string, string>> = {
+  'claude-code': 'claude',
+  codex: 'codex',
+  'command-code': 'commandcode',
+  kimi: 'kimi',
+  gemini: 'gemini',
+  pi: 'pi',
+  opencode: 'opencode',
+  grok: 'grok',
+  mcode: 'minimax-code',
+  zcode: 'zcode',
+  codebuddy: 'codebuddy',
+  workbuddy: 'workbuddy',
+  'cursor-cli': 'cursor',
+  qoder: 'qoder',
+  'qoder-cn': 'qoder-cn',
+  antigravity: 'agy',
+  dsh: 'dsh',
+}
+
+/** Magpie's agent IDs are verified from the matching catalog output. */
+export type MagpieAgent = string
+
+interface MagpieModelCatalog {
+  readonly models: ReadonlySet<string>
+  /** Origin only; requests are restricted to the local loopback gateway. */
+  readonly gatewayOrigin: string | null
+}
+
+interface CatalogCacheEntry {
+  readonly catalog: MagpieModelCatalog
+  readonly loadedAt: number
+}
+
+export interface MagpieModelMetadata {
+  readonly id: string
+  readonly name?: string
+  readonly description?: string
+  readonly contextWindow?: number
+  readonly maxInputTokens?: number
+  readonly maxOutputTokens?: number
+  readonly inputModalities?: readonly string[]
+  readonly outputModalities?: readonly string[]
+  readonly reasoningSupported?: boolean
+  readonly efforts?: readonly string[]
+  readonly serviceTiers?: readonly CodingNsCliServiceTier[]
+  readonly capabilities?: readonly string[]
+  readonly ownedBy?: string
+}
+
+interface ModelMetadataCacheEntry {
+  readonly origin: string
+  readonly catalogFingerprint: string
+  readonly models: ReadonlyMap<string, MagpieModelMetadata>
+  readonly loadedAt: number
+}
+
+export interface MagpieUsageServiceOptions {
+  /** Test seam for the bounded `magpie models <agent>` command. */
+  readonly readModels?: (agent: MagpieAgent, signal?: AbortSignal) => Promise<string | null>
+  readonly readVersion?: (signal?: AbortSignal) => Promise<string | null>
+  readonly fetch?: typeof fetch
+  readonly now?: () => number
+  readonly timeoutMs?: number
+  /** Shared catalog CLI work is cancelled when its owning Host feature stops, not by one RPC caller. */
+  readonly lifetimeSignal?: AbortSignal
+}
+
+/**
+ * Reads Magpie's public local Gateway API only after its CLI confirms that the
+ * current Agent model is in that Agent's catalog. No Agent or Magpie config
+ * files are opened here; the provider session ID is supplied by the Host.
+ */
+export class MagpieUsageService {
+  private readonly readModels: NonNullable<MagpieUsageServiceOptions['readModels']>
+  private readonly readVersion: NonNullable<MagpieUsageServiceOptions['readVersion']>
+  private readonly request: typeof fetch
+  private readonly now: () => number
+  private readonly timeoutMs: number
+  private readonly lifetimeSignal: AbortSignal | undefined
+  private readonly catalogs = new Map<MagpieAgent, CatalogCacheEntry>()
+  private readonly catalogLoads = new Map<MagpieAgent, Promise<MagpieModelCatalog | null>>()
+  private readonly modelMetadata = new Map<MagpieAgent, ModelMetadataCacheEntry>()
+  private readonly modelMetadataLoads = new Map<string, Promise<ReadonlyMap<string, MagpieModelMetadata> | null>>()
+  private versionCheck: { readonly supported: boolean; readonly checkedAt: number } | undefined
+  private versionLoad: Promise<boolean> | undefined
+
+  constructor(options: MagpieUsageServiceOptions = {}) {
+    this.readModels = options.readModels ?? readMagpieModels
+    // An injected catalog reader represents the whole fake CLI boundary in
+    // unit tests; tests that exercise version handling inject readVersion too.
+    this.readVersion = options.readVersion ?? (options.readModels === undefined
+      ? readMagpieVersion
+      : async () => 'magpie 0.1.1295')
+    this.request = options.fetch ?? fetch
+    this.now = options.now ?? Date.now
+    this.timeoutMs = options.timeoutMs ?? MAGPIE_HTTP_TIMEOUT_MS
+    this.lifetimeSignal = options.lifetimeSignal
+  }
+
+  async read(
+    session: Pick<CodingNsCliSessionConfig, 'adapterId' | 'modelId' | 'providerSessionId'>,
+    signal?: AbortSignal,
+    includeRoute = false,
+    dshSessionId?: string,
+  ): Promise<MagpieUsageSnapshot | null> {
+    signal?.throwIfAborted()
+    const agent = magpieAgentForAdapter(session.adapterId)
+    const requestedModelId = cleanText(session.modelId)
+    if (agent === null || requestedModelId === null) return null
+
+    const catalog = await this.loadCatalog(agent, signal)
+    const modelId = resolveCatalogModelId(agent, requestedModelId, catalog)
+    if (catalog === null || modelId === null) return null
+
+    const providerSessionId = cleanText(session.providerSessionId)
+    // Some drivers may temporarily fall back to the DSH key before their
+    // native session ID is known. Never treat that fallback as a Magpie ID.
+    const sessionId = providerSessionId !== null && providerSessionId !== cleanText(dshSessionId)
+      ? providerSessionId
+      : null
+    return this.readFromGateway(agent, requestedModelId, catalog.gatewayOrigin, sessionId, signal, includeRoute)
+  }
+
+  /**
+   * Mark exact Magpie model IDs and enrich their public metadata. The marker is
+   * transient catalog data used by model-list UIs, not session provenance.
+   */
+  async enrichModelCatalog(adapterId: CodingNsCliAdapterId, catalog: CodingNsCliModelCatalog, signal?: AbortSignal): Promise<CodingNsCliModelCatalog> {
+    const agent = magpieAgentForAdapter(adapterId)
+    if (agent === null) return catalog
+    const agentCatalog = await this.loadCatalog(agent, signal)
+    if (agentCatalog === null) return catalog
+    const hasExactMatch = catalog.groups.some((group) => group.models.some((model) => {
+      const id = catalogModelIdForRequested(agent, model.id)
+      return id !== null && agentCatalog.models.has(id)
+    }))
+    if (!hasExactMatch) return catalog
+    const metadata = await this.loadModelMetadata(agent, agentCatalog, signal)
+
+    let changed = false
+    const groups = catalog.groups.map((group) => {
+      let groupChanged = false
+      const models = group.models.map((model) => {
+        const id = catalogModelIdForRequested(agent, model.id)
+        if (id === null || !agentCatalog.models.has(id)) return model
+        const record = metadata?.get(id)
+        const enriched = record === undefined
+          ? model.source === 'magpie' ? model : { ...model, source: 'magpie' as const }
+          : mergeMagpieModelMetadata(model, record)
+        if (enriched === model) return model
+        groupChanged = true
+        return enriched
+      })
+      if (!groupChanged) return group
+      changed = true
+      return { ...group, models }
+    })
+    return changed ? { ...catalog, groups } : catalog
+  }
+
+  /** Return an exact, CLI-confirmed Magpie model record for trusted Host use. */
+  async readModelMetadata(adapterId: CodingNsCliAdapterId, modelId: string, signal?: AbortSignal): Promise<MagpieModelMetadata | null> {
+    signal?.throwIfAborted()
+    const agent = magpieAgentForAdapter(adapterId)
+    const requestedModelId = cleanText(modelId)
+    if (agent === null || requestedModelId === null) return null
+    const catalog = await this.loadCatalog(agent, signal)
+    if (catalog === null) return null
+    const id = catalogModelIdForRequested(agent, requestedModelId)
+    if (id === null || !catalog.models.has(id)) return null
+    const metadata = await this.loadModelMetadata(agent, catalog, signal)
+    return metadata?.get(id) ?? null
+  }
+
+  private async readFromGateway(agent: MagpieAgent, modelId: string, gatewayOrigin: string | null, sessionId: string | null, signal: AbortSignal | undefined, includeRoute: boolean): Promise<MagpieUsageSnapshot> {
+    const capturedAt = new Date(this.now()).toISOString()
+    if (gatewayOrigin === null) return unavailableMagpieSnapshot(agent, modelId, sessionId, this.now(), capturedAt)
+    const usageResult = await this.readGatewayJson(gatewayOrigin, '/v1/magpie/usage?period=today', signal)
+    const aggregate = usageResult.ok ? readTotals(usageResult.value) : null
+    const sessionUsage = usageResult.ok && sessionId !== null
+      ? readSession(usageResult.value, agent, sessionId)
+      : null
+    // A providerSessionId is not enough to prove that Magpie knows this Agent
+    // session. Require the exact Agent + ID pair in Magpie's own usage result
+    // before asking the route endpoint, and then verify its echoed identity.
+    const canReadRoute = includeRoute && sessionId !== null && sessionId.length <= 128 && sessionUsage !== null
+    const routeResult = canReadRoute
+      ? await this.readGatewayJson(gatewayOrigin, `/v1/magpie/route?session=${encodeURIComponent(sessionId)}`, signal)
+      : { ok: false as const }
+    const routeRead = sessionId === null
+      ? { status: 'session-unavailable' as const, route: null }
+      : !includeRoute
+        ? { status: 'not-requested' as const, route: null }
+        : !canReadRoute
+          ? { status: 'unavailable' as const, route: null }
+        : !routeResult.ok
+          ? { status: 'unavailable' as const, route: null }
+          : readRoute(routeResult.value, sessionId)
+
+    return {
+      agent,
+      modelId,
+      capturedAt,
+      usageStatus: aggregate === null ? 'unavailable' : 'available',
+      aggregate,
+      sessionId,
+      session: sessionUsage,
+      routeStatus: routeRead.status,
+      route: routeRead.route,
+    }
+  }
+
+  private async loadCatalog(agent: MagpieAgent, signal?: AbortSignal): Promise<MagpieModelCatalog | null> {
+    const cached = this.catalogs.get(agent)
+    if (cached !== undefined && this.now() - cached.loadedAt < MAGPIE_CATALOG_TTL_MS) {
+      return awaitWithSignal(Promise.resolve(cached.catalog), signal)
+    }
+    const pending = this.catalogLoads.get(agent)
+    if (pending !== undefined) return awaitWithSignal(pending, signal)
+
+    if (!await this.supportedCli(signal)) return null
+    const catalogLoadedWhileCheckingVersion = this.catalogs.get(agent)
+    if (catalogLoadedWhileCheckingVersion !== undefined
+      && this.now() - catalogLoadedWhileCheckingVersion.loadedAt < MAGPIE_CATALOG_TTL_MS) {
+      return catalogLoadedWhileCheckingVersion.catalog
+    }
+    const catalogPendingWhileCheckingVersion = this.catalogLoads.get(agent)
+    if (catalogPendingWhileCheckingVersion !== undefined) return awaitWithSignal(catalogPendingWhileCheckingVersion, signal)
+
+    const request = this.readModels(agent, this.lifetimeSignal)
+      .then((output) => output === null ? null : parseMagpieModelOutput(output, agent))
+      .then((catalog) => {
+        if (catalog !== null) this.catalogs.set(agent, { catalog, loadedAt: this.now() })
+        return catalog
+      })
+      .catch(() => null)
+      .finally(() => { if (this.catalogLoads.get(agent) === request) this.catalogLoads.delete(agent) })
+    this.catalogLoads.set(agent, request)
+    return awaitWithSignal(request, signal)
+  }
+
+  private async loadModelMetadata(agent: MagpieAgent, catalog: MagpieModelCatalog, signal?: AbortSignal): Promise<ReadonlyMap<string, MagpieModelMetadata> | null> {
+    signal?.throwIfAborted()
+    if (catalog.gatewayOrigin === null) return null
+    const catalogFingerprint = [...catalog.models].sort().join('\u0000')
+    const cached = this.modelMetadata.get(agent)
+    if (cached !== undefined
+      && cached.origin === catalog.gatewayOrigin
+      && cached.catalogFingerprint === catalogFingerprint
+      && this.now() - cached.loadedAt < MAGPIE_MODEL_METADATA_TTL_MS) {
+      return awaitWithSignal(Promise.resolve(cached.models), signal)
+    }
+
+    const loadKey = `${agent}\u0000${catalog.gatewayOrigin}\u0000${catalogFingerprint}`
+    const pending = this.modelMetadataLoads.get(loadKey)
+    if (pending !== undefined) return awaitWithSignal(pending, signal)
+
+    const request = this.readGatewayJson(catalog.gatewayOrigin, '/v1/models', this.lifetimeSignal)
+      .then((response) => response.ok ? parseMagpieModelMetadata(response.value) : null)
+      .then((models) => {
+        if (models !== null) this.modelMetadata.set(agent, {
+          origin: catalog.gatewayOrigin!,
+          catalogFingerprint,
+          models,
+          loadedAt: this.now(),
+        })
+        return models
+      })
+      .catch(() => null)
+      .finally(() => { if (this.modelMetadataLoads.get(loadKey) === request) this.modelMetadataLoads.delete(loadKey) })
+    this.modelMetadataLoads.set(loadKey, request)
+    return awaitWithSignal(request, signal)
+  }
+
+  private async supportedCli(signal?: AbortSignal): Promise<boolean> {
+    if (this.versionCheck !== undefined && this.now() - this.versionCheck.checkedAt < MAGPIE_CATALOG_TTL_MS) {
+      return awaitWithSignal(Promise.resolve(this.versionCheck.supported), signal)
+    }
+    if (this.versionLoad !== undefined) return awaitWithSignal(this.versionLoad, signal)
+    const load = this.readVersion(this.lifetimeSignal)
+      .then((value) => parseMagpieCliVersion(value))
+      .then((supported) => {
+        this.versionCheck = { supported, checkedAt: this.now() }
+        return supported
+      })
+      .catch(() => {
+        this.versionCheck = { supported: false, checkedAt: this.now() }
+        return false
+      })
+      .finally(() => { if (this.versionLoad === load) this.versionLoad = undefined })
+    this.versionLoad = load
+    return awaitWithSignal(load, signal)
+  }
+
+  private async readGatewayJson(origin: string, path: string, signal?: AbortSignal): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false }> {
+    const abort = AbortSignal.timeout(this.timeoutMs)
+    const requestSignal = signal === undefined ? abort : AbortSignal.any([signal, abort])
+    try {
+      const response = await this.request(new URL(path, origin), {
+        method: 'GET',
+        headers: { Accept: 'application/json', Authorization: 'Bearer magpie' },
+        redirect: 'error',
+        cache: 'no-store',
+        signal: requestSignal,
+      })
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined)
+        return { ok: false }
+      }
+      const value = await readBoundedJson(response)
+      if (value === null) await response.body?.cancel().catch(() => undefined)
+      return value === null ? { ok: false } : { ok: true, value }
+    } catch {
+      return { ok: false }
+    }
+  }
+}
+
+function unavailableMagpieSnapshot(agent: string, modelId: string, sessionId: string | null, now: number, capturedAt = new Date(now).toISOString()): MagpieUsageSnapshot {
+  return {
+    agent,
+    modelId,
+    capturedAt,
+    usageStatus: 'unavailable',
+    aggregate: null,
+    sessionId,
+    session: null,
+    routeStatus: sessionId === null ? 'session-unavailable' : 'unavailable',
+    route: null,
+  }
+}
+
+function awaitWithSignal<T>(task: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (signal === undefined) return task
+  if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'))
+  return new Promise<T>((resolve, reject) => {
+    const cleanup = (): void => signal.removeEventListener('abort', onAbort)
+    const onAbort = (): void => {
+      cleanup()
+      reject(signal.reason ?? new DOMException('The operation was aborted', 'AbortError'))
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+    task.then(
+      (value) => { cleanup(); resolve(value) },
+      (error: unknown) => { cleanup(); reject(error) },
+    )
+  })
+}
+
+/** Strict parser for the human-readable Magpie catalog; unknown formats fail closed. */
+export function parseMagpieModelOutput(output: string, agent: MagpieAgent): MagpieModelCatalog | null {
+  if (!isMagpieAgentId(agent) || Buffer.byteLength(output, 'utf8') > MAX_MAGPIE_CLI_OUTPUT_BYTES) return null
+  const models = new Set<string>()
+  const gatewayUrls: string[] = []
+  const lines = output.split(/\r?\n/u)
+  const expectedFooter = `${agent} is shown every provider's models`
+  const hasExpectedAgentFooter = lines.some((line) => {
+    const footer = line.trim()
+    return footer === expectedFooter || footer.startsWith(`${expectedFooter} ·`)
+  })
+  for (const line of lines) {
+    const text = line.trim()
+    const columns = text.split(/\s{2,}/u)
+    const model = columns[0]
+    const label = columns[1]?.trim()
+    if (model !== undefined && label !== undefined && label !== ''
+      && new RegExp(`^${MAGPIE_MODEL_ID_PATTERN}$`, 'u').test(model)
+      && model.length <= 512 && label.length <= 200 && models.size < 10_000) {
+      models.add(model)
+    }
+    const url = text.match(/https?:\/\/[^\s]+/u)?.[0]?.replace(/[),.;]+$/u, '')
+    if (url !== undefined && gatewayUrls.length < 4) gatewayUrls.push(url)
+  }
+  if (!hasExpectedAgentFooter || models.size === 0 || gatewayUrls.length !== 1) return null
+  const origins = [...new Set(gatewayUrls.map(normalizeLoopbackGatewayOrigin).filter((origin): origin is string => origin !== null))]
+  if (origins.length !== 1) return null
+  return { models, gatewayOrigin: origins[0]! }
+}
+
+/** Parse a bounded OpenAI-compatible `/v1/models` response into a safe allowlist. */
+export function parseMagpieModelMetadata(value: unknown): ReadonlyMap<string, MagpieModelMetadata> | null {
+  const root = asRecord(value)
+  const rows = Array.isArray(value) ? value : Array.isArray(root?.data) ? root.data : null
+  if (rows === null || rows.length === 0 || rows.length > MAX_MAGPIE_MODELS) return null
+  const models = new Map<string, MagpieModelMetadata>()
+  for (const row of rows) {
+    const record = asRecord(row)
+    const id = cleanModelId(record?.id)
+    if (record === null || id === null || models.has(id)) return null
+    const modalities = asRecord(record.modalities)
+    const reasoningLevels = readReasoningLevels(record)
+    const serviceTiers = readMagpieServiceTiers(record.service_tiers)
+    const capabilities = readStringList(record.capabilities, 64, 128)
+    const metadata: MagpieModelMetadata = {
+      id,
+      ...optionalText(record.display_name ?? record.magpie_label ?? record.name, 200, 'name'),
+      ...optionalText(record.description, 2_000, 'description'),
+      ...optionalPositiveLimit(record.context_window ?? record.context_length, 'contextWindow'),
+      ...optionalPositiveLimit(record.max_input_tokens, 'maxInputTokens'),
+      ...optionalPositiveLimit(record.max_output_tokens ?? record.max_completion_tokens, 'maxOutputTokens'),
+      ...optionalStringList(modalities?.input ?? record.input_modalities, 16, 64, 'inputModalities'),
+      ...optionalStringList(modalities?.output ?? record.output_modalities, 16, 64, 'outputModalities'),
+      ...(typeof record.reasoning === 'boolean' ? { reasoningSupported: record.reasoning } : {}),
+      ...(reasoningLevels === undefined ? {} : { efforts: reasoningLevels }),
+      ...(serviceTiers === undefined ? {} : { serviceTiers }),
+      ...(capabilities === undefined ? {} : { capabilities }),
+      ...optionalText(record.owned_by, 200, 'ownedBy'),
+    }
+    if (metadata.reasoningSupported === false && metadata.efforts === undefined) {
+      models.set(id, { ...metadata, efforts: [] })
+    } else {
+      models.set(id, metadata)
+    }
+  }
+  return models
+}
+
+function mergeMagpieModelMetadata(model: CodingNsCliModel, metadata: MagpieModelMetadata): CodingNsCliModel {
+  return {
+    ...model,
+    source: 'magpie',
+    ...(metadata.name === undefined ? {} : { name: metadata.name }),
+    ...(metadata.description === undefined ? {} : { description: metadata.description }),
+    ...(metadata.contextWindow === undefined ? {} : { contextWindow: metadata.contextWindow }),
+    ...(metadata.maxInputTokens === undefined ? {} : { maxInputTokens: metadata.maxInputTokens }),
+    ...(metadata.maxOutputTokens === undefined ? {} : { maxOutputTokens: metadata.maxOutputTokens }),
+    ...(metadata.inputModalities === undefined ? {} : { inputModalities: metadata.inputModalities }),
+    ...(metadata.outputModalities === undefined ? {} : { outputModalities: metadata.outputModalities }),
+    ...(metadata.reasoningSupported === undefined ? {} : { reasoningSupported: metadata.reasoningSupported }),
+    ...(metadata.reasoningSupported === false ? { efforts: [] } : metadata.efforts === undefined ? {} : { efforts: metadata.efforts }),
+    ...(metadata.serviceTiers === undefined ? {} : { serviceTiers: metadata.serviceTiers }),
+    ...(metadata.capabilities === undefined ? {} : { capabilities: metadata.capabilities }),
+    ...(metadata.ownedBy === undefined ? {} : { ownedBy: metadata.ownedBy }),
+  }
+}
+
+function readReasoningLevels(record: Record<string, unknown>): readonly string[] | undefined {
+  for (const key of ['reasoning_levels', 'supported_reasoning_levels']) {
+    if (!(key in record)) continue
+    const value = record[key]
+    if (!Array.isArray(value)) return undefined
+    const levels = value.flatMap((item) => {
+      const level = typeof item === 'string'
+        ? item
+        : asRecord(item)?.effort ?? asRecord(item)?.reasoning_effort ?? asRecord(item)?.id
+      return typeof level === 'string' && isSafeModelToken(level, 64) ? [level.trim()] : []
+    })
+    return [...new Set(levels)]
+  }
+  return undefined
+}
+
+function readMagpieServiceTiers(value: unknown): readonly CodingNsCliServiceTier[] | undefined {
+  if (value === undefined) return undefined
+  if (!Array.isArray(value) || value.length > 32) return undefined
+  const tiers = value.flatMap((item) => {
+    const record = asRecord(item)
+    if (record === null) return []
+    const id = typeof record.id === 'string' && isSafeModelToken(record.id, 64) ? record.id.trim() : ''
+    if (id === '') return []
+    const name = typeof record.name === 'string' && safeMetadataText(record.name, 128) ? record.name.trim() : id
+    const description = typeof record.description === 'string' && safeMetadataText(record.description, 512) ? record.description.trim() : undefined
+    return [{ id, name, ...(description === undefined ? {} : { description }) }]
+  })
+  return tiers
+}
+
+function optionalText<Key extends string>(value: unknown, maxLength: number, key: Key): Partial<Record<Key, string>> {
+  return typeof value === 'string' && safeMetadataText(value, maxLength) ? { [key]: value.trim() } as Record<Key, string> : {}
+}
+
+function optionalPositiveLimit<Key extends string>(value: unknown, key: Key): Partial<Record<Key, number>> {
+  const parsed = positiveModelTokenLimit(value)
+  return parsed === undefined ? {} : { [key]: parsed } as Record<Key, number>
+}
+
+function optionalStringList<Key extends string>(value: unknown, maxItems: number, maxLength: number, key: Key): Partial<Record<Key, readonly string[]>> {
+  const parsed = readStringList(value, maxItems, maxLength)
+  return parsed === undefined ? {} : { [key]: parsed } as Record<Key, readonly string[]>
+}
+
+function readStringList(value: unknown, maxItems: number, maxLength: number): readonly string[] | undefined {
+  if (!Array.isArray(value) || value.length > maxItems) return undefined
+  const items = value.flatMap((item) => typeof item === 'string' && isSafeModelToken(item, maxLength) ? [item.trim()] : [])
+  return [...new Set(items)]
+}
+
+function cleanModelId(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const id = value.trim()
+  return id.length <= 512 && new RegExp(`^${MAGPIE_MODEL_ID_PATTERN}$`, 'u').test(id) ? id : null
+}
+
+function positiveModelTokenLimit(value: unknown): number | undefined {
+  return typeof value === 'number'
+    && Number.isSafeInteger(value)
+    && value > 0
+    && value <= MAX_MODEL_TOKEN_LIMIT
+    ? value
+    : undefined
+}
+
+function safeMetadataText(value: string, maxLength: number): boolean {
+  const text = value.trim()
+  return text !== '' && text.length <= maxLength && !/[\u0000-\u001f\u007f]/u.test(text)
+}
+
+function isSafeModelToken(value: string, maxLength: number): boolean {
+  const text = value.trim()
+  return text !== '' && text.length <= maxLength && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/u.test(text)
+}
+
+/** Fail closed until the human-readable catalog format is known to match. */
+export function parseMagpieCliVersion(output: string | null): boolean {
+  if (output === null || Buffer.byteLength(output, 'utf8') > 256) return false
+  const match = output.trim().match(/^magpie\s+(\d+)\.(\d+)\.(\d+)$/u)
+  if (match === null) return false
+  const version = match.slice(1).map(Number)
+  for (let index = 0; index < MAGPIE_MINIMUM_CLI_VERSION.length; index += 1) {
+    if (version[index] !== MAGPIE_MINIMUM_CLI_VERSION[index]) {
+      return version[index]! > MAGPIE_MINIMUM_CLI_VERSION[index]!
+    }
+  }
+  return true
+}
+
+async function readMagpieModels(agent: MagpieAgent, signal?: AbortSignal): Promise<string | null> {
+  const result = await runMagpieCommand(['models', agent], signal)
+  return result?.status === 0 ? result.stdout : null
+}
+
+async function readMagpieVersion(signal?: AbortSignal): Promise<string | null> {
+  const result = await runMagpieCommand(['--version'], signal)
+  return result?.status === 0 ? result.stdout : null
+}
+
+async function runMagpieCommand(args: readonly string[], signal?: AbortSignal): Promise<{ readonly status: number | null; readonly stdout: string } | null> {
+  const command = await resolveCommandPath('magpie')
+  if (command === null) return null
+  const run = (): Promise<{ readonly status: number | null; readonly stdout: string }> => runAsyncCommand(spawnSync, command, args, {
+    timeout: MAGPIE_CLI_TIMEOUT_MS,
+    maxBuffer: MAX_MAGPIE_CLI_OUTPUT_BYTES,
+    shell: WINDOWS && /\.(?:cmd|bat)$/iu.test(command),
+    env: {
+      ...commandEnvironment(command),
+      MAGPIE_NO_ACCOUNTS: '1',
+      NO_COLOR: '1',
+      FORCE_COLOR: '0',
+    },
+  }).then((result) => ({
+    status: result.status,
+    stdout: Buffer.byteLength(result.stdout, 'utf8') <= MAX_MAGPIE_CLI_OUTPUT_BYTES ? result.stdout : '',
+  }))
+  try {
+    return signal === undefined ? await run() : await withCommandSignal(signal, run)
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Magpie IDs normally match adapter IDs. Keep naming differences explicit;
+ * every result is still checked against Magpie's own catalog output before
+ * any Gateway request is made.
+ */
+export function magpieAgentForAdapter(adapterId: CodingNsCliAdapterId): MagpieAgent | null {
+  const agent = MAGPIE_AGENT_BY_ADAPTER[adapterId]
+  return agent !== undefined && isMagpieAgentId(agent) ? agent : null
+}
+
+function isMagpieAgentId(value: string): boolean {
+  return value.length <= 64 && /^[a-z0-9][a-z0-9-]*$/u.test(value)
+}
+
+function normalizeLoopbackGatewayOrigin(value: string): string | null {
+  try {
+    const url = new URL(value)
+    const hostname = url.hostname.toLowerCase()
+    if (url.protocol !== 'http:'
+      || (hostname !== '127.0.0.1' && hostname !== 'localhost' && hostname !== '[::1]' && hostname !== '::1')
+      || url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== ''
+      || url.pathname.replace(/\/$/u, '') !== '/v1') return null
+    return url.origin
+  } catch {
+    return null
+  }
+}
+
+async function readBoundedJson(response: Response): Promise<unknown | null> {
+  const contentLength = Number(response.headers.get('content-length'))
+  if (Number.isFinite(contentLength) && contentLength > MAX_MAGPIE_RESPONSE_BYTES) return null
+  const reader = response.body?.getReader()
+  if (reader === undefined) return null
+  const chunks: Uint8Array[] = []
+  let total = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
+      if (total > MAX_MAGPIE_RESPONSE_BYTES) {
+        await reader.cancel()
+        return null
+      }
+      chunks.push(value)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  try {
+    const bytes = new Uint8Array(total)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.byteLength
+    }
+    return JSON.parse(new TextDecoder().decode(bytes)) as unknown
+  } catch {
+    return null
+  }
+}
+
+function readTotals(value: unknown): MagpieUsageTotals | null {
+  const record = asRecord(value)
+  if (record === null) return null
+  const calls = safeCount(record.calls)
+  const errors = safeCount(record.errors)
+  const inputTokens = safeCount(record.input)
+  const outputTokens = safeCount(record.output)
+  const cacheReadTokens = safeCount(record.cache_read)
+  const cacheWriteTokens = safeCount(record.cache_write)
+  const costUsd = safeCost(record.cost)
+  if ([calls, errors, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd].every((item) => item === null)) return null
+  return { calls, errors, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd }
+}
+
+function readSession(value: unknown, agent: MagpieAgent, sessionId: string): MagpieSessionUsage | null {
+  const sessions = asRecord(value)?.sessions
+  if (!Array.isArray(sessions)) return null
+  const row = sessions.find((item) => {
+    const record = asRecord(item)
+    return cleanText(record?.id) === sessionId && cleanText(record?.agent) === agent
+  })
+  const record = asRecord(row)
+  const totals = readTotals(record)
+  return record !== null && totals !== null ? { id: sessionId, agent, ...totals } : null
+}
+
+function readRoute(value: unknown, expectedSessionId: string): { readonly status: 'available' | 'no-route' | 'unavailable'; readonly route: MagpieRouteUsage | null } {
+  const envelope = asRecord(value)
+  if (envelope === null || cleanText(envelope.session) !== expectedSessionId || !('route' in envelope)) return { status: 'unavailable', route: null }
+  if (envelope.route === null) return { status: 'no-route', route: null }
+  const record = asRecord(envelope.route)
+  if (record === null) return { status: 'unavailable', route: null }
+  const tries = Array.isArray(record.tries)
+    ? record.tries.slice(0, 20).flatMap((item) => {
+        const attempt = asRecord(item)
+        if (attempt === null) return []
+        const model = routeText(attempt.model)
+        const provider = routeText(attempt.provider)
+        return [{
+          model: model !== null && provider !== null && !model.includes('/') ? `${provider}/${model}` : model ?? provider,
+          failed: routeText(attempt.fail) !== null,
+        }]
+      })
+    : []
+  return {
+    status: 'available',
+    route: {
+      asked: routeText(record.asked),
+      group: routeText(record.group),
+      rule: readRule(record.rule),
+      model: routeText(record.model),
+      effort: routeText(record.effort),
+      tries,
+      done: typeof record.done === 'boolean' ? record.done : null,
+      status: routeStatusText(record.status),
+      served: routeText(record.served),
+    },
+  }
+}
+
+function readRule(value: unknown): string | null {
+  const text = routeText(value)
+  if (text !== null) return text
+  const record = asRecord(value)
+  return routeText(record?.name) ?? routeText(record?.id)
+}
+
+function routeStatusText(value: unknown): string | null {
+  if (typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599) return String(value)
+  const text = routeText(value)
+  return text !== null && /^[A-Za-z0-9_-]{1,32}$/u.test(text) ? text : null
+}
+
+function routeText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const text = value.trim().replace(/[\u0000-\u001f\u007f]/gu, '').slice(0, 240)
+  return text === '' ? null : text
+}
+
+function cleanText(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const text = value.trim()
+  return text === '' || text.length > 512 || /[\u0000-\u001f\u007f]/u.test(text) ? null : text
+}
+
+/**
+ * Command Code stores a Magpie model as `magpie/provider/model`, while
+ * `magpie models commandcode` lists the gateway catalog as `provider/model`.
+ * The prefix is an adapter-specific, verified spelling from Magpie's
+ * Command Code integration; no generic slash-prefix inference is allowed.
+ */
+function resolveCatalogModelId(agent: MagpieAgent, requestedModelId: string, catalog: MagpieModelCatalog | null): string | null {
+  if (catalog === null) return null
+  const catalogModelId = catalogModelIdForRequested(agent, requestedModelId)
+  return catalogModelId !== null && catalog.models.has(catalogModelId) ? catalogModelId : null
+}
+
+function catalogModelIdForRequested(agent: MagpieAgent, requestedModelId: string): string | null {
+  if (agent === 'commandcode' && requestedModelId.startsWith('magpie/')) return requestedModelId.slice('magpie/'.length)
+  return requestedModelId
+}
+
+function safeCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null
+}
+
+function safeCost(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null
+}

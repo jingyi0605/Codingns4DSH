@@ -545,7 +545,7 @@ export class CodingNsCliAdapterRegistry {
     }
     const driver = this.requireEnabledDriver(input.adapterId)
     this.executingSessions.set(input.sessionId, input.adapterId)
-    try { yield* driver.executeTurn(input) }
+    try { yield* driver.executeTurn(withCodexContextWindow(input, input.adapterId)) }
     finally { this.executingSessions.delete(input.sessionId) }
   }
 
@@ -559,6 +559,7 @@ export class CodingNsCliAdapterRegistry {
       throw new CodingNsRpcError('CODINGNS_CLI_MANAGEMENT_BUSY', 'This Agent is being installed or updated. Wait for it to finish.')
     }
     const driver = this.requireEnabledDriver(input.adapterId)
+    const driverInput = withCodexContextWindow(input, input.adapterId)
     if (this.archivingSessions.has(input.sessionId)) {
       throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', '外部会话正在归档，不能开始新一轮执行')
     }
@@ -629,7 +630,7 @@ export class CodingNsCliAdapterRegistry {
       // 这条 request/context 是升级后自动迁移时唯一可靠的回填依据。
       try {
         const contextWindow = input.adapterId === 'codex'
-          ? knownCodexContextWindow(input.modelId)
+          ? driverInput.modelContextWindow
           : input.adapterId === 'command-code'
             ? knownCommandCodeContextWindow(input.modelId)
             : input.adapterId === 'antigravity'
@@ -655,7 +656,7 @@ export class CodingNsCliAdapterRegistry {
         this.segmentedTurns.delete(input.sessionId)
         iterator = suspended.iterator
       } else {
-        iterator = driver.executeTurn({ ...input, ...(resumingDriverTurn ? { resumeSegmentedTurn: true } : {}) })[Symbol.asyncIterator]()
+        iterator = driver.executeTurn({ ...driverInput, ...(resumingDriverTurn ? { resumeSegmentedTurn: true } : {}) })[Symbol.asyncIterator]()
       }
       while (true) {
         const next = await iterator.next()
@@ -667,7 +668,7 @@ export class CodingNsCliAdapterRegistry {
             await closeAgentIterator(iterator)
             const pending = deferredPeerInput
             deferredPeerInput = undefined
-            iterator = driver.executeTurn({ ...pending, ...(current.providerSessionId ? { providerSessionId: current.providerSessionId } : {}), resumeSegmentedTurn: false })[Symbol.asyncIterator]()
+            iterator = driver.executeTurn(withCodexContextWindow({ ...pending, ...(current.providerSessionId ? { providerSessionId: current.providerSessionId } : {}), resumeSegmentedTurn: false }, input.adapterId))[Symbol.asyncIterator]()
             continue
           }
           if (next.done) { iterator = undefined; break }
@@ -1314,6 +1315,15 @@ function mergeStoredSessionFields(
     ...(config.serviceTierId === undefined && stored.serviceTierId !== undefined ? { serviceTierId: stored.serviceTierId } : {}),
     ...(config.translationEnabled === undefined && stored.translationEnabled !== undefined ? { translationEnabled: stored.translationEnabled } : {}),
   }
+}
+
+function withCodexContextWindow(input: CodingNsCliTurnInput, adapterId: CodingNsCliAdapterId): CodingNsCliTurnInput {
+  if (adapterId !== 'codex') return input
+  const supplied = input.modelContextWindow
+  const contextWindow = typeof supplied === 'number' && Number.isSafeInteger(supplied) && supplied > 0
+    ? supplied
+    : knownCodexContextWindow(input.modelId)
+  return contextWindow === undefined ? input : { ...input, modelContextWindow: contextWindow }
 }
 
 function usageSnapshot(event: Extract<CodingNsAgentEvent, { type: 'usage' }>): CodingNsCliSessionUsage {

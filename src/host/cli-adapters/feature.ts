@@ -23,6 +23,7 @@ import { CodingNsCliSessionStore } from './session-store.js'
 import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
 import { CommandCodeSubscriptionService } from './command-code-subscription.js'
 import { ProviderSubscriptionService } from './provider-subscription.js'
+import { MagpieUsageService } from './magpie-usage.js'
 import { normalizeSubagentBridgeSettings, normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsHostServices } from '../features/types.js'
 import { setAdapterRegistry } from './registry-holder.js'
@@ -64,7 +65,7 @@ import { createAgentTeamTool } from '../cli-bridge/team-tool.js'
 import { TeamInputTracker, isTeamInputMessage, pendingPeerInput } from './team-input.js'
 import { withTeamSupport } from '../cli-bridge/team-adapters.js'
 
-export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry; updateCheck?: CliUpdateCheckOptions } = {}): FeatureModule<CodingNsHostServices> {
+export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry; updateCheck?: CliUpdateCheckOptions; magpieUsage?: MagpieUsageService } = {}): FeatureModule<CodingNsHostServices> {
   return {
     descriptor: {
       name: 'cliAdapters',
@@ -88,6 +89,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         return new ProviderSubscriptionService({ commandCode: new CommandCodeSubscriptionService({ timeoutMs }), timeoutMs })
       }
       let subscriptions = buildSubscriptions(context.services.settings?.get())
+      const magpieUsage = options.magpieUsage ?? new MagpieUsageService({ lifetimeSignal: lifetime.signal })
       let subscriptionSettings = JSON.stringify(context.services.settings?.get().subscriptionUsage ?? null)
       // 注入的 registry 自带 SessionStore；只有自建时才有本地 store 变量。
       const sessionStore = options.registry?.sessionRecords
@@ -242,7 +244,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
       registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, translationRecovery, promptTranslation, nativeSessions, teamInputs)
       const interactionTranslation = createInteractionTranslation(translation, sessionId => registry.getSession(sessionId))
       context.resources.add(() => interactionTranslation.dispose())
-      context.resources.add(context.services.rpc.register('cli', (action, payload, rpcContext) => {
+      context.resources.add(context.services.rpc.register('cli', async (action, payload, rpcContext) => {
         const rpcSignal = asRecord(rpcContext)?.signal
         const signal = isAbortSignal(rpcSignal) ? rpcSignal : undefined
         switch (action) {
@@ -259,7 +261,12 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           })
           case 'models': {
             const adapterId = readAdapterId(payload)
-            return adapterId === 'dsh' ? readDshModelCatalog(context.services.dshContext) : registry.models(adapterId)
+            const catalog = adapterId === 'dsh'
+              ? await readDshModelCatalog(context.services.dshContext)
+              : await registry.models(adapterId)
+            return typeof magpieUsage.enrichModelCatalog === 'function'
+              ? magpieUsage.enrichModelCatalog(adapterId, catalog, signal ?? lifetime.signal)
+              : catalog
           }
           case 'translation/models': return context.services.sessionTranslation?.catalog() ?? { models: [], default: null, errors: ['翻译模型目录不可用'] }
           case 'translation/pending': return translationRecovery.pending(payload)
@@ -286,9 +293,10 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           case 'session/set': {
             const sessionId = readSessionId(payload)
             const previous = registry.getSession(sessionId)
-            const config = registry.setSession(sessionId, readSessionConfig(payload))
+            const config = readSessionConfig(payload)
+            const saved = registry.setSession(sessionId, config)
             if (config.translationEnabled === false || previous.adapterId !== config.adapterId) translationRecovery.cancelSession(sessionId)
-            return config
+            return saved
           }
           case 'session/list': return registry.listSessions(readSessionListOptions(payload))
           case 'session/adapter-map':
@@ -314,7 +322,16 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           case 'team/interrupt': return requireTeam(context).invoke('interrupt', payload)
           case 'subscription': {
             const subscription = readSubscriptionRequest(payload)
-            return subscriptions.read(subscription.adapterId, subscription.providerId, subscription.modelId)
+            const requestSignal = signal ?? lifetime.signal
+            const session = subscription.sessionId === undefined ? undefined : registry.getSession(subscription.sessionId)
+            if (session !== undefined && session.adapterId === subscription.adapterId) {
+              const magpie = await magpieUsage.read(session, requestSignal, subscription.includeRoute, subscription.sessionId)
+              requestSignal.throwIfAborted()
+              if (magpie !== null) return { providerUsage: null, magpie }
+            }
+            requestSignal.throwIfAborted()
+            const providerUsage = await subscriptions.read(subscription.adapterId, subscription.providerId, subscription.modelId)
+            return { providerUsage, magpie: null }
           }
           case 'subscription/reset': {
             const subscription = readSubscriptionResetRequest(payload)
@@ -536,6 +553,14 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           // 权限状态必须与 DSH 会话当前生效值同源。驱动不能自行假设“完全权限”，
           // 也不能把缺省当成“已确认无限制”：解析失败时留空，由驱动沿用保守默认。
           const permission = resolveSessionPermission(context.services.dshContext, sessionId)
+          let magpieCodexContextWindow: number | undefined
+          if (config.adapterId === 'codex' && config.modelId !== undefined && typeof magpieUsage.readModelMetadata === 'function') {
+            try {
+              magpieCodexContextWindow = (await magpieUsage.readModelMetadata('codex', config.modelId, requestSignal))?.contextWindow
+            } catch (error) {
+              if (!requestSignal.aborted) throw error
+            }
+          }
           // 只有 Provider 驱动明确声明可以维护连续事件流，才把工具边界映射为 DSH step。
           // Command Code、Codex 自己维护 assistant 消息边界；OpenCode 由 Registry
           // 挂起并续读同一条 SSE。其他驱动仍把整轮保持在一个 step，避免 token-meter
@@ -553,6 +578,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             ...(turnOptions.enableAskUserQuestion === true ? { enableAskUserQuestion: true } : {}),
             ...(runtimeEnv === undefined ? {} : { runtimeEnv }),
             ...(config.modelId ? { modelId: config.modelId } : {}),
+            ...(magpieCodexContextWindow === undefined ? {} : { modelContextWindow: magpieCodexContextWindow }),
             ...(config.effortId ? { effortId: config.effortId } : {}),
             ...(config.serviceTierId ? { serviceTierId: config.serviceTierId } : {}),
             ...(config.translationEnabled === undefined ? {} : { translationEnabled: config.translationEnabled }),
@@ -977,12 +1003,14 @@ function readAdapterId(value: unknown): string {
   return record.adapterId.trim()
 }
 
-function readSubscriptionRequest(value: unknown): { adapterId: string; providerId?: string; modelId?: string } {
+function readSubscriptionRequest(value: unknown): { adapterId: string; sessionId?: string; providerId?: string; modelId?: string; includeRoute: boolean } {
   const record = asRecord(value)
-  if (record === null || record.adapterId === undefined) return { adapterId: 'command-code' }
+  if (record === null || record.adapterId === undefined) return { adapterId: 'command-code', includeRoute: false }
   const adapterId = readAdapterId(value)
   return {
     adapterId,
+    ...(typeof record.sessionId === 'string' && record.sessionId.trim() !== '' ? { sessionId: record.sessionId.trim() } : {}),
+    includeRoute: record.includeRoute === true,
     ...(typeof record.providerId === 'string' && record.providerId.trim() !== '' ? { providerId: record.providerId.trim() } : {}),
     // Antigravity 用会话模型区分 Gemini 与 Claude/GPT 两个独立配额组。
     ...(typeof record.modelId === 'string' && record.modelId.trim() !== '' ? { modelId: record.modelId.trim() } : {}),
