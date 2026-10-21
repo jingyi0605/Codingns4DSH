@@ -166,11 +166,12 @@ export class MagpieUsageService {
     if (catalog === null || modelId === null) return null
 
     const providerSessionId = cleanText(session.providerSessionId)
-    // Some drivers may temporarily fall back to the DSH key before their
-    // native session ID is known. Never treat that fallback as a Magpie ID.
-    const sessionId = providerSessionId !== null && providerSessionId !== cleanText(dshSessionId)
+    const nativeSessionId = cleanText(dshSessionId)
+    // Native DSH requests use the DSH session ID as their Magpie session
+    // identity. Other drivers must never treat that fallback as a provider ID.
+    const sessionId = providerSessionId !== null && providerSessionId !== nativeSessionId
       ? providerSessionId
-      : null
+      : agent === 'dsh' ? nativeSessionId : null
     return this.readFromGateway(agent, requestedModelId, catalog.gatewayOrigin, sessionId, signal, includeRoute)
   }
 

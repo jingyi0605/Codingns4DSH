@@ -738,6 +738,45 @@ test('DSH 用 Magpie 的实际网关 client 身份关联会话、路由和上游
   assert.ok(urls.includes('http://127.0.0.1:3425/v1/magpie/usage/requests?period=today&q=dsh-provider-session&limit=100'))
 })
 
+test('原生 DSH 使用 DSH 会话 ID 关联 Magpie 用量、路由和上游配额', async () => {
+  const sessionId = 'native-dsh-session'
+  const modelOutput = [
+    'Routing groups', 'auto/gpt-6.1-sol    GPT-6.1 Sol-Auto',
+    "dsh is shown every provider's models · magpie visible dsh", 'http://127.0.0.1:3425/v1',
+  ].join('\n')
+  const service = new MagpieUsageService({
+    readModels: async () => modelOutput,
+    fetch: (async (url) => {
+      const target = new URL(String(url))
+      if (target.pathname.endsWith('/quotas')) return Response.json({ data: [{
+        provider: 'glorinfo-api-platform', name: 'GAP-Codex', windows: [{ name: 'Credits', remaining: 73 }],
+      }] })
+      if (target.pathname.endsWith('/route')) return Response.json({
+        session: sessionId,
+        route: { id: 42, asked: 'auto/gpt-6.1-sol', model: 'glorinfo-api-platform/gpt-6.1-sol', served: 'gpt-6.1-sol', done: true, status: 200, tries: [] },
+      })
+      if (target.pathname.endsWith('/usage/requests')) return Response.json({ rows: [{
+        route_id: 42, t: '2026-10-21T14:00:00Z', agent: 'dsh', session: sessionId,
+        provider: 'glorinfo-api-platform', model: 'gpt-6.1-sol', served: 'gpt-6.1-sol', status: 200,
+      }] })
+      return Response.json(usageReply([{
+        agent: 'dsh', id: sessionId, input: 8, output: 2, cost: 0.001,
+      }]))
+    }) as typeof fetch,
+  })
+
+  const result = await service.read({
+    adapterId: 'dsh',
+    modelId: 'auto/gpt-6.1-sol',
+  }, undefined, true, sessionId)
+  assert.equal(result?.session?.agent, 'dsh')
+  assert.equal(result?.session?.id, sessionId)
+  assert.equal(result?.routeStatus, 'available')
+  assert.equal(result?.route?.routeId, 42)
+  assert.deepEqual(result?.upstreamProviders, ['glorinfo-api-platform'])
+  assert.deepEqual(result?.quotas.map((quota) => quota.provider), ['glorinfo-api-platform'])
+})
+
 test('尚无路由时不把 auto 模型别名冒充成上游提供商', async () => {
   const service = new MagpieUsageService({
     readModels: async () => [
