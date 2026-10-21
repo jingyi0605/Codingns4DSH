@@ -251,7 +251,9 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         // 会话 ID 同时承担 PeerHost 的路由身份；缓存也必须按会话隔离，
         // 否则本机与远端使用相同 Agent/Provider/模型时会互相复用上游结果。
         const cacheKey = JSON.stringify([adapterId, selection.providerId ?? '', selection.modelId ?? '', sessionId, selection.providerSessionId ?? ''])
-        const includeRoute = openRef.current && snapshotRef.current?.magpie != null
+        const magpieSnapshot = snapshotRef.current?.magpie
+        const includeRoute = magpieSnapshot !== null && magpieSnapshot !== undefined
+          && (openRef.current || shouldResolveMagpieQuota(magpieSnapshot))
         const cached = subscriptionUsageCache.get(cacheKey)
         // New-API 的余额和 Token 日志可能随 Key/钱包状态快速变化，且旧结果
         // 容易把历史日志投影到当前站点；每次刷新都重新读取，Sub2API 仍复用原缓存。
@@ -297,11 +299,13 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     }
   }, [props.rpc, props.sessionId, props.getRefreshIntervalMins, modelSelectionRevision, adapterRevision])
 
-  // Only request route details while the Magpie usage panel is open. The
-  // existing serial poller owns timing; this controller only bounds the
-  // request to the panel's open lifetime.
+  // Route history is also required to resolve quotas for automatic models.
+  // The serial poller owns timing; this controller bounds the extra read to
+  // the panel lifetime or the period while the quota's upstream is unknown.
+  const magpieQuotaNeedsResolution = shouldResolveMagpieQuota(snapshot?.magpie)
+  const shouldLoadMagpieRoute = open || magpieQuotaNeedsResolution
   useEffect(() => {
-    if (!open || !hasMagpieSnapshot) {
+    if (!shouldLoadMagpieRoute || !hasMagpieSnapshot) {
       routeRefreshControllerRef.current?.abort()
       routeRefreshControllerRef.current = null
       return
@@ -313,7 +317,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       controller.abort()
       if (routeRefreshControllerRef.current === controller) routeRefreshControllerRef.current = null
     }
-  }, [open, hasMagpieSnapshot])
+  }, [shouldLoadMagpieRoute, hasMagpieSnapshot])
 
   useEffect(() => {
     if (!eligible || snapshot === null) return
@@ -1338,6 +1342,9 @@ function createModelRow(model: Sub2ApiModelUsage, unit: string): ReactElement {
 function resolveDisplayWindow(usage: CliSubscriptionUsage): CliSubscriptionWindow | null {
   return usage.primary ?? usage.secondary ?? usage.monthly
 }
+function shouldResolveMagpieQuota(usage: MagpieUsageSnapshot | null | undefined): boolean {
+  return usage?.quotaStatus === 'provider-unavailable' && usage.sessionId !== null && usage.session !== null
+}
 function resolveMagpieQuotaRemaining(usage: MagpieUsageSnapshot): number | null {
   if (usage.quotaStatus !== 'available') return null
   for (const quota of usage.quotas) {
@@ -1351,8 +1358,8 @@ function selectDeepseekBalance(usage: DeepseekUsage): DeepseekUsage['balances'][
   return usage.balances.find((balance) => balance.currency.toUpperCase() === 'USD') ?? usage.balances[0] ?? null
 }
 /** 已具备用量读取契约的适配器才挂载底部订阅入口。 */
-function isSubscriptionAdapter(adapterId: unknown): adapterId is 'antigravity' | 'command-code' | 'codex' | 'claude-code' | 'codebuddy' | 'codebuddy-cn' | 'dsh' | 'grok' | 'kimi' | 'opencode' | 'qoder' | 'qoder-cn' | 'workbuddy' | 'zcode' {
-  return adapterId === 'antigravity' || adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'codebuddy' || adapterId === 'codebuddy-cn' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'kimi' || adapterId === 'opencode' || adapterId === 'qoder' || adapterId === 'qoder-cn' || adapterId === 'workbuddy' || adapterId === 'zcode'
+function isSubscriptionAdapter(adapterId: unknown): adapterId is 'antigravity' | 'command-code' | 'codex' | 'claude-code' | 'codebuddy' | 'codebuddy-cn' | 'dsh' | 'grok' | 'kimi' | 'opencode' | 'pi' | 'qoder' | 'qoder-cn' | 'workbuddy' | 'zcode' {
+  return adapterId === 'antigravity' || adapterId === 'command-code' || adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'codebuddy' || adapterId === 'codebuddy-cn' || adapterId === 'dsh' || adapterId === 'grok' || adapterId === 'kimi' || adapterId === 'opencode' || adapterId === 'pi' || adapterId === 'qoder' || adapterId === 'qoder-cn' || adapterId === 'workbuddy' || adapterId === 'zcode'
 }
 function isRemoteWebContext(): boolean {
   return (globalThis as { __CODINGNS4DSH_REMOTE_WEB_CONTEXT__?: unknown }).__CODINGNS4DSH_REMOTE_WEB_CONTEXT__ === true

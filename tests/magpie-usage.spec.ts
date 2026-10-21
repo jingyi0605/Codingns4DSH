@@ -935,6 +935,74 @@ test('网关超时、无效 JSON 和超大响应均按不可用处理', async ()
   }
 })
 
+test('Magpie 自动模型在页面加载后主动解析上游配额并显示圆环', async (t) => {
+  let component: ((props: unknown) => unknown) | undefined
+  const slots = {
+    inject: (_name: string, register: () => unknown) => register(),
+    register: (_options: unknown, render: (props: unknown) => unknown) => { component = render; return () => undefined },
+  }
+  const subscriptionReads: boolean[] = []
+  const rpc = {
+    call: async (_channel: string, method: string, payload: unknown) => {
+      if (method.endsWith('/session/get')) return {
+        ok: true,
+        value: { adapterId: 'claude-code', modelId: 'auto/deepseek-v4.1-flash', providerSessionId: 'magpie-session' },
+      }
+      assert.ok(method.endsWith('/subscription'))
+      const includeRoute = (payload as { includeRoute?: boolean }).includeRoute === true
+      subscriptionReads.push(includeRoute)
+      return {
+        ok: true,
+        value: {
+          providerUsage: null,
+          magpie: {
+            agent: 'claude', modelId: 'auto/deepseek-v4.1-flash', capturedAt: new Date().toISOString(), usageStatus: 'available',
+            aggregate: { calls: 1, errors: 0, inputTokens: 20, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001 },
+            sessionId: 'magpie-session',
+            session: { id: 'magpie-session', agent: 'claude', calls: 1, errors: 0, inputTokens: 20, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001 },
+            routeStatus: includeRoute ? 'available' : 'not-requested',
+            route: includeRoute ? {
+              asked: 'auto/deepseek-v4.1-flash', group: null, rule: null, model: 'workbuddy/deepseek-v4.1-flash', effort: null,
+              tries: [], done: true, status: '200', served: 'deepseek-v4.1-flash',
+            } : null,
+            upstreamProvider: includeRoute ? 'workbuddy' : null,
+            upstreamProviders: includeRoute ? ['workbuddy'] : [],
+            quotaStatus: includeRoute ? 'available' : 'provider-unavailable',
+            quotas: includeRoute ? [{
+              provider: 'workbuddy', name: 'WorkBuddy', kind: 'subscription', user: null, plan: null, alias: null, balance: null, readAt: null,
+              windows: [{ name: 'Credits', usedPercent: 27, remainingPercent: 73, resetsAt: null, display: null, amount: null, limit: null, unit: null, holdsWhy: null }],
+            }] : [],
+          },
+        },
+      }
+    },
+  }
+  registerSubscriptionSlot(slots as never, rpc as never)
+  assert.ok(component)
+  const view = createHookRenderer(component!, { rpc, sessionId: 'dsh-session' })
+  t.after(() => view.dispose())
+
+  const findTrigger = (node: unknown): { readonly children: unknown } | null => {
+    if (Array.isArray(node)) return node.map(findTrigger).find((item) => item !== null) ?? null
+    if (node === null || typeof node !== 'object') return null
+    const element = node as { readonly type?: unknown; readonly props?: { readonly className?: unknown; readonly children?: unknown } }
+    if (element.type === 'button' && element.props?.className === 'codingns4dsh-subscription-trigger') return { children: element.props.children }
+    return findTrigger(element.props?.children)
+  }
+
+  let trigger: ReturnType<typeof findTrigger> = null
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await setImmediate()
+    trigger = findTrigger(view.render())
+    if (subscriptionReads.includes(true) && trigger !== null) break
+  }
+  assert.deepEqual(subscriptionReads, [false, true], 'the initial unknown-provider snapshot should trigger one route-aware refresh')
+  assert.ok(trigger)
+  assert.match(JSON.stringify(trigger.children), /conic-gradient/u)
+  assert.match(JSON.stringify(trigger.children), /73/u)
+  assert.doesNotMatch(JSON.stringify(trigger.children), /Magpie/u)
+})
+
 test('关闭 Magpie 用量弹层会取消当前路由读取', async (t) => {
   const claudeModelId = 'auto/deepseek-v4.1-flash[1m]'
   const routedModel = 'sub2api/deepseek-v4.1-flash'
