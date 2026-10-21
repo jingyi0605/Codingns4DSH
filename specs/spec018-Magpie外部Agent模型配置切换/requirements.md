@@ -4,7 +4,7 @@ Status: The existing scope is read-only. This amendment adds Magpie model metada
 
 ## Summary
 
-Magpie already exposes configured provider/model choices through each Agent. CodingNS does not need a CC-Switch-like configuration writer. It reads the mapped Agent catalog and the standard read-only `/v1/models` response on the owning Host, then safely enriches exact matching model records with Magpie's metadata. For Codex, that same source corrects the context window before usage is stabilized. Usage and route data remain read-only and sanitized.
+Magpie already exposes configured provider/model choices through each Agent. CodingNS does not need a CC-Switch-like configuration writer. It reads the complete mapped Agent catalog, including account-backed entries, and the standard read-only `/v1/models` response on the owning Host, then safely enriches matching model records with Magpie's metadata. For Codex, that same source corrects the context window before usage is stabilized. Usage and route data remain read-only and sanitized.
 
 ## Terms
 
@@ -19,7 +19,7 @@ Magpie already exposes configured provider/model choices through each Agent. Cod
 
 - Read the bounded Magpie CLI version and model catalog on the Host that owns the selected Agent.
 - Keep an explicit adapter-to-Magpie-Agent mapping, including naming differences such as `cursor-cli` -> `cursor` and `command-code` -> `commandcode`.
-- Recognize a Magpie model only when its exact ID appears in the mapped Agent catalog. Command Code may use its documented `magpie/provider/model` normalization.
+- Recognize a Magpie model only when its exact ID appears in the mapped Agent catalog, or when its display label maps uniquely to one catalog ID. Command Code may use its documented `magpie/provider/model` normalization.
 - Read aggregate Magpie usage through the documented local Gateway API.
 - Read model metadata through the Gateway's standard OpenAI-compatible `/v1/models` endpoint and expose it to external Agent catalogs using exact verified model IDs.
 - Correct Codex context sizing from Magpie metadata for the exact Magpie model in use.
@@ -46,7 +46,7 @@ Magpie already exposes configured provider/model choices through each Agent. Cod
 #### Acceptance criteria
 
 1. The Host uses an explicit adapter-to-Magpie-Agent allowlist and invokes only the bounded read-only catalog command.
-2. The current model is recognized as Magpie only after exact membership in the mapped Agent catalog. Unsupported mappings, missing Magpie, old versions, malformed output, empty catalogs, and unavailable Gateway origins fail closed.
+2. The current model is recognized as Magpie only after exact ID membership, or a unique exact normalized display-label match, in the mapped Agent catalog. Unsupported mappings, missing Magpie, old versions, malformed output, empty catalogs, and unavailable Gateway origins fail closed.
 3. All current mappings are read-only catalog mappings; a mapping does not imply that CodingNS can write or switch the Agent configuration.
 4. Magpie discovery and usage reads happen on the Host that owns the adapter. A remote Host's Magpie installation is never inferred from or replaced by the local machine's installation.
 5. The DSH native adapter follows the same read-only path as external adapters when its model is present in the `dsh` catalog.
@@ -80,7 +80,7 @@ Magpie already exposes configured provider/model choices through each Agent. Cod
 
 #### Acceptance criteria
 
-1. Every Magpie CLI invocation is read-only, bounded, and runs with `MAGPIE_NO_ACCOUNTS=1`.
+1. Every Magpie CLI invocation is read-only and bounded. Model catalog reads must not set or inherit `MAGPIE_NO_ACCOUNTS`, because that flag hides valid account-backed model entries; CodingNS still never writes Magpie configuration or accounts.
 2. The Client has no Magpie model-switch RPC, setter, read-back, restore workflow, or persisted provenance field.
 3. CodingNS never starts Magpie's desktop UI, gateway, or web server, and never touches DSH Desktop.
 4. Model selection continues to use the Agent's normal model catalog and existing `session/set` path.
@@ -104,7 +104,7 @@ Magpie already exposes configured provider/model choices through each Agent. Cod
 #### Acceptance criteria
 
 1. The Host fetches Magpie `/v1/models` only after the mapped `magpie models <agent>` catalog and its loopback Gateway origin have been validated.
-2. A record is eligible only when its exact model ID appears in that same mapped Agent's CLI catalog. Only explicitly tested adapter-specific normalization (currently Command Code's `magpie/` prefix) is allowed; there is no fuzzy matching.
+2. A record is eligible only when its exact model ID appears in that same mapped Agent's CLI catalog, or when the Agent row has a unique exact normalized display-label alias to one CLI ID. Only explicitly tested adapter-specific normalization (currently Command Code's `magpie/` prefix) is allowed; there is no fuzzy matching.
 3. For exact matches, expose Magpie's model display label, context window, maximum input/output tokens, input/output modalities, reasoning support and levels, service tiers, and other supported public capabilities through the shared model contract.
 4. `reasoning_levels` and `supported_reasoning_levels` are normalized into the Agent model's existing effort identifiers. The Host never invents effort levels from a model name or a bare reasoning boolean.
 5. Magpie-provided metadata takes precedence for a field it explicitly declares on an exact Magpie model. If a field is absent, preserve the Agent's existing verified value; explicit `reasoning: false` clears stale effort options.

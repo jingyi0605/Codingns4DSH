@@ -4,7 +4,7 @@ Status: Usage/catalog recognition is implemented. This amendment adds bounded mo
 
 ## 1. Design decision
 
-Magpie already integrates configured provider/model choices into each Agent's model catalog. CodingNS does not create a second model-selection source in the Client and does not write Agent configuration. For a model already present in the Agent's normal catalog, the Host may enrich its metadata only after exact identity is confirmed by `magpie models <agent>` and Magpie's `/v1/models` record.
+Magpie already integrates configured provider/model choices into each Agent's model catalog. CodingNS does not create a second model-selection source in the Client and does not write Agent configuration. For a model already present in the Agent's normal catalog, the Host may enrich its metadata only after its exact ID, or a unique exact normalized display label, is confirmed by `magpie models <agent>` and Magpie's `/v1/models` record.
 
 CodingNS also uses the verified Magpie record to supply context-window and related metadata. The exact Codex Magpie model `auto/gpt-6.1-sol` must use Magpie's 500,000-token context window before usage anchoring and compaction. A missing or invalid record never disables the normal catalog or usage path.
 
@@ -58,7 +58,7 @@ The map authorizes read-only catalog recognition only. It does not authorize any
 ### 3.2 CLI and parser
 
 - `magpie --version` is accepted only at or above the verified minimum version.
-- `magpie models <agent>` is executed with fixed argument arrays, bounded output, a timeout, `shell: false` except the platform's required command-wrapper behavior, and `MAGPIE_NO_ACCOUNTS=1`.
+- `magpie models <agent>` is executed with fixed argument arrays, bounded output, a timeout, and `shell: false` except the platform's required command-wrapper behavior. `MAGPIE_NO_ACCOUNTS` is removed from the child environment so account-backed entries remain visible; the command is still read-only.
 - The parser requires the exact Agent footer, at least one model row, one loopback Gateway URL, and exact bounded model IDs. Unknown output fails closed.
 - The parsed catalog stays Host-private. The Client receives no Magpie catalog and no raw CLI output.
 - Catalog and version reads are cached briefly and share in-flight reads per Agent. A caller abort does not cancel a shared Host-lifetime read.
@@ -76,7 +76,7 @@ Responses are size-limited and normalized to the shared `MagpieUsageSnapshot` co
 
 - Add a bounded, read-only `GET /v1/models` reader on the Host, reusing the validated loopback origin and the existing response-size and timeout safeguards.
 - Normalize only known public fields: `id`, `display_name`/`magpie_label`, `context_window`/`context_length`, `max_input_tokens`, `max_output_tokens`, `modalities.input`/`modalities.output`, `reasoning`, `reasoning_levels`, `supported_reasoning_levels`, `service_tiers`, and explicitly supported capability/description fields.
-- Require both the exact model ID in the mapped `magpie models <agent>` output and an exact matching `/v1/models` `id`. Apply only documented adapter-specific ID normalization; Command Code's `magpie/` prefix is the existing exception.
+- Require the exact model ID in the mapped `magpie models <agent>` output, or a unique exact normalized display-label alias, and an exact matching `/v1/models` `id`. Apply only documented adapter-specific ID normalization; Command Code's `magpie/` prefix is the existing exception.
 - Enrich existing Agent model entries; do not synthesize models from unrelated records or change model-selection semantics. On exact Magpie matches, Magpie's declared value wins. An absent field preserves the Agent's own known value; explicit `reasoning: false` removes stale efforts.
 - Cache parsed metadata per Magpie Agent for a short bounded TTL and clear it when its catalog/origin changes. A failed metadata read degrades to the unmodified Agent catalog.
 - Never return the raw Magpie document, ownership secrets, or unrecognized fields to the Client.
