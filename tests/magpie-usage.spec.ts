@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { setImmediate } from 'node:timers/promises'
 import test from 'node:test'
 import { MagpieUsageService, magpieAgentForAdapter, parseMagpieCliVersion, parseMagpieModelMetadata, parseMagpieModelOutput } from '../src/host/cli-adapters/magpie-usage.js'
-import { registerSubscriptionSlot } from '../src/client/subscription-slot.js'
+import { calculateMagpiePopoverPlacement, registerSubscriptionSlot } from '../src/client/subscription-slot.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 
 const fixture = (name: string) => readFile(new URL(`./fixtures/${name}`, import.meta.url), 'utf8')
@@ -13,6 +13,13 @@ const usageReply = (sessions: unknown[] = [{
 }]) => ({
   calls: 3, errors: 1, input: 300, output: 90, cache_read: 20, cache_write: 8, cost: 0.0325,
   sessions,
+})
+
+test('Magpie usage popover stays within viewport and shifts left of an open right sidebar', () => {
+  assert.deepEqual(calculateMagpiePopoverPlacement(800, 1200, null), { left: -12, width: 400 })
+  assert.deepEqual(calculateMagpiePopoverPlacement(800, 1200, 900), { left: -312, width: 400 })
+  assert.deepEqual(calculateMagpiePopoverPlacement(500, 1200, 300), { left: -488, width: 276 })
+  assert.deepEqual(calculateMagpiePopoverPlacement(16, 1280, null), { left: 0, width: 400 })
 })
 
 test('Magpie 0.1.1295 目录输出按准确 Agent ID 和模型 ID 解析', async () => {
@@ -701,6 +708,8 @@ test('网关超时、无效 JSON 和超大响应均按不可用处理', async ()
 })
 
 test('关闭 Magpie 用量弹层会取消当前路由读取', async (t) => {
+  const claudeModelId = 'auto/deepseek-v4.1-flash[1m]'
+  const routedModel = 'sub2api/deepseek-v4.1-flash'
   let component: ((props: unknown) => unknown) | undefined
   const slots = {
     inject: (_name: string, register: () => unknown) => register(),
@@ -710,15 +719,21 @@ test('关闭 Magpie 用量弹层会取消当前路由读取', async (t) => {
   let routeAborts = 0
   const rpc = {
     call: async (_channel: string, method: string, payload: unknown, signal?: AbortSignal) => {
-      if (method.endsWith('/session/get')) return { ok: true, value: { adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' } }
+      if (method.endsWith('/session/get')) return { ok: true, value: { adapterId: 'claude-code', modelId: claudeModelId, providerSessionId: 'agent-session-1' } }
       assert.ok(method.endsWith('/subscription'))
+      assert.equal((payload as { modelId?: string }).modelId, claudeModelId)
       if ((payload as { includeRoute?: boolean }).includeRoute !== true) {
         return { ok: true, value: { providerUsage: null, magpie: {
-          agent: 'claude', modelId: 'example-provider/model-one', capturedAt: new Date().toISOString(), usageStatus: 'available',
-          aggregate: { calls: 3, errors: 0, inputTokens: 300, outputTokens: 100, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.01 },
+          agent: 'claude', modelId: claudeModelId, capturedAt: new Date().toISOString(), usageStatus: 'available',
+          aggregate: { calls: 3, errors: 0, inputTokens: 300, outputTokens: 100, cacheReadTokens: 20, cacheWriteTokens: 0, costUsd: 0.01 },
           sessionId: 'agent-session-1',
-          session: { id: 'agent-session-1', agent: 'claude', calls: 1, errors: 0, inputTokens: 100, outputTokens: 50, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.005 },
-          routeStatus: 'not-requested', route: null,
+          session: { id: 'agent-session-1', agent: 'claude', calls: 1, errors: 0, inputTokens: 100, outputTokens: 50, cacheReadTokens: 25, cacheWriteTokens: 0, costUsd: 0.005 },
+          routeStatus: 'available',
+          route: { asked: 'group/auto-deepseek-v4-1-flash', group: 'auto-deepseek-v4-1-flash', rule: null, model: routedModel, effort: 'high', tries: [], done: false, status: '200', served: 'deepseek-v4.1-flash' },
+          upstreamProvider: 'sub2api', upstreamProviders: ['sub2api'], quotaStatus: 'available', quotas: [{
+            provider: 'sub2api', name: 'Sub2API', kind: 'subscription', user: 'Primary account', plan: 'Plus', alias: 'DeepSeek', balance: null, readAt: null,
+            windows: [{ name: '7 days', usedPercent: 12, remainingPercent: 88, resetsAt: '2026-10-28T08:00:00Z', display: '12 / 100', amount: 12, limit: 100, unit: 'credits', holdsWhy: null }],
+          }],
         } } }
       }
       routeSignal = signal
@@ -753,8 +768,9 @@ test('关闭 Magpie 用量弹层会取消当前路由读取', async (t) => {
   assert.ok(trigger, 'Magpie usage trigger should render')
   trigger.props.onClick()
   const panel = view.render()
-  assert.match(JSON.stringify(panel), /example-provider\/model-one/u)
+  assert.match(JSON.stringify(panel), /auto\/deepseek-v4\.1-flash\[1m\]/u)
   assert.match(JSON.stringify(panel), /agent-session-1/u)
+  assert.match(JSON.stringify(panel), /api\/codingns\/provider-icons\/magpie\.png/u)
   const children = (panel as { readonly props: { readonly children: readonly unknown[] } }).props.children
   const popover = children.find((child) => typeof child === 'object' && child !== null
     && typeof (child as { readonly type?: unknown }).type === 'function') as { readonly type: (props: never) => unknown; readonly props: unknown } | undefined
@@ -764,6 +780,46 @@ test('关闭 Magpie 用量弹层会取消当前路由读取', async (t) => {
   assert.match(content, /当前 Agent 会话/u)
   assert.match(content, /缓存读取/u)
   assert.match(content, /更新于/u)
+  assert.match(content, /"width":400/u, 'Magpie should open at the wider panel size')
+  assert.match(content, /"padding":12/u, 'all four popover padding sides should be 12px')
+  assert.doesNotMatch(content, /auto\/deepseek-v4\.1-flash\[1m\]/u, 'the model ID is omitted from the header')
+  assert.doesNotMatch(content, /今日 · 所有 Magpie Agent/u, 'the all-agent scope label is omitted from the header')
+  assert.match(content, /"gridTemplateColumns":"repeat\(3,/u, 'usage metrics should use a three-column grid')
+  assert.equal((content.match(/"minHeight":40/gu) ?? []).length, 18, 'gateway and session usage should each contain nine scaled metric cells')
+  assert.match(content, /缓存命中率/u)
+  assert.match(content, /6\.3%/u)
+  assert.match(content, /20\.0%/u)
+  assert.ok(content.indexOf('缓存命中率') < content.indexOf('预估费用'), 'cache hit rate should appear to the left of estimated cost')
+  const findRouteTab = (node: unknown): { readonly props: { readonly onClick: () => void } } | null => {
+    if (Array.isArray(node)) return node.map(findRouteTab).find((item) => item !== null) ?? null
+    if (node === null || typeof node !== 'object') return null
+    const element = node as { readonly type?: unknown; readonly props?: { readonly id?: unknown; readonly children?: unknown; readonly onClick?: unknown } }
+    if (element.type === 'button' && element.props?.id === 'codingns4dsh-magpie-tab-route' && typeof element.props.onClick === 'function') {
+      return { props: { onClick: element.props.onClick as () => void } }
+    }
+    return findRouteTab(element.props?.children)
+  }
+  const routeTab = findRouteTab(popover.type(popover.props as never))
+  assert.ok(routeTab, 'routing should have its own tab')
+  routeTab.props.onClick()
+  const routePanelView = view.render()
+  const routeChildren = (routePanelView as { readonly props: { readonly children: readonly unknown[] } }).props.children
+  const routePopover = routeChildren.find((child) => typeof child === 'object' && child !== null
+    && typeof (child as { readonly type?: unknown }).type === 'function') as { readonly type: (props: never) => unknown; readonly props: unknown } | undefined
+  assert.ok(routePopover)
+  const routeContent = JSON.stringify(routePopover.type(routePopover.props as never))
+  assert.match(routeContent, /codingns4dsh-magpie-panel-route/u)
+  assert.match(routeContent, /codingns4dsh-magpie-route-node-active/u)
+  assert.match(routeContent, /sub2api\/deepseek-v4\.1-flash/u)
+  assert.match(routeContent, /请求的模型/u)
+  assert.match(routeContent, /当前目标/u)
+  assert.match(routeContent, /实际响应模型/u)
+  assert.match(routeContent, /gridTemplateColumns/u, 'route stages should use a vertically stacked, wrapping layout')
+  assert.match(routeContent, /"height":28/u, 'vertical connectors should scale with the route stages')
+  assert.doesNotMatch(routeContent, /codingns4dsh-magpie-tab-quota/u, 'quota and routing should share one tab')
+  assert.match(routeContent, /Primary account/u)
+  assert.match(routeContent, /88%/u)
+  assert.match(routeContent, /12 \/ 100/u)
   await flush()
   assert.ok(routeSignal, 'opening the panel should start a route-aware read')
   assert.equal(routeSignal.aborted, false)

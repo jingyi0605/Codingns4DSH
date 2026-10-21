@@ -1,10 +1,10 @@
 import { startSerialPolling } from './serial-polling.js'
-import { createElement, useEffect, useRef, useState } from 'react'
+import { createElement, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactElement, RefObject } from 'react'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { isSubscriptionUsageFresh } from '../shared/contracts/subscription.js'
-import type { CliSubscriptionGroup, CliSubscriptionGroupWindow, CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionSnapshot, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, MagpieUsageSnapshot, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
+import type { CliSubscriptionGroup, CliSubscriptionGroupWindow, CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionSnapshot, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, MagpieQuota, MagpieUsageSnapshot, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
 import { DEFAULT_SUBSCRIPTION_USAGE_SETTINGS } from '../shared/contracts/config.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCliRpc } from './cli-catalog.js'
@@ -81,6 +81,15 @@ function loadUsage(rpc: CodingNsRpcClient, key: string, payload: unknown): Promi
 
 /** 图标重置按钮的悬停/按下/聚焦/禁用只能由注入样式表表达，内联样式无法命中伪类。 */
 const RESET_BUTTON_CSS = '.codingns4dsh-subscription-reset{display:inline-flex;align-items:center;justify-content:center;flex:none;width:26px;height:26px;padding:0;border:1px solid var(--dsw-alias-border-l2,#d9d9d9);border-radius:50%;background:transparent;color:var(--dsw-alias-label-secondary,GrayText);cursor:pointer;transition:background .15s ease,color .15s ease}.codingns4dsh-subscription-reset:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08));color:var(--dsw-alias-label-primary,CanvasText)}.codingns4dsh-subscription-reset:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active,rgba(127,127,127,.14))}.codingns4dsh-subscription-reset:focus-visible{outline:none;box-shadow:0 0 0 var(--dsw-focus-ring-width,2px) var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#1677ff))}.codingns4dsh-subscription-reset:disabled{opacity:.4;cursor:not-allowed}@media (prefers-reduced-motion: reduce){.codingns4dsh-subscription-reset{transition:none}}'
+const MAGPIE_ROUTE_CSS = '@keyframes codingns4dsh-magpie-route-pulse{0%{transform:translateY(-120%);opacity:0}20%{opacity:1}80%{opacity:1}100%{transform:translateY(320%);opacity:0}}@keyframes codingns4dsh-magpie-route-breathe{0%,100%{box-shadow:0 0 0 0 rgba(22,119,255,0)}50%{box-shadow:0 0 0 4px rgba(22,119,255,.16)}}@keyframes codingns4dsh-magpie-route-step{from{opacity:0;transform:translateY(4px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}.codingns4dsh-magpie-route-pulse{animation:codingns4dsh-magpie-route-pulse 1.8s ease-in-out infinite}.codingns4dsh-magpie-route-node-active{animation:codingns4dsh-magpie-route-breathe 2s ease-in-out infinite}.codingns4dsh-magpie-route-step{animation:codingns4dsh-magpie-route-step .38s cubic-bezier(.2,.75,.25,1) both;transition:background .16s ease}.codingns4dsh-magpie-route-step:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.07))}.codingns4dsh-magpie-route-step:hover .codingns4dsh-magpie-route-node{box-shadow:0 0 0 1px var(--dsw-alias-state-business-primary,#1677ff),0 0 0 4px rgba(22,119,255,.1)}.codingns4dsh-magpie-route-node{transition:box-shadow .16s ease}.codingns4dsh-magpie-tab:focus-visible{outline:none;box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#1677ff)) inset}@media (prefers-reduced-motion:reduce){.codingns4dsh-magpie-route-pulse,.codingns4dsh-magpie-route-node-active,.codingns4dsh-magpie-route-step,.codingns4dsh-magpie-route-node{animation:none;transition:none}}'
+
+export function calculateMagpiePopoverPlacement(rootLeft: number, viewportWidth: number, sidebarLeft: number | null): { readonly left: number; readonly width: number } {
+  const margin = 12
+  const boundary = Math.min(viewportWidth - margin, sidebarLeft === null ? viewportWidth - margin : sidebarLeft - margin)
+  const width = Math.max(0, Math.min(400, boundary - margin))
+  const left = Math.max(margin, Math.min(rootLeft, boundary - width))
+  return { left: left - rootLeft, width }
+}
 
 /** 移动端订阅入口只保留图标，完整数据仍可在点击后的弹层中查看。 */
 function installSubscriptionStyles(): void {
@@ -88,7 +97,7 @@ function installSubscriptionStyles(): void {
   const style = document.createElement('style')
   style.dataset.plugin = 'codingns4dsh'
   style.dataset.pluginCss = SUBSCRIPTION_STYLE_ID
-  style.textContent = '@media (max-width: 768px){.codingns4dsh-subscription-trigger{gap:0!important;padding-left:4px!important;padding-right:4px!important}.codingns4dsh-subscription-label,.codingns4dsh-subscription-value{display:none!important}.codingns4dsh-subscription-popover{position:fixed!important;left:12px!important;right:12px!important;bottom:48px!important;width:auto!important;min-width:0!important;max-width:none!important;max-height:calc(100vh - 72px)!important;overflow:auto!important}}' + RESET_BUTTON_CSS
+  style.textContent = '@media (max-width: 768px){.codingns4dsh-subscription-trigger{gap:0!important;padding-left:4px!important;padding-right:4px!important}.codingns4dsh-subscription-label,.codingns4dsh-subscription-value{display:none!important}.codingns4dsh-subscription-popover{position:fixed!important;left:12px!important;right:12px!important;bottom:48px!important;width:auto!important;min-width:0!important;max-width:none!important;max-height:calc(100vh - 72px)!important;overflow:auto!important}}' + RESET_BUTTON_CSS + MAGPIE_ROUTE_CSS
   document.head.appendChild(style)
 }
 
@@ -119,8 +128,11 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const [eligible, setEligible] = useState(false)
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [magpieTab, setMagpieTab] = useState<'usage' | 'route'>('usage')
+  const [magpiePlacement, setMagpiePlacement] = useState({ left: 0, width: 400 })
   const [clock, setClock] = useState(() => Date.now())
   const rootRef = useRef<HTMLDivElement>(null)
+  const magpiePopoverRef = useRef<HTMLDivElement>(null)
   const resetDialogRef = useRef<HTMLDivElement>(null)
   // 重置成功后的刷新不能重跑加载 effect，否则 usage 会被清空导致底部入口闪断。
   const refreshRef = useRef<null | ((options?: { readonly afterPending?: boolean }) => Promise<void>)>(null)
@@ -142,6 +154,49 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const hasMagpieSnapshot = snapshot?.magpie != null
   useEffect(() => subscribeSessionAdapters(() => { bumpAdapterRevision((value) => value + 1) }), [])
 
+  useLayoutEffect(() => {
+    if (!open || !hasMagpieSnapshot || typeof document === 'undefined' || typeof window === 'undefined') return
+    const root = rootRef.current
+    const popover = magpiePopoverRef.current
+    if (root === null || popover === null) return
+
+    const getOpenSidebar = (): HTMLElement | undefined => [...document.querySelectorAll<HTMLElement>('[data-sidebar-right-session][data-sidebar-right-open]')]
+      .find((element) => element.closest('[hidden]') === null && element.getBoundingClientRect().width > 0)
+    let observedSidebar: HTMLElement | undefined
+    let resizeObserver: ResizeObserver | undefined
+
+    const updatePlacement = (): void => {
+      const sidebar = getOpenSidebar()
+      if (sidebar !== observedSidebar) {
+        if (observedSidebar !== undefined) resizeObserver?.unobserve(observedSidebar)
+        observedSidebar = sidebar
+        if (observedSidebar !== undefined) resizeObserver?.observe(observedSidebar)
+      }
+      if (window.innerWidth <= 768) {
+        setMagpiePlacement((current) => current.left === 0 && current.width === 400 ? current : { left: 0, width: 400 })
+        return
+      }
+      const sidebarLeft = sidebar?.getBoundingClientRect().left ?? null
+      const next = calculateMagpiePopoverPlacement(root.getBoundingClientRect().left, window.innerWidth, sidebarLeft)
+      setMagpiePlacement((current) => current.left === next.left && current.width === next.width ? current : next)
+    }
+
+    resizeObserver = typeof globalThis.ResizeObserver === 'function' ? new globalThis.ResizeObserver(updatePlacement) : undefined
+    resizeObserver?.observe(root)
+    resizeObserver?.observe(popover)
+    updatePlacement()
+    const mutationObserver = typeof globalThis.MutationObserver === 'function' ? new globalThis.MutationObserver(updatePlacement) : undefined
+    mutationObserver?.observe(document.documentElement, { attributes: true, attributeFilter: ['data-sidebar-right-open', 'hidden'], childList: true, subtree: true })
+    window.addEventListener('resize', updatePlacement)
+    document.addEventListener('scroll', updatePlacement, true)
+    return () => {
+      resizeObserver?.disconnect()
+      mutationObserver?.disconnect()
+      window.removeEventListener('resize', updatePlacement)
+      document.removeEventListener('scroll', updatePlacement, true)
+    }
+  }, [open, hasMagpieSnapshot])
+
   useEffect(() => {
     const sessionId = props.sessionId?.trim()
     if (!sessionId) {
@@ -154,6 +209,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       setResetPending(false)
       setResetResult(null)
       setResetError(null)
+      setMagpieTab('usage')
       return
     }
     let active = true
@@ -166,6 +222,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     setResetPending(false)
     setResetResult(null)
     setResetError(null)
+    setMagpieTab('usage')
     const refresh = async (signal: AbortSignal): Promise<boolean | void> => {
       let routeSignal: AbortSignal | undefined
       setLoading(true)
@@ -310,10 +367,16 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         'aria-expanded': open,
         style: subscriptionTriggerStyle,
       },
-        createElement('span', { style: magpieTriggerIconStyle, 'aria-hidden': true }, 'M'),
+        createElement('span', { style: magpieTriggerIconStyle, 'aria-hidden': true }, createElement('img', {
+          src: providerIconUrl('magpie') ?? '/api/codingns/provider-icons/magpie.png',
+          alt: '',
+          width: 20,
+          height: 20,
+          style: magpieTriggerImageStyle,
+        })),
         createElement('span', { className: 'codingns4dsh-subscription-label', style: subscriptionLabelStyle }, t('usage.magpieShortLabel')),
       ),
-      open && createElement(MagpieUsagePopover, { usage: magpie, t }),
+      open && createElement(MagpieUsagePopover, { usage: magpie, t, tab: magpieTab, onTabChange: setMagpieTab, placement: magpiePlacement, popoverRef: magpiePopoverRef }),
     )
   }
   const usage = snapshot.providerUsage
@@ -423,7 +486,14 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   )
 }
 
-function MagpieUsagePopover({ usage, t }: { readonly usage: MagpieUsageSnapshot; readonly t: CodingNsTranslator }): ReactElement {
+function MagpieUsagePopover({ usage, t, tab = 'usage', onTabChange = () => {}, placement = { left: 0, width: 400 }, popoverRef }: {
+  readonly usage: MagpieUsageSnapshot
+  readonly t: CodingNsTranslator
+  readonly tab?: 'usage' | 'route'
+  readonly onTabChange?: (tab: 'usage' | 'route') => void
+  readonly placement?: { readonly left: number; readonly width: number }
+  readonly popoverRef?: RefObject<HTMLDivElement>
+}): ReactElement {
   const aggregateRows = usage.aggregate === null ? [] : [
     [t('usage.magpieRequests'), formatMagpieNumber(usage.aggregate.calls)],
     [t('usage.magpieErrors'), formatMagpieNumber(usage.aggregate.errors)],
@@ -432,6 +502,7 @@ function MagpieUsagePopover({ usage, t }: { readonly usage: MagpieUsageSnapshot;
     [t('usage.magpieCacheReadTokens'), formatMagpieTokenCount(usage.aggregate.cacheReadTokens)],
     [t('usage.magpieCacheWriteTokens'), formatMagpieTokenCount(usage.aggregate.cacheWriteTokens)],
     [t('usage.magpieTotalTokens'), formatMagpieTokenCount(sumKnownCounts(usage.aggregate.inputTokens, usage.aggregate.outputTokens))],
+    [t('usage.magpieCacheHitRate'), formatMagpieCacheHitRate(usage.aggregate.inputTokens, usage.aggregate.cacheReadTokens)],
     [t('usage.magpieCost'), formatMagpieCost(usage.aggregate.costUsd)],
   ] as const
   const sessionRows = usage.session === null ? [] : [
@@ -442,49 +513,69 @@ function MagpieUsagePopover({ usage, t }: { readonly usage: MagpieUsageSnapshot;
     [t('usage.magpieCacheReadTokens'), formatMagpieTokenCount(usage.session.cacheReadTokens)],
     [t('usage.magpieCacheWriteTokens'), formatMagpieTokenCount(usage.session.cacheWriteTokens)],
     [t('usage.magpieTotalTokens'), formatMagpieTokenCount(sumKnownCounts(usage.session.inputTokens, usage.session.outputTokens))],
+    [t('usage.magpieCacheHitRate'), formatMagpieCacheHitRate(usage.session.inputTokens, usage.session.cacheReadTokens)],
     [t('usage.magpieCost'), formatMagpieCost(usage.session.costUsd)],
   ] as const
-  const routeStatus = usage.routeStatus === 'available'
-    ? usage.route === null ? t('usage.magpieRouteUnavailable') : null
-    : usage.routeStatus === 'no-route'
-      ? t('usage.magpieRouteNoRequests')
-      : usage.routeStatus === 'session-unavailable'
-        ? t('usage.magpieSessionIdUnavailable')
-        : t('usage.magpieRouteUnavailable')
-  const route = usage.route
-  const routeRows = route === null ? [] : [
-    [t('usage.magpieAskedModel'), route.asked],
-    [t('usage.magpieRouteGroup'), route.group],
-    [t('usage.magpieRouteRule'), route.rule],
-    [t('usage.magpieRoutedModel'), route.model],
-    [t('usage.magpieServedModel'), route.served],
-    [t('usage.magpieEffort'), route.effort],
-    [t('usage.magpieRequestStatus'), route.status === null ? null : `${route.done === true ? t('usage.magpieRouteDone') : route.done === false ? t('usage.magpieRouteRunning') : ''}${route.status}`],
-  ] as const
+  const quotas = usage.quotas ?? []
+  const tabs = [
+    { id: 'usage' as const, label: t('usage.magpieTabUsage') },
+    { id: 'route' as const, label: t('usage.magpieTabRoute') },
+  ]
   return createElement('div', {
+    ref: popoverRef,
     className: 'codingns4dsh-subscription-popover',
     role: 'dialog',
     'aria-label': t('usage.magpieUsageLabel'),
-    style: subscriptionPopoverStyle,
+    style: { ...magpiePopoverStyle, left: placement.left, width: placement.width, maxWidth: placement.width },
   },
-    createElement('div', { style: popoverHeadingStyle },
-      createElement('div', { style: popoverHeadingTextStyle },
+    createElement('div', { style: magpiePopoverHeadingStyle },
+      createElement('div', { style: magpiePopoverHeadingTextStyle },
         createElement('strong', undefined, t('usage.magpieTitle')),
-        createElement('span', { style: magpieMutedTextStyle }, usage.modelId),
       ),
       createElement('span', { style: magpieHeaderMetaStyle },
-        createElement('span', { style: magpieMutedTextStyle }, t('usage.magpieTodayScope')),
-        createElement('span', { style: magpieMutedTextStyle }, t('usage.magpieUpdated', { time: formatMagpieTimestamp(usage.capturedAt) })),
+        createElement('span', { style: magpieHeaderMutedStyle }, t('usage.magpieUpdated', { time: formatMagpieTimestamp(usage.capturedAt) })),
       ),
     ),
-    createElement('section', { style: magpieSectionStyle },
-      createElement('strong', { style: sub2apiSectionTitleStyle }, t('usage.magpieAggregateTitle')),
+    createElement('div', { role: 'tablist', 'aria-label': t('usage.magpieUsageLabel'), style: magpieTabsStyle },
+      ...tabs.map((entry) => createElement('button', {
+        key: entry.id,
+        type: 'button',
+        role: 'tab',
+        id: `codingns4dsh-magpie-tab-${entry.id}`,
+        'aria-selected': tab === entry.id,
+        'aria-controls': `codingns4dsh-magpie-panel-${entry.id}`,
+        className: 'codingns4dsh-magpie-tab',
+        onClick: () => onTabChange(entry.id),
+        style: { ...magpieTabStyle, ...(tab === entry.id ? magpieTabActiveStyle : {}) },
+      }, entry.label)),
+    ),
+    createElement('div', {
+      role: 'tabpanel',
+      id: `codingns4dsh-magpie-panel-${tab}`,
+      'aria-labelledby': `codingns4dsh-magpie-tab-${tab}`,
+      style: magpieTabPanelStyle,
+    },
+      tab === 'usage' ? MagpieUsagePanel({ usage, aggregateRows, sessionRows, t })
+        : MagpieRoutePanel({ usage, quotas, t }),
+    ),
+  )
+}
+
+function MagpieUsagePanel({ usage, aggregateRows, sessionRows, t }: {
+  readonly usage: MagpieUsageSnapshot
+  readonly aggregateRows: readonly (readonly [string, string | null])[]
+  readonly sessionRows: readonly (readonly [string, string | null])[]
+  readonly t: CodingNsTranslator
+}): ReactElement {
+  return createElement('div', undefined,
+    createElement('section', { style: magpieUsageSectionStyle },
+      createElement('strong', { style: magpieSectionTitleStyle }, t('usage.magpieAggregateTitle')),
       usage.usageStatus === 'available'
         ? createMagpieRows(aggregateRows)
         : createElement('div', { style: magpieMutedTextStyle }, t('usage.magpieUsageUnavailable')),
     ),
-    createElement('section', { style: magpieSectionStyle },
-      createElement('strong', { style: sub2apiSectionTitleStyle }, t('usage.magpieSessionTitle')),
+    createElement('section', { style: magpieUsageSectionStyle },
+      createElement('strong', { style: magpieSectionTitleStyle }, t('usage.magpieSessionTitle')),
       usage.sessionId !== null && createElement('div', { style: magpieSessionIdentityStyle },
         createElement('span', undefined, t('usage.magpieAgent', { agent: usage.agent })),
         createElement('code', { style: magpieSessionIdStyle }, usage.sessionId),
@@ -493,28 +584,132 @@ function MagpieUsagePopover({ usage, t }: { readonly usage: MagpieUsageSnapshot;
         ? createElement('div', { style: magpieMutedTextStyle }, usage.sessionId === null ? t('usage.magpieSessionIdUnavailable') : t('usage.magpieSessionNoUsage'))
         : createMagpieRows(sessionRows),
     ),
+  )
+}
+
+function magpieQuotaUnavailableMessage(usage: MagpieUsageSnapshot, quotas: readonly MagpieQuota[], t: CodingNsTranslator): string | null {
+  return usage.quotaStatus === 'unavailable'
+    ? t('usage.magpieQuotaUnavailable')
+    : usage.quotaStatus === 'provider-unavailable'
+      ? t('usage.magpieQuotaProviderUnavailable')
+      : quotas.length === 0 ? t('usage.magpieQuotaNoData') : null
+}
+
+function createMagpieProviderBadges(usage: MagpieUsageSnapshot, style: Record<string, string | number>): ReactElement | null {
+  const providers = usage.upstreamProviders ?? (usage.upstreamProvider === null ? [] : [usage.upstreamProvider])
+  if (providers.length === 0) return null
+  return createElement('span', { style }, ...providers.map((provider) => createElement('span', { key: provider, style: magpieProviderBadgeStyle }, provider)))
+}
+
+function createMagpieQuotaCard(quota: MagpieQuota, t: CodingNsTranslator, index: number): ReactElement {
+  return createElement('div', { key: `${quota.provider}-${quota.user ?? 'account'}-${index}`, style: magpieQuotaCardStyle },
+    createElement('div', { style: magpieQuotaCardHeadingStyle },
+      createElement('span', { style: magpieQuotaNameStyle }, quota.alias ?? quota.name),
+      createElement('span', { style: magpieQuotaHeadingMetaStyle }, quota.plan ?? quota.provider),
+    ),
+    (quota.user !== null || quota.balance !== null) && createElement('div', { style: magpieQuotaIdentityStyle },
+      quota.user !== null && createElement('span', { title: quota.user }, t('usage.magpieQuotaAccount', { account: quota.user })),
+      quota.balance !== null && createElement('span', undefined, t('usage.magpieQuotaBalance', { balance: quota.balance })),
+    ),
+    quota.windows.length === 0
+      ? createElement('div', { style: magpieQuotaMetaStyle }, t('usage.magpieQuotaNoWindows'))
+      : quota.windows.map((window, windowIndex) => {
+          const remaining = window.remainingPercent
+          const amount = window.display ?? (window.amount !== null && window.limit !== null ? `${window.amount} / ${window.limit}${window.unit === null ? '' : ` ${window.unit}`}` : null)
+          return createElement('div', { key: `${window.name}-${windowIndex}`, style: magpieQuotaWindowStyle },
+            createElement('div', { style: windowHeadingStyle },
+              createElement('span', undefined, window.name),
+              remaining === null ? amount : createElement('strong', undefined, `${formatPercent(remaining)}%`),
+            ),
+            remaining !== null && createElement('div', { role: 'progressbar', 'aria-label': t('usage.magpieQuotaRemaining', { name: window.name, percent: formatPercent(remaining) }), 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': remaining, style: barStyle },
+              createElement('span', { style: { ...barFillStyle, width: `${remaining}%` } }),
+            ),
+            (amount !== null || window.resetsAt !== null) && createElement('div', { style: magpieQuotaFooterStyle },
+              amount !== null && createElement('span', undefined, amount),
+              window.resetsAt !== null && createElement('span', undefined, t('usage.magpieQuotaResets', { time: formatMagpieTimestamp(window.resetsAt) })),
+            ),
+          )
+        }),
+  )
+}
+
+function MagpieRoutePanel({ usage, quotas, t }: { readonly usage: MagpieUsageSnapshot; readonly quotas: readonly MagpieQuota[]; readonly t: CodingNsTranslator }): ReactElement {
+  const route = usage.route
+  const quotaMessage = magpieQuotaUnavailableMessage(usage, quotas, t)
+  const routeStatus = usage.routeStatus === 'no-route'
+    ? t('usage.magpieRouteNoRequests')
+    : usage.routeStatus === 'session-unavailable'
+      ? t('usage.magpieSessionIdUnavailable')
+      : t('usage.magpieRouteUnavailable')
+  const routeStages = route === null ? [] : ([
+    [t('usage.magpieAskedModel'), route.asked],
+    [t('usage.magpieRoutedModel'), route.model],
+    [t('usage.magpieServedModel'), route.served],
+  ] as const).filter((stage, index, all): stage is readonly [string, string] => stage[1] !== null && all.findIndex((item) => item[1] === stage[1]) === index)
+  const active = route?.done === false
+  const routeRows = route === null ? [] : [
+    [t('usage.magpieRouteGroup'), route.group],
+    [t('usage.magpieRouteRule'), route.rule],
+    [t('usage.magpieRouteAccount'), route.providerAccount ?? null],
+    [t('usage.magpieEffort'), route.effort],
+    [t('usage.magpieRequestStatus'), route.status === null ? null : `${route.done === true ? t('usage.magpieRouteDone') : route.done === false ? t('usage.magpieRouteRunning') : ''}${route.status}`],
+  ] as const
+  return createElement('div', undefined,
     createElement('section', { style: magpieSectionStyle },
-      createElement('strong', { style: sub2apiSectionTitleStyle }, t('usage.magpieRouteTitle')),
-      routeStatus !== null
-        ? createElement('div', { style: magpieMutedTextStyle }, routeStatus)
-        : createMagpieRows(routeRows),
-      route !== null && route.tries.length > 0 && createElement('div', { style: magpieAttemptsStyle },
-        createElement('span', { style: magpieMutedTextStyle }, t('usage.magpieAttempts')),
-        ...route.tries.map((attempt, index) => createElement('div', { key: `${attempt.model ?? 'model'}-${index}`, style: magpieAttemptRowStyle },
-          createElement('span', { style: magpieAttemptModelStyle }, attempt.model ?? t('usage.magpieUnknownModel')),
-          attempt.failed && createElement('span', { style: magpieFailedStyle }, t('usage.magpieFallback')),
-        )),
+      createElement('div', { style: magpieQuotaHeadingStyle },
+        createElement('strong', { style: magpieSectionTitleStyle }, t('usage.magpieQuotaTitle')),
+        createMagpieProviderBadges(usage, magpieProviderBadgesStyle),
       ),
+      quotaMessage !== null
+        ? createElement('div', { style: magpieEmptyStateStyle }, quotaMessage)
+        : quotas.map((quota, index) => createMagpieQuotaCard(quota, t, index)),
+    ),
+    createElement('section', { style: magpieSectionStyle },
+      createElement('div', { style: magpieRouteHeadingStyle },
+        createElement('strong', { style: magpieSectionTitleStyle }, t('usage.magpieRouteTitle')),
+        route !== null && createElement('span', { className: active ? 'codingns4dsh-magpie-route-node-active' : undefined, style: magpieRouteStatusStyle },
+          createElement('span', { style: magpieRouteStatusDotStyle }),
+          createElement('strong', undefined, route.done === true ? t('usage.magpieRouteComplete') : route.done === false ? t('usage.magpieRouteRunning').replace(/\s*·\s*$/u, '') : route.status ?? '--'),
+        ),
+      ),
+      route === null
+        ? createElement('div', { style: magpieEmptyStateStyle }, routeStatus)
+        : createElement('div', { style: magpieRouteHeroStyle },
+            createElement('div', { style: magpieRouteTrackStyle, 'aria-label': t('usage.magpieRouteFlowTitle'), role: 'list' },
+              ...routeStages.map(([label, model], index) => createElement('div', {
+                key: `step-${index}`,
+                className: 'codingns4dsh-magpie-route-step',
+                role: 'listitem',
+                style: { ...magpieRouteTrackItemStyle, animationDelay: `${index * 90}ms` },
+              },
+                createElement('div', { style: magpieRouteMarkerColumnStyle, 'aria-hidden': true },
+                  createElement('div', { className: 'codingns4dsh-magpie-route-node', style: magpieRouteNodeStyle }, createElement('span', { style: magpieRouteNodeDotStyle })),
+                  index < routeStages.length - 1 && createElement('div', { style: magpieRouteConnectorStyle }, active && createElement('span', { className: 'codingns4dsh-magpie-route-pulse', style: magpieRoutePulseStyle })),
+                ),
+                createElement('div', { style: magpieRouteStageCopyStyle },
+                  createElement('span', { style: magpieRouteStageLabelStyle }, label),
+                  createElement('strong', { style: magpieRouteStageValueStyle, title: model }, model),
+                ),
+              )),
+            ),
+            routeRows.length > 0 && createElement('div', { style: magpieRouteMetaStyle }, ...routeRows.filter((row): row is readonly [string, string] => row[1] !== null).map(([label, value]) => createElement('div', { key: label, style: magpieRouteMetaItemStyle },
+              createElement('span', { style: magpieRouteMetaLabelStyle }, label),
+              createElement('strong', { style: magpieRouteMetaValueStyle, title: value }, value),
+            ))),
+            route.tries.length > 0 && createElement('div', { style: magpieAttemptsStyle }, ...route.tries.map((attempt, index) => createElement('div', { key: `${attempt.model ?? 'model'}-${index}`, style: magpieAttemptRowStyle },
+              createElement('span', { style: magpieAttemptModelStyle }, attempt.model ?? t('usage.magpieUnknownModel')),
+              attempt.failed && createElement('span', { style: magpieFailedStyle }, t('usage.magpieFallback')),
+            ))),
+          ),
     ),
   )
 }
 
 function createMagpieRows(rows: readonly (readonly [string, string | null])[]): ReactElement {
-  const visibleRows = rows.filter((row): row is readonly [string, string] => row[1] !== null)
-  if (visibleRows.length === 0) return createElement('div', { style: magpieMutedTextStyle }, '--')
-  return createElement('div', { style: magpieStatsGridStyle }, ...visibleRows.map(([label, value]) => createElement('div', { key: label, style: magpieStatStyle },
-    createElement('span', { style: magpieMutedTextStyle }, label),
-    createElement('strong', { style: magpieRowValueStyle }, value),
+  if (rows.length === 0) return createElement('div', { style: magpieMutedTextStyle }, '--')
+  return createElement('div', { style: magpieStatsGridStyle }, ...rows.map(([label, value]) => createElement('div', { key: label, style: magpieStatStyle },
+    createElement('span', { style: magpieStatLabelStyle }, label),
+    createElement('strong', { style: magpieRowValueStyle }, value ?? '--'),
   )))
 }
 
@@ -528,6 +723,12 @@ function formatMagpieTokenCount(value: number | null): string | null {
 
 function formatMagpieCost(value: number | null): string | null {
   return value === null ? null : `$${value.toFixed(value >= 0.01 ? 2 : 4)}`
+}
+
+function formatMagpieCacheHitRate(inputTokens: number | null, cacheReadTokens: number | null): string | null {
+  if (inputTokens === null || cacheReadTokens === null) return null
+  const totalPromptTokens = inputTokens + cacheReadTokens
+  return totalPromptTokens <= 0 ? null : formatSub2ApiPercent(cacheReadTokens / totalPromptTokens * 100)
 }
 
 function sumKnownCounts(left: number | null, right: number | null): number | null {
@@ -1251,19 +1452,60 @@ function formatCreditBalance(value: string): string {
 const subscriptionRootStyle = { position: 'relative' as const, minWidth: 0, display: 'inline-flex', alignItems: 'center' }
 const subscriptionTriggerStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, height: 28, border: 0, borderRadius: 14, padding: '0 8px 0 4px', color: dshThemeColor.labelSecondary, background: 'transparent', cursor: 'pointer', fontSize: uiFontSize(13), lineHeight: '20px' }
 const subscriptionLabelStyle = { whiteSpace: 'nowrap' as const }
-const magpieTriggerIconStyle = { display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: dshThemeColor.surfaceSubtle, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), fontWeight: 700 }
-const magpieMutedTextStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), lineHeight: '16px', overflowWrap: 'anywhere' as const }
-const magpieHeaderMetaStyle = { display: 'grid', justifyItems: 'end', gap: 2, minWidth: 0, textAlign: 'right' as const }
-const magpieSectionStyle = { display: 'grid', gap: 8, paddingTop: 12, marginTop: 10, borderTop: `1px solid ${dshThemeColor.border}` }
-const magpieStatsGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 9, paddingTop: 2 }
-const magpieStatStyle = { display: 'grid', alignContent: 'start', gap: 2, minWidth: 0, padding: '7px 8px', borderRadius: 8, background: dshThemeColor.surfaceSubtle }
-const magpieRowValueStyle = { color: dshThemeColor.labelPrimary, fontWeight: 600, textAlign: 'right' as const, overflowWrap: 'anywhere' as const }
-const magpieSessionIdentityStyle = { display: 'grid', gap: 3, minWidth: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) }
-const magpieSessionIdStyle = { minWidth: 0, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), whiteSpace: 'normal' as const, overflowWrap: 'anywhere' as const }
-const magpieAttemptsStyle = { display: 'grid', gap: 4, paddingTop: 4 }
-const magpieAttemptRowStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: uiFontSize(11) }
+const magpieTriggerIconStyle = { display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', borderRadius: 6, background: dshThemeColor.surfaceSubtle }
+const magpieTriggerImageStyle = { display: 'block', width: '100%', height: '100%', objectFit: 'cover' as const }
+const magpieMutedTextStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: '17px', overflowWrap: 'anywhere' as const }
+const magpieHeaderMutedStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: '17px', overflowWrap: 'anywhere' as const }
+const magpieHeaderMetaStyle = { display: 'grid', justifyItems: 'end', gap: 3, minWidth: 0, textAlign: 'right' as const }
+const magpiePopoverHeadingStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 22, paddingBottom: 12, borderBottom: `1px solid ${dshThemeColor.border}`, fontSize: uiFontSize(15) }
+const magpiePopoverHeadingTextStyle = { display: 'grid', gap: 3, minWidth: 0 }
+const magpieSectionTitleStyle = { fontSize: uiFontSize(13), color: dshThemeColor.labelSecondary }
+const magpieTabsStyle = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 4, marginTop: 8, padding: 3, borderRadius: 9, background: dshThemeColor.surfaceSubtle }
+const magpieTabStyle = { minWidth: 0, padding: '6px 8px', border: 0, borderRadius: 8, background: 'transparent', color: dshThemeColor.labelTertiary, cursor: 'pointer', fontSize: uiFontSize(12), lineHeight: '16px', whiteSpace: 'nowrap' as const }
+const magpieTabActiveStyle = { background: dshThemeColor.menuBackground, color: dshThemeColor.labelPrimary, boxShadow: `0 1px 3px ${dshThemeColor.border}` }
+const magpieTabPanelStyle = { minHeight: 0 }
+const magpieSectionStyle = { display: 'grid', gap: 8, paddingTop: 11, marginTop: 10, borderTop: `1px solid ${dshThemeColor.border}` }
+const magpieUsageSectionStyle = { display: 'grid', gap: 5, paddingTop: 8, marginTop: 7, borderTop: `1px solid ${dshThemeColor.border}` }
+const magpieStatsGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6, paddingTop: 0 }
+const magpieStatStyle = { display: 'grid', alignContent: 'space-between', gap: 1, minWidth: 0, minHeight: 40, boxSizing: 'border-box' as const, padding: '5px 7px', borderRadius: 8, background: dshThemeColor.surfaceSubtle }
+const magpieStatLabelStyle = { minWidth: 0, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), lineHeight: '13px', overflowWrap: 'anywhere' as const }
+const magpieRowValueStyle = { color: dshThemeColor.labelPrimary, fontSize: uiFontSize(14), fontWeight: 650, lineHeight: '18px', textAlign: 'right' as const, overflowWrap: 'anywhere' as const }
+const magpieSessionIdentityStyle = { display: 'flex', flexWrap: 'wrap' as const, alignItems: 'baseline', gap: '2px 10px', minWidth: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: '16px' }
+const magpieSessionIdStyle = { flex: '1 1 120px', minWidth: 0, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), lineHeight: '14px', whiteSpace: 'normal' as const, overflowWrap: 'anywhere' as const }
+const magpieAttemptsStyle = { display: 'grid', gap: 5, paddingTop: 6 }
+const magpieAttemptRowStyle = { display: 'flex', justifyContent: 'space-between', gap: 14, fontSize: uiFontSize(12) }
 const magpieAttemptModelStyle = { color: dshThemeColor.labelSecondary, overflowWrap: 'anywhere' as const }
-const magpieFailedStyle = { flex: 'none', color: dshThemeColor.error, fontSize: uiFontSize(10) }
+const magpieFailedStyle = { flex: 'none', color: dshThemeColor.error, fontSize: uiFontSize(11) }
+const magpieQuotaHeadingStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }
+const magpieProviderBadgesStyle = { display: 'flex', justifyContent: 'flex-end', flexWrap: 'wrap' as const, gap: 5, minWidth: 0 }
+const magpieProviderBadgeStyle = { flex: 'none', maxWidth: 220, overflow: 'hidden', padding: '4px 8px', borderRadius: 999, background: dshThemeColor.surfaceSubtle, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
+const magpieEmptyStateStyle = { display: 'grid', placeItems: 'center', minHeight: 36, padding: '8px 10px', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: '17px', textAlign: 'center' as const }
+const magpieQuotaCardStyle = { display: 'grid', gap: 5, marginTop: 7, padding: '9px 10px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 9, background: dshThemeColor.surfaceSubtle }
+const magpieQuotaCardHeadingStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }
+const magpieQuotaNameStyle = { minWidth: 0, overflow: 'hidden', color: dshThemeColor.labelPrimary, fontSize: uiFontSize(13), fontWeight: 650, textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
+const magpieQuotaHeadingMetaStyle = { flex: 'none', maxWidth: 160, overflow: 'hidden', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
+const magpieQuotaIdentityStyle = { display: 'flex', flexWrap: 'wrap' as const, gap: '3px 12px', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), lineHeight: '15px', overflowWrap: 'anywhere' as const }
+const magpieQuotaMetaStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), lineHeight: '15px', overflowWrap: 'anywhere' as const }
+const magpieQuotaWindowStyle = { display: 'grid', gap: 4, paddingTop: 3 }
+const magpieQuotaFooterStyle = { display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap' as const, gap: '3px 10px', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), lineHeight: '15px' }
+const magpieRouteHeadingStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }
+const magpieRouteHeroStyle = { display: 'grid', gap: 11, padding: '12px 13px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 12, background: `linear-gradient(145deg, ${dshThemeColor.surfaceSubtle}, transparent)` }
+const magpieRouteStatusStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', padding: '3px 8px', borderRadius: 999, background: dshThemeColor.surfaceSubtle, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), whiteSpace: 'nowrap' as const }
+const magpieRouteStatusDotStyle = { width: 8, height: 8, borderRadius: '50%', background: dshThemeColor.accent }
+const magpieRouteTrackStyle = { display: 'grid', gap: 0, minWidth: 0, padding: '3px 0' }
+const magpieRouteTrackItemStyle = { display: 'grid', gridTemplateColumns: '18px minmax(0, 1fr)', alignItems: 'start', gap: 12, minWidth: 0, padding: '5px 8px', margin: '0 -8px', borderRadius: 8 }
+const magpieRouteMarkerColumnStyle = { display: 'flex', flexDirection: 'column' as const, alignItems: 'center', minHeight: 18 }
+const magpieRouteNodeStyle = { display: 'grid', flex: '0 0 18px', placeItems: 'center', width: 18, height: 18, borderRadius: '50%', background: dshThemeColor.menuBackground, boxShadow: `0 0 0 1px ${dshThemeColor.border}` }
+const magpieRouteNodeDotStyle = { width: 7, height: 7, borderRadius: '50%', background: dshThemeColor.accent }
+const magpieRouteStageCopyStyle = { display: 'grid', gap: 3, minWidth: 0, padding: '2px 0 3px' }
+const magpieRouteStageLabelStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), lineHeight: '13px', letterSpacing: '.025em' }
+const magpieRouteStageValueStyle = { color: dshThemeColor.labelPrimary, fontSize: uiFontSize(12), fontWeight: 620, lineHeight: '16px', overflowWrap: 'anywhere' as const }
+const magpieRouteConnectorStyle = { width: 2, height: 28, marginTop: 4, overflow: 'hidden' as const, borderRadius: 2, background: `linear-gradient(180deg, ${dshThemeColor.accent}, ${dshThemeColor.border})` }
+const magpieRoutePulseStyle = { display: 'block', width: '100%', height: 9, borderRadius: 2, background: dshThemeColor.accent, boxShadow: `0 0 6px ${dshThemeColor.accent}` }
+const magpieRouteMetaStyle = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 6 }
+const magpieRouteMetaItemStyle = { display: 'grid', alignContent: 'start', gap: 3, minWidth: 0, padding: '6px 8px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, background: dshThemeColor.menuBackground }
+const magpieRouteMetaLabelStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), lineHeight: '13px' }
+const magpieRouteMetaValueStyle = { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), fontWeight: 550, lineHeight: '15px', overflowWrap: 'anywhere' as const }
 const sub2apiIdentityStyle = { display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' as const, fontVariantNumeric: 'tabular-nums' }
 const sub2apiLogoStyle = { display: 'block', borderRadius: 4, objectFit: 'contain' as const }
 const deepseekBalanceIdentityStyle = { display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' as const, fontVariantNumeric: 'tabular-nums' as const }
@@ -1305,6 +1547,7 @@ const barFillStyle = { display: 'block', height: '100%', borderRadius: 4, backgr
 const resetStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12) }
 const quotaGroupTitleStyle = { paddingTop: 12, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), fontWeight: 600, letterSpacing: '.02em' }
 const subscriptionPopoverStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1200, bottom: 'calc(100% + 8px)', left: 0, width: 'max-content', minWidth: 280, maxWidth: 'min(400px, calc(100vw - 24px))', maxHeight: 'min(70vh, 560px)', overflowY: 'auto' as const, boxSizing: 'border-box' as const, padding: 14, borderRadius: 12 }
+const magpiePopoverStyle = { ...subscriptionPopoverStyle, width: 400, minWidth: 0, maxWidth: 'min(400px, calc(100vw - 24px))', maxHeight: 'min(78vh, 640px)', padding: 12, borderRadius: 14 }
 const resetCreditsSectionStyle = { display: 'grid', gap: 6, marginTop: 10, padding: '10px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 10, background: dshThemeColor.surfaceSubtle }
 const resetCreditsRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13) }
 const resetCreditsValueGroupStyle = { display: 'inline-flex', alignItems: 'center', gap: 8 }

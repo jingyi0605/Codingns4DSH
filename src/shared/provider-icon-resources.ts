@@ -2,6 +2,7 @@
 export const PROVIDER_ICON_PATH = '/api/codingns/provider-icons/'
 
 export const PROVIDER_ICON_FILES: Readonly<Record<string, string>> = {
+  magpie: 'magpie.png',
   dsh: 'deepseek-harness.svg',
   'command-code': 'command-code.svg',
   'claude-code': 'claude-code.png',

@@ -120,7 +120,40 @@ export interface MagpieRouteUsage {
   readonly done: boolean | null
   readonly status: string | null
   readonly served: string | null
+  /** Magpie's trace ID and timestamp; request-ledger fallbacks also provide these. */
+  readonly routeId?: number | null
+  readonly time?: string | null
+  /** Account label recorded for the provider that served this request. */
+  readonly providerAccount?: string | null
 }
+
+/** A quota window returned by Magpie's public gateway quota endpoint. */
+export interface MagpieQuotaWindow {
+  readonly name: string
+  readonly usedPercent: number | null
+  readonly remainingPercent: number | null
+  readonly resetsAt: string | null
+  readonly display: string | null
+  readonly amount: number | null
+  readonly limit: number | null
+  readonly unit: string | null
+  readonly holdsWhy: string | null
+}
+
+/** A provider/account quota summary with credentials and raw provider data removed. */
+export interface MagpieQuota {
+  readonly provider: string
+  readonly name: string
+  readonly kind: string | null
+  readonly user: string | null
+  readonly plan: string | null
+  readonly alias: string | null
+  readonly balance: string | null
+  readonly readAt: string | null
+  readonly windows: readonly MagpieQuotaWindow[]
+}
+
+export type MagpieQuotaStatus = 'available' | 'unavailable' | 'provider-unavailable'
 
 export type MagpieUsageRouteStatus = 'available' | 'no-route' | 'not-requested' | 'unavailable' | 'session-unavailable'
 
@@ -136,6 +169,13 @@ export interface MagpieUsageSnapshot {
   readonly session: MagpieSessionUsage | null
   readonly routeStatus: MagpieUsageRouteStatus
   readonly route: MagpieRouteUsage | null
+  /** Provider identified from the exact route, or from a direct provider/model selection. */
+  readonly upstreamProvider: string | null
+  /** Every upstream provider observed in this session's request records. */
+  readonly upstreamProviders?: readonly string[]
+  readonly quotaStatus: MagpieQuotaStatus
+  /** Only quotas belonging to the identified upstream provider are exposed. */
+  readonly quotas: readonly MagpieQuota[]
 }
 
 /** 新版 Host 的用量响应；Client 仍兼容旧版直接返回订阅对象的 Host。 */
