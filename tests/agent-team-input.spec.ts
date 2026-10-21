@@ -181,14 +181,15 @@ for (const withPeer of [false, true]) {
       const report = peer('keep-report', 'Existing task completed')
       const messages = withPeer ? [fresh, report] : [fresh]
       const result = hooks.get('agent/pre-step')({ agent: { id: 'lead' }, messages }, async () => ({ kind: 'enter', messages }))
-      const pending = () => table.resolve('cli/translation/pending')!.handler('translation/pending', { sessionId: 'lead' }) as any[]
-      for (let index = 0; index < 30 && pending().length === 0; index++) await new Promise(resolve => setImmediate(resolve))
-      assert.equal(pending().length, 1)
-      await table.resolve('cli/translation/resolve')!.handler('translation/resolve', { sessionId: 'lead', id: pending()[0].id, choice: 'cancel' })
+      const pending = async () => await table.resolve('cli/translation/pending')!.handler('translation/pending', { sessionId: 'lead' }) as any[]
+      for (let index = 0; index < 30 && (await pending()).length === 0; index++) await new Promise(resolve => setImmediate(resolve))
+      const queued = await pending()
+      assert.equal(queued.length, 1)
+      await table.resolve('cli/translation/resolve')!.handler('translation/resolve', { sessionId: 'lead', id: queued[0].id, choice: 'cancel' })
       const decision = await result
       assert.equal(decision.kind, withPeer ? 'enter' : 'reject')
       if (withPeer) assert.deepEqual(decision.messages, [report], 'A cancelled human submission must not discard accepted Team work')
-      assert.equal(pending().length, 0)
+      assert.equal((await pending()).length, 0)
     } finally { await features.disable('cliAdapters') }
   })
 }
