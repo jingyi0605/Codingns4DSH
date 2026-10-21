@@ -357,6 +357,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   if (!eligible || snapshot === null) return null
   if (snapshot.magpie !== null) {
     const magpie = snapshot.magpie
+    const magpieRemaining = resolveMagpieQuotaRemaining(magpie)
     const label = t('usage.magpieUsageLabel')
     return createElement('div', { ref: rootRef, style: subscriptionRootStyle },
       createElement('button', {
@@ -374,7 +375,9 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
           height: 20,
           style: magpieTriggerImageStyle,
         })),
-        createElement('span', { className: 'codingns4dsh-subscription-label', style: subscriptionLabelStyle }, t('usage.magpieShortLabel')),
+        magpieRemaining === null
+          ? createElement('span', { className: 'codingns4dsh-subscription-label', style: subscriptionLabelStyle }, t('usage.magpieShortLabel'))
+          : createRemainingRing(magpieRemaining),
       ),
       open && createElement(MagpieUsagePopover, { usage: magpie, t, tab: magpieTab, onTabChange: setMagpieTab, placement: magpiePlacement, popoverRef: magpiePopoverRef }),
     )
@@ -1334,6 +1337,15 @@ function createModelRow(model: Sub2ApiModelUsage, unit: string): ReactElement {
 
 function resolveDisplayWindow(usage: CliSubscriptionUsage): CliSubscriptionWindow | null {
   return usage.primary ?? usage.secondary ?? usage.monthly
+}
+function resolveMagpieQuotaRemaining(usage: MagpieUsageSnapshot): number | null {
+  if (usage.quotaStatus !== 'available') return null
+  for (const quota of usage.quotas) {
+    for (const window of quota.windows) {
+      if (window.remainingPercent !== null) return window.remainingPercent
+    }
+  }
+  return null
 }
 function selectDeepseekBalance(usage: DeepseekUsage): DeepseekUsage['balances'][number] | null {
   return usage.balances.find((balance) => balance.currency.toUpperCase() === 'USD') ?? usage.balances[0] ?? null
