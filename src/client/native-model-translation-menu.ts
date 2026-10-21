@@ -1,10 +1,21 @@
 import { composerSlotSelector } from '../dsh-capabilities/client/composer-slot-selectors.js'
+import { createMagpieModelTagNode, MAGPIE_MODEL_TAG_ATTRIBUTE } from './magpie-model-tag.js'
+
+export interface NativeModelCatalogEntry {
+  readonly id: string
+  readonly name: string
+  readonly source?: 'magpie'
+}
 
 /**
  * DSH 模型菜单尚无扩展插槽，通过原生触发器的 aria-controls 定位当前会话菜单。
  * 只添加翻译行的 Portal 容器，原生模型选择、思考强度和菜单交互继续由 DSH 管理。
  */
-export function watchNativeModelMenu(anchor: HTMLElement, onTarget: (target: HTMLElement | null) => void): () => void {
+export function watchNativeModelMenu(
+  anchor: HTMLElement,
+  onTarget: (target: HTMLElement | null) => void,
+  readModels: () => readonly NativeModelCatalogEntry[] = () => [],
+): () => void {
   const document = anchor.ownerDocument
   const view = document.defaultView
   const Observer = view?.MutationObserver
@@ -26,6 +37,7 @@ export function watchNativeModelMenu(anchor: HTMLElement, onTarget: (target: HTM
     trigger = anchor.closest('[data-composer-card]')?.querySelector<HTMLButtonElement>(modelTriggerSelector) ?? null
     const menuId = trigger?.getAttribute('aria-controls')
     const menu = menuId === undefined || menuId === null ? null : document.getElementById(menuId)
+    if (menu !== null && trigger?.getAttribute('aria-expanded') === 'true') decorateMagpieModels(menu, readModels(), document)
     // 模型列表和思考档位子菜单不放翻译行，避免干扰原生键盘导航与搜索。
     const rootMenu = trigger?.getAttribute('aria-expanded') === 'true'
       && menu?.getAttribute('role') === 'menu'
@@ -52,4 +64,75 @@ export function watchNativeModelMenu(anchor: HTMLElement, onTarget: (target: HTM
     target?.remove()
     resize()
   }
+}
+
+/** Decorate only exact model identities; display-name fallback requires an unambiguous label. */
+export function decorateMagpieModels(menu: HTMLElement, models: readonly NativeModelCatalogEntry[], document: Document): void {
+  if (typeof menu.querySelectorAll !== 'function') return
+  const tags = [...menu.querySelectorAll<HTMLElement>(`[${MAGPIE_MODEL_TAG_ATTRIBUTE}]`)]
+  if (models.length === 0) {
+    for (const tag of tags) tag.remove()
+    return
+  }
+  const byId = new Map(models.filter((model) => model.source === 'magpie').map((model) => [model.id, model]))
+  const byName = new Map<string, NativeModelCatalogEntry[]>()
+  for (const model of models) {
+    const sameName = byName.get(model.name) ?? []
+    sameName.push(model)
+    byName.set(model.name, sameName)
+  }
+  const selector = `[role="menuitemradio"], [role="option"], [data-model-id], [data-model], [data-value]`
+  const candidates = [...menu.querySelectorAll<HTMLElement>(selector)]
+  const candidateSet = new Set(candidates)
+  for (const row of candidates) {
+    // Nested identity attributes belong to their containing option, not a second row.
+    let ancestor = row.parentElement
+    let nested = false
+    while (ancestor !== null && ancestor !== menu) {
+      if (candidateSet.has(ancestor)) { nested = true; break }
+      ancestor = ancestor.parentElement
+    }
+    if (nested) continue
+
+    const existing = row.querySelector<HTMLElement>(`[${MAGPIE_MODEL_TAG_ATTRIBUTE}]`)
+    const marked = existing?.dataset.modelId === undefined ? undefined : byId.get(existing.dataset.modelId)
+    const model = marked?.source === 'magpie' ? marked : identifyNativeModel(row, byId, byName)
+    if (model?.source !== 'magpie') {
+      existing?.remove()
+      continue
+    }
+    if (existing?.dataset.modelId === model.id) continue
+    existing?.remove()
+    const label = findModelLabel(row, model.name)
+    const tag = createMagpieModelTagNode(document, model.id)
+    if (label === row) row.append(tag)
+    else label.after(tag)
+  }
+}
+
+function identifyNativeModel(
+  row: HTMLElement,
+  byId: ReadonlyMap<string, NativeModelCatalogEntry>,
+  byName: ReadonlyMap<string, readonly NativeModelCatalogEntry[]>,
+): NativeModelCatalogEntry | undefined {
+  const nodes = [row, ...row.querySelectorAll<HTMLElement>('*')]
+  for (const node of nodes) {
+    for (const attribute of ['data-model-id', 'data-model', 'data-value', 'value']) {
+      const id = node.getAttribute(attribute)
+      const match = id === null ? undefined : byId.get(id)
+      if (match !== undefined) return match
+    }
+  }
+  for (const [name, matches] of byName) {
+    if (matches.length === 0 || matches.some((model) => model.source !== 'magpie')) continue
+    if (nodes.some((node) => node.textContent?.trim() === name || node.getAttribute('aria-label')?.trim() === name || node.title.trim() === name)) {
+      return matches[0]
+    }
+  }
+  return undefined
+}
+
+function findModelLabel(row: HTMLElement, name: string): HTMLElement {
+  const nodes = [row, ...row.querySelectorAll<HTMLElement>('*')]
+  return nodes.find((node) => node.textContent?.trim() === name && node.children.length === 0) ?? row
 }

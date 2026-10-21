@@ -4,7 +4,7 @@ import type { ReactElement, RefObject } from 'react'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { isSubscriptionUsageFresh } from '../shared/contracts/subscription.js'
-import type { CliSubscriptionGroup, CliSubscriptionGroupWindow, CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
+import type { CliSubscriptionGroup, CliSubscriptionGroupWindow, CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionSnapshot, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, MagpieUsageSnapshot, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
 import { DEFAULT_SUBSCRIPTION_USAGE_SETTINGS } from '../shared/contracts/config.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCliRpc } from './cli-catalog.js'
@@ -52,9 +52,9 @@ const FALLBACK_LOCALE = {
  * 进程内用量结果缓存：同一适配器/提供商在刷新间隔内直接复用上次结果，
  * 避免每次进入会话或切回同一 Agent 都请求上游；null 结果不缓存，便于刚登录后立刻重试。
  */
-type UsageCache = Map<string, { readonly usage: CliSubscriptionUsage; readonly capturedAt: number }>
+type UsageCache = Map<string, { readonly usage: CliSubscriptionSnapshot; readonly capturedAt: number }>
 const usageCaches = new WeakMap<CodingNsRpcClient, UsageCache>()
-const usageLoads = new WeakMap<CodingNsRpcClient, Map<string, Promise<CliSubscriptionUsage | null>>>()
+const usageLoads = new WeakMap<CodingNsRpcClient, Map<string, Promise<CliSubscriptionSnapshot | null>>>()
 function usageCache(rpc: CodingNsRpcClient): UsageCache {
   let cache = usageCaches.get(rpc)
   if (cache === undefined) { cache = new Map(); usageCaches.set(rpc, cache) }
@@ -67,12 +67,13 @@ export function invalidateSubscriptionUsageCache(cache: Pick<UsageCache, 'keys' 
   for (const key of cache.keys()) if (key.startsWith(prefix)) cache.delete(key)
 }
 
-function loadUsage(rpc: CodingNsRpcClient, key: string, payload: unknown): Promise<CliSubscriptionUsage | null> {
+function loadUsage(rpc: CodingNsRpcClient, key: string, payload: unknown): Promise<CliSubscriptionSnapshot | null> {
   let loads = usageLoads.get(rpc)
   if (loads === undefined) { loads = new Map(); usageLoads.set(rpc, loads) }
   const existing = loads.get(key)
   if (existing !== undefined) return existing
-  const request = callCliRpc<CliSubscriptionUsage | null>(rpc, 'subscription', payload, AbortSignal.timeout(30_000))
+  const request = callCliRpc<unknown>(rpc, 'subscription', payload, AbortSignal.timeout(30_000))
+    .then(normalizeSubscriptionSnapshot)
     .finally(() => { if (loads.get(key) === request) loads.delete(key) })
   loads.set(key, request)
   return request
@@ -112,7 +113,7 @@ export function registerSubscriptionSlot(slots: SlotRegistry, rpc: CodingNsRpcCl
 function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement | null {
   const t = useCodingNsTranslator(props.locale ?? FALLBACK_LOCALE)
   const subscriptionUsageCache = usageCache(props.rpc)
-  const [usage, setUsage] = useState<CliSubscriptionUsage | null>(null)
+  const [snapshot, setSnapshot] = useState<CliSubscriptionSnapshot | null>(null)
   const [adapterId, setAdapterId] = useState<string | null>(null)
   const [providerId, setProviderId] = useState<string | null>(null)
   const [eligible, setEligible] = useState(false)
@@ -122,22 +123,30 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const rootRef = useRef<HTMLDivElement>(null)
   const resetDialogRef = useRef<HTMLDivElement>(null)
   // 重置成功后的刷新不能重跑加载 effect，否则 usage 会被清空导致底部入口闪断。
-  const refreshRef = useRef<null | (() => Promise<void>)>(null)
+  const refreshRef = useRef<null | ((options?: { readonly afterPending?: boolean }) => Promise<void>)>(null)
+  const routeRefreshControllerRef = useRef<AbortController | null>(null)
   const [resetOpen, setResetOpen] = useState(false)
   const [resetPending, setResetPending] = useState(false)
   const [resetResult, setResetResult] = useState<CliSubscriptionResetOutcome | null>(null)
   const [resetError, setResetError] = useState<string | null>(null)
-  const modelSelectionRevision = props.useSession?.((value) => JSON.stringify(value.modelSelection))
+  // Agent-native session bindings are written by Host during a turn. Refresh
+  // at turn state changes so a snapshot loaded before the binding is not kept.
+  const modelSelectionRevision = props.useSession?.((value) => JSON.stringify([value.modelSelection, value.running]))
   // Agent、模型或 Provider 切换可能只改变 Host 侧会话配置，DSH 会话快照不一定会更新；
   // 订阅适配器缓存的通知才能真正触发重新查询，否则底部会一直显示旧上游的数据。
   const [adapterRevision, bumpAdapterRevision] = useState(0)
+  const openRef = useRef(open)
+  openRef.current = open
+  const snapshotRef = useRef(snapshot)
+  snapshotRef.current = snapshot
+  const hasMagpieSnapshot = snapshot?.magpie != null
   useEffect(() => subscribeSessionAdapters(() => { bumpAdapterRevision((value) => value + 1) }), [])
 
   useEffect(() => {
     const sessionId = props.sessionId?.trim()
     if (!sessionId) {
       setEligible(false)
-      setUsage(null)
+      setSnapshot(null)
       setAdapterId(null)
       setProviderId(null)
       setOpen(false)
@@ -149,7 +158,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     }
     let active = true
     setEligible(false)
-    setUsage(null)
+    setSnapshot(null)
     setAdapterId(null)
     setProviderId(null)
     setOpen(false)
@@ -157,7 +166,8 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     setResetPending(false)
     setResetResult(null)
     setResetError(null)
-    const refresh = async (): Promise<boolean | void> => {
+    const refresh = async (signal: AbortSignal): Promise<boolean | void> => {
+      let routeSignal: AbortSignal | undefined
       setLoading(true)
       try {
         // 订阅入口必须读取当前会话的真实 Provider；模型选择器切换后不能复用
@@ -167,12 +177,13 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         if (!active || !isSubscriptionAdapter(adapterId)) {
           if (active) {
             setEligible(false)
-            setUsage(null)
+            setSnapshot(null)
             setAdapterId(null)
             setProviderId(null)
           }
           return
         }
+        if (signal.aborted) return false
         if (active) {
           setEligible(true)
           setAdapterId(adapterId)
@@ -182,27 +193,35 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         // 模型也是读取键的一部分：Antigravity 的 Gemini 与 Claude/GPT 是两个独立配额组。
         // 会话 ID 同时承担 PeerHost 的路由身份；缓存也必须按会话隔离，
         // 否则本机与远端使用相同 Agent/Provider/模型时会互相复用上游结果。
-        const cacheKey = `${adapterId}|${selection.providerId ?? ''}|${selection.modelId ?? ''}|${sessionId}`
+        const cacheKey = JSON.stringify([adapterId, selection.providerId ?? '', selection.modelId ?? '', sessionId, selection.providerSessionId ?? ''])
+        const includeRoute = openRef.current && snapshotRef.current?.magpie != null
         const cached = subscriptionUsageCache.get(cacheKey)
         // New-API 的余额和 Token 日志可能随 Key/钱包状态快速变化，且旧结果
         // 容易把历史日志投影到当前站点；每次刷新都重新读取，Sub2API 仍复用原缓存。
-        const canReuseCachedUsage = cached !== undefined && cached.usage.provider?.capability !== 'new-api'
-        if (canReuseCachedUsage && isSubscriptionUsageFresh(cached.capturedAt, Date.now(), intervalMins)) {
-          if (active) setUsage(cached.usage)
+        const canReuseCachedUsage = cached !== undefined && cached.usage.providerUsage?.provider?.capability !== 'new-api'
+        if (!includeRoute && canReuseCachedUsage && isSubscriptionUsageFresh(cached.capturedAt, Date.now(), intervalMins)) {
+          if (active) setSnapshot(cached.usage)
           return
         }
-        const next = await loadUsage(props.rpc, cacheKey, {
+        const payload = {
           sessionId,
           adapterId,
           ...(selection.providerId ? { providerId: selection.providerId } : {}),
           ...(selection.modelId ? { modelId: selection.modelId } : {}),
-        })
+          ...(includeRoute ? { includeRoute: true } : {}),
+        }
+        routeSignal = includeRoute ? routeRefreshControllerRef.current?.signal : undefined
+        const requestSignal = routeSignal === undefined ? signal : AbortSignal.any([signal, routeSignal])
+        const next = includeRoute
+          ? normalizeSubscriptionSnapshot(await callCliRpc<unknown>(props.rpc, 'subscription', payload, requestSignal))
+          : await loadUsage(props.rpc, cacheKey, payload)
         if (next !== null) subscriptionUsageCache.set(cacheKey, { usage: next, capturedAt: Date.now() })
-        if (active) setUsage(next)
+        if (active) setSnapshot(next)
       } catch {
+        if (signal.aborted || routeSignal?.aborted === true) return false
         if (active) {
           setEligible(false)
-          setUsage(null)
+          setSnapshot(null)
         }
         return false
       } finally {
@@ -214,16 +233,36 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     refreshRef.current = poll.refresh
     return () => {
       active = false
+      routeRefreshControllerRef.current?.abort()
+      routeRefreshControllerRef.current = null
       refreshRef.current = null
       poll.dispose()
     }
   }, [props.rpc, props.sessionId, props.getRefreshIntervalMins, modelSelectionRevision, adapterRevision])
 
+  // Only request route details while the Magpie usage panel is open. The
+  // existing serial poller owns timing; this controller only bounds the
+  // request to the panel's open lifetime.
   useEffect(() => {
-    if (!eligible || usage === null) return
+    if (!open || !hasMagpieSnapshot) {
+      routeRefreshControllerRef.current?.abort()
+      routeRefreshControllerRef.current = null
+      return
+    }
+    const controller = new AbortController()
+    routeRefreshControllerRef.current = controller
+    void refreshRef.current?.({ afterPending: true })
+    return () => {
+      controller.abort()
+      if (routeRefreshControllerRef.current === controller) routeRefreshControllerRef.current = null
+    }
+  }, [open, hasMagpieSnapshot])
+
+  useEffect(() => {
+    if (!eligible || snapshot === null) return
     const timer = globalThis.setInterval(() => setClock(Date.now()), 60_000)
     return () => globalThis.clearInterval(timer)
-  }, [eligible, usage])
+  }, [eligible, snapshot])
 
   const closeResetDialog = (): void => {
     if (resetPending) return
@@ -258,8 +297,28 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   useDismissOnOutsidePointer(rootRef, open, () => setOpen(false))
   useDismissOnOutsidePointer(resetDialogRef, resetOpen && !resetPending, closeResetDialog)
 
+  if (!eligible || snapshot === null) return null
+  if (snapshot.magpie !== null) {
+    const magpie = snapshot.magpie
+    const label = t('usage.magpieUsageLabel')
+    return createElement('div', { ref: rootRef, style: subscriptionRootStyle },
+      createElement('button', {
+        type: 'button',
+        className: 'codingns4dsh-subscription-trigger',
+        onClick: () => setOpen((value) => !value),
+        'aria-label': label,
+        'aria-expanded': open,
+        style: subscriptionTriggerStyle,
+      },
+        createElement('span', { style: magpieTriggerIconStyle, 'aria-hidden': true }, 'M'),
+        createElement('span', { className: 'codingns4dsh-subscription-label', style: subscriptionLabelStyle }, t('usage.magpieShortLabel')),
+      ),
+      open && createElement(MagpieUsagePopover, { usage: magpie, t }),
+    )
+  }
+  const usage = snapshot.providerUsage
   // 未拿到真实订阅数据时不占用底部栏空间；加载状态不能伪装成订阅存在。
-  if (!eligible || usage === null || (usage.sub2api === undefined && usage.deepseek === undefined && usage.providerBalance === undefined && resolveDisplayWindow(usage) === null)) return null
+  if (usage === null || (usage.sub2api === undefined && usage.deepseek === undefined && usage.providerBalance === undefined && resolveDisplayWindow(usage) === null)) return null
   const sub2api = usage.sub2api
   const deepseek = usage.deepseek
   const providerBalance = usage.providerBalance
@@ -362,6 +421,139 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       dialogRef: resetDialogRef,
     }),
   )
+}
+
+function MagpieUsagePopover({ usage, t }: { readonly usage: MagpieUsageSnapshot; readonly t: CodingNsTranslator }): ReactElement {
+  const aggregateRows = usage.aggregate === null ? [] : [
+    [t('usage.magpieRequests'), formatMagpieNumber(usage.aggregate.calls)],
+    [t('usage.magpieErrors'), formatMagpieNumber(usage.aggregate.errors)],
+    [t('usage.magpieInputTokens'), formatMagpieTokenCount(usage.aggregate.inputTokens)],
+    [t('usage.magpieOutputTokens'), formatMagpieTokenCount(usage.aggregate.outputTokens)],
+    [t('usage.magpieCacheReadTokens'), formatMagpieTokenCount(usage.aggregate.cacheReadTokens)],
+    [t('usage.magpieCacheWriteTokens'), formatMagpieTokenCount(usage.aggregate.cacheWriteTokens)],
+    [t('usage.magpieTotalTokens'), formatMagpieTokenCount(sumKnownCounts(usage.aggregate.inputTokens, usage.aggregate.outputTokens))],
+    [t('usage.magpieCost'), formatMagpieCost(usage.aggregate.costUsd)],
+  ] as const
+  const sessionRows = usage.session === null ? [] : [
+    [t('usage.magpieRequests'), formatMagpieNumber(usage.session.calls)],
+    [t('usage.magpieErrors'), formatMagpieNumber(usage.session.errors)],
+    [t('usage.magpieInputTokens'), formatMagpieTokenCount(usage.session.inputTokens)],
+    [t('usage.magpieOutputTokens'), formatMagpieTokenCount(usage.session.outputTokens)],
+    [t('usage.magpieCacheReadTokens'), formatMagpieTokenCount(usage.session.cacheReadTokens)],
+    [t('usage.magpieCacheWriteTokens'), formatMagpieTokenCount(usage.session.cacheWriteTokens)],
+    [t('usage.magpieTotalTokens'), formatMagpieTokenCount(sumKnownCounts(usage.session.inputTokens, usage.session.outputTokens))],
+    [t('usage.magpieCost'), formatMagpieCost(usage.session.costUsd)],
+  ] as const
+  const routeStatus = usage.routeStatus === 'available'
+    ? usage.route === null ? t('usage.magpieRouteUnavailable') : null
+    : usage.routeStatus === 'no-route'
+      ? t('usage.magpieRouteNoRequests')
+      : usage.routeStatus === 'session-unavailable'
+        ? t('usage.magpieSessionIdUnavailable')
+        : t('usage.magpieRouteUnavailable')
+  const route = usage.route
+  const routeRows = route === null ? [] : [
+    [t('usage.magpieAskedModel'), route.asked],
+    [t('usage.magpieRouteGroup'), route.group],
+    [t('usage.magpieRouteRule'), route.rule],
+    [t('usage.magpieRoutedModel'), route.model],
+    [t('usage.magpieServedModel'), route.served],
+    [t('usage.magpieEffort'), route.effort],
+    [t('usage.magpieRequestStatus'), route.status === null ? null : `${route.done === true ? t('usage.magpieRouteDone') : route.done === false ? t('usage.magpieRouteRunning') : ''}${route.status}`],
+  ] as const
+  return createElement('div', {
+    className: 'codingns4dsh-subscription-popover',
+    role: 'dialog',
+    'aria-label': t('usage.magpieUsageLabel'),
+    style: subscriptionPopoverStyle,
+  },
+    createElement('div', { style: popoverHeadingStyle },
+      createElement('div', { style: popoverHeadingTextStyle },
+        createElement('strong', undefined, t('usage.magpieTitle')),
+        createElement('span', { style: magpieMutedTextStyle }, usage.modelId),
+      ),
+      createElement('span', { style: magpieHeaderMetaStyle },
+        createElement('span', { style: magpieMutedTextStyle }, t('usage.magpieTodayScope')),
+        createElement('span', { style: magpieMutedTextStyle }, t('usage.magpieUpdated', { time: formatMagpieTimestamp(usage.capturedAt) })),
+      ),
+    ),
+    createElement('section', { style: magpieSectionStyle },
+      createElement('strong', { style: sub2apiSectionTitleStyle }, t('usage.magpieAggregateTitle')),
+      usage.usageStatus === 'available'
+        ? createMagpieRows(aggregateRows)
+        : createElement('div', { style: magpieMutedTextStyle }, t('usage.magpieUsageUnavailable')),
+    ),
+    createElement('section', { style: magpieSectionStyle },
+      createElement('strong', { style: sub2apiSectionTitleStyle }, t('usage.magpieSessionTitle')),
+      usage.sessionId !== null && createElement('div', { style: magpieSessionIdentityStyle },
+        createElement('span', undefined, t('usage.magpieAgent', { agent: usage.agent })),
+        createElement('code', { style: magpieSessionIdStyle }, usage.sessionId),
+      ),
+      usage.session === null
+        ? createElement('div', { style: magpieMutedTextStyle }, usage.sessionId === null ? t('usage.magpieSessionIdUnavailable') : t('usage.magpieSessionNoUsage'))
+        : createMagpieRows(sessionRows),
+    ),
+    createElement('section', { style: magpieSectionStyle },
+      createElement('strong', { style: sub2apiSectionTitleStyle }, t('usage.magpieRouteTitle')),
+      routeStatus !== null
+        ? createElement('div', { style: magpieMutedTextStyle }, routeStatus)
+        : createMagpieRows(routeRows),
+      route !== null && route.tries.length > 0 && createElement('div', { style: magpieAttemptsStyle },
+        createElement('span', { style: magpieMutedTextStyle }, t('usage.magpieAttempts')),
+        ...route.tries.map((attempt, index) => createElement('div', { key: `${attempt.model ?? 'model'}-${index}`, style: magpieAttemptRowStyle },
+          createElement('span', { style: magpieAttemptModelStyle }, attempt.model ?? t('usage.magpieUnknownModel')),
+          attempt.failed && createElement('span', { style: magpieFailedStyle }, t('usage.magpieFallback')),
+        )),
+      ),
+    ),
+  )
+}
+
+function createMagpieRows(rows: readonly (readonly [string, string | null])[]): ReactElement {
+  const visibleRows = rows.filter((row): row is readonly [string, string] => row[1] !== null)
+  if (visibleRows.length === 0) return createElement('div', { style: magpieMutedTextStyle }, '--')
+  return createElement('div', { style: magpieStatsGridStyle }, ...visibleRows.map(([label, value]) => createElement('div', { key: label, style: magpieStatStyle },
+    createElement('span', { style: magpieMutedTextStyle }, label),
+    createElement('strong', { style: magpieRowValueStyle }, value),
+  )))
+}
+
+function formatMagpieNumber(value: number | null): string | null {
+  return value === null ? null : formatInteger(value)
+}
+
+function formatMagpieTokenCount(value: number | null): string | null {
+  return value === null ? null : formatCompactTokenCount(value)
+}
+
+function formatMagpieCost(value: number | null): string | null {
+  return value === null ? null : `$${value.toFixed(value >= 0.01 ? 2 : 4)}`
+}
+
+function sumKnownCounts(left: number | null, right: number | null): number | null {
+  if (left === null && right === null) return null
+  return (left ?? 0) + (right ?? 0)
+}
+
+function formatMagpieTimestamp(value: string): string {
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? new Intl.DateTimeFormat(undefined, { hour: '2-digit', minute: '2-digit' }).format(timestamp) : value
+}
+
+function normalizeSubscriptionSnapshot(value: unknown): CliSubscriptionSnapshot | null {
+  if (value === null || value === undefined) return null
+  if (!isRecord(value)) return null
+  if ('providerUsage' in value || 'magpie' in value) {
+    const providerUsage = isRecord(value.providerUsage) ? value.providerUsage as unknown as CliSubscriptionUsage : null
+    const magpie = isRecord(value.magpie) ? value.magpie as unknown as MagpieUsageSnapshot : null
+    return { providerUsage, magpie }
+  }
+  // Compatibility with Hosts that returned the provider usage directly.
+  return { providerUsage: value as unknown as CliSubscriptionUsage, magpie: null }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 interface SubscriptionResetRequest {
@@ -1059,6 +1251,19 @@ function formatCreditBalance(value: string): string {
 const subscriptionRootStyle = { position: 'relative' as const, minWidth: 0, display: 'inline-flex', alignItems: 'center' }
 const subscriptionTriggerStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, height: 28, border: 0, borderRadius: 14, padding: '0 8px 0 4px', color: dshThemeColor.labelSecondary, background: 'transparent', cursor: 'pointer', fontSize: uiFontSize(13), lineHeight: '20px' }
 const subscriptionLabelStyle = { whiteSpace: 'nowrap' as const }
+const magpieTriggerIconStyle = { display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', borderRadius: 6, background: dshThemeColor.surfaceSubtle, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), fontWeight: 700 }
+const magpieMutedTextStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), lineHeight: '16px', overflowWrap: 'anywhere' as const }
+const magpieHeaderMetaStyle = { display: 'grid', justifyItems: 'end', gap: 2, minWidth: 0, textAlign: 'right' as const }
+const magpieSectionStyle = { display: 'grid', gap: 8, paddingTop: 12, marginTop: 10, borderTop: `1px solid ${dshThemeColor.border}` }
+const magpieStatsGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: 9, paddingTop: 2 }
+const magpieStatStyle = { display: 'grid', alignContent: 'start', gap: 2, minWidth: 0, padding: '7px 8px', borderRadius: 8, background: dshThemeColor.surfaceSubtle }
+const magpieRowValueStyle = { color: dshThemeColor.labelPrimary, fontWeight: 600, textAlign: 'right' as const, overflowWrap: 'anywhere' as const }
+const magpieSessionIdentityStyle = { display: 'grid', gap: 3, minWidth: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) }
+const magpieSessionIdStyle = { minWidth: 0, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), whiteSpace: 'normal' as const, overflowWrap: 'anywhere' as const }
+const magpieAttemptsStyle = { display: 'grid', gap: 4, paddingTop: 4 }
+const magpieAttemptRowStyle = { display: 'flex', justifyContent: 'space-between', gap: 12, fontSize: uiFontSize(11) }
+const magpieAttemptModelStyle = { color: dshThemeColor.labelSecondary, overflowWrap: 'anywhere' as const }
+const magpieFailedStyle = { flex: 'none', color: dshThemeColor.error, fontSize: uiFontSize(10) }
 const sub2apiIdentityStyle = { display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' as const, fontVariantNumeric: 'tabular-nums' }
 const sub2apiLogoStyle = { display: 'block', borderRadius: 4, objectFit: 'contain' as const }
 const deepseekBalanceIdentityStyle = { display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' as const, fontVariantNumeric: 'tabular-nums' as const }
@@ -1099,7 +1304,7 @@ const barStyle = { height: 7, overflow: 'hidden' as const, borderRadius: 4, back
 const barFillStyle = { display: 'block', height: '100%', borderRadius: 4, background: dshThemeColor.accent, transition: 'width .2s ease' }
 const resetStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12) }
 const quotaGroupTitleStyle = { paddingTop: 12, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), fontWeight: 600, letterSpacing: '.02em' }
-const subscriptionPopoverStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1200, bottom: 'calc(100% + 8px)', left: 0, width: 'max-content', minWidth: 280, maxWidth: 'min(400px, calc(100vw - 24px))', boxSizing: 'border-box' as const, padding: 14, borderRadius: 12 }
+const subscriptionPopoverStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1200, bottom: 'calc(100% + 8px)', left: 0, width: 'max-content', minWidth: 280, maxWidth: 'min(400px, calc(100vw - 24px))', maxHeight: 'min(70vh, 560px)', overflowY: 'auto' as const, boxSizing: 'border-box' as const, padding: 14, borderRadius: 12 }
 const resetCreditsSectionStyle = { display: 'grid', gap: 6, marginTop: 10, padding: '10px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 10, background: dshThemeColor.surfaceSubtle }
 const resetCreditsRowStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13) }
 const resetCreditsValueGroupStyle = { display: 'inline-flex', alignItems: 'center', gap: 8 }

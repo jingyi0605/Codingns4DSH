@@ -35,7 +35,8 @@ import { loadCliSessionConfig, rememberCliSessionConfig } from './cli-session-co
 import { uiFontSize } from './font-scale.js'
 import { DSH_NATIVE_SESSION_ADAPTER_ID, supportsSessionTranslation } from '../shared/contracts/session-translation.js'
 import { readNativeTranslationDefault, subscribeNativeTranslationDefault } from './native-translation-default.js'
-import { watchNativeModelMenu } from './native-model-translation-menu.js'
+import { watchNativeModelMenu, type NativeModelCatalogEntry } from './native-model-translation-menu.js'
+import { MagpieModelTag } from './magpie-model-tag.js'
 import { ConversationTranslationSettings } from './conversation-translation-settings.js'
 import { settingsIconButtonStyle } from './settings-controls.js'
 
@@ -435,24 +436,12 @@ const agentOptionLabelStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden
 const agentStatusStyle = { flex: '0 0 auto', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), whiteSpace: 'nowrap' as const }
 const agentFallbackIconStyle = { flexGrow: 0, flexShrink: 0, borderRadius: 5, color: '#fff', background: dshThemeColor.labelTertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: uiFontSize(11), fontWeight: 600, lineHeight: 1 }
 
-type ModelPane = 'root' | 'model' | 'effort' | 'magpie-confirm'
+type ModelPane = 'root' | 'model' | 'effort'
 
 interface ModelCatalogState {
   readonly sessionId: string | undefined
   readonly adapterId: string
   readonly value: CodingNsCliModelCatalog
-}
-
-interface MagpiePendingChoice {
-  readonly sessionId: string
-  readonly adapterId: string
-  readonly model: CodingNsCliModel
-}
-
-interface MagpieSessionRetry {
-  readonly sessionId: string
-  readonly adapterId: string
-  readonly selection: SelectionState
 }
 
 interface ModelNameProps {
@@ -508,31 +497,6 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const [catalogRetry, setCatalogRetry] = useState(0)
   const [open, setOpen] = useState(false)
   const [pane, setPane] = useState<ModelPane>('root')
-  const [magpieCatalogState, setMagpieCatalogState] = useState<ModelCatalogState | null>(null)
-  const [magpieCatalogStatus, setMagpieCatalogStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable' | 'unsupported'>('idle')
-  const [pendingMagpieChoice, setPendingMagpieChoice] = useState<MagpiePendingChoice | null>(null)
-  const [magpieSwitching, setMagpieSwitching] = useState(false)
-  const [magpieFeedbackState, setMagpieFeedbackState] = useState<{
-    readonly sessionId: string
-    readonly adapterId: string
-    readonly value: 'success' | 'unavailable' | 'invalid' | 'verification' | 'partial'
-  } | null>(null)
-  const [magpieRetryState, setMagpieRetryState] = useState<MagpieSessionRetry | null>(null)
-  const magpieCatalogRef = useRef<ModelCatalogState | null>(null)
-  magpieCatalogRef.current = magpieCatalogState
-  const pendingMagpieModel = pendingMagpieChoice !== null && pendingMagpieChoice.sessionId === sessionId && pendingMagpieChoice.adapterId === selection.adapterId
-    ? pendingMagpieChoice.model : null
-  const magpieRetrySelection = magpieRetryState !== null && magpieRetryState.sessionId === sessionId && magpieRetryState.adapterId === selection.adapterId
-    ? magpieRetryState.selection : null
-  const magpieFeedback = magpieFeedbackState !== null && magpieFeedbackState.sessionId === sessionId && magpieFeedbackState.adapterId === selection.adapterId
-    ? magpieFeedbackState.value : null
-  const setMagpieFeedback = (value: typeof magpieFeedback): void => {
-    if (value === null || sessionId === undefined) {
-      setMagpieFeedbackState(null)
-      return
-    }
-    setMagpieFeedbackState({ sessionId, adapterId: selection.adapterId, value })
-  }
   const [translationSettingsOpen, setTranslationSettingsOpen] = useState(false)
   const [modelQuery, setModelQuery] = useState('')
   const [highlightedModelIndex, setHighlightedModelIndex] = useState<number | null>(null)
@@ -540,6 +504,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const modelOptionRefs = useRef<Array<HTMLButtonElement | null>>([])
   const modelGroupsId = useId()
   const rootRef = useRef<HTMLDivElement | null>(null)
+  const nativeMagpieModelsRef = useRef<readonly NativeModelCatalogEntry[]>([])
 
   // 模型列表与思考档位和内置选择器一样没有返回按钮：Escape 只退出当前子面板，
   // 回到根菜单；根菜单再按 Escape 才关闭整个弹层。
@@ -552,29 +517,39 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   )
   const nativeAvailable = nativeDefault !== undefined
   const [nativeMenu, setNativeMenu] = useState<HTMLElement | null>(null)
+
+  const catalog = catalogState?.adapterId === selection.adapterId && catalogState.sessionId === sessionId ? catalogState.value : null
+  const nativeModels = selection.adapterId === DSH_NATIVE_SESSION_ADAPTER_ID
+    ? (catalog?.groups ?? []).flatMap((group) => group.models.map(({ id, name, source }) => ({ id, name, ...(source === 'magpie' ? { source } : {}) })))
+    : []
+  nativeMagpieModelsRef.current = nativeModels
+  const nativeMagpieModelRevision = JSON.stringify(nativeModels)
   useEffect(() => {
     setNativeMenu(null)
     if (selection.adapterId !== DSH_NATIVE_SESSION_ADAPTER_ID || !nativeAvailable || rootRef.current === null) return
-    return watchNativeModelMenu(rootRef.current, setNativeMenu)
-  }, [selection.adapterId, nativeAvailable, sessionId])
+    return watchNativeModelMenu(rootRef.current, setNativeMenu, () => nativeMagpieModelsRef.current)
+  }, [selection.adapterId, sessionId, nativeAvailable, nativeMagpieModelRevision])
 
-  const catalog = catalogState?.adapterId === selection.adapterId && catalogState.sessionId === sessionId ? catalogState.value : null
   // 目录必须和当前会话、适配器绑定；跨 Host 切换时不能短暂展示上一会话的目录。
   // 有 stale 目录时直接可用，后台刷新不应阻塞模型/思考强度选择。
   const loading = catalog === null && refreshingAdapterId === selection.adapterId
-  // 模型列表包含普通目录与 Magpie 目录；搜索阈值与内置模型选择器一致：
   // 超过 4 个可选模型才出现搜索框，目录较少时保持原来的直接选择体验。
-  const activeMagpieCatalog = magpieCatalogState?.adapterId === selection.adapterId && magpieCatalogState.sessionId === sessionId
-    ? magpieCatalogState.value
-    : null
   const modelChoiceCount = (catalog?.groups ?? []).reduce((count, group) => count + group.models.length, 0)
-    + (activeMagpieCatalog?.groups ?? []).reduce((count, group) => count + group.models.length, 0)
   const showModelSearch = modelChoiceCount > 4
   useEffect(() => {
     if (selection.adapterId === DSH_NATIVE_SESSION_ADAPTER_ID) {
-      setCatalogState(null)
-      setRefreshingAdapterId(null)
-      return
+      let active = true
+      const adapterId = selection.adapterId
+      const cached = getModelCatalogCache(props.rpc, sessionId).get(adapterId)
+      if (cached !== undefined) setCatalogState({ sessionId, adapterId, value: cached })
+      void loadModelCatalog(props.rpc, adapterId, sessionId)
+        .then((value) => { if (active) setCatalogState({ sessionId, adapterId, value }) })
+        .catch(() => {
+          if (active && getModelCatalogCache(props.rpc, sessionId).get(adapterId) === undefined) {
+            setCatalogState({ sessionId, adapterId, value: { groups: [], currentModel: null, currentEffort: null } })
+          }
+        })
+      return () => { active = false }
     }
     let active = true
     const adapterId = selection.adapterId
@@ -598,13 +573,6 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
             ? selection
             : selections.get(sessionId) ?? selection
           if (currentSelection.adapterId !== adapterId) return
-          const currentMagpieCatalog = magpieCatalogRef.current
-          if (currentMagpieCatalog?.adapterId === adapterId
-            && currentMagpieCatalog.sessionId === sessionId
-            && findModel(currentMagpieCatalog.value, currentSelection.modelId)?.source === 'magpie') return
-          // An ID absent from the driver's catalog may be a confirmed Magpie
-          // model. Preserve it instead of silently replacing it with the first
-          // ordinary model while the separate Magpie catalog is not open.
           const model = currentSelection.modelId === undefined
             ? firstModel(value)
             : findModel(value, currentSelection.modelId)
@@ -650,43 +618,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
 
   useEffect(() => {
     setPane('root')
-    setPendingMagpieChoice(null)
-    setMagpieFeedbackState(null)
-    setMagpieRetryState(null)
   }, [sessionId, selection.adapterId])
-
-  useEffect(() => {
-    if (pane !== 'model') return
-    if (sessionId === undefined || sessionId.trim() === '') {
-      setMagpieCatalogStatus('unsupported')
-      return
-    }
-    const controller = new AbortController()
-    let active = true
-    const adapterId = selection.adapterId
-    setMagpieCatalogState(null)
-    setMagpieCatalogStatus('loading')
-    void callCliRpc<{ readonly status: 'available' | 'unavailable' | 'unsupported'; readonly catalog?: CodingNsCliModelCatalog }>(props.rpc, 'magpie/models', {
-      adapterId,
-      sessionId,
-    }, controller.signal)
-      .then((value) => {
-        if (!active) return
-        if (value.status !== 'available' || value.catalog === undefined) {
-          setMagpieCatalogStatus(value.status === 'unsupported' ? 'unsupported' : 'unavailable')
-          return
-        }
-        setMagpieCatalogState({ sessionId, adapterId, value: value.catalog })
-        setMagpieCatalogStatus('ready')
-      })
-      .catch(() => {
-        if (active && !controller.signal.aborted) setMagpieCatalogStatus('unavailable')
-      })
-    return () => {
-      active = false
-      controller.abort()
-    }
-  }, [props.rpc, selection.adapterId, sessionId, pane])
 
   // 手动重新检测后刷新目录；日常读取沿用缓存，不定时重启探测。
   useEffect(() => subscribeAdapterCatalogChanged(props.rpc, () => setCatalogRetry((value) => value + 1)), [props.rpc])
@@ -706,24 +638,18 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     setHighlightedModelIndex(null)
   }, [open, pane, showModelSearch])
 
-  // 模型列表与思考档位不再提供返回按钮：Escape 退回根菜单，Magpie 确认页退回模型列表。
+  // 模型列表与思考档位不再提供返回按钮：Escape 退回根菜单。
   useEffect(() => {
     if (!open || pane === 'root' || typeof document === 'undefined') return
     const onKeyDown = (event: KeyboardEvent): void => {
       if (event.key !== 'Escape') return
       event.preventDefault()
       event.stopPropagation()
-      if (pane === 'magpie-confirm') {
-        if (magpieSwitching) return
-        setPane('model')
-        setMagpieFeedbackState(null)
-        return
-      }
       setPane('root')
     }
     document.addEventListener('keydown', onKeyDown, true)
     return () => document.removeEventListener('keydown', onKeyDown, true)
-  }, [open, pane, magpieSwitching])
+  }, [open, pane])
 
   // 所有 Hooks 都先执行；原生与外部适配器切换不能改变 Hook 调用顺序。
   const translationSettings = translationSettingsOpen && props.settings !== undefined
@@ -750,9 +676,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     )
   }
 
-  const magpieCatalog = activeMagpieCatalog
-  const model = (magpieCatalog === null ? undefined : findModel(magpieCatalog, selection.modelId))
-    ?? (catalog === null ? undefined : findModel(catalog, selection.modelId))
+  const model = (catalog === null ? undefined : findModel(catalog, selection.modelId))
     ?? (selection.modelId ? { id: selection.modelId, name: selection.modelId, efforts: [] } : catalog === null ? undefined : firstModel(catalog))
   const efforts = model?.efforts ?? []
   // 目录已经加载、但当前模型不声明该档位时不能再沿用旧值：切到 Claude 这类没有
@@ -765,17 +689,8 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const modelLabel = model?.name ?? (loading ? t('cli.loadingModel') : t('cli.noModelsAvailable'))
   const effortLabel = effortDisplayName(model, effortValue, t('cli.defaultEffort'))
   const modelUnavailable = model === undefined
-  const canTryMagpie = selection.adapterId === 'claude-code' || selection.adapterId === 'codex'
-  const triggerDisabled = !loading && modelUnavailable && !canTryMagpie
+  const triggerDisabled = !loading && modelUnavailable
   const chooseModel = (next: CodingNsCliModel): void => {
-    if (next.source === 'magpie') {
-      if (sessionId === undefined || sessionId.trim() === '') return
-      setPendingMagpieChoice({ sessionId, adapterId: selection.adapterId, model: next })
-      setMagpieFeedback(null)
-      setMagpieRetryState(null)
-      setPane('magpie-confirm')
-      return
-    }
     const nextEffort = next.efforts.includes(effortValue) ? effortValue : defaultEffort(next.efforts)
     // 档位必须随模型切换一起携带：新模型不声明该档位时显式回落 `default`，
     // 不能省略——省略会让 Host 保留旧档位，继续下发该模型不支持的 serviceTier。
@@ -784,78 +699,12 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     update({
       adapterId: selection.adapterId,
       modelId: next.id,
-      modelProvenance: { kind: 'other' },
       effortId: nextEffort ?? 'default',
       translationEnabled: selection.translationEnabled === true,
       ...(nextTier ? { serviceTierId: nextTier } : {}),
     })
     setOpen(false)
     setPane('root')
-  }
-  const makeSelectionForModel = (next: CodingNsCliModel): SelectionState => {
-    const nextEffort = next.efforts.includes(effortValue) ? effortValue : defaultEffort(next.efforts)
-    const nextTier = carriedServiceTierId(next, selection.serviceTierId)
-    return {
-      adapterId: selection.adapterId,
-      modelId: next.id,
-      modelProvenance: { kind: 'magpie' },
-      effortId: nextEffort ?? 'default',
-      translationEnabled: selection.translationEnabled === true,
-      ...(nextTier ? { serviceTierId: nextTier } : {}),
-    }
-  }
-  const confirmMagpieModel = async (): Promise<void> => {
-    const pendingChoice = pendingMagpieChoice
-    if (pendingChoice === null || pendingChoice.sessionId !== sessionId || pendingChoice.adapterId !== selection.adapterId
-      || pendingChoice.model.source !== 'magpie' || sessionId === undefined || magpieSwitching) return
-    const pending = pendingChoice.model
-    setMagpieSwitching(true)
-    setMagpieFeedback(null)
-    const nextSelection = makeSelectionForModel(pending)
-    const selectionRevision = cliSessionSelectionRevision(sessionId)
-    try {
-      const result = await callCliRpc<{ readonly ok: boolean; readonly reason?: string }>(props.rpc, 'magpie/set-model', {
-        adapterId: selection.adapterId,
-        sessionId,
-        modelId: pending.id,
-      })
-      if (!result.ok) {
-        setMagpieFeedback(result.reason === 'invalid-model' ? 'invalid' : result.reason === 'verification-failed' ? 'verification' : 'unavailable')
-        return
-      }
-      if (cliSessionSelectionRevision(sessionId) !== selectionRevision) {
-        setMagpieRetryState({ sessionId, adapterId: selection.adapterId, selection: nextSelection })
-        setMagpieFeedback('partial')
-        return
-      }
-      if (await update(nextSelection)) {
-        setMagpieRetryState(null)
-        setMagpieFeedback('success')
-        setPendingMagpieChoice(null)
-        setPane('model')
-      } else {
-        setMagpieRetryState({ sessionId, adapterId: selection.adapterId, selection: nextSelection })
-        setMagpieFeedback('partial')
-      }
-    } catch {
-      setMagpieFeedback('unavailable')
-    } finally {
-      setMagpieSwitching(false)
-    }
-  }
-  const retryMagpieSessionSelection = async (): Promise<void> => {
-    const retry = magpieRetryState
-    if (retry === null || retry.sessionId !== sessionId || retry.adapterId !== selection.adapterId || magpieSwitching) return
-    setMagpieSwitching(true)
-    if (await update(retry.selection)) {
-      setMagpieRetryState(null)
-      setMagpieFeedback('success')
-      setPendingMagpieChoice(null)
-      setPane('model')
-    } else {
-      setMagpieFeedback('partial')
-    }
-    setMagpieSwitching(false)
   }
   const chooseEffort = (effort: string): void => {
     if (model === undefined) return
@@ -864,7 +713,6 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     update({
       adapterId: selection.adapterId,
       modelId: model.id,
-      modelProvenance: model.source === 'magpie' ? { kind: 'magpie' } : { kind: 'other' },
       effortId: effort,
       translationEnabled: selection.translationEnabled === true,
       ...(tier ? { serviceTierId: tier } : {}),
@@ -881,7 +729,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     if (model === undefined) return
     const serviceTierId = toggledServiceTierId(model, next)
     if (serviceTierId === undefined) return
-    update({ adapterId: selection.adapterId, modelId: model.id, modelProvenance: model.source === 'magpie' ? { kind: 'magpie' } : { kind: 'other' }, ...(selection.effortId ? { effortId: selection.effortId } : {}), serviceTierId, translationEnabled: selection.translationEnabled === true })
+    update({ adapterId: selection.adapterId, modelId: model.id, ...(selection.effortId ? { effortId: selection.effortId } : {}), serviceTierId, translationEnabled: selection.translationEnabled === true })
   }
   const translationAvailable = supportsSessionTranslation(selection.adapterId)
   const toggleTranslation = (next: boolean): void => {
@@ -889,16 +737,12 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     update({
       adapterId: selection.adapterId,
       modelId: model.id,
-      modelProvenance: model.source === 'magpie' ? { kind: 'magpie' } : { kind: 'other' },
       ...(selection.effortId ? { effortId: selection.effortId } : {}),
       ...(selection.serviceTierId ? { serviceTierId: selection.serviceTierId } : {}),
       translationEnabled: next,
     })
   }
-  const modelGroups = [
-    ...(catalog?.groups ?? []),
-    ...(magpieCatalog?.groups ?? []),
-  ]
+  const modelGroups = catalog?.groups ?? []
   // 搜索只在模型较多时启用；过滤按 Provider 分组进行，空分组直接隐藏，
   // 与内置模型选择器的 rankByName 分组结果一致。
   const modelQueryText = showModelSearch ? modelQuery.trim() : ''
@@ -970,7 +814,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
                 }),
               )]
             : []),
-          createElement('button', { key: 'model', type: 'button', role: 'menuitem', disabled: modelUnavailable && !canTryMagpie, onClick: () => setPane('model'), style: nativeMenuCellStyle },
+          createElement('button', { key: 'model', type: 'button', role: 'menuitem', disabled: modelUnavailable, onClick: () => setPane('model'), style: nativeMenuCellStyle },
           createElement('span', { style: nativeMenuLabelStyle }, t('cli.model')), createElement('span', { style: nativeMenuValueStyle }, modelLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
         createElement('button', { key: 'effort', type: 'button', role: 'menuitem', disabled: modelUnavailable, onClick: () => setPane('effort'), style: nativeMenuCellStyle },
           createElement('span', undefined, t('cli.thinking')), createElement('span', { style: nativeMenuValueStyle }, effortLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
@@ -1004,7 +848,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
           ),
           createElement('div', { key: 'model-groups', id: modelGroupsId, className: 'codingns4dsh-model-groups' },
             ...visibleModelGroups.map((group) => createElement('section', { key: group.id, role: 'group', 'aria-label': group.name, style: { marginTop: 4 } },
-              createElement('div', { style: nativeGroupTitleStyle }, group.id === 'magpie' ? t('cli.magpieGroup') : group.name),
+              createElement('div', { style: nativeGroupTitleStyle }, group.name),
               ...group.models.map((item) => {
                 const index = modelOptionIndex++
                 return createElement('button', {
@@ -1022,49 +866,15 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
                   style: nativeOptionStyle,
                 },
                   createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.name),
-                  item.source === 'magpie' && createElement('span', { style: magpieMutedTextStyle }, t('cli.magpieSavedChoice')),
+                  item.source === 'magpie' && createElement(MagpieModelTag, {}),
                   item.id === model?.id && createElement('span', { 'aria-hidden': true }, '✓'),
                 )
               }),
             )),
-            visibleModelGroups.length === 0 && magpieCatalogStatus !== 'loading' && createElement('div', { key: 'model-empty', role: 'status', style: modelSearchEmptyStyle },
+            visibleModelGroups.length === 0 && createElement('div', { key: 'model-empty', role: 'status', style: modelSearchEmptyStyle },
               t(modelGroups.length === 0 ? 'cli.noModelsAvailable' : 'cli.modelSearchEmpty')),
-            magpieCatalogStatus === 'loading' && createElement('div', { key: 'magpie-loading', role: 'status', style: magpieMessageStyle }, t('cli.magpieLoading')),
-            magpieCatalogStatus === 'unavailable' && createElement('div', { key: 'magpie-unavailable', role: 'status', style: magpieMessageStyle }, t('cli.magpieUnavailable')),
-            magpieFeedback !== null && createElement('div', { key: 'magpie-feedback', role: magpieFeedback === 'success' ? 'status' : 'alert', style: magpieMessageStyle }, t(magpieFeedback === 'success'
-              ? 'cli.magpieSwitchSuccess'
-              : magpieFeedback === 'partial' ? 'cli.magpieSwitchPartial'
-                : magpieFeedback === 'invalid' ? 'cli.magpieSwitchInvalid'
-                  : magpieFeedback === 'verification' ? 'cli.magpieSwitchVerification'
-                    : 'cli.magpieSwitchUnavailable')),
-            magpieFeedback === 'partial' && magpieRetrySelection !== null && createElement('button', {
-              key: 'magpie-retry-session', type: 'button', role: 'menuitem', disabled: magpieSwitching,
-              onClick: () => { void retryMagpieSessionSelection() }, style: nativeMenuCellStyle,
-            }, t('cli.magpieRetrySession')),
           ),
         ]
-      : pane === 'magpie-confirm'
-        ? [
-            createElement('button', { key: 'back', type: 'button', disabled: magpieSwitching, onClick: () => { setPane('model'); setMagpieFeedback(null) }, style: nativeBackStyle }, t('cli.back')),
-            createElement('div', { key: 'title', style: nativeGroupTitleStyle }, t('cli.magpieConfirmTitle', { model: pendingMagpieModel?.name ?? '' })),
-            createElement('p', { key: 'description', style: magpieMessageStyle }, t('cli.magpieConfirmDescription', {
-              agent: t(selection.adapterId === 'codex' ? 'cli.magpieAgentCodex' : 'cli.magpieAgentClaudeCode'),
-              model: pendingMagpieModel?.id ?? '',
-            })),
-            magpieFeedback !== null && createElement('div', { key: 'magpie-feedback', role: magpieFeedback === 'partial' ? 'alert' : 'status', style: magpieMessageStyle }, t(magpieFeedback === 'partial'
-              ? 'cli.magpieSwitchPartial'
-              : magpieFeedback === 'invalid' ? 'cli.magpieSwitchInvalid'
-                : magpieFeedback === 'verification' ? 'cli.magpieSwitchVerification'
-                  : 'cli.magpieSwitchUnavailable')),
-            magpieFeedback === 'partial' && magpieRetrySelection !== null && createElement('button', {
-              key: 'magpie-retry-session', type: 'button', role: 'menuitem', disabled: magpieSwitching,
-              onClick: () => { void retryMagpieSessionSelection() }, style: nativeMenuCellStyle,
-            }, t('cli.magpieRetrySession')),
-            createElement('button', {
-              key: 'save', type: 'button', role: 'menuitem', disabled: magpieSwitching || pendingMagpieModel === null,
-              onClick: () => { void confirmMagpieModel() }, style: nativeMenuCellStyle,
-            }, magpieSwitching ? t('cli.magpieSaving') : t('cli.magpieSaveAndUse')),
-          ]
       : [
           // 思考档位同样是原生式下钻面板，没有返回按钮；Escape 回到根菜单。
           createElement('div', { key: 'title', style: nativeGroupTitleStyle }, t('cli.thinkingLevelTitle', { model: modelLabel })),
@@ -1107,10 +917,7 @@ const serviceTierLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
 const nativeMenuLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
 const nativeMenuValueStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, textAlign: 'right' as const, color: dshThemeColor.labelTertiary }
 const nativeChevronStyle = { flex: 'none', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(20), lineHeight: 1 }
-const nativeBackStyle = { width: '100%', height: 30, color: dshThemeColor.labelSecondary, cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 8, padding: '0 8px', fontSize: uiFontSize(13) }
 const nativeGroupTitleStyle = { position: 'sticky' as const, top: 0, zIndex: 1, padding: '5px 8px 3px', color: dshThemeColor.labelTertiary, background: dshThemeColor.menuBackground, fontSize: uiFontSize(12), fontWeight: 500, lineHeight: '18px' }
-const magpieMutedTextStyle = { flex: 'none', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), whiteSpace: 'nowrap' as const }
-const magpieMessageStyle = { margin: 0, padding: '8px 10px', color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: '18px', whiteSpace: 'normal' as const }
 const nativeOptionStyle = { width: '100%', minHeight: 38, color: 'inherit', cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 10, padding: '6px 8px', display: 'flex', alignItems: 'center', gap: 8, fontSize: uiFontSize(14), lineHeight: '20px' }
 const modelSpinnerStyle = { width: 12, height: 12, flex: '0 0 12px', boxSizing: 'border-box' as const, border: '2px solid currentColor', borderRightColor: 'transparent', borderRadius: '50%' }
 const modelLoadingMenuStyle = { minHeight: 56, padding: '0 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(13) }

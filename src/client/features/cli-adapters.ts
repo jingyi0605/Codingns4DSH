@@ -29,6 +29,7 @@ import { createPeerHostManagementApi } from '../peer-host-management-api.js'
 import { SettingsSwitch } from '../settings-controls.js'
 import { uiFontSize } from '../font-scale.js'
 import { CliManagementDialog, cliManagementAction } from '../cli-management-dialog.js'
+import { MagpieModelTag } from '../magpie-model-tag.js'
 
 const CLI_ADAPTER_STYLE_ID = 'codingns4dsh-cli-adapter-settings-style'
 const cliAdapterClass = {
@@ -606,7 +607,10 @@ function ModelCatalog({ catalog, t }: { readonly catalog: CodingNsCliModelCatalo
 
 function ModelRow({ model, t }: { readonly model: CodingNsCliModel; readonly t: ReturnType<typeof useCodingNsTranslator> }): ReactElement {
   return createElement('div', { style: { padding: '8px 10px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 6 } },
-    createElement('div', { style: { fontWeight: 600 } }, model.name),
+    createElement('div', { style: { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, fontWeight: 600 } },
+      createElement('span', { style: { minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' } }, model.name),
+      model.source === 'magpie' && createElement(MagpieModelTag, {}),
+    ),
     model.description && createElement('div', { style: { marginTop: 3, opacity: 0.7, fontSize: uiFontSize(13) } }, model.description),
     createElement('div', { style: { marginTop: 5, opacity: 0.7, fontSize: uiFontSize(13) } }, t('cli.thinkingLevel', { value: model.efforts.length > 0 ? model.efforts.map((effort) => model.effortLabels?.[effort] ?? effort).join(t('common.listSeparator')) : t('cli.defaultEffort') })),
   )
