@@ -11,7 +11,7 @@ import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js
 import { createCliAdaptersFeature } from '../src/host/cli-adapters/feature.js'
 import { CodingNsRpcTable } from '../src/host/rpc-table.js'
 import { FeatureRegistry } from '../src/features/registry.js'
-import { watchAdapterCatalog } from '../src/client/adapter-catalog-watch.js'
+import { notifyAdapterCatalogChanged, notifyModelCatalogChanged, watchAdapterCatalog } from '../src/client/adapter-catalog-watch.js'
 import { AGENT_MANAGEMENT_DEFINITIONS } from '../src/host/cli-adapters/management-methods.js'
 
 const adapter = (id = 'codex', version = '1.0.0'): CodingNsCliAdapterDescriptor => ({ id, name: id, version, command: id, installed: true, enabled: true, detectionState: 'ready' })
@@ -282,5 +282,28 @@ test('catalog watcher follows a pending release check, stops when settled, and c
     assert.deepEqual(values, ['checking', 'current'])
     await delay(1_050)
     assert.equal(requests, 2)
+  } finally { stop() }
+})
+
+test('后台模型元数据更新不会触发适配器安装目录重新扫描', async () => {
+  let requests = 0
+  const rpc = {
+    call: async () => {
+      requests += 1
+      return { ok: true as const, value: [adapter()] }
+    },
+  }
+  const stop = watchAdapterCatalog(rpc, undefined, () => undefined)
+  try {
+    await setImmediate()
+    assert.equal(requests, 1)
+
+    notifyModelCatalogChanged(rpc, 'codex')
+    await setImmediate()
+    assert.equal(requests, 1, 'model changes only refresh model consumers')
+
+    notifyAdapterCatalogChanged(rpc)
+    await setImmediate()
+    assert.equal(requests, 2, 'manual adapter refresh still reloads the adapter catalog')
   } finally { stop() }
 })

@@ -3,14 +3,27 @@ import type { CodingNsRpcClient } from './features/types.js'
 import { callCliRpc } from './cli-catalog.js'
 
 const loads = new WeakMap<CodingNsRpcClient, Map<string, Promise<readonly CodingNsCliAdapterDescriptor[]>>>()
-const listeners = new WeakMap<CodingNsRpcClient, Set<() => void>>()
+export type AdapterCatalogChange =
+  | { readonly kind: 'adapter' }
+  | { readonly kind: 'models'; readonly adapterId: string }
+
+const listeners = new WeakMap<CodingNsRpcClient, Set<(change: AdapterCatalogChange) => void>>()
 
 /** 手动检测完成后，让已挂载的选择器和模型目录一起更新。 */
 export function notifyAdapterCatalogChanged(rpc: CodingNsRpcClient): void {
-  for (const listener of listeners.get(rpc) ?? []) listener()
+  publishCatalogChange(rpc, { kind: 'adapter' })
 }
 
-export function subscribeAdapterCatalogChanged(rpc: CodingNsRpcClient, listener: () => void): () => void {
+/** Model enrichment must not trigger a fresh adapter-installation scan. */
+export function notifyModelCatalogChanged(rpc: CodingNsRpcClient, adapterId: string): void {
+  publishCatalogChange(rpc, { kind: 'models', adapterId })
+}
+
+function publishCatalogChange(rpc: CodingNsRpcClient, change: AdapterCatalogChange): void {
+  for (const listener of listeners.get(rpc) ?? []) listener(change)
+}
+
+export function subscribeAdapterCatalogChanged(rpc: CodingNsRpcClient, listener: (change: AdapterCatalogChange) => void): () => void {
   let entries = listeners.get(rpc)
   if (entries === undefined) { entries = new Set(); listeners.set(rpc, entries) }
   entries.add(listener)
@@ -64,7 +77,11 @@ export function watchAdapterCatalog(
       if (dirty && active) { dirty = false; void refresh() }
     }
   }
-  const remove = subscribeAdapterCatalogChanged(rpc, () => { started = Date.now(); void refresh() })
+  const remove = subscribeAdapterCatalogChanged(rpc, (change) => {
+    if (change.kind !== 'adapter') return
+    started = Date.now()
+    void refresh()
+  })
   void refresh()
   return () => { active = false; clearTimeout(timer); remove() }
 }

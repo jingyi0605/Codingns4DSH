@@ -4,6 +4,7 @@ import type { CodingNsRpcClient } from './features/types.js'
 import type { CodingNsLocale } from './locale.js'
 import { adapterCatalogWithDsh, callCliRpc } from './cli-catalog.js'
 import type { CodingNsCliModelCatalog } from '../shared/contracts/cli-adapter.js'
+import { subscribeAdapterCatalogChanged } from './adapter-catalog-watch.js'
 import { appendDelegateCarrier, DELEGATE_COMMAND_NAME, delegateAdapterOptions, type DelegateAdapterOption } from './delegate-plan.js'
 import { DELEGATE_POPUP_LOGO_ATTRIBUTE, setDelegatePopupOptions, startDelegateUiDom } from './delegate-ui-dom.js'
 import { providerIconUrl } from './provider-icons.js'
@@ -332,6 +333,7 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
   let popupModels: readonly { id: string; label: string; detail?: string; magpie?: boolean }[] = []
   let popupEditor: HTMLElement | undefined
   let popupToken: { start: number; end: number; draftRev: number } | undefined
+  let popupQuery = ''
   let popupRequestId = 0
   let refreshTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -351,6 +353,7 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
     popupOptions = []
     popupModels = []
     popupMode = 'adapter'
+    popupQuery = ''
   }
 
   const inputFor = (sessionId: string): SessionInputFace | undefined => {
@@ -483,30 +486,39 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
     close()
   }
 
+  const renderModelCatalog = (catalog: CodingNsCliModelCatalog, query = popupQuery): void => {
+    const adapter = popupAdapter
+    if (popup === undefined || popupMode !== 'model' || adapter === undefined) return
+    popupModels = catalog.groups.flatMap((group) => group.models.map((model) => {
+      const efforts = model.efforts.map((effort) => model.effortLabels?.[effort] ?? effort)
+      const effortsLabel = efforts.length === 0 ? undefined : t('cli.thinkingLevel', { value: efforts.join(t('common.listSeparator')) })
+      const details = [model.description, effortsLabel].filter((value): value is string => value !== undefined && value.trim() !== '')
+      return {
+        id: model.id,
+        label: model.name || model.id,
+        ...(details.length === 0 ? {} : { detail: details.join(' · ') }),
+        ...(model.source === 'magpie' ? { magpie: true } : {}),
+      }
+    }))
+    render(t('delegate.selectModel', { name: adapter.label }), popupModels
+      .filter((model) => query === '' || model.id.toLowerCase().includes(query) || model.label.toLowerCase().includes(query))
+      .map((model) => ({ ...model, onClick: () => selectModel(model) })))
+  }
+
   const selectAdapter = async (adapter: DelegateAdapterOption): Promise<void> => {
     // 选择适配器后进入模型目录，取消触发 `#` 时为确保快照发布而安排的旧重试，
     // 避免它把已加载的模型列表重新按旧 token 过滤为空。
     cancelRefresh()
     popupAdapter = adapter
     popupMode = 'model'
+    popupQuery = ''
     const requestId = ++popupRequestId
     const sessionId = popupSessionId
     render(t('delegate.selectModel', { name: adapter.label }), [{ id: 'loading', label: t('delegate.loadingModels'), onClick: () => undefined }])
     try {
       const catalog = await loadModelCatalog(options.rpc, adapter.id, sessionId)
-      popupModels = catalog.groups.flatMap((group) => group.models.map((model) => {
-        const efforts = model.efforts.map((effort) => model.effortLabels?.[effort] ?? effort)
-        const effortsLabel = efforts.length === 0 ? undefined : t('cli.thinkingLevel', { value: efforts.join(t('common.listSeparator')) })
-        const details = [model.description, effortsLabel].filter((value): value is string => value !== undefined && value.trim() !== '')
-        return {
-          id: model.id,
-          label: model.name || model.id,
-          ...(details.length === 0 ? {} : { detail: details.join(' · ') }),
-          ...(model.source === 'magpie' ? { magpie: true } : {}),
-        }
-      }))
       if (popup === undefined || popupMode !== 'model' || popupRequestId !== requestId || popupSessionId !== sessionId || popupAdapter?.id !== adapter.id) return
-      render(t('delegate.selectModel', { name: adapter.label }), popupModels.map((model) => ({ ...model, onClick: () => selectModel(model) })))
+      renderModelCatalog(catalog, '')
     } catch (error) {
       if (popup === undefined || popupMode !== 'model' || popupRequestId !== requestId || popupSessionId !== sessionId || popupAdapter?.id !== adapter.id) return
       render(t('delegate.selectModel', { name: adapter.label }), [{ id: 'error', label: error instanceof Error ? error.message : t('delegate.modelCatalogFailed'), onClick: () => undefined }])
@@ -549,6 +561,7 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
     popupToken = { ...token, end: caret, draftRev: selection?.draftRev ?? snapshot.draftRev ?? 0 }
     const root = ensurePopup(editor, sessionId)
     const query = token.query.trim().toLowerCase()
+    popupQuery = query
     if (popupMode === 'model' && popupAdapter !== undefined) {
       render(t('delegate.selectModel', { name: popupAdapter.label }), popupModels.filter((model) => query === '' || model.id.toLowerCase().includes(query) || model.label.toLowerCase().includes(query)).map((model) => ({ ...model, onClick: () => selectModel(model) })))
       return
@@ -599,6 +612,11 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
   }
   const onKey = (event: KeyboardEvent): void => { if (event.key === 'Escape') close() }
   const onResize = (): void => position()
+  const unsubscribeCatalog = subscribeAdapterCatalogChanged(options.rpc, (change) => {
+    if (change.kind !== 'models' || popup === undefined || popupMode !== 'model' || popupAdapter === undefined || popupAdapter.id !== change.adapterId) return
+    const catalog = getModelCatalogCache(options.rpc, popupSessionId).get(popupAdapter.id)
+    if (catalog !== undefined) renderModelCatalog(catalog)
+  })
   document.addEventListener('input', onInput, true)
   document.addEventListener('compositionend', onCompositionEnd, true)
   document.addEventListener('focusin', onFocus, true)
@@ -609,6 +627,7 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
   window.visualViewport?.addEventListener('resize', onResize)
   window.visualViewport?.addEventListener('scroll', onResize)
   return () => {
+    unsubscribeCatalog()
     close()
     cancelRefresh()
     document.removeEventListener('input', onInput, true)

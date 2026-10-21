@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { setImmediate } from 'node:timers/promises'
+import { subscribeAdapterCatalogChanged } from '../data/build/dist/client/adapter-catalog-watch.js'
 import { getModelCatalogCache, invalidateModelCatalogCache, loadModelCatalog, shouldRevalidateModelCatalog } from '../data/build/dist/client/model-catalog-cache.js'
 import { createVirtualSessionId, parseVirtualSessionId } from '../data/build/dist/shared/index.js'
 
@@ -92,6 +94,94 @@ test('手动刷新后的新目录不会被之前的迟到请求覆盖', async ()
   releases[0]!({ ok: true, value: catalog('old') })
   assert.equal((await oldRequest).currentModel, 'new-model')
   assert.equal(getModelCatalogCache(rpc).get('codex')?.currentModel, 'new-model')
+})
+
+test('先返回原生目录，Magpie 完成后后台替换缓存并通知订阅者', async () => {
+  let finishEnrichment: ((value: { groups: ReturnType<typeof catalog>['groups']; currentModel: string; currentEffort: string; magpiePending?: boolean }) => void) | undefined
+  const calls: string[] = []
+  const rpc = {
+    call: async (_channel: string, endpoint: string, payload: unknown) => {
+      assert.equal(endpoint, 'cli/models')
+      const stage = (payload as { stage?: string }).stage ?? 'legacy'
+      calls.push(stage)
+      if (stage === 'enriched') return new Promise<{ ok: true; value: ReturnType<typeof catalog> }>(resolve => {
+        finishEnrichment = value => resolve({ ok: true, value })
+      })
+      return { ok: true as const, value: { ...catalog('local'), magpiePending: true } }
+    },
+  }
+  let changes = 0
+  const unsubscribe = subscribeAdapterCatalogChanged(rpc, () => { changes += 1 })
+  try {
+    const base = await loadModelCatalog(rpc, 'codex')
+    assert.equal(base.magpiePending, true)
+    assert.equal(getModelCatalogCache(rpc).get('codex'), base)
+    await setImmediate()
+    assert.deepEqual(calls, ['base', 'enriched'])
+
+    const enriched = { ...catalog('local'), currentModel: 'local-model', magpiePending: undefined }
+    finishEnrichment?.(enriched)
+    await setImmediate()
+    await setImmediate()
+
+    assert.equal(getModelCatalogCache(rpc).get('codex')?.magpiePending, undefined)
+    assert.equal(getModelCatalogCache(rpc).get('codex')?.currentModel, 'local-model')
+    assert.equal(changes, 1)
+    assert.equal(await loadModelCatalog(rpc, 'codex'), getModelCatalogCache(rpc).get('codex'))
+    assert.deepEqual(calls, ['base', 'enriched'], 'the enriched snapshot is reused instead of blocking on another RPC')
+  } finally {
+    unsubscribe()
+  }
+})
+
+test('过期目录先回显，基础目录刷新与 Magpie 补全分两次通知', async () => {
+  const originalNow = Date.now
+  let now = originalNow()
+  Date.now = () => now
+  let releaseBase: ((value: ReturnType<typeof catalog>) => void) | undefined
+  let releaseEnrichment: ((value: ReturnType<typeof catalog>) => void) | undefined
+  const stages: string[] = []
+  const rpc = {
+    call: async (_channel: string, endpoint: string, payload: unknown) => {
+      assert.equal(endpoint, 'cli/models')
+      const stage = (payload as { stage?: string }).stage ?? 'legacy'
+      stages.push(stage)
+      if (stages.length === 1) return { ok: true as const, value: catalog('old') }
+      if (stage === 'base') return new Promise<{ ok: true; value: ReturnType<typeof catalog> }>(resolve => {
+        releaseBase = value => resolve({ ok: true, value: { ...value, magpiePending: true } })
+      })
+      return new Promise<{ ok: true; value: ReturnType<typeof catalog> }>(resolve => {
+        releaseEnrichment = value => resolve({ ok: true, value })
+      })
+    },
+  }
+  let changes = 0
+  const unsubscribe = subscribeAdapterCatalogChanged(rpc, () => { changes += 1 })
+  try {
+    const old = await loadModelCatalog(rpc, 'codex')
+    await setImmediate()
+    now += 60_001
+
+    const immediate = await loadModelCatalog(rpc, 'codex')
+    assert.equal(immediate, old, 'expired successful data stays visible while refresh is pending')
+    assert.deepEqual(stages, ['base', 'base'])
+    assert.equal(changes, 0)
+
+    releaseBase?.(catalog('fresh'))
+    await setImmediate()
+    assert.equal(getModelCatalogCache(rpc).get('codex')?.groups[0]?.id, 'fresh')
+    assert.equal(changes, 1, 'the fresh base catalog is published before Magpie enrichment finishes')
+    assert.deepEqual(stages, ['base', 'base', 'enriched'])
+
+    releaseEnrichment?.(catalog('enriched'))
+    await setImmediate()
+    await setImmediate()
+    assert.equal(getModelCatalogCache(rpc).get('codex')?.groups[0]?.id, 'enriched')
+    assert.equal(changes, 2)
+  } finally {
+    unsubscribe()
+    Date.now = originalNow
+  }
 })
 
 test('远端回退目录与失败不移除或替代其他 Host 的成功缓存', async () => {

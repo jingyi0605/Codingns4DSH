@@ -23,7 +23,7 @@ import { CodingNsCliSessionStore } from './session-store.js'
 import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
 import { CommandCodeSubscriptionService } from './command-code-subscription.js'
 import { ProviderSubscriptionService } from './provider-subscription.js'
-import { MagpieUsageService } from './magpie-usage.js'
+import { MagpieUsageService, magpieAgentForAdapter } from './magpie-usage.js'
 import { normalizeSubagentBridgeSettings, normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsHostServices } from '../features/types.js'
 import { setAdapterRegistry } from './registry-holder.js'
@@ -262,8 +262,12 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
           case 'models': {
             const adapterId = readAdapterId(payload)
             const catalog = adapterId === 'dsh'
-              ? await readDshModelCatalog(context.services.dshContext)
-              : await registry.models(adapterId)
+              ? readDshModelCatalog(context.services.dshContext)
+              : registry.models(adapterId)
+            if (asRecord(payload)?.stage === 'base') {
+              const base = await catalog
+              return magpieAgentForAdapter(adapterId) === null ? base : { ...base, magpiePending: true }
+            }
             return typeof magpieUsage.enrichModelCatalog === 'function'
               ? magpieUsage.enrichModelCatalog(adapterId, catalog, signal ?? lifetime.signal)
               : catalog

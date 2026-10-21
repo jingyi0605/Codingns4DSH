@@ -21,8 +21,8 @@ import { fetchSessionAdapters, replaceSessionAdapters, sessionAdapterId, subscri
 import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
 import type { SessionPerformancePresentation } from '../../dsh-capabilities/client/session-performance-adapter.js'
 import { providerIconUrl } from '../provider-icons.js'
-import { notifyAdapterCatalogChanged, watchAdapterCatalog } from '../adapter-catalog-watch.js'
-import { invalidateModelCatalogCache } from '../model-catalog-cache.js'
+import { notifyAdapterCatalogChanged, subscribeAdapterCatalogChanged, watchAdapterCatalog } from '../adapter-catalog-watch.js'
+import { getModelCatalogCache, invalidateModelCatalogCache, loadModelCatalog } from '../model-catalog-cache.js'
 import { resolveRefreshIcon } from '../../dsh-capabilities/client/primitives-adapter.js'
 import { createCliSettingsRpc } from '../cli-settings-rpc.js'
 import { createPeerHostManagementApi } from '../peer-host-management-api.js'
@@ -278,6 +278,7 @@ export function CliAdaptersContent({ services, enabled, snapshot, notify }: Feat
   const [managementAdapter, setManagementAdapter] = useState<CodingNsCliAdapterDescriptor | null>(null)
   const [managementVisible, setManagementVisible] = useState(false)
   const [models, setModels] = useState<CodingNsCliModelCatalog | null>(null)
+  const [modelCatalogRevision, setModelCatalogRevision] = useState(0)
   const [loading, setLoading] = useState(false)
   const [busyAdapterId, setBusyAdapterId] = useState<string | null>(null)
   const [modelsError, setModelsError] = useState('')
@@ -334,18 +335,27 @@ export function CliAdaptersContent({ services, enabled, snapshot, notify }: Feat
   }, [disabled, requestContext, catalogAvailable])
 
   useEffect(() => {
+    return subscribeAdapterCatalogChanged(catalogRpc, (change) => {
+      if (change.kind === 'models' && change.adapterId !== selected?.id) return
+      setModelCatalogRevision((value) => value + 1)
+    })
+  }, [catalogRpc, selected?.id])
+
+  useEffect(() => {
     if (selected === null || disabled || !catalogAvailable || !selected.installed || !selected.enabled) {
       setModels(null)
       return
     }
     let active = true
-    setModels(null)
+    const cached = getModelCatalogCache(catalogRpc).get(selected.id)
+    if (cached === undefined) setModels(null)
+    else setModels(cached)
     setModelsError('')
-    void callCliRpc<CodingNsCliModelCatalog>(catalogRpc, 'models', { adapterId: selected.id }, AbortSignal.timeout(10_000))
+    void loadModelCatalog(catalogRpc, selected.id)
       .then((value) => { if (active && currentRequest.current === requestContext) setModels(value) })
       .catch((error: unknown) => { if (active && currentRequest.current === requestContext) { const message = errorMessage(error); setModelsError(message); notify({ kind: 'error', message }) } })
     return () => { active = false }
-  }, [disabled, selected, requestContext, catalogAvailable])
+  }, [disabled, selected, requestContext, catalogAvailable, modelCatalogRevision])
 
   const buttonStyle = { ...dshSettingsButtonStyle, cursor: disabled ? 'not-allowed' : 'pointer' }
   const refreshManagedCatalog = async (operation?: CliManagementOperation): Promise<void> => {
@@ -354,6 +364,7 @@ export function CliAdaptersContent({ services, enabled, snapshot, notify }: Feat
     const detected = operation?.adapter
     const adapterId = operation?.adapterId ?? managementAdapter?.id
     invalidateModelCatalogCache(services.rpc, adapterId)
+    invalidateModelCatalogCache(catalogRpc, adapterId)
     // Show the Host-verified version immediately while the explicit refresh runs.
     if (succeeded && detected) {
       const updated = { ...detected, update: { state: 'unchecked' as const } }
@@ -379,6 +390,7 @@ export function CliAdaptersContent({ services, enabled, snapshot, notify }: Feat
     setDetecting(adapterId ?? '*')
     try {
       const value = await callCliRpc<readonly CodingNsCliAdapterDescriptor[]>(catalogRpc, 'catalog/refresh', { ...(adapterId === undefined ? {} : { adapterId }), checkUpdates: true }, AbortSignal.timeout(120_000))
+      invalidateModelCatalogCache(catalogRpc, adapterId)
       invalidateModelCatalogCache(services.rpc, adapterId, peerHostId === null ? undefined : createVirtualSessionId(peerHostId, '__catalog__'))
       notifyAdapterCatalogChanged(services.rpc)
       if (currentRequest.current !== requestContext) return

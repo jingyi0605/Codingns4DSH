@@ -1948,6 +1948,35 @@ test('Host 的普通 cli/models RPC 返回精确 Magpie 模型元数据', async 
   assert.deepEqual(model.efforts, ['low', 'high'])
 })
 
+test('Host cli/models base 阶段不等待 Magpie 校验', async (t) => {
+  const table = new CodingNsRpcTable()
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'claude-code', name: 'Claude Code' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'claude' } },
+    async listModels() {
+      return { groups: [{ id: 'claude', name: 'Claude', models: [{ id: 'native/model', name: 'Native', efforts: [] }] }], currentModel: 'native/model', currentEffort: null }
+    },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } as const },
+  }])
+  let enrichCalls = 0
+  const magpieUsage = {
+    enrichModelCatalog: async () => {
+      enrichCalls += 1
+      return new Promise<CodingNsCliModelCatalog>(() => undefined)
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table })
+  features.register(createCliAdaptersFeature({ registry, magpieUsage: magpieUsage as never }))
+  await features.start('cliAdapters')
+  t.after(() => features.disable('cliAdapters'))
+
+  const target = table.resolve('cli/models')!
+  const base = await target.handler(target.action, { adapterId: 'claude-code', stage: 'base' }) as CodingNsCliModelCatalog
+  assert.equal(base.magpiePending, true)
+  assert.equal(base.currentModel, 'native/model')
+  assert.equal(enrichCalls, 0)
+})
+
 test('Native DSH cli/models catalog receives exact Magpie metadata and source markers', async (t) => {
   const table = new CodingNsRpcTable()
   const dshContext = {

@@ -621,7 +621,10 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   }, [sessionId, selection.adapterId])
 
   // 手动重新检测后刷新目录；日常读取沿用缓存，不定时重启探测。
-  useEffect(() => subscribeAdapterCatalogChanged(props.rpc, () => setCatalogRetry((value) => value + 1)), [props.rpc])
+  useEffect(() => subscribeAdapterCatalogChanged(props.rpc, (change) => {
+    if (change.kind === 'models' && change.adapterId !== selection.adapterId) return
+    setCatalogRetry((value) => value + 1)
+  }), [props.rpc, selection.adapterId])
 
   useEffect(() => { if (selection.adapterId === 'dsh') setOpen(false) }, [selection.adapterId])
 

@@ -1,6 +1,7 @@
 import type { CodingNsCliModelCatalog } from '../shared/contracts/cli-adapter.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCliRpc } from './cli-catalog.js'
+import { notifyModelCatalogChanged } from './adapter-catalog-watch.js'
 import { parseVirtualSessionId } from '../shared/contracts/peer-host.js'
 
 /**
@@ -43,6 +44,7 @@ export const MODEL_CATALOG_CACHE_TTL_MS = 60_000
 interface CachedCatalog {
   readonly value: CodingNsCliModelCatalog
   readonly storedAt: number
+  readonly ttlMs: number
 }
 
 const modelCatalogCacheTimes = new WeakMap<object, Map<string, CachedCatalog>>()
@@ -61,9 +63,9 @@ function cacheTimesFor(rpc: CodingNsRpcClient, sessionId?: string): Map<string, 
   return times
 }
 
-function storeCatalog(rpc: CodingNsRpcClient, adapterId: string, value: CodingNsCliModelCatalog, sessionId?: string): void {
+function storeCatalog(rpc: CodingNsRpcClient, adapterId: string, value: CodingNsCliModelCatalog, sessionId?: string, ttlMs = MODEL_CATALOG_CACHE_TTL_MS): void {
   getModelCatalogCache(rpc, sessionId).set(adapterId, value)
-  cacheTimesFor(rpc, sessionId).set(adapterId, { value, storedAt: Date.now() })
+  cacheTimesFor(rpc, sessionId).set(adapterId, { value, storedAt: Date.now(), ttlMs })
 }
 
 /** 指定会话时只作废其 Host；旧调用不传会话时仍清理整个 RPC 的指定目录。 */
@@ -125,35 +127,83 @@ export function getModelCatalogCache(rpc: CodingNsRpcClient, sessionId?: string)
 
 export function loadModelCatalog(rpc: CodingNsRpcClient, adapterId: string, sessionId?: string): Promise<CodingNsCliModelCatalog> {
   const cached = getModelCatalogCache(rpc, sessionId).get(adapterId)
-  // 回退目录由 Host 保存；用户重新检测后清理此缓存并读取最新结果。
-  if (cached !== undefined && cached.fallback !== true && isFreshCacheEntry(rpc, adapterId, cached, sessionId)) {
+  const entry = cached === undefined ? undefined : cacheEntry(rpc, adapterId, sessionId)
+  // A successful stale catalog stays visible while a fresh base and optional
+  // Magpie enrichment load in the background.
+  if (cached !== undefined && cached.fallback !== true && entry?.value === cached && isFreshCacheEntry(rpc, adapterId, cached, sessionId)) {
     return Promise.resolve(cached)
   }
-  if (cached !== undefined) invalidateModelCatalogCache(rpc, adapterId, sessionId)
   const loads = getModelCatalogLoadCache(rpc, sessionId)
   const running = loads.get(adapterId)
-  if (running !== undefined) return running
+  if (running !== undefined) return cached !== undefined && cached.fallback !== true ? Promise.resolve(cached) : running
+
+  const hasStaleCatalog = cached !== undefined && cached.fallback !== true && entry?.value === cached
+  if (cached !== undefined && !hasStaleCatalog) invalidateModelCatalogCache(rpc, adapterId, sessionId)
+
   const request = callCliRpc<CodingNsCliModelCatalog>(rpc, 'models', {
     adapterId,
+    stage: 'base',
     ...(sessionId === undefined ? {} : { sessionId }),
   }).then((value) => {
     // 手动重新检测已替换请求时，迟到结果不能复活被作废的目录。
     if (loads.get(adapterId) !== request) return loadModelCatalog(rpc, adapterId, sessionId)
-    if (value.fallback === true) invalidateModelCatalogCache(rpc, adapterId, sessionId)
-    else storeCatalog(rpc, adapterId, value, sessionId)
+    if (value.fallback === true) {
+      if (hasStaleCatalog && cached !== undefined) storeCatalog(rpc, adapterId, cached, sessionId, 5_000)
+      else invalidateModelCatalogCache(rpc, adapterId, sessionId)
+    } else {
+      storeCatalog(rpc, adapterId, value, sessionId)
+      if (hasStaleCatalog) notifyModelCatalogChanged(rpc, adapterId)
+    }
     return value
+  })
+  loads.set(adapterId, request)
+
+  // The base result above is the only part awaited by the caller. Enrichment
+  // is a second, shared Host request; its completed snapshot replaces the base
+  // cache and wakes mounted selectors without a timer or blocking spinner.
+  void request.then(async (base) => {
+    if (base.fallback === true || base.magpiePending !== true || loads.get(adapterId) !== request) return
+    try {
+      const enriched = await callCliRpc<CodingNsCliModelCatalog>(rpc, 'models', {
+        adapterId,
+        stage: 'enriched',
+        ...(sessionId === undefined ? {} : { sessionId }),
+      })
+      if (loads.get(adapterId) !== request || getModelCatalogCache(rpc, sessionId).get(adapterId) !== base || enriched.fallback === true) return
+      storeCatalog(rpc, adapterId, enriched, sessionId)
+      notifyModelCatalogChanged(rpc, adapterId)
+    } catch {
+      if (loads.get(adapterId) !== request || getModelCatalogCache(rpc, sessionId).get(adapterId) !== base) return
+      const readyBase = withoutMagpiePending(base)
+      storeCatalog(rpc, adapterId, readyBase, sessionId, 5_000)
+      notifyModelCatalogChanged(rpc, adapterId)
+    }
+  }).catch(() => {
+    if (loads.get(adapterId) !== request) return
+    const current = getModelCatalogCache(rpc, sessionId).get(adapterId)
+    if (current === undefined || current.fallback === true || cacheEntry(rpc, adapterId, sessionId)?.value !== current) return
+    // Keep showing the last good snapshot and avoid immediately retrying a
+    // failing Host after every render.
+    storeCatalog(rpc, adapterId, current, sessionId, 5_000)
   }).finally(() => {
     if (loads.get(adapterId) === request) loads.delete(adapterId)
   })
-  loads.set(adapterId, request)
+
+  if (hasStaleCatalog) return Promise.resolve(cached)
   return request
+}
+
+function withoutMagpiePending(catalog: CodingNsCliModelCatalog): CodingNsCliModelCatalog {
+  if (catalog.magpiePending !== true) return catalog
+  const { magpiePending: _magpiePending, ...ready } = catalog
+  return ready
 }
 
 /** 缓存条目是否仍在有效期内；没有时间戳的旧条目按过期处理并触发一次重新读取。 */
 function isFreshCacheEntry(rpc: CodingNsRpcClient, adapterId: string, cached: CodingNsCliModelCatalog, sessionId?: string): boolean {
   const entry = cacheEntry(rpc, adapterId, sessionId)
   if (entry === undefined || entry.value !== cached) return false
-  return Date.now() - entry.storedAt < MODEL_CATALOG_CACHE_TTL_MS
+  return Date.now() - entry.storedAt < entry.ttlMs
 }
 
 function getModelCatalogLoadCache(rpc: CodingNsRpcClient, sessionId?: string): Map<string, Promise<CodingNsCliModelCatalog>> {
