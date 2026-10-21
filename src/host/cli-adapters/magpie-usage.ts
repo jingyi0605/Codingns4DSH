@@ -970,7 +970,7 @@ function providerFromRoute(route: MagpieRouteUsage | null): string | null {
 }
 
 function providerFromModelId(modelId: string, agent: MagpieAgent): string | null {
-  const normalized = agent === 'commandcode' && modelId.startsWith('magpie/') ? modelId.slice('magpie/'.length) : modelId
+  const normalized = stripMagpieProviderPrefix(agent, modelId)
   return providerFromModel(normalized)
 }
 
@@ -1017,12 +1017,7 @@ function cleanText(value: unknown): string | null {
   return text === '' || text.length > 512 || /[\u0000-\u001f\u007f]/u.test(text) ? null : text
 }
 
-/**
- * Command Code stores a Magpie model as `magpie/provider/model`, while
- * `magpie models commandcode` lists the gateway catalog as `provider/model`.
- * The prefix is an adapter-specific, verified spelling from Magpie's
- * Command Code integration; no generic slash-prefix inference is allowed.
- */
+/** Pi and Command Code store Magpie selections with a local `magpie/` provider prefix. */
 function resolveCatalogModelId(agent: MagpieAgent, requestedModelId: string, catalog: MagpieModelCatalog | null, modelName?: string): string | null {
   if (catalog === null) return null
   const catalogModelId = catalogModelIdForRequested(agent, requestedModelId)
@@ -1032,12 +1027,16 @@ function resolveCatalogModelId(agent: MagpieAgent, requestedModelId: string, cat
 }
 
 function catalogModelIdForRequested(agent: MagpieAgent, requestedModelId: string): string | null {
-  const normalized = agent === 'commandcode' && requestedModelId.startsWith('magpie/')
-    ? requestedModelId.slice('magpie/'.length)
-    : requestedModelId
+  const normalized = stripMagpieProviderPrefix(agent, requestedModelId)
   // Claude appends this context-window marker to model IDs returned by its
   // initialize protocol; Magpie's verified catalog keeps the canonical ID.
   return agent === 'claude' ? normalized.replace(/\[1m\]$/u, '') : normalized
+}
+
+function stripMagpieProviderPrefix(agent: MagpieAgent, modelId: string): string {
+  return (agent === 'commandcode' || agent === 'pi') && modelId.startsWith('magpie/')
+    ? modelId.slice('magpie/'.length)
+    : modelId
 }
 
 function normalizeMagpieModelName(value: unknown): string | null {
