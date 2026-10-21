@@ -1,32 +1,26 @@
 import { createElement, type ReactElement } from 'react'
 
 export const MAGPIE_MODEL_TAG_ATTRIBUTE = 'data-codingns-magpie-model-tag'
+export const MAGPIE_MODEL_LOGO_URL = 'https://github.com/yetone/magpie/raw/main/site/public/img/icon-256.png'
 
 const tagStyle = {
   display: 'inline-flex',
   flex: 'none',
   alignItems: 'center',
-  gap: 4,
-  padding: '1px 7px',
-  border: '1px solid rgba(179, 140, 68, .42)',
-  borderRadius: 999,
-  background: 'linear-gradient(125deg, rgba(242, 196, 108, .22), rgba(82, 164, 154, .16))',
-  color: 'var(--dsw-alias-label-secondary, #84652c)',
-  fontSize: 10,
-  fontWeight: 650,
-  letterSpacing: '.015em',
-  lineHeight: '15px',
+  justifyContent: 'center',
+  width: 18,
+  height: 18,
   whiteSpace: 'nowrap',
   verticalAlign: 'middle',
 } as const
 
-const tagMarkStyle = {
-  width: 6,
-  height: 6,
-  flex: '0 0 6px',
-  borderRadius: '50%',
-  background: 'linear-gradient(135deg, #edb94e, #51a79b)',
-  boxShadow: '0 0 5px rgba(81, 167, 155, .35)',
+const tagLogoStyle = {
+  display: 'block',
+  width: 16,
+  height: 16,
+  flex: '0 0 16px',
+  objectFit: 'contain',
+  borderRadius: 4,
 } as const
 
 /** Compact visual source marker shared by every model-list surface. */
@@ -37,7 +31,7 @@ export function MagpieModelTag(): ReactElement {
     'aria-label': 'Provided by Magpie',
     title: 'Provided by Magpie',
     style: tagStyle,
-  }, createElement('span', { 'aria-hidden': true, style: tagMarkStyle }), 'Magpie')
+  }, createElement('img', { src: MAGPIE_MODEL_LOGO_URL, alt: 'Provided by Magpie', style: tagLogoStyle }))
 }
 
 /** Native DSH owns its menu DOM, so its option rows receive the same badge imperatively. */
@@ -50,9 +44,10 @@ export function createMagpieModelTagNode(document: Document, modelId?: string): 
   tag.title = 'Provided by Magpie'
   Object.assign(tag.style, tagStyle)
 
-  const mark = document.createElement('span')
-  mark.setAttribute('aria-hidden', 'true')
-  Object.assign(mark.style, tagMarkStyle)
-  tag.append(mark, document.createTextNode('Magpie'))
+  const logo = document.createElement('img')
+  logo.setAttribute('src', MAGPIE_MODEL_LOGO_URL)
+  logo.setAttribute('alt', 'Provided by Magpie')
+  Object.assign(logo.style, tagLogoStyle)
+  tag.append(logo)
   return tag
 }

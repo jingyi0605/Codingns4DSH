@@ -37,7 +37,12 @@ export function watchNativeModelMenu(
     trigger = anchor.closest('[data-composer-card]')?.querySelector<HTMLButtonElement>(modelTriggerSelector) ?? null
     const menuId = trigger?.getAttribute('aria-controls')
     const menu = menuId === undefined || menuId === null ? null : document.getElementById(menuId)
-    if (menu !== null && trigger?.getAttribute('aria-expanded') === 'true') decorateMagpieModels(menu, readModels(), document)
+    if (menu !== null && trigger?.getAttribute('aria-expanded') === 'true') {
+      const models = readModels()
+      if (models.length > 0 || menu.querySelector('[data-codingns-magpie-model-tag]') !== null) {
+        decorateMagpieModels(menu, models, document)
+      }
+    }
     // 模型列表和思考档位子菜单不放翻译行，避免干扰原生键盘导航与搜索。
     const rootMenu = trigger?.getAttribute('aria-expanded') === 'true'
       && menu?.getAttribute('role') === 'menu'
@@ -75,11 +80,17 @@ export function decorateMagpieModels(menu: HTMLElement, models: readonly NativeM
     return
   }
   const byId = new Map(models.filter((model) => model.source === 'magpie').map((model) => [model.id, model]))
-  const byName = new Map<string, NativeModelCatalogEntry[]>()
+  const nameCandidates = new Map<string, NativeModelCatalogEntry[]>()
   for (const model of models) {
-    const sameName = byName.get(model.name) ?? []
+    const name = normalizeModelName(model.name)
+    if (name === null) continue
+    const sameName = nameCandidates.get(name) ?? []
     sameName.push(model)
-    byName.set(model.name, sameName)
+    nameCandidates.set(name, sameName)
+  }
+  const byName = new Map<string, NativeModelCatalogEntry>()
+  for (const [name, matches] of nameCandidates) {
+    if (matches.length === 1) byName.set(name, matches[0]!)
   }
   const selector = `[role="menuitemradio"], [role="option"], [data-model-id], [data-model], [data-value]`
   const candidates = [...menu.querySelectorAll<HTMLElement>(selector)]
@@ -113,7 +124,7 @@ export function decorateMagpieModels(menu: HTMLElement, models: readonly NativeM
 function identifyNativeModel(
   row: HTMLElement,
   byId: ReadonlyMap<string, NativeModelCatalogEntry>,
-  byName: ReadonlyMap<string, readonly NativeModelCatalogEntry[]>,
+  byName: ReadonlyMap<string, NativeModelCatalogEntry>,
 ): NativeModelCatalogEntry | undefined {
   const nodes = [row, ...row.querySelectorAll<HTMLElement>('*')]
   for (const node of nodes) {
@@ -123,13 +134,21 @@ function identifyNativeModel(
       if (match !== undefined) return match
     }
   }
-  for (const [name, matches] of byName) {
-    if (matches.length === 0 || matches.some((model) => model.source !== 'magpie')) continue
-    if (nodes.some((node) => node.textContent?.trim() === name || node.getAttribute('aria-label')?.trim() === name || node.title.trim() === name)) {
-      return matches[0]
+  for (const [name, model] of byName) {
+    if (model.source !== 'magpie') continue
+    if (nodes.some((node) => normalizeModelName(node.textContent) === name
+      || normalizeModelName(node.getAttribute('aria-label')) === name
+      || normalizeModelName(node.title) === name)) {
+      return model
     }
   }
   return undefined
+}
+
+function normalizeModelName(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const name = value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-US')
+  return name === '' ? null : name
 }
 
 function findModelLabel(row: HTMLElement, name: string): HTMLElement {

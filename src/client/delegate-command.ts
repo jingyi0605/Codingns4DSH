@@ -11,6 +11,7 @@ import { getModelCatalogCache, loadModelCatalog } from './model-catalog-cache.js
 import { resolveDelegateIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 import { debugInfo, debugWarn } from '../shared/debug.js'
 import { encodeDelegationCarrier } from '../shared/delegation-carrier.js'
+import { createMagpieModelTagNode } from './magpie-model-tag.js'
 
 const DELEGATE_REFERENCE_SOURCE = 'codingns-delegate'
 const delegateReferenceLabels = new Map<string, string>()
@@ -328,7 +329,7 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
   let popupMode: 'adapter' | 'model' = 'adapter'
   let popupAdapter: DelegateAdapterOption | undefined
   let popupOptions: readonly DelegateAdapterOption[] = []
-  let popupModels: readonly { id: string; label: string; detail?: string }[] = []
+  let popupModels: readonly { id: string; label: string; detail?: string; magpie?: boolean }[] = []
   let popupEditor: HTMLElement | undefined
   let popupToken: { start: number; end: number; draftRev: number } | undefined
   let popupRequestId = 0
@@ -414,7 +415,7 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
     return popup
   }
 
-  const render = (title: string, rows: readonly { id: string; label: string; detail?: string; iconId?: string; onClick: () => void }[]): void => {
+  const render = (title: string, rows: readonly { id: string; label: string; detail?: string; iconId?: string; magpie?: boolean; onClick: () => void }[]): void => {
     if (popup === undefined) return
     popup.replaceChildren()
     const heading = document.createElement('div')
@@ -452,6 +453,7 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
       text.textContent = row.label
       Object.assign(text.style, { minWidth: '0', overflowWrap: 'anywhere', flex: '1 1 auto' })
       button.append(text)
+      if (row.magpie === true) text.after(createMagpieModelTagNode(document, row.id))
       if (row.detail) {
         const detail = document.createElement('span')
         detail.textContent = row.detail
@@ -496,7 +498,12 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
         const efforts = model.efforts.map((effort) => model.effortLabels?.[effort] ?? effort)
         const effortsLabel = efforts.length === 0 ? undefined : t('cli.thinkingLevel', { value: efforts.join(t('common.listSeparator')) })
         const details = [model.description, effortsLabel].filter((value): value is string => value !== undefined && value.trim() !== '')
-        return { id: model.id, label: model.name || model.id, ...(details.length === 0 ? {} : { detail: details.join(' · ') }) }
+        return {
+          id: model.id,
+          label: model.name || model.id,
+          ...(details.length === 0 ? {} : { detail: details.join(' · ') }),
+          ...(model.source === 'magpie' ? { magpie: true } : {}),
+        }
       }))
       if (popup === undefined || popupMode !== 'model' || popupRequestId !== requestId || popupSessionId !== sessionId || popupAdapter?.id !== adapter.id) return
       render(t('delegate.selectModel', { name: adapter.label }), popupModels.map((model) => ({ ...model, onClick: () => selectModel(model) })))

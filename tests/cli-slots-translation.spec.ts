@@ -426,7 +426,7 @@ test('external Agent 模型列表只为 Host 确认的 Magpie 模型显示来源
     assert.ok(magpieRow)
     assert.ok(ordinaryRow)
     assert.match(renderToStaticMarkup(magpieRow), /data-codingns-magpie-model-tag/u)
-    assert.match(renderToStaticMarkup(magpieRow), />Magpie</u)
+    assert.match(renderToStaticMarkup(magpieRow), /<img[^>]+icon-256\.png/u)
     assert.doesNotMatch(renderToStaticMarkup(ordinaryRow), /data-codingns-magpie-model-tag/u)
   } finally { renderer.dispose(); probe.dispose() }
 })
