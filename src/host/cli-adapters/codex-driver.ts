@@ -436,7 +436,11 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         const reason = input.signal?.aborted ? 'cancel' : terminalReason ?? 'stop'
         yield { type: 'finish', reason }
       }
-    } finally { /* app-server 在会话结束前保持连接。 */ }
+    } finally {
+      // app-server 在会话结束前保持连接；但回合中止时仍挂起的问题/审批必须
+      // 结算，否则 Codex 认为该 turn 还在等待输入，后续回合会卡住。
+      if (input.signal?.aborted) this.releasePendingRequests(session)
+    }
   }
 
   /**
@@ -716,6 +720,27 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     active.removeNotificationListener()
     active.queue.close()
     if (session.segmentedTurn === active) session.segmentedTurn = undefined
+    this.releasePendingRequests(session)
+  }
+
+  /**
+   * 释放仍挂起的反向请求。
+   *
+   * Codex app-server 把 `requestUserInput` 和各类审批作为 server request 发给
+   * 客户端，驱动只有拿到回包才会让对应 turn 继续。回合被中止、分段被丢弃或
+   * 会话被替换时，如果这些 Promise 永远不 resolve，app-server 侧就会认为
+   * 该 turn 仍在等待输入；后续同一个 thread 上的新回合会表现成“发消息没有
+   * 反应”或直接卡住。这里统一按“取消/拒绝”结算，属于协议层的收尾。
+   */
+  private releasePendingRequests(session: CodexSession): void {
+    for (const resolve of session.pendingQuestions.values()) {
+      try { resolve({ answers: {} }) } catch { /* 请求可能已被其他路径清理 */ }
+    }
+    session.pendingQuestions.clear()
+    for (const pending of session.pendingPermissions.values()) {
+      try { pending.resolve({ approved: false }) } catch { /* 请求可能已被其他路径清理 */ }
+    }
+    session.pendingPermissions.clear()
   }
 
   /**
