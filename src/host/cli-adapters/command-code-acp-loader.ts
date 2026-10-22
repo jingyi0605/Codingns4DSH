@@ -10,11 +10,12 @@
  * 拒绝成 `Unknown model: ...`，而 CLI 自己的默认模型走另一条路径不受影响。这里
  * 把 BYOK 模型补进内存中的目录，使 ACP 会话能切换并真正路由到对应提供者。
  *
- * 这个 loader 只改写内存中的 cli.mjs，不修改用户安装的 npm 包或 Desktop
- * The model catalog and Magpie session patches depend only on stable function
- * entries,
- * not on minified catalog variable names or the complete function text. If the
- * upstream entry point disappears, the original module is left unchanged.
+ * 这个 loader 只改写内存中的 cli.mjs，不修改用户安装的 npm 包或 Desktop。
+ *
+ * Magpie 会话标记有两条互相独立的路径：模块顶部的 fetch 包装只依赖标准 Web
+ * API 和 CODINGNS_MAGPIE_SESSION 环境变量，不匹配任何压缩代码；按函数名定位的
+ * sessionRoutingHeaders 结构化补丁作为兜底。两条路径都匹配不到时保持原实现，
+ * 不影响 CLI 启动。模型目录补丁仍只依赖稳定函数入口，不依赖压缩变量名。
  */
 
 import { fileURLToPath } from 'node:url'
@@ -40,7 +41,15 @@ export async function load(url: string, context: LoaderContext, nextLoad: NextLo
   const loaded = await nextLoad(url, context)
   if (!url.endsWith(COMMAND_CODE_CLI_SUFFIX) || loaded.format !== 'module' || loaded.source === undefined) return loaded
   const source = typeof loaded.source === 'string' ? loaded.source : new TextDecoder().decode(loaded.source)
-  const patched = patchCommandCodeAcpMod(patchCommandCodeAcpMagpieSession(patchCommandCodeAcpByokModels(patchCommandCodeAcpQuestion(source))))
+  const patched = injectCommandCodeAcpMagpieSession(
+    patchCommandCodeAcpMod(
+      patchCommandCodeAcpMagpieSession(
+        patchCommandCodeAcpByokModels(
+          patchCommandCodeAcpQuestion(source),
+        ),
+      ),
+    ),
+  )
   return patched === source ? loaded : { ...loaded, source: patched, shortCircuit: true }
 }
 
@@ -75,17 +84,75 @@ function patchCommandCodeAcpQuestion(source: string): string {
 }
 
 /**
+ * Version-independent Magpie session tagging.
+ *
+ * Command Code builds each model transport with `fetchImpl ?? globalThis.fetch`
+ * at request time. Prepending this prefix installs a fetch wrapper before the
+ * bundle is evaluated, so loopback OpenAI-compatible requests carry the DSH
+ * session ID as `x-magpie-session`. It depends only on standard Web APIs and
+ * the `CODINGNS_MAGPIE_SESSION` environment variable, never on minified names.
+ */
+const MAGPIE_FETCH_PREFIX =
+  'const __codingNsMagpieSession=process.env.CODINGNS_MAGPIE_SESSION;' +
+  'if(typeof __codingNsMagpieSession==="string"&&__codingNsMagpieSession.trim()!==""){' +
+  'const __codingNsOriginalFetch=globalThis.fetch;' +
+  'globalThis.fetch=function __codingNsMagpieFetch(input,init){' +
+  'try{' +
+  'const raw=input instanceof Request?input.url:input instanceof URL?input.href:String(input),' +
+  'u=new URL(raw),' +
+  'loopback=u.hostname==="127.0.0.1"||u.hostname==="localhost"||u.hostname==="::1"||u.hostname==="[::1]";' +
+  'if(loopback&&/^\\/v1(?:\\/|$)/u.test(u.pathname)){' +
+  'const headers=new Headers(input instanceof Request?input.headers:init?.headers);' +
+  'if(!headers.has("x-magpie-session")){' +
+  'headers.set("x-magpie-session",__codingNsMagpieSession.trim());' +
+  'return input instanceof Request?__codingNsOriginalFetch(new Request(input,{...init,headers})):__codingNsOriginalFetch(input,{...init,headers})' +
+  '}' +
+  '}' +
+  '}catch{}' +
+  'return __codingNsOriginalFetch(input,init)' +
+  '};' +
+  '}'
+
+/** 把 fetch 包装放到模块最前面；有 shebang 时保留在字节 0。 */
+function injectCommandCodeAcpMagpieSession(source: string): string {
+  if (source.includes('__codingNsMagpieSession')) return source
+  if (!source.startsWith('#!')) return MAGPIE_FETCH_PREFIX + source
+  const newline = source.indexOf('\n')
+  return newline < 0
+    ? MAGPIE_FETCH_PREFIX + source
+    : `${source.slice(0, newline + 1)}${MAGPIE_FETCH_PREFIX}${source.slice(newline + 1)}`
+}
+
+/**
  * Magpie associates usage and route records through `X-Magpie-Session`.
  * Command Code already passes its ACP session as `threadId` to the model
  * transport, but its built-in session-header helper only handles OpenCode.
- * Add the Magpie header for loopback OpenAI-compatible `/v1` gateways.
+ *
+ * The fetch prefix above is the primary, version-independent path. This
+ * structural fallback keeps working if a future bundle bypasses
+ * `globalThis.fetch`: it locates `sessionRoutingHeaders` by name, renames the
+ * original, and wraps it without reading any minified constant.
  */
+const SESSION_ROUTING_DECLARATION = /function\s+sessionRoutingHeaders\s*\([^)]*\)\s*\{/u
+
 function patchCommandCodeAcpMagpieSession(source: string): string {
-  const original = 'function sessionRoutingHeaders(e){return e.threadId&&isSessionRoutedHost(e.baseURL)?Object.keys(e.headers??{}).some(e=>e.toLowerCase()===NT)?{}:{[NT]:e.threadId}:{}}'
-  if (!source.includes(original) || source.includes('codingNsMagpieBaseUrl')) return source
-  const helper = 'function codingNsMagpieBaseUrl(e){try{const t=new URL(e);return(t.hostname==="127.0.0.1"||t.hostname==="localhost"||t.hostname==="::1"||t.hostname==="[::1]")&&(/^\\/v1(?:\\/|$)/u.test(t.pathname))}catch{return false}}'
-  const replacement = `${helper}function sessionRoutingHeaders(e){const t=Object.keys(e.headers??{});if(e.threadId&&isSessionRoutedHost(e.baseURL))return t.some(e=>e.toLowerCase()===NT)?{}:{[NT]:e.threadId};return e.threadId&&codingNsMagpieBaseUrl(e.baseURL)&&!t.some(e=>e.toLowerCase()==="x-magpie-session")?{"x-magpie-session":e.threadId}:{}}`
-  return source.replace(original, replacement)
+  const match = SESSION_ROUTING_DECLARATION.exec(source)
+  if (match === null || match.index === undefined) return source
+  const openingBrace = match.index + match[0].lastIndexOf('{')
+  const end = findJavaScriptBlockEnd(source, openingBrace)
+  if (end === null) return source
+  const original = source.slice(match.index, end)
+  if (original.includes('codingNsOriginalSessionRoutingHeaders')) return source
+  const renamed = original.replace(/^function\s+sessionRoutingHeaders/u, 'function codingNsOriginalSessionRoutingHeaders')
+  if (renamed === original) return source
+  const wrapper = 'function sessionRoutingHeaders(e){const r=codingNsOriginalSessionRoutingHeaders(e);'
+    + 'if(Object.keys(r).length>0)return r;if(!e.threadId)return r;'
+    + 'try{const u=new URL(e.baseURL),h=Object.keys(e.headers??{}),'
+    + 's=typeof process!=="undefined"&&typeof process.env.CODINGNS_MAGPIE_SESSION==="string"&&process.env.CODINGNS_MAGPIE_SESSION.trim()!==""?process.env.CODINGNS_MAGPIE_SESSION.trim():e.threadId;'
+    + 'if((u.hostname==="127.0.0.1"||u.hostname==="localhost"||u.hostname==="::1"||u.hostname==="[::1]")'
+    + '&&/^\\/v1(?:\\/|$)/u.test(u.pathname)&&!h.some(k=>k.toLowerCase()==="x-magpie-session"))'
+    + 'return{"x-magpie-session":s}}catch{}return r}'
+  return `${source.slice(0, match.index)}${renamed}${wrapper}${source.slice(end)}`
 }
 
 /**
