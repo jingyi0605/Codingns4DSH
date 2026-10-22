@@ -194,7 +194,17 @@ export class MagpieUsageService {
     const sessionId = providerSessionId !== null && providerSessionId !== nativeSessionId
       ? providerSessionId
       : agent === 'dsh' ? nativeSessionId : null
-    return this.readFromGateway(agent, requestedModelId, catalog.gatewayOrigin, sessionId, signal, includeRoute)
+    // Command Code's ACP child tags loopback Magpie requests with the DSH
+    // session ID injected by the Host, so the ledger key differs from the ACP
+    // session ID shown in the panel. Older Hosts without that ID keep the
+    // provider ID so the panel still reports the same "no usage" state.
+    const magpieSessionId = agent === 'commandcode' ? nativeSessionId ?? sessionId : sessionId
+    // During a rolling update the ACP child may still tag requests with its ACP
+    // session ID; fall back to it when the DSH-ID ledger row is absent.
+    const fallbackSessionId = agent === 'commandcode' && nativeSessionId !== null && sessionId !== null && nativeSessionId !== sessionId
+      ? sessionId
+      : null
+    return this.readFromGateway(agent, requestedModelId, catalog.gatewayOrigin, sessionId, magpieSessionId, fallbackSessionId, signal, includeRoute)
   }
 
   /**
@@ -361,29 +371,46 @@ export class MagpieUsageService {
     }
   }
 
-  private async readFromGateway(agent: MagpieAgent, modelId: string, gatewayOrigin: string | null, sessionId: string | null, signal: AbortSignal | undefined, includeRoute: boolean): Promise<MagpieUsageSnapshot> {
+  private async readFromGateway(
+    agent: MagpieAgent,
+    modelId: string,
+    gatewayOrigin: string | null,
+    sessionId: string | null,
+    magpieSessionId: string | null,
+    fallbackSessionId: string | null,
+    signal: AbortSignal | undefined,
+    includeRoute: boolean,
+  ): Promise<MagpieUsageSnapshot> {
     const capturedAt = new Date(this.now()).toISOString()
-    if (gatewayOrigin === null) return unavailableMagpieSnapshot(agent, modelId, sessionId, this.now(), capturedAt)
+    if (gatewayOrigin === null) {
+      const snapshot = unavailableMagpieSnapshot(agent, modelId, sessionId, this.now(), capturedAt)
+      return magpieSessionId === null ? { ...snapshot, routeStatus: 'session-unavailable' } : snapshot
+    }
     const [usageResult, quotaResult] = await Promise.all([
       this.readGatewayJson(gatewayOrigin, '/v1/magpie/usage?period=today', signal),
       this.readGatewayJson(gatewayOrigin, '/v1/magpie/quotas', signal),
     ])
     const aggregate = usageResult.ok ? readTotals(usageResult.value) : null
-    const sessionUsage = usageResult.ok && sessionId !== null
-      ? readSession(usageResult.value, agent, sessionId)
+    const primarySession = usageResult.ok && magpieSessionId !== null
+      ? readSession(usageResult.value, agent, magpieSessionId)
       : null
+    const fallbackSession = primarySession === null && usageResult.ok && fallbackSessionId !== null
+      ? readSession(usageResult.value, agent, fallbackSessionId)
+      : null
+    const sessionUsage = primarySession ?? fallbackSession
+    const resolvedSessionId = primarySession !== null ? magpieSessionId : fallbackSession !== null ? fallbackSessionId : magpieSessionId
     // A providerSessionId is not enough to prove that Magpie knows this Agent
     // session. Require the exact Agent + ID pair in Magpie's own usage result
     // before asking the route endpoint, and then verify its echoed identity.
-    const canReadRoute = includeRoute && sessionId !== null && sessionId.length <= 128 && sessionUsage !== null
+    const canReadRoute = includeRoute && resolvedSessionId !== null && resolvedSessionId.length <= 128 && sessionUsage !== null
     const routeResultPromise = canReadRoute
-      ? this.readGatewayJson(gatewayOrigin, `/v1/magpie/route?session=${encodeURIComponent(sessionId)}`, signal)
+      ? this.readGatewayJson(gatewayOrigin, `/v1/magpie/route?session=${encodeURIComponent(resolvedSessionId)}`, signal)
       : Promise.resolve({ ok: false as const })
     const routeHistoryResultPromise = canReadRoute
-      ? this.readGatewayJson(gatewayOrigin, `/v1/magpie/usage/requests?period=today&q=${encodeURIComponent(sessionId)}&limit=100`, signal)
+      ? this.readGatewayJson(gatewayOrigin, `/v1/magpie/usage/requests?period=today&q=${encodeURIComponent(resolvedSessionId)}&limit=100`, signal)
       : Promise.resolve({ ok: false as const })
     const [routeResult, routeHistoryResult] = await Promise.all([routeResultPromise, routeHistoryResultPromise])
-    const routeRead = sessionId === null
+    const routeRead = resolvedSessionId === null
       ? { status: 'session-unavailable' as const, route: null }
       : !includeRoute
         ? { status: 'not-requested' as const, route: null }
@@ -391,9 +418,9 @@ export class MagpieUsageService {
           ? { status: 'unavailable' as const, route: null }
         : !routeResult.ok
           ? { status: 'unavailable' as const, route: null }
-          : readRoute(routeResult.value, sessionId)
-    const routeHistory = routeHistoryResult.ok && sessionId !== null && sessionUsage !== null
-      ? readSessionRouteHistory(routeHistoryResult.value, agent, sessionId)
+          : readRoute(routeResult.value, resolvedSessionId)
+    const routeHistory = routeHistoryResult.ok && resolvedSessionId !== null && sessionUsage !== null
+      ? readSessionRouteHistory(routeHistoryResult.value, agent, resolvedSessionId)
       : []
     const route = routeRead.route === null
       ? routeHistory[0]?.route ?? null
