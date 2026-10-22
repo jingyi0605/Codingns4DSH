@@ -116,7 +116,12 @@ export function decorateMagpieModels(menu: HTMLElement, models: readonly NativeM
       continue
     }
     if (existing?.dataset.modelId === model.id) {
-      existing.style.marginInlineStart = 'auto'
+      // Move only when native content was appended after the logo; otherwise avoid
+      // triggering the observer again for an already-correct row.
+      if (row.children[row.children.length - 1] !== existing) {
+        existing.remove()
+        row.append(existing)
+      }
       continue
     }
     existing?.remove()

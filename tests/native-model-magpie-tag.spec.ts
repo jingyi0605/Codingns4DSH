@@ -119,6 +119,9 @@ test('native DSH model options tag exact Magpie IDs and avoid ambiguous labels',
   assert.equal(tags.length, 2, 'repeated scans must not duplicate badges')
   assert.equal(tags[0]!.dataset.modelId, 'auto/gpt-6.1-sol')
   assert.equal(tags[1]!.dataset.modelId, 'alias/provider-model')
+  const stableChildren = [...magpie.children]
+  decorateMagpieModels(menu as never, models, document as never)
+  assert.deepEqual(magpie.children, stableChildren, 'a stable native row is not re-parented on every observer scan')
   for (const tag of tags) {
     assert.equal(tag.children.length, 1, 'the badge contains one logo only')
     assert.equal(tag.style.width, '18px')
