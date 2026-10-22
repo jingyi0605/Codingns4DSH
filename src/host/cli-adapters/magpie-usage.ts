@@ -14,6 +14,19 @@ import type {
   MagpieUsageSnapshot,
   MagpieUsageTotals,
 } from '../../shared/contracts/subscription.js'
+import type {
+  MagpieDashboardPeriod,
+  MagpieDashboardAvailabilityIssue,
+  MagpieDashboardQuota,
+  MagpieQuotaHistory,
+  MagpieUsageDashboard,
+  MagpieUsageGroup,
+  MagpieUsageMetrics,
+  MagpieUsageRequest,
+  MagpieUsageRequestPage,
+  MagpieUsageSeriesPoint,
+  MagpieUsageSession,
+} from '../../shared/contracts/magpie-management.js'
 import { commandEnvironment, resolveCommandPath, runAsyncCommand, WINDOWS, withCommandSignal } from './process-utils.js'
 
 const MAGPIE_CATALOG_TTL_MS = 60_000
@@ -73,6 +86,7 @@ interface MagpieModelCatalog {
 
 interface CatalogCacheEntry {
   readonly catalog: MagpieModelCatalog | null
+  readonly unavailableIssue: Extract<MagpieDashboardAvailabilityIssue, 'cli-unavailable' | 'cli-version-unsupported' | 'model-catalog-unavailable'> | null
   readonly loadedAt: number
 }
 
@@ -116,6 +130,14 @@ export interface MagpieUsageServiceOptions {
   readonly lifetimeSignal?: AbortSignal
 }
 
+export interface MagpieUsageRequestOptions {
+  readonly period: MagpieDashboardPeriod
+  readonly offset: number
+  readonly limit: number
+  readonly sessionId?: string
+  readonly sessionAgent?: string
+}
+
 /**
  * Reads Magpie's public local Gateway API only after its CLI confirms that the
  * current Agent model is in that Agent's catalog. No Agent or Magpie config
@@ -134,7 +156,7 @@ export class MagpieUsageService {
   /** `/v1/models` is Gateway-wide, so adapters with the same model set share one normalized response. */
   private readonly modelMetadata = new Map<string, ModelMetadataCacheEntry>()
   private readonly modelMetadataLoads = new Map<string, Promise<ReadonlyMap<string, MagpieModelMetadata> | null>>()
-  private versionCheck: { readonly supported: boolean; readonly checkedAt: number } | undefined
+  private versionCheck: { readonly supported: boolean; readonly executableAvailable: boolean; readonly checkedAt: number } | undefined
   private versionLoad: Promise<boolean> | undefined
 
   constructor(options: MagpieUsageServiceOptions = {}) {
@@ -255,6 +277,90 @@ export class MagpieUsageService {
     return metadata?.get(id) ?? null
   }
 
+  /** Read bounded, graph-ready usage and quota data for the separate dashboard. */
+  async readDashboard(period: MagpieDashboardPeriod, signal?: AbortSignal): Promise<MagpieUsageDashboard> {
+    signal?.throwIfAborted()
+    const catalog = await this.loadCatalog('dsh', signal)
+    if (catalog === null) {
+      const unavailableIssue = this.catalogs.get('dsh')?.unavailableIssue ?? 'model-catalog-unavailable'
+      return unavailableDashboard(period, unavailableIssue, this.now())
+    }
+    if (catalog.gatewayOrigin === null) return unavailableDashboard(period, 'model-catalog-unavailable', this.now())
+
+    const [usage, quotas, history] = await Promise.all([
+      this.readGatewayJson(catalog.gatewayOrigin, `/v1/magpie/usage?period=${period}`, signal),
+      this.readGatewayJson(catalog.gatewayOrigin, '/v1/magpie/quotas/cards', signal),
+      this.readGatewayJson(catalog.gatewayOrigin, '/v1/magpie/quotas/history?days=30', signal),
+    ])
+    const parsedUsage = usage.ok ? parseMagpieDashboardUsage(usage.value) : null
+    const parsedQuotas = quotas.ok ? parseMagpieQuotaCards(quotas.value) : null
+    const parsedHistory = history.ok ? parseMagpieQuotaHistory(history.value) : null
+    return {
+      period,
+      capturedAt: new Date(this.now()).toISOString(),
+      availabilityIssue: null,
+      usageStatus: parsedUsage === null ? 'unavailable' : 'available',
+      aggregate: parsedUsage?.aggregate ?? null,
+      series: parsedUsage?.series ?? [],
+      agents: parsedUsage?.agents ?? [],
+      providers: parsedUsage?.providers ?? [],
+      models: parsedUsage?.models ?? [],
+      accounts: parsedUsage?.accounts ?? [],
+      sessions: parsedUsage?.sessions ?? [],
+      sessionCount: parsedUsage?.sessionCount ?? null,
+      quotaStatus: parsedQuotas === null ? 'unavailable' : 'available',
+      quotas: parsedQuotas ?? [],
+      quotaHistoryStatus: parsedHistory === null ? 'unavailable' : 'available',
+      quotaHistory: parsedHistory ?? [],
+    }
+  }
+
+  /** Read one bounded ledger page and exact-match session identities on Host. */
+  async readRequestPage(options: MagpieUsageRequestOptions, signal?: AbortSignal): Promise<MagpieUsageRequestPage | null> {
+    signal?.throwIfAborted()
+    if (!isMagpieDashboardPeriod(options.period)
+      || !Number.isSafeInteger(options.offset) || options.offset < 0 || options.offset > 1_000_000
+      || !Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 100) return null
+    const sessionId = options.sessionId === undefined ? null : cleanText(options.sessionId)
+    const sessionAgent = options.sessionAgent === undefined ? null : cleanText(options.sessionAgent)
+    if ((options.sessionId !== undefined && sessionId === null)
+      || (options.sessionAgent !== undefined && (sessionAgent === null || !isMagpieAgentId(sessionAgent)))
+      || ((sessionId === null) !== (sessionAgent === null))) return null
+
+    const catalog = await this.loadCatalog('dsh', signal)
+    if (catalog?.gatewayOrigin === null || catalog === null) return null
+    const query = new URLSearchParams({ period: options.period, limit: String(options.limit), offset: String(options.offset) })
+    if (sessionId !== null) query.set('q', sessionId)
+    const response = await this.readGatewayJson(catalog.gatewayOrigin, `/v1/magpie/usage/requests?${query.toString()}`, signal)
+    if (!response.ok) return null
+    const root = asRecord(response.value)
+    const rawRows = root?.rows
+    if (!Array.isArray(rawRows) || rawRows.length > 500) return null
+    const candidates = rawRows.flatMap((row) => {
+      const record = asRecord(row)
+      if (record === null) return []
+      const candidateSession = cleanText(record.session)
+      const nativeSession = cleanText(record.native_session)
+      const agent = cleanText(record.agent)
+      const acceptedAgents = sessionAgent === null ? [] : MAGPIE_USAGE_AGENT_ALIASES[sessionAgent] ?? [sessionAgent]
+      if (sessionId !== null
+        && (candidateSession !== sessionId && nativeSession !== sessionId || agent === null || !acceptedAgents.includes(agent))) return []
+      const item = parseMagpieRequest(record)
+      return item === null ? [] : [sessionId === null ? item : { ...item, sessionId }]
+    })
+    const total = sessionId === null ? safeCount(root?.total) : null
+    return {
+      period: options.period,
+      offset: options.offset,
+      limit: options.limit,
+      total,
+      hasMore: total === null ? rawRows.length >= options.limit : options.offset + rawRows.length < total,
+      sessionId,
+      sessionAgent,
+      items: candidates.slice(0, options.limit),
+    }
+  }
+
   private async readFromGateway(agent: MagpieAgent, modelId: string, gatewayOrigin: string | null, sessionId: string | null, signal: AbortSignal | undefined, includeRoute: boolean): Promise<MagpieUsageSnapshot> {
     const capturedAt = new Date(this.now()).toISOString()
     if (gatewayOrigin === null) return unavailableMagpieSnapshot(agent, modelId, sessionId, this.now(), capturedAt)
@@ -346,7 +452,12 @@ export class MagpieUsageService {
           .catch(() => null)
       const [supported, catalog] = await Promise.all([supportedRequest, catalogRequest])
       const result = supported ? catalog : null
-      this.catalogs.set(agent, { catalog: result, loadedAt: this.now() })
+      const unavailableIssue = result !== null
+        ? null
+        : !supported
+          ? this.versionCheck?.executableAvailable === true ? 'cli-version-unsupported' : 'cli-unavailable'
+          : 'model-catalog-unavailable'
+      this.catalogs.set(agent, { catalog: result, unavailableIssue, loadedAt: this.now() })
       return result
     })
       .catch(() => null)
@@ -400,13 +511,13 @@ export class MagpieUsageService {
     }
     if (this.versionLoad !== undefined) return awaitWithSignal(this.versionLoad, signal)
     const load = this.readVersion(this.lifetimeSignal)
-      .then((value) => parseMagpieCliVersion(value))
-      .then((supported) => {
-        this.versionCheck = { supported, checkedAt: this.now() }
+      .then((value) => {
+        const supported = parseMagpieCliVersion(value)
+        this.versionCheck = { supported, executableAvailable: value !== null, checkedAt: this.now() }
         return supported
       })
       .catch(() => {
-        this.versionCheck = { supported: false, checkedAt: this.now() }
+        this.versionCheck = { supported: false, executableAvailable: false, checkedAt: this.now() }
         return false
       })
       .finally(() => { if (this.versionLoad === load) this.versionLoad = undefined })
@@ -458,6 +569,31 @@ function unavailableMagpieSnapshot(agent: string, modelId: string, sessionId: st
     upstreamProvider: providerFromModelId(modelId, agent),
     quotaStatus: 'unavailable',
     quotas: [],
+  }
+}
+
+function unavailableDashboard(
+  period: MagpieDashboardPeriod,
+  availabilityIssue: Extract<MagpieDashboardAvailabilityIssue, 'cli-unavailable' | 'cli-version-unsupported' | 'model-catalog-unavailable'>,
+  now: number,
+): MagpieUsageDashboard {
+  return {
+    period,
+    capturedAt: new Date(now).toISOString(),
+    availabilityIssue,
+    usageStatus: 'unavailable',
+    aggregate: null,
+    series: [],
+    agents: [],
+    providers: [],
+    models: [],
+    accounts: [],
+    sessions: [],
+    sessionCount: null,
+    quotaStatus: 'unavailable',
+    quotas: [],
+    quotaHistoryStatus: 'unavailable',
+    quotaHistory: [],
   }
 }
 
@@ -947,6 +1083,279 @@ export function parseMagpieQuotas(value: unknown): readonly MagpieQuota[] | null
     })
   }
   return quotas
+}
+
+/** Normalize the live aggregate and per-dimension usage response. */
+export function parseMagpieDashboardUsage(value: unknown): {
+  readonly aggregate: MagpieUsageMetrics
+  readonly series: readonly MagpieUsageSeriesPoint[]
+  readonly agents: readonly MagpieUsageGroup[]
+  readonly providers: readonly MagpieUsageGroup[]
+  readonly models: readonly MagpieUsageGroup[]
+  readonly accounts: readonly MagpieUsageGroup[]
+  readonly sessions: readonly MagpieUsageSession[]
+  readonly sessionCount: number | null
+} | null {
+  const root = asRecord(value)
+  if (root === null) return null
+  const hasMetrics = ['calls', 'errors', 'input', 'output', 'cache_read', 'cache_write', 'cost'].some((key) => key in root)
+  if (!hasMetrics && !Array.isArray(root.series) && !Array.isArray(root.sessions)) return null
+  const series = readMagpieSeries(root.series)
+  const agents = readMagpieUsageGroups(root.agents, 'agent')
+  const providers = readMagpieUsageGroups(root.providerKeys ?? root.providers, 'provider')
+  const models = readMagpieUsageGroups(root.models, 'model')
+  const accounts = readMagpieUsageGroups(root.accounts, 'account')
+  const sessions = readMagpieUsageSessions(root.sessions)
+  if (series === null || agents === null || providers === null || models === null || accounts === null || sessions === null) return null
+  return {
+    aggregate: readMagpieUsageMetrics(root),
+    series,
+    agents,
+    providers,
+    models,
+    accounts,
+    sessions,
+    sessionCount: safeCount(root.sessionCount),
+  }
+}
+
+/** Normalize quota cards while preserving nullable values and bounded history. */
+export function parseMagpieQuotaCards(value: unknown): readonly MagpieDashboardQuota[] | null {
+  const root = asRecord(value)
+  const rows = Array.isArray(value) ? value : Array.isArray(root?.data) ? root.data : null
+  if (rows === null || rows.length > 512) return null
+  const quotas: MagpieDashboardQuota[] = []
+  for (const row of rows) {
+    const record = asRecord(row)
+    const provider = routeText(record?.provider)
+    const name = routeText(record?.name)
+    if (record === null || provider === null || name === null
+      || !Array.isArray(record.windows) || record.windows.length > 64) return null
+    const windows = record.windows.flatMap((item) => {
+      const window = asRecord(item)
+      const windowName = routeText(window?.name)
+      if (window === null || windowName === null) return []
+      return [{
+        name: windowName,
+        usedPercent: safePercent(window.used),
+        remainingPercent: safePercent(window.remaining),
+        resetsAt: routeText(window.resetsAt),
+        display: routeText(window.display),
+        amount: safeDecimal(window.amount),
+        limit: safeDecimal(window.limit),
+        unit: routeText(window.unit),
+        holdsWhy: routeText(window.holdsWhy),
+        runsOutAt: routeText(window.runsOutAt),
+        runsOut: safeDecimal(window.runsOut),
+      }]
+    })
+    if (windows.length !== record.windows.length) return null
+    const dailyRecord = record.daily === undefined ? null : asRecord(record.daily)
+    const dailyPoints = dailyRecord === null ? [] : dailyRecord.days
+    if (dailyRecord !== null && (!Array.isArray(dailyPoints) || dailyPoints.length > 366)) return null
+    const daily = (Array.isArray(dailyPoints) ? dailyPoints : []).flatMap((item) => {
+      const point = asRecord(item)
+      const day = routeText(point?.day)
+      return point === null || day === null ? [] : [{ day, used: safeDecimal(point.used) }]
+    })
+    if (daily.length !== (Array.isArray(dailyPoints) ? dailyPoints.length : 0)) return null
+    quotas.push({
+      provider,
+      name,
+      kind: routeText(record.kind),
+      user: routeText(record.user),
+      plan: routeText(record.plan),
+      alias: routeText(record.alias),
+      balance: routeText(record.balance),
+      readAt: routeText(record.readAt),
+      windows,
+      daily,
+    })
+  }
+  return quotas
+}
+
+export function parseMagpieQuotaHistory(value: unknown): readonly MagpieQuotaHistory[] | null {
+  const root = asRecord(value)
+  const rows = Array.isArray(value) ? value : Array.isArray(root?.data) ? root.data : null
+  if (rows === null || rows.length > 512) return null
+  const history: MagpieQuotaHistory[] = []
+  for (const row of rows) {
+    const record = asRecord(row)
+    const provider = routeText(record?.provider)
+    if (record === null || provider === null || !Array.isArray(record.lines) || record.lines.length > 64) return null
+    const lines = record.lines.flatMap((item) => {
+      const line = asRecord(item)
+      const name = routeText(line?.name)
+      if (line === null || name === null || !Array.isArray(line.points) || line.points.length > 2_000) return []
+      const points = line.points.flatMap((pointValue) => {
+        const point = asRecord(pointValue)
+        const at = routeText(point?.at)
+        return point === null || at === null ? [] : [{
+          at,
+          left: safeDecimal(point.left),
+          start: routeText(point.start),
+          resetsAt: routeText(point.resetsAt),
+        }]
+      })
+      if (points.length !== line.points.length) return []
+      return [{ name, points }]
+    })
+    if (lines.length !== record.lines.length) return null
+    history.push({ provider, user: routeText(record.user), lines })
+  }
+  return history
+}
+
+function readMagpieUsageMetrics(record: Record<string, unknown>): MagpieUsageMetrics {
+  return {
+    calls: safeCount(record.calls),
+    errors: safeCount(record.errors),
+    retried: safeCount(record.retried),
+    inputTokens: safeCount(record.input),
+    outputTokens: safeCount(record.output),
+    cacheReadTokens: safeCount(record.cache_read),
+    cacheWriteTokens: safeCount(record.cache_write),
+    reasoningTokens: safeCount(record.reasoning),
+    cost: safeDecimal(record.cost),
+    unpriced: safeDecimal(record.unpriced),
+    credits: safeDecimal(record.credits),
+    credited: safeDecimal(record.credited),
+    timed: safeCount(record.timed),
+    ttftMs: safeDecimal(record.ttft_ms),
+    decodeMs: safeDecimal(record.decode_ms),
+    decodeTokens: safeCount(record.decode_out),
+    decodeCount: safeCount(record.decode_n),
+  }
+}
+
+function readMagpieSeries(value: unknown): readonly MagpieUsageSeriesPoint[] | null {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 2_000) return null
+  return value.flatMap((item) => {
+    const record = asRecord(item)
+    return record === null ? [] : [{
+      time: routeText(record.time),
+      label: routeText(record.label),
+      ...readMagpieUsageMetrics(record),
+    }]
+  })
+}
+
+function readMagpieUsageGroups(value: unknown, dimension: 'agent' | 'provider' | 'model' | 'account'): readonly MagpieUsageGroup[] | null {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 2_000) return null
+  const idKeys: Readonly<Record<typeof dimension, readonly string[]>> = {
+    agent: ['id', 'agent'],
+    provider: ['provider', 'id'],
+    model: ['model', 'id'],
+    account: ['account', 'id'],
+  }
+  const groups = value.flatMap((item) => {
+    const record = asRecord(item)
+    if (record === null) return []
+    const id = firstRouteText(record, idKeys[dimension])
+    if (id === null) return []
+    return [{
+      id,
+      name: routeText(record.name),
+      provider: routeText(record.provider),
+      model: routeText(record.model),
+      account: routeText(record.account),
+      agent: routeText(record.agent ?? record.id),
+      ...readMagpieUsageMetrics(record),
+    }]
+  })
+  if (dimension !== 'provider') return groups
+  const byProvider = new Map<string, MagpieUsageGroup>()
+  for (const group of groups) {
+    const current = byProvider.get(group.id)
+    if (current === undefined) {
+      byProvider.set(group.id, group)
+      continue
+    }
+    byProvider.set(group.id, {
+      ...current,
+      calls: sumNullable(current.calls, group.calls),
+      errors: sumNullable(current.errors, group.errors),
+      retried: sumNullable(current.retried, group.retried),
+      inputTokens: sumNullable(current.inputTokens, group.inputTokens),
+      outputTokens: sumNullable(current.outputTokens, group.outputTokens),
+      cacheReadTokens: sumNullable(current.cacheReadTokens, group.cacheReadTokens),
+      cacheWriteTokens: sumNullable(current.cacheWriteTokens, group.cacheWriteTokens),
+      reasoningTokens: sumNullable(current.reasoningTokens, group.reasoningTokens),
+      cost: sumNullable(current.cost, group.cost),
+      unpriced: sumNullable(current.unpriced, group.unpriced),
+      credits: sumNullable(current.credits, group.credits),
+      credited: sumNullable(current.credited, group.credited),
+      timed: sumNullable(current.timed, group.timed),
+      ttftMs: null,
+      decodeMs: null,
+      decodeTokens: sumNullable(current.decodeTokens, group.decodeTokens),
+      decodeCount: sumNullable(current.decodeCount, group.decodeCount),
+    })
+  }
+  return [...byProvider.values()]
+}
+
+function readMagpieUsageSessions(value: unknown): readonly MagpieUsageSession[] | null {
+  if (value === undefined) return []
+  if (!Array.isArray(value) || value.length > 2_000) return null
+  return value.flatMap((item) => {
+    const record = asRecord(item)
+    const id = cleanText(record?.id)
+    const agent = cleanText(record?.agent)
+    return record === null || id === null || agent === null ? [] : [{ id, agent, ...readMagpieUsageMetrics(record) }]
+  })
+}
+
+function parseMagpieRequest(record: Record<string, unknown>): MagpieUsageRequest | null {
+  const agent = routeText(record.agent)
+  const provider = routeText(record.provider)
+  const requestedModel = routeText(record.req)
+  const servedModel = routeText(record.served)
+  const group = requestedModel?.startsWith('group/') === true ? requestedModel.slice('group/'.length) : null
+  return {
+    routeId: safeRouteId(record.route_id),
+    time: routeText(record.t),
+    agent,
+    provider,
+    account: routeText(record.providerAccount),
+    requestedModel,
+    servedModel,
+    group,
+    effort: routeText(record.effort),
+    inputTokens: safeCount(record.in),
+    outputTokens: safeCount(record.out),
+    cacheReadTokens: safeCount(record.cache_read),
+    cacheWriteTokens: safeCount(record.cache_write),
+    reasoningTokens: safeCount(record.reasoning),
+    cost: safeDecimal(record.cost),
+    priced: typeof record.priced === 'boolean' ? record.priced : null,
+    status: routeStatusText(record.status),
+    durationMs: safeDecimal(record.ms),
+    ttftMs: safeDecimal(record.ttft_ms),
+    firstTextMs: safeDecimal(record.first_text_ms),
+    firstReasoningMs: safeDecimal(record.first_reasoning_ms),
+    flowMs: safeDecimal(record.flow_ms),
+    sessionId: cleanText(record.session) ?? cleanText(record.native_session),
+  }
+}
+
+function firstRouteText(record: Record<string, unknown>, keys: readonly string[]): string | null {
+  for (const key of keys) {
+    const value = routeText(record[key])
+    if (value !== null) return value
+  }
+  return null
+}
+
+function sumNullable(left: number | null, right: number | null): number | null {
+  return left === null && right === null ? null : (left ?? 0) + (right ?? 0)
+}
+
+function isMagpieDashboardPeriod(value: unknown): value is MagpieDashboardPeriod {
+  return value === 'today' || value === 'week' || value === 'month' || value === 'all'
 }
 
 function readQuotaWindow(record: Record<string, unknown>, name: string): MagpieQuotaWindow {

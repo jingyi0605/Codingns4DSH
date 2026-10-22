@@ -912,6 +912,91 @@ test('Command Code 使用 CodingNS 网关 Agent 身份时仍能关联会话、�
   assert.deepEqual(result?.quotas.map((quota) => quota.provider), ['example-provider'])
 })
 
+test('Command Code 使用 Host 注入的 DSH 会话 ID 归档，同时保留 ACP 会话 ID 展示', async () => {
+  const providerSessionId = 'command-acp-session'
+  const dshSessionId = 'session-command-code'
+  const urls: string[] = []
+  const service = new MagpieUsageService({
+    readModels: async () => [
+      'Example provider',
+      'example-provider/model-one    Model One',
+      "commandcode is shown every provider's models · magpie visible commandcode",
+      'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async (url) => {
+      const target = new URL(String(url))
+      urls.push(`${target.pathname}${target.search}`)
+      if (target.pathname.endsWith('/quotas')) return Response.json({ data: [] })
+      if (target.pathname.endsWith('/route')) return Response.json({
+        session: dshSessionId,
+        route: { id: 7, asked: 'example-provider/model-one', model: 'example-provider/model-one', served: 'model-one', done: true, status: 200, tries: [] },
+      })
+      if (target.pathname.endsWith('/usage/requests')) return Response.json({ rows: [{
+        route_id: 7, t: '2026-10-22T05:00:00Z', agent: 'commandcode', session: dshSessionId,
+        provider: 'example-provider', model: 'model-one', served: 'model-one', status: 200,
+      }] })
+      return Response.json(usageReply([{
+        agent: 'commandcode', id: dshSessionId, input: 8, output: 2, cost: 0.001,
+      }]))
+    }) as typeof fetch,
+  })
+
+  const result = await service.read({
+    adapterId: 'command-code',
+    modelId: 'magpie/example-provider/model-one',
+    providerSessionId,
+  }, undefined, true, dshSessionId)
+  assert.equal(result?.sessionId, providerSessionId)
+  assert.equal(result?.session?.id, dshSessionId)
+  assert.equal(result?.session?.agent, 'commandcode')
+  assert.equal(result?.routeStatus, 'available')
+  assert.equal(result?.route?.routeId, 7)
+  assert.ok(urls.some((url) => url.includes(`q=${dshSessionId}`)))
+  assert.ok(urls.some((url) => url.includes(`session=${dshSessionId}`)))
+})
+
+test('Command Code 旧 ACP 子进程仍按 ACP 会话 ID 归档时面板能回退关联', async () => {
+  const providerSessionId = 'command-acp-session'
+  const dshSessionId = 'session-command-code'
+  const urls: string[] = []
+  const service = new MagpieUsageService({
+    readModels: async () => [
+      'Example provider',
+      'example-provider/model-one    Model One',
+      "commandcode is shown every provider's models · magpie visible commandcode",
+      'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async (url) => {
+      const target = new URL(String(url))
+      urls.push(`${target.pathname}${target.search}`)
+      if (target.pathname.endsWith('/quotas')) return Response.json({ data: [] })
+      if (target.pathname.endsWith('/route')) return Response.json({
+        session: providerSessionId,
+        route: { id: 9, asked: 'example-provider/model-one', model: 'example-provider/model-one', served: 'model-one', done: true, status: 200, tries: [] },
+      })
+      if (target.pathname.endsWith('/usage/requests')) return Response.json({ rows: [{
+        route_id: 9, t: '2026-10-22T08:41:00Z', agent: 'commandcode', session: providerSessionId,
+        provider: 'example-provider', model: 'model-one', served: 'model-one', status: 200,
+      }] })
+      return Response.json(usageReply([{
+        agent: 'commandcode', id: providerSessionId, input: 8, output: 2, cost: 0.001,
+      }]))
+    }) as typeof fetch,
+  })
+
+  const result = await service.read({
+    adapterId: 'command-code',
+    modelId: 'magpie/example-provider/model-one',
+    providerSessionId,
+  }, undefined, true, dshSessionId)
+  assert.equal(result?.sessionId, providerSessionId)
+  assert.equal(result?.session?.id, providerSessionId)
+  assert.equal(result?.routeStatus, 'available')
+  assert.equal(result?.route?.routeId, 9)
+  assert.ok(urls.some((url) => url.includes(`q=${providerSessionId}`)))
+  assert.ok(urls.some((url) => url.includes(`session=${providerSessionId}`)))
+})
+
 test('Magpie 不把与 DSH 会话 ID 相同的回退值当作 Agent 会话', async () => {
   const modelOutput = await fixture('magpie-models-codex.txt')
   const urls: string[] = []
