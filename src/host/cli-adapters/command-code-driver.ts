@@ -380,8 +380,14 @@ export class CommandCodeDriver implements CodingNsCliDriver {
         buildArgs: (input) => commandCodeAcpArgs(input),
         runtimeModelSelection: false,
         configureSession: configureCommandCodeAcpSession,
+        recoverConfigureSession: recoverCommandCodeAcpSession,
         sessionEnvironment: commandCodeAcpEnvironment(),
-        sessionEnvironmentForInput: (input) => commandCodeNativeAgentEnvironment(input.sessionId, 'command-code'),
+        sessionEnvironmentForInput: (input) => ({
+          ...commandCodeNativeAgentEnvironment(input.sessionId, 'command-code'),
+          // ACP 子进程自己发模型请求；在 session/new 之前就把 DSH 会话 ID
+          // 交给 loader，Magpie 才能按面板查询的同一个键归档用量。
+          CODINGNS_MAGPIE_SESSION: input.sessionId,
+        }),
         id: 'command-code',
         name: 'Command Code',
         capabilities: acpCapabilities,
@@ -2068,6 +2074,29 @@ async function configureCommandCodeAcpSession(rpc: JsonRpcProcess, sessionId: st
   if (effort !== undefined && VALID_EFFORTS.has(effort)) {
     await rpc.request('session/set_config_option', { sessionId, configId: 'effort', value: effort }, requestOptions)
   }
+}
+
+/**
+ * Command Code 的 `prompting` 是进程内会话状态，只有 prompt 真正返回才会复位。
+ * 如果上一轮的 prompt 仍卡在 ask_user_question / 权限请求上（例如用户取消了
+ * 提问或直接中止回合），新一轮的 set_model/set_mode 会被 Provider 以
+ * `Cannot switch models while a prompt is running` 拒绝。此时同一进程里的会话
+ * 已经无法自愈：必须先丢弃会话（进程随之退出），下一次执行会重新 spawn 并在
+ * 新会话上重新配置，否则用户看到的就是“每次发消息都在第一步失败”。
+ */
+async function recoverCommandCodeAcpSession(params: {
+  readonly error: unknown
+  readonly abandonSession: () => void
+}): Promise<boolean> {
+  if (!commandCodePromptRunningError(params.error)) return false
+  params.abandonSession()
+  return true
+}
+
+/** 识别 Provider 的“本轮 prompt 尚未结束”拒绝；不同版本文案可能不同。 */
+function commandCodePromptRunningError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /prompt is (?:still )?running|prompt is already running|Cannot switch models while a prompt is running/iu.test(message)
 }
 
 /** ACP 使用权限引擎的模式 ID，与普通 CLI 的 accept-edits/yolo 别名不同。 */
