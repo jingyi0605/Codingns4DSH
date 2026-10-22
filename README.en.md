@@ -171,6 +171,8 @@ Read conversations, send messages and use workspace tools on your phone. Swipe t
 
 ### Modules and Settings
 
+“Workspace session enhancements” includes “Optimize DSH session title generation”, disabled by default. It generates concise topic titles while retaining key technical names and versions. Native API title routes stay unchanged; requests targeting an external Agent's virtual CLI provider use the configured native DSH default model. If no native model is configured or generation fails, a text fallback is used. For messages starting with a Windows path, the fallback prefers the following task description and does not treat the drive-letter colon as a sentence boundary. Existing sessions are not renamed in bulk.
+
 Enable the features you need and configure them in their module cards. Settings that require a restart are clearly marked.
 
 <div align="center">
