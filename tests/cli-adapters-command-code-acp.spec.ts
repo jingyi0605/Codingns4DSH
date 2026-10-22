@@ -39,29 +39,95 @@ test('Command Code ACP Mod initialization preserves standalone and unknown upstr
     const module = await import(`data:text/javascript;base64,${Buffer.from(String(loaded.source)).toString('base64')}`)
     assert.equal(await module.runAcp(), 'standalone')
     const unknown = 'async function startAcp(){return 1}'
-    assert.equal((await loadCommandCodeAcpLoader('file:///tmp/node_modules/command-code/dist/cli.mjs',
-      { format: 'module' }, async () => ({ format: 'module', source: unknown }))).source, unknown)
+    const unknownLoaded = await loadCommandCodeAcpLoader('file:///tmp/node_modules/command-code/dist/cli.mjs',
+      { format: 'module' }, async () => ({ format: 'module', source: unknown }))
+    assert.ok(String(unknownLoaded.source).includes(unknown))
+    assert.ok(String(unknownLoaded.source).includes('__codingNsMagpieSession'))
   } finally { if (previous !== undefined) process.env.CODINGNS_DISABLE_NATIVE_AGENT = previous }
 })
 
-test('Command Code ACP attaches its session ID to loopback Magpie model requests', async () => {
+test('Command Code ACP attaches its session ID to loopback Magpie model requests across minified versions', async () => {
+  // 1.86.3 and 1.87.1 use different minified names for the same header; the
+  // structural patch must not depend on either of them.
+  const versions = [
+    { header: 'NT', hostSet: 'FT' },
+    { header: 'FT', hostSet: '_T' },
+  ]
+  for (const { header, hostSet } of versions) {
+    const source = [
+      `const ${header}="x-opencode-session",${hostSet}=new Set(["opencode.ai"]);`,
+      `function isSessionRoutedHost(e){try{return ${hostSet}.has(new URL(e).hostname)}catch{return false}}`,
+      `function sessionRoutingHeaders(e){return e.threadId&&isSessionRoutedHost(e.baseURL)?Object.keys(e.headers??{}).some(e=>e.toLowerCase()===${header})?{}:{[${header}]:e.threadId}:{}}`,
+      'export{sessionRoutingHeaders}',
+    ].join('')
+    const loaded = await loadCommandCodeAcpLoader('file:///tmp/node_modules/command-code/dist/cli.mjs',
+      { format: 'module' }, async () => ({ format: 'module', source }))
+    const module = await import(`data:text/javascript;base64,${Buffer.from(String(loaded.source)).toString('base64')}`)
+    assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'http://127.0.0.1:3425/v1', headers: {}, threadId: 'command-session' }), {
+      'x-magpie-session': 'command-session',
+    })
+    assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'http://127.0.0.1:3425/v1', headers: {}, threadId: undefined }), {})
+    assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'https://opencode.ai/v1', headers: {}, threadId: 'open-code-session' }), {
+      'x-opencode-session': 'open-code-session',
+    })
+    assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'http://127.0.0.1:3425/v1', headers: { 'X-Magpie-Session': 'configured' }, threadId: 'command-session' }), {})
+  }
+})
+
+test('Command Code ACP structural fallback uses the Host session ID when present', async () => {
+  // The fetch prefix is the primary path, but the structural wrapper must agree
+  // with it: both must use the Host-injected DSH session ID, not the ACP ID.
   const source = [
-    'const NT="x-opencode-session",FT=new Set(["opencode.ai"]);',
-    'function isSessionRoutedHost(e){try{return FT.has(new URL(e).hostname)}catch{return false}}',
-    'function sessionRoutingHeaders(e){return e.threadId&&isSessionRoutedHost(e.baseURL)?Object.keys(e.headers??{}).some(e=>e.toLowerCase()===NT)?{}:{[NT]:e.threadId}:{}}',
+    'const FT="x-opencode-session",_T=new Set(["opencode.ai"]);',
+    'function isSessionRoutedHost(e){try{return _T.has(new URL(e).hostname)}catch{return false}}',
+    'function sessionRoutingHeaders(e){return e.threadId&&isSessionRoutedHost(e.baseURL)?Object.keys(e.headers??{}).some(e=>e.toLowerCase()===FT)?{}:{[FT]:e.threadId}:{}}',
     'export{sessionRoutingHeaders}',
   ].join('')
-  const loaded = await loadCommandCodeAcpLoader('file:///tmp/node_modules/command-code/dist/cli.mjs',
-    { format: 'module' }, async () => ({ format: 'module', source }))
-  const module = await import(`data:text/javascript;base64,${Buffer.from(String(loaded.source)).toString('base64')}`)
-  assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'http://127.0.0.1:3425/v1', headers: {}, threadId: 'command-session' }), {
-    'x-magpie-session': 'command-session',
-  })
-  assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'http://127.0.0.1:3425/v1', headers: {}, threadId: undefined }), {})
-  assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'https://opencode.ai/v1', headers: {}, threadId: 'open-code-session' }), {
-    'x-opencode-session': 'open-code-session',
-  })
-  assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'http://127.0.0.1:3425/v1', headers: { 'X-Magpie-Session': 'configured' }, threadId: 'command-session' }), {})
+  const previous = process.env.CODINGNS_MAGPIE_SESSION
+  try {
+    process.env.CODINGNS_MAGPIE_SESSION = 'dsh-session'
+    const loaded = await loadCommandCodeAcpLoader('file:///tmp/node_modules/command-code/dist/cli.mjs',
+      { format: 'module' }, async () => ({ format: 'module', source }))
+    const module = await import(`data:text/javascript;base64,${Buffer.from(String(loaded.source)).toString('base64')}`)
+    assert.deepEqual(module.sessionRoutingHeaders({ baseURL: 'http://127.0.0.1:3425/v1', headers: {}, threadId: 'acp-session' }), {
+      'x-magpie-session': 'dsh-session',
+    })
+  } finally {
+    if (previous === undefined) delete process.env.CODINGNS_MAGPIE_SESSION
+    else process.env.CODINGNS_MAGPIE_SESSION = previous
+  }
+})
+
+test('Command Code ACP tags Magpie requests through a version-independent fetch wrapper', async () => {
+  const originalFetch = globalThis.fetch
+  const previous = process.env.CODINGNS_MAGPIE_SESSION
+  const calls: Array<{ readonly url: string; readonly magpie: string | null }> = []
+  globalThis.fetch = (async (input, init) => {
+    const headers = new Headers(input instanceof Request ? input.headers : init?.headers)
+    calls.push({ url: input instanceof Request ? input.url : String(input), magpie: headers.get('x-magpie-session') })
+    return Response.json({ ok: true })
+  }) as typeof fetch
+  try {
+    process.env.CODINGNS_MAGPIE_SESSION = 'dsh-session-1'
+    const source = 'export async function call(url, init){return fetch(url, init)}'
+    const loaded = await loadCommandCodeAcpLoader('file:///tmp/node_modules/command-code/dist/cli.mjs',
+      { format: 'module' }, async () => ({ format: 'module', source }))
+    const module = await import(`data:text/javascript;base64,${Buffer.from(String(loaded.source)).toString('base64')}`)
+    await module.call('http://127.0.0.1:3425/v1/chat/completions', { method: 'POST' })
+    await module.call('https://api.example.test/v1/chat/completions')
+    await module.call('http://127.0.0.1:3425/v1/chat/completions', { headers: { 'X-Magpie-Session': 'existing' } })
+    await module.call(new Request('http://127.0.0.1:3425/v1/chat/completions', { method: 'POST' }))
+  } finally {
+    if (previous === undefined) delete process.env.CODINGNS_MAGPIE_SESSION
+    else process.env.CODINGNS_MAGPIE_SESSION = previous
+    globalThis.fetch = originalFetch
+  }
+  assert.deepEqual(calls, [
+    { url: 'http://127.0.0.1:3425/v1/chat/completions', magpie: 'dsh-session-1' },
+    { url: 'https://api.example.test/v1/chat/completions', magpie: null },
+    { url: 'http://127.0.0.1:3425/v1/chat/completions', magpie: 'existing' },
+    { url: 'http://127.0.0.1:3425/v1/chat/completions', magpie: 'dsh-session-1' },
+  ])
 })
 
 test('Command Code ACP 将问题和 DSH 权限映射回传给 Provider', async () => {
@@ -141,6 +207,7 @@ test('Command Code ACP 将问题和 DSH 权限映射回传给 Provider', async (
   for (const environment of probeEnvironments) assert.equal(environment?.NODE_OPTIONS, process.env.NODE_OPTIONS)
   assert.match(spawnEnvironment?.NODE_OPTIONS ?? '', /command-code-acp-loader\.js/u)
   assert.equal(spawnEnvironment?.CODINGNS_DISABLE_NATIVE_AGENT, '1')
+  assert.equal(spawnEnvironment?.CODINGNS_MAGPIE_SESSION, 'command-code-acp-dsh')
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'command-code-acp-session' },
     { type: 'question-request', requestId: '91', questions: [{ id: 'command-code-question-91', question: '选择策略', options: [{ label: '安全' }, { label: '快速' }] }] },
@@ -419,7 +486,8 @@ test('Command Code ACP 自由文本桥保留 async 语法并实际还原问题�
     { format: 'module' },
     async () => ({ format: 'module', source: unrelated }),
   )
-  assert.equal(unsupported.source, unrelated)
+  assert.ok(String(unsupported.source).includes(unrelated))
+  assert.ok(String(unsupported.source).includes('__codingNsMagpieSession'))
 })
 
 test('Command Code ACP 把 providers.json 声明的 BYOK 模型并入模型目录', async () => {
