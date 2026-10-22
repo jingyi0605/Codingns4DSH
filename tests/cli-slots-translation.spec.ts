@@ -441,8 +441,11 @@ test('external Agent 模型列表只为 Host 确认的 Magpie 模型显示来源
     const ordinaryRow = modelOptions(tree).find((element) => element.key === 'codex:codex/gpt-6.1-sol')
     assert.ok(magpieRow)
     assert.ok(ordinaryRow)
-    assert.match(renderToStaticMarkup(magpieRow), /data-codingns-magpie-model-tag/u)
-    assert.match(renderToStaticMarkup(magpieRow), /<img[^>]+icon-256\.png/u)
+    const magpieMarkup = renderToStaticMarkup(magpieRow)
+    assert.match(magpieMarkup, /data-codingns-magpie-model-tag/u)
+    assert.match(magpieMarkup, /<img[^>]+icon-256\.png/u)
+    assert.match(magpieMarkup, /margin-inline-start:auto/u, 'the external logo occupies the trailing column')
+    assert.ok(magpieMarkup.indexOf('aria-hidden="true">✓') < magpieMarkup.indexOf('data-codingns-magpie-model-tag'), 'the external checkmark stays before the logo')
     assert.doesNotMatch(renderToStaticMarkup(ordinaryRow), /data-codingns-magpie-model-tag/u)
   } finally { renderer.dispose(); probe.dispose() }
 })

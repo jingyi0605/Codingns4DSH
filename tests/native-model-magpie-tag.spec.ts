@@ -86,19 +86,24 @@ class FakeElement {
   }
 }
 
-function modelRow(id: string | undefined, name: string): FakeElement {
+function modelRow(id: string | undefined, name: string, selected = false): FakeElement {
   const row = new FakeElement('button')
   row.setAttribute('role', 'menuitemradio')
   if (id !== undefined) row.setAttribute('data-model-id', id)
   const label = new FakeElement('span')
   label.textContent = name
   row.append(label)
+  if (selected) {
+    const check = new FakeElement('span')
+    check.textContent = '✓'
+    row.append(check)
+  }
   return row
 }
 
 test('native DSH model options tag exact Magpie IDs and avoid ambiguous labels', () => {
   const menu = new FakeElement('div')
-  const magpie = modelRow('auto/gpt-6.1-sol', 'GPT-6.1 Sol')
+  const magpie = modelRow('auto/gpt-6.1-sol', 'GPT-6.1 Sol', true)
   const ordinarySameName = modelRow('codex/gpt-6.1-sol', 'GPT-6.1 Sol')
   const uniqueLabel = modelRow(undefined, 'MAGPIE-only   alias')
   menu.append(magpie, ordinarySameName, uniqueLabel)
@@ -119,6 +124,8 @@ test('native DSH model options tag exact Magpie IDs and avoid ambiguous labels',
   assert.equal(tags.length, 2, 'repeated scans must not duplicate badges')
   assert.equal(tags[0]!.dataset.modelId, 'auto/gpt-6.1-sol')
   assert.equal(tags[1]!.dataset.modelId, 'alias/provider-model')
+  assert.equal(magpie.children[magpie.children.length - 1], tags[0], 'the native logo is the trailing row element')
+  assert.equal(magpie.children[magpie.children.length - 2]!.textContent, '✓', 'the native checkmark stays before the logo')
   const stableChildren = [...magpie.children]
   decorateMagpieModels(menu as never, models, document as never)
   assert.deepEqual(magpie.children, stableChildren, 'a stable native row is not re-parented on every observer scan')

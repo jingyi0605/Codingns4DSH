@@ -10,6 +10,7 @@ const tagStyle = {
   justifyContent: 'center',
   width: '18px',
   height: '18px',
+  marginInlineStart: 'auto',
   whiteSpace: 'nowrap',
   verticalAlign: 'middle',
 } as const

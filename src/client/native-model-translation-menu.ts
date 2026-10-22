@@ -125,11 +125,9 @@ export function decorateMagpieModels(menu: HTMLElement, models: readonly NativeM
       continue
     }
     existing?.remove()
-    const label = findModelLabel(row, model.name)
     const tag = createMagpieModelTagNode(document, model.id)
-    tag.style.marginInlineStart = 'auto'
-    if (label === row) row.append(tag)
-    else label.after(tag)
+    // The native row owns the checkmark; append after all native content so the logo is last.
+    row.append(tag)
   }
 }
 
@@ -161,9 +159,4 @@ function normalizeModelName(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const name = value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('en-US')
   return name === '' ? null : name
-}
-
-function findModelLabel(row: HTMLElement, name: string): HTMLElement {
-  const nodes = [row, ...row.querySelectorAll<HTMLElement>('*')]
-  return nodes.find((node) => node.textContent?.trim() === name && node.children.length === 0) ?? row
 }

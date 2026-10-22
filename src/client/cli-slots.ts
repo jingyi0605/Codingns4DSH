@@ -869,8 +869,8 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
                   style: nativeOptionStyle,
                 },
                   createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.name),
-                  item.source === 'magpie' && createElement(MagpieModelTag, {}),
                   item.id === model?.id && createElement('span', { 'aria-hidden': true }, '✓'),
+                  item.source === 'magpie' && createElement(MagpieModelTag, {}),
                 )
               }),
             )),
