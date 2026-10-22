@@ -39,6 +39,17 @@ export interface AcpCliDriverOptions {
   readonly runtimeModelSelection?: boolean
   /** 产品通过原生 ACP 请求设置会话模型、权限和思考强度；失败时禁止继续发送 prompt。 */
   readonly configureSession?: (rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput) => Promise<void>
+  /**
+   * 会话配置失败（例如 Provider 仍认为上一轮 prompt 未结束）时重建会话并重试一次。
+   * 返回 true 表示会话已被丢弃、可以新建；缺省不重试，保持各产品原有失败语义。
+   */
+  readonly recoverConfigureSession?: (params: {
+    readonly rpc: JsonRpcProcess
+    readonly sessionId: string
+    readonly input: CodingNsCliTurnInput
+    readonly error: unknown
+    readonly abandonSession: () => void
+  }) => Promise<boolean>
   /** 读取 Provider 自己公开的只读模型目录；返回 null 表示本次读取失败。 */
   readonly readModelCatalog?: (command: string, runSpawnSync: typeof spawnSync, environment: Readonly<Record<string, string | undefined>>) => CodingNsCliModelCatalog | null | Promise<CodingNsCliModelCatalog | null>
   readonly id: string
@@ -122,6 +133,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
   private readonly buildArgsForTurn: (input: CodingNsCliTurnInput) => readonly string[]
   private readonly runtimeModelSelection: boolean
   private readonly configureSession: AcpCliDriverOptions['configureSession']
+  private readonly recoverConfigureSession: AcpCliDriverOptions['recoverConfigureSession']
   private readonly readModelCatalog: AcpCliDriverOptions['readModelCatalog']
   private readonly fallbackCatalog: CodingNsCliModelCatalog
   private readonly runSpawnSync: typeof spawnSync
@@ -150,6 +162,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.buildArgsForTurn = options.buildArgs ?? (() => this.args)
     this.runtimeModelSelection = options.runtimeModelSelection ?? true
     this.configureSession = options.configureSession
+    this.recoverConfigureSession = options.recoverConfigureSession
     this.readModelCatalog = options.readModelCatalog
     this.fallbackCatalog = options.fallbackCatalog ?? emptyCatalog()
     this.runSpawnSync = options.spawnSync ?? spawnSync
@@ -215,21 +228,18 @@ export class AcpCliDriver implements CodingNsCliDriver {
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) throw new Error(`${this.descriptor.name} 未安装`)
-    const session = await this.getSession(input, command, this.buildArgsForTurn(input))
-    let providerSessionId = session.acpSessionId
-    if (providerSessionId === '') {
-      const created = input.providerSessionId === undefined
-        ? await session.rpc.request('session/new', {
-          cwd: input.cwd ?? process.cwd(),
-          mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),
-        }, { signal: input.signal, killOnAbort: false })
-        : await this.loadOrCreate(session.rpc, input)
-      providerSessionId = readSessionId(created) ?? input.providerSessionId ?? input.sessionId
-      session.acpSessionId = providerSessionId
-    }
+    let session = await this.getSession(input, command, this.buildArgsForTurn(input))
+    let providerSessionId = await this.createAcpSessionId(session, input)
     yield { type: 'session-binding', providerSessionId }
 
-    await this.configureSession?.(session.rpc, providerSessionId, input)
+    const configured = await this.configureWithRecovery(session, providerSessionId, input)
+    if (configured.session !== session) {
+      // 会话配置失败已被恢复：换了新的进程和会话，必须把新的绑定告诉 DSH，
+      // 否则下一轮还会拿着旧会话 ID 去恢复一个已经不存在的 Provider 会话。
+      session = configured.session
+      providerSessionId = configured.providerSessionId
+      yield { type: 'session-binding', providerSessionId }
+    }
     if (this.runtimeModelSelection && input.modelId && input.modelId !== 'provider-default') {
       await session.rpc.request('session/set_model', { sessionId: providerSessionId, modelId: input.modelId }, { signal: input.signal, killOnAbort: false }).catch(error => { if (session.teamToken) throw error })
     }
@@ -281,16 +291,21 @@ export class AcpCliDriver implements CodingNsCliDriver {
       const merged = mergeAcpUsageContext(usage, latestUsage)
       return this.enrichUsage?.(merged, input) ?? merged
     }
+    let requestDone = true
     try {
       const stream = streamRpcRequest(session.rpc, 'session/prompt', {
         sessionId: providerSessionId,
         prompt: await buildAcpPromptBlocks(input.prompt, input.attachments ?? []),
       }, input.signal, { dispose: false, killOnAbort: false })
       let response: unknown
+      // 只有读到 session/prompt 的最终响应才算 Provider 本轮真正结束；提前
+      // break（消费方关闭迭代器）时 requestDone 保持 true，finally 会补发
+      // session/cancel，避免 Provider 留在“prompt 仍在运行”的状态。
       while (true) {
         const next = await stream.next()
         if (next.done) {
           response = next.value
+          requestDone = false
           break
         }
         const rawChunk = acpMessageToChunk(next.value, input.signal?.aborted ?? false, this.readQuestionRequest, session.autoResolvedPermissions)
@@ -368,7 +383,71 @@ export class AcpCliDriver implements CodingNsCliDriver {
       } else if (!emittedFinish) {
         yield { type: 'finish', reason: 'error', failure: failureFromUnknown(error) }
       }
+    } finally {
+      // 回合中止（用户停止）或消费方提前关闭迭代器时，必须让 Provider 真正
+      // 结束这条 prompt。`JsonRpcProcess` 在 abort 时补发的是 JSON-RPC 通用
+      // `$/cancelRequest`，ACP 服务只认 `session/cancel`，否则 Provider 的
+      // prompt 会一直挂起（例如仍停在 ask_user_question 的权限请求上），
+      // 进程内“有 prompt 在运行”的状态还会毒化后续所有回合。
+      // 取消是通知，不等响应，避免已经卡死的请求继续阻塞清理。
+      if (input.signal?.aborted || requestDone) {
+        try { session.rpc.notify('session/cancel', { sessionId: providerSessionId }) } catch { /* 进程可能已退出 */ }
+      }
     }
+  }
+
+  /**
+   * 执行会话配置；失败时交给产品决定是否丢弃会话后重建。
+   *
+   * Command Code 这类 Provider 会拒绝“上一轮 prompt 仍未结束”的会话上的
+   * set_model/set_mode。单纯重试同一个进程没有意义，必须先处理掉旧会话：
+   * 丢弃进程（进程内状态随进程消失）并新建会话，然后在同一回合内重试。
+   * 否则一次异常会把整个会话永久锁死，用户看到的就是“发什么都失败”。
+   *
+   * 返回本回合最终使用的会话（可能是新建的），调用方必须用返回值继续。
+   */
+  private async configureWithRecovery(session: AcpSession, providerSessionId: string, input: CodingNsCliTurnInput): Promise<{ session: AcpSession; providerSessionId: string }> {
+    if (this.configureSession === undefined) return { session, providerSessionId }
+    try {
+      await this.configureSession(session.rpc, providerSessionId, input)
+      return { session, providerSessionId }
+    } catch (error) {
+      if (this.recoverConfigureSession === undefined) throw error
+      const recovered = await this.recoverConfigureSession({
+        rpc: session.rpc,
+        sessionId: providerSessionId,
+        input,
+        error,
+        abandonSession: () => this.abandonSession(input.sessionId, session),
+      })
+      if (!recovered) throw error
+      // 旧会话已被产品丢弃；同一回合内重建进程与新会话，避免把这一轮判死。
+      const replacement = await this.getSession(input, this.cachedBinary ?? (await this.detect()).command ?? '', this.buildArgsForTurn(input))
+      const replacedSessionId = await this.createAcpSessionId(replacement, input)
+      await this.configureSession(replacement.rpc, replacedSessionId, input)
+      return { session: replacement, providerSessionId: replacedSessionId }
+    }
+  }
+
+  /** 在一个已经拿到进程的会话上确保存在 ACP 会话 ID（session/new 或 session/load）。 */
+  private async createAcpSessionId(session: AcpSession, input: CodingNsCliTurnInput): Promise<string> {
+    if (session.acpSessionId !== '') return session.acpSessionId
+    const created = input.providerSessionId === undefined
+      ? await session.rpc.request('session/new', {
+        cwd: input.cwd ?? process.cwd(),
+        mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),
+      }, { signal: input.signal, killOnAbort: false })
+      : await this.loadOrCreate(session.rpc, input)
+    const sessionId = readSessionId(created) ?? input.providerSessionId ?? input.sessionId
+    session.acpSessionId = sessionId
+    return sessionId
+  }
+
+  /** 丢弃一个会话及其进程，下次执行会重新 spawn 并按需建立新会话。 */
+  private abandonSession(sessionKey: string, session: AcpSession): void {
+    if (this.sessions.get(sessionKey) === session) this.sessions.delete(sessionKey)
+    this.processes.delete(session.rpc)
+    session.rpc.dispose()
   }
 
   async interrupt(sessionId: string): Promise<void> {
