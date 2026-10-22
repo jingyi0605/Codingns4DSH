@@ -121,3 +121,50 @@ for (const { splitToolSteps, preface } of [
     }
   })
 }
+
+// Codex app-server 把 requestUserInput 当作 server request；回合中止时必须把
+// 仍挂起的请求按“取消”结算，否则 app-server 认为该 turn 仍在等待输入。
+test('Codex 回合中止时释放仍挂起的提问请求', async () => {
+  const sessionId = 'codex-abort-pending-question'
+  let questionRequestId: number | string | null = null
+  let turnStarts = 0
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number | string; method?: string }
+        if (request.method === 'turn/start') {
+          turnStarts += 1
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'abort-turn', status: 'inProgress' } } })}\n`)
+          questionRequestId = 0
+          stdout.write(`${JSON.stringify({
+            jsonrpc: '2.0', id: 0, method: 'item/tool/requestUserInput',
+            params: { threadId: 'abort-thread', turnId: 'abort-turn', itemId: 'question-call', questions: [{ id: 'q', question: '继续吗？', options: [{ label: '是' }] }] },
+          })}\n`)
+          return
+        }
+        const result = request.method === 'thread/start' ? { thread: { id: 'abort-thread' } } : {}
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`)
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const controller = new AbortController()
+  try {
+    const chunks = []
+    for await (const event of driver.executeTurn({ sessionId, messages: [], prompt: '测试中止', signal: controller.signal })) {
+      if (event.type === 'question-request') controller.abort()
+      chunks.push(event)
+    }
+    assert.equal(turnStarts, 1)
+    assert.equal(questionRequestId, 0)
+    // 中止后驱动内部的等待表必须清空；否则任何残留 Promise 都会挂住 app-server。
+    const session = (driver as unknown as { sessions: Map<string, { pendingQuestions: Map<string, unknown>; pendingPermissions: Map<string, unknown> }> }).sessions.get(sessionId)
+    assert.equal(session?.pendingQuestions.size, 0)
+    assert.equal(session?.pendingPermissions.size, 0)
+    assert.equal(chunks.at(-1)?.type, 'finish')
+  } finally { driver.dispose() }
+})

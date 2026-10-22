@@ -882,3 +882,174 @@ test('Command Code ACP 回合按工具边界切分 step，上下文分子与底�
     rmSync(homeDirectory, { recursive: true, force: true })
   }
 })
+
+// 中止提问后会话必须能继续：提问被取消时要先回一个取消形状，Provider 的
+// session/prompt 才不会一直挂在 session/request_permission 上。
+test('Command Code ACP 提问被取消时回传 cancelled，Provider 不悬空', async () => {
+  const replies = new Map<number | string, Record<string, unknown>>()
+  let promptId: number | string = 0
+  let promptResolved = false
+  const driver = new CommandCodeDriver({
+    enableAcp: true,
+    binaries: ['fake-command-code'],
+    spawnSync: (() => ({ status: 0, stdout: 'command-code 1.2.3', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const stdin = { write(data: string): boolean {
+        const request = JSON.parse(data) as { id?: number | string; method?: string }
+        if (request.method === 'initialize' || request.method === 'session/new'
+          || request.method === 'session/set_mode' || request.method === 'session/set_model' || request.method === 'session/set_config_option') {
+          const result = request.method === 'session/new' ? { sessionId: 'command-code-cancel-session' } : {}
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`)
+        } else if (request.method === 'session/prompt') {
+          promptId = request.id ?? 0
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 201, method: 'session/request_permission', params: {
+            options: [{ optionId: 'option_0', kind: 'allow_once' }, { optionId: 'option_1', kind: 'reject_once' }],
+            toolCall: { kind: 'other', rawInput: { question: '选择策略', options: ['安全', '快速'] }, toolCallId: 'question-1' },
+          } })}\n`)
+        } else if (request.id === 201) {
+          replies.set(201, request as unknown as Record<string, unknown>)
+          // Provider 只有在问题被回答（包括 cancelled）后才会结束 prompt。
+          promptResolved = true
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: promptId, result: { stopReason: 'cancelled' } })}\n`)
+        }
+        return true
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  try {
+    const chunks = []
+    // 模拟“用户取消提问”：收到问题事件后直接回一个空回答，等价于用户放弃作答。
+    for await (const chunk of driver.executeTurn({
+      sessionId: 'command-code-cancel-dsh',
+      messages: [],
+      prompt: '执行',
+      modelId: 'z-ai/glm-5.3-flash',
+      permission: { sandboxMode: 'workspace-write', approvalPolicy: 'never' },
+    })) {
+      chunks.push(chunk)
+      if (chunk.type === 'question-request') driver.respondQuestion('command-code-cancel-dsh', { requestId: chunk.requestId, answers: [] })
+    }
+    assert.equal(promptResolved, true)
+    assert.deepEqual(replies.get(201), { jsonrpc: '2.0', id: 201, result: { outcome: { outcome: 'cancelled' } } })
+    assert.equal(chunks.some((chunk) => chunk.type === 'question-request'), true)
+    // Provider 在问题被 cancelled 后按自己的 stopReason 结束本回合。
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'cancel' })
+  } finally { driver.dispose() }
+})
+
+// 回合中止时必须给 Provider 发 ACP session/cancel；只发 JSON-RPC 的
+// $/cancelRequest 不会让 Command Code 结束 prompt，进程内会话会被永久占住。
+test('Command Code ACP 回合中止时发送 session/cancel', async () => {
+  const notifications: Array<{ method: string; params?: unknown }> = []
+  let promptId: number | string = 0
+  const driver = new CommandCodeDriver({
+    enableAcp: true,
+    binaries: ['fake-command-code'],
+    spawnSync: (() => ({ status: 0, stdout: 'command-code 1.2.3', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const stdin = { write(data: string): boolean {
+        const request = JSON.parse(data) as { id?: number | string; method?: string; params?: unknown }
+        if (request.method !== undefined && request.id === undefined) {
+          notifications.push({ method: request.method, params: request.params })
+          return true
+        }
+        if (request.method === 'initialize' || request.method === 'session/new'
+          || request.method === 'session/set_mode' || request.method === 'session/set_model' || request.method === 'session/set_config_option') {
+          const result = request.method === 'session/new' ? { sessionId: 'command-code-abort-session' } : {}
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result })}\n`)
+        } else if (request.method === 'session/prompt') {
+          promptId = request.id ?? 0
+          // 卡在提问上，模拟用户中止回合时 prompt 仍未结束。
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: 301, method: 'session/request_permission', params: {
+            options: [{ optionId: 'option_0', kind: 'allow_once' }],
+            toolCall: { kind: 'other', rawInput: { question: '继续吗', options: ['是'] }, toolCallId: 'question-1' },
+          } })}\n`)
+        }
+        return true
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const controller = new AbortController()
+  try {
+    const chunks = []
+    const turn = driver.executeTurn({
+      sessionId: 'command-code-abort-dsh',
+      messages: [],
+      prompt: '执行',
+      modelId: 'z-ai/glm-5.3-flash',
+      signal: controller.signal,
+      permission: { sandboxMode: 'workspace-write', approvalPolicy: 'never' },
+    })
+    for await (const chunk of turn) {
+      if (chunk.type === 'question-request') controller.abort()
+      chunks.push(chunk)
+    }
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'cancel' })
+    assert.equal(promptId !== 0, true)
+    assert.deepEqual(notifications.filter((item) => item.method === 'session/cancel'), [
+      { method: 'session/cancel', params: { sessionId: 'command-code-abort-session' } },
+    ])
+  } finally { driver.dispose() }
+})
+
+// Provider 报“prompt 仍在运行”时，不能把会话永久锁死：必须丢弃旧会话并在
+// 新进程/新会话上重新配置，让下一轮能正常执行。
+test('Command Code ACP 遇到残留 prompt 拒绝配置时重建会话并继续', async () => {
+  let spawnCount = 0
+  const sessionRequests: string[] = []
+  const driver = new CommandCodeDriver({
+    enableAcp: true,
+    binaries: ['fake-command-code'],
+    spawnSync: (() => ({ status: 0, stdout: 'command-code 1.2.3', stderr: '' })) as never,
+    spawn: (() => {
+      spawnCount += 1
+      const round = spawnCount
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const stdin = { write(data: string): boolean {
+        const request = JSON.parse(data) as { id?: number | string; method?: string }
+        if (request.method !== undefined) sessionRequests.push(`${round}:${request.method}`)
+        if (request.method === 'initialize') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        } else if (request.method === 'session/new') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { sessionId: `command-code-poisoned-${round}` } })}\n`)
+        } else if (request.method === 'session/set_model' && round === 1) {
+          // 第一个进程模拟“上一轮 prompt 仍挂着”，拒绝模型切换。
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32600, message: 'Cannot switch models while a prompt is running' } })}\n`)
+        } else if (request.method === 'session/prompt') {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { stopReason: 'end_turn' } })}\n`)
+        } else {
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: {} })}\n`)
+        }
+        return true
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  try {
+    const chunks = []
+    for await (const chunk of driver.executeTurn({
+      sessionId: 'command-code-poisoned-dsh',
+      messages: [],
+      prompt: '执行',
+      modelId: 'z-ai/glm-5.3-flash',
+      permission: { sandboxMode: 'workspace-write', approvalPolicy: 'never' },
+    })) chunks.push(chunk)
+    // 第二次 spawn 的会话上必须真正跑完 prompt，而不是把错误抛给用户。
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'stop' })
+    assert.equal(spawnCount, 2)
+    assert.deepEqual(sessionRequests.filter((item) => !item.endsWith(':initialized')), [
+      '1:initialize',
+      '1:session/new',
+      '1:session/set_model',
+      '2:initialize',
+      '2:session/new',
+      '2:session/set_model',
+      '2:session/set_mode',
+      '2:session/prompt',
+    ])
+  } finally { driver.dispose() }
+})
