@@ -414,9 +414,20 @@ export class CodingNsDshMessageProjector {
       questions: event.questions,
       ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
     }) ?? null
+    // 提问被取消（用户关闭问题卡 / 中止回合）时，Provider 仍挂在自己的
+    // 反向请求上等待回包。必须先回一个“取消”形状的响应，再结束本次投影；
+    // 否则 Provider 的 prompt 永远不返回，进程内会话被永久占住，后续回合
+    // 会在 Provider 侧的“已有 prompt 在运行”检查处直接失败。
+    // 这里区分两种 null：signal 已中止是取消，回包后可继续抛 AbortError；
+    // 否则是原生问题组件不可用，仍需回包避免 Provider 悬空等待。
+    if (response === null) {
+      try { await responder({ requestId: event.requestId, answers: [] }) } catch { /* Provider 可能已经取消该请求 */ }
+      // A submitted answer can race with cancellation or adapter reload.
+      this.options.signal?.throwIfAborted()
+      throw new Error('DSH 原生问题组件不可用或问题已取消')
+    }
     // A submitted answer can race with cancellation or adapter reload.
     this.options.signal?.throwIfAborted()
-    if (response === null) throw new Error('DSH 原生问题组件不可用或问题已取消')
     await responder(response)
     if (event.callId !== undefined) {
       this.toolHistory.observe({
