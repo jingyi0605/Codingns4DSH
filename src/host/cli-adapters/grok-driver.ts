@@ -737,6 +737,10 @@ function grokQuestionResponse(pending: GrokQuestionPending, response: CodingNsAg
     if (selected.length > 0) answers[key] = selected
     if (custom !== undefined && custom !== '') annotations[key] = { notes: custom }
   }
+  // 空回答表示“取消/放弃作答”（原生问题卡被关闭、回合中止或适配器卸载）。
+  // 绝不能映射成 accepted：那会让 Provider 收到一个空的有效答复并继续往下跑，
+  // 表面上像“已选择”，实际用户什么都没有回答。
+  if (Object.keys(answers).length === 0) return { outcome: 'cancelled' }
   return {
     outcome: 'accepted',
     answers,
