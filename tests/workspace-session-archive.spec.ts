@@ -323,7 +323,7 @@ test('归档入口使用 12px 文本，模态框为每个会话显示彩色 Agen
   clearSessionAdapters()
 })
 
-test('归档会话行第一行只显示标题，第二行显示类型标签与归档时间，取消归档为图标按钮', async () => {
+test('归档会话行显示标题、类型标签、创建时间和归档时间，取消归档为图标按钮', async () => {
   clearSessionAdapters()
   replaceSessionAdapters([{ sessionId: 'archived-codex', adapterId: 'codex' }])
   const header = workspaceHeader('workspace-a')
@@ -332,6 +332,7 @@ test('归档会话行第一行只显示标题，第二行显示类型标签与�
   const group = new FakeArchiveElement('section')
   group.append(header, more)
   const document = new FakeArchiveDocument(group)
+  let creationStreamClosed = false
   const controller = startWorkspaceSessionArchiveDom({
     document,
     remote: {
@@ -345,6 +346,14 @@ test('归档会话行第一行只显示标题，第二行显示类型标签与�
         async list() {
           return { items: [{ sessionId: 'archived-codex', updatedAt: 1_800_000_000_000, projections: { values: { title: '修复移动端布局' } } }] }
         },
+        async *follow(request) {
+          assert.deepEqual(request, { address: { kind: 'session', sessionId: 'archived-codex' }, maxMessages: 1 })
+          try {
+            yield { type: 'snapshot', header: { createdAt: 1_700_000_000_000 } }
+          } finally {
+            creationStreamClosed = true
+          }
+        },
       },
     },
   })
@@ -352,6 +361,7 @@ test('归档会话行第一行只显示标题，第二行显示类型标签与�
   await nextArchiveTurn()
   const entry = group.children.find((child) => child.getAttribute(WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE) !== null)
   entry.listeners.get('click')()
+  await nextArchiveTurn()
   await nextArchiveTurn()
   await nextArchiveTurn()
 
@@ -364,17 +374,20 @@ test('归档会话行第一行只显示标题，第二行显示类型标签与�
   assert.equal(title.tagName, 'STRONG')
   assert.equal(title.textContent, '修复移动端布局')
   assert.equal(title.children.length, 0)
-  // 第二行是「类型标签 + 归档时间」：强制同排，不做整行换行。
+  // Metadata includes the badge and both timestamps, wrapping when the row is narrow.
   const meta = content.children[1]
-  assert.equal(meta.style.flexWrap, undefined)
+  assert.equal(meta.style.flexWrap, 'wrap')
   const badge = meta.children[0]
   assert.equal(badge.getAttribute(WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE), 'codex')
   assert.equal(badge.textContent, 'Codex')
   assert.equal(badge.style.whiteSpace, 'nowrap')
-  const time = meta.children[1]
-  assert.match(time.textContent, /^\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/u)
-  assert.equal(time.textContent.includes('归档于'), false)
-  assert.equal(time.style.whiteSpace, 'nowrap')
+  const createdAt = meta.children[1]
+  assert.match(createdAt.textContent, /^创建时间：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/u)
+  assert.equal(createdAt.style.whiteSpace, 'nowrap')
+  const archivedAt = meta.children[2]
+  assert.match(archivedAt.textContent, /^归档时间：\d{4}\/\d{2}\/\d{2} \d{2}:\d{2}$/u)
+  assert.equal(archivedAt.style.whiteSpace, 'nowrap')
+  assert.equal(creationStreamClosed, true, 'the metadata read closes its follow stream after the opening snapshot')
   // 取消归档改为图标按钮：无文字、保留无障碍名称、内含 DSH 原生取消归档图形。
   const restore = row.children[1]
   assert.equal(restore.textContent, '')
@@ -523,7 +536,12 @@ class FakeArchiveDocument {
     return []
   }
 
-  querySelector() { return null }
+  querySelector(selector) {
+    if (selector === `[${WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE}]`) {
+      return collectArchiveNodes(this.body).find((node) => node.getAttribute(WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE) !== null) ?? null
+    }
+    return null
+  }
 }
 
 function collectArchiveNodes(root) {

@@ -19,6 +19,10 @@ interface RemoteWorkspaceApi {
 
 interface RemoteSessionApi {
   readonly list?: (request: { readonly cursor?: string }) => Promise<unknown>
+  readonly follow?: (request: {
+    readonly address: { readonly kind: 'session'; readonly sessionId: string }
+    readonly maxMessages?: number
+  }) => AsyncIterable<unknown> | Promise<AsyncIterable<unknown>>
 }
 
 interface CodingNsRemote {
@@ -29,6 +33,7 @@ interface CodingNsRemote {
 export interface ArchivedSessionItem {
   readonly sessionId: string
   readonly title: string
+  readonly createdAt?: number
   readonly archivedAt: number
   readonly workspaceId?: string
 }
@@ -251,6 +256,7 @@ async function loadArchiveSnapshot(
       items.push({
         sessionId,
         title: session.title,
+        ...(session.createdAt === undefined ? {} : { createdAt: session.createdAt }),
         archivedAt: session.archivedAt > 0 ? session.archivedAt : session.updatedAt > 0 ? session.updatedAt : now(),
         ...(workspace.workspaceId ? { workspaceId: workspace.workspaceId } : {}),
       })
@@ -274,6 +280,7 @@ interface SessionRecord {
   readonly updatedAt: number
   readonly archivedAt: number
   readonly title: string
+  readonly createdAt?: number
   readonly cwd?: string
   readonly workspaceId?: string
 }
@@ -341,11 +348,13 @@ async function readSessionList(api: RemoteSessionApi | undefined): Promise<Sessi
     const cwd = readString(record?.cwd)
     const workspaceIdValue = readString(record?.workspaceId)
     const archivedAt = typeof record?.archivedAt === 'number' && Number.isFinite(record.archivedAt) ? record.archivedAt : 0
+    const createdAt = typeof record?.createdAt === 'number' && Number.isFinite(record.createdAt) ? record.createdAt : undefined
     return [{
       sessionId,
       updatedAt: typeof record?.updatedAt === 'number' && Number.isFinite(record.updatedAt) ? record.updatedAt : 0,
       archivedAt,
       title: typeof titleValue === 'string' && titleValue.trim() ? titleValue.trim() : sessionId,
+      ...(createdAt === undefined ? {} : { createdAt }),
       ...(cwd === undefined ? {} : { cwd }),
       ...(workspaceIdValue === undefined ? {} : { workspaceId: workspaceIdValue }),
     }]
@@ -602,10 +611,11 @@ function openArchiveModal(
   Object.assign(search.style, { width: '100%', boxSizing: 'border-box', padding: '11px 14px', marginBottom: '16px', border: '1px solid var(--dsw-alias-border-l2, #d9d9d9)', borderRadius: '8px', color: 'inherit', background: 'var(--dsw-specific-input-major, Canvas)', font: 'inherit' })
   const list = dom.createElement('div')
   Object.assign(list.style, { display: 'flex', flexDirection: 'column', gap: '4px' })
+  let displayItems = items
   const render = (): void => {
     list.replaceChildren()
     const keyword = search.value.trim().toLocaleLowerCase()
-    const filtered = items.filter((item) => item.title.toLocaleLowerCase().includes(keyword))
+    const filtered = displayItems.filter((item) => item.title.toLocaleLowerCase().includes(keyword))
     for (const item of filtered) list.appendChild(createArchiveRow(item, context))
     if (filtered.length === 0) {
       const empty = dom.createElement('p')
@@ -626,6 +636,53 @@ function openArchiveModal(
   dom.body.appendChild(overlay)
   render()
   search.focus()
+  void loadMissingSessionCreationTimes(items, context.remote.session).then((creationTimes) => {
+    if (creationTimes.size === 0 || dom.querySelector(`[${WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE}]`) !== overlay) return
+    displayItems = items.map((item) => {
+      const createdAt = creationTimes.get(item.sessionId)
+      return item.createdAt !== undefined || createdAt === undefined ? item : { ...item, createdAt }
+    })
+    render()
+  })
+}
+
+async function loadMissingSessionCreationTimes(
+  items: readonly ArchivedSessionItem[],
+  api: RemoteSessionApi | undefined,
+): Promise<ReadonlyMap<string, number>> {
+  if (api?.follow === undefined) return new Map()
+  const missing = items.filter((item) => item.createdAt === undefined)
+  const creationTimes = new Map<string, number>()
+  let nextIndex = 0
+  await Promise.all(Array.from({ length: Math.min(4, missing.length) }, async () => {
+    while (nextIndex < missing.length) {
+      const item = missing[nextIndex]
+      nextIndex += 1
+      if (item === undefined) continue
+      const createdAt = await readSessionCreationTime(api, item.sessionId)
+      if (createdAt !== undefined) creationTimes.set(item.sessionId, createdAt)
+    }
+  }))
+  return creationTimes
+}
+
+async function readSessionCreationTime(api: RemoteSessionApi, sessionId: string): Promise<number | undefined> {
+  try {
+    const stream = await api.follow!({
+      address: { kind: 'session', sessionId },
+      maxMessages: 1,
+    })
+    const iterator = stream[Symbol.asyncIterator]()
+    try {
+      const first = await iterator.next()
+      const header = asRecord(asRecord(first.value)?.header)
+      return typeof header?.createdAt === 'number' && Number.isFinite(header.createdAt) ? header.createdAt : undefined
+    } finally {
+      await iterator.return?.()
+    }
+  } catch {
+    return undefined
+  }
 }
 
 function createArchiveRow(
@@ -642,18 +699,31 @@ function createArchiveRow(
   name.textContent = item.title
   name.title = item.title
   Object.assign(name.style, { minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: '15px' })
-  // 第二行放类型标签与归档时间，强制同排：标签不收缩、时间不折行，
-  // 极端窄屏只截断时间尾部，不允许整行换行。
+  // Metadata wraps as needed so both timestamps remain readable on narrow screens.
   const meta = dom.createElement('div')
-  Object.assign(meta.style, { minWidth: '0', display: 'flex', alignItems: 'center', gap: '8px' })
-  const time = dom.createElement('span')
-  time.textContent = formatArchiveTime(item.archivedAt)
-  Object.assign(time.style, { minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--dsw-alias-label-secondary, GrayText)', fontSize: '13px' })
-  meta.append(createAgentBadge(adapterIdForSession(item.sessionId), dom, t), time)
+  Object.assign(meta.style, { minWidth: '0', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px 12px' })
+  meta.append(createAgentBadge(adapterIdForSession(item.sessionId), dom, t))
+  if (item.createdAt !== undefined) meta.append(createArchiveTimestamp('archive.createdAt', item.createdAt, dom, t))
+  meta.append(createArchiveTimestamp('archive.archivedAt', item.archivedAt, dom, t))
   content.append(name, meta)
   const restore = createRestoreButton(item, row, context)
   row.append(content, restore)
   return row
+}
+
+function createArchiveTimestamp(
+  key: 'archive.createdAt' | 'archive.archivedAt',
+  timestamp: number,
+  dom: Pick<Document, 'createElement'>,
+  t: CodingNsTranslator,
+): HTMLElement {
+  const time = dom.createElement('span')
+  time.textContent = t(key, { time: formatArchiveTime(timestamp) })
+  Object.assign(time.style, {
+    minWidth: '0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+    color: 'var(--dsw-alias-label-secondary, GrayText)', fontSize: '13px',
+  })
+  return time
 }
 
 /**
