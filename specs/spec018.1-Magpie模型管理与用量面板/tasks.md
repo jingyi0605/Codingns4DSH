@@ -381,3 +381,13 @@ Each task states what changes, what becomes visible, dependencies, documents to 
   - Explicit non-goals: No new dependencies, no theme detection code, no change to data or navigation.
   - Done when: No hard-coded brand colors remain in the page CSS, all surfaces resolve from DSH tokens, and both themes render correctly.
   - Verify: `pnpm run typecheck`, focused Magpie suites, `i18n:check`, and light/dark screenshots rendered with the real DSH token values extracted from `@deepseek-ai/dsh-client-ui-theme`.
+
+- [x] 11.5 Make the panel usable on phones and tablets
+  - Status: DONE
+  - What changes: Below 900px the request ledger switches to a compact card list and the KPI strip becomes a wrapping three-column grid that fills its last row; below 650px paddings, type sizes, chart height, chips, quota cards, and list rows are tightened so the panel stays dense rather than merely scaled down.
+  - What becomes visible: On a 390px phone the panel shows the KPI strip in two rows, the ledger as readable cards with the same fields as the table, and quota/session lists without oversized chrome; at 768px the ledger uses cards instead of a table clipped to three columns.
+  - Dependencies: 11.2, 11.4.
+  - Main files: `src/client/features/magpie-management-page.ts`.
+  - Explicit non-goals: No width detection in JS, no separate mobile data path, no change to desktop markup.
+  - Done when: The card list and the table share one data source and one set of locale keys, both render correctly, and no layout leaves empty grid cells.
+  - Verify: Screenshots captured through CDP device emulation at 390×844 and 768×1024; `pnpm run typecheck`, focused Magpie suites, `i18n:check`, and `git diff --check` pass.

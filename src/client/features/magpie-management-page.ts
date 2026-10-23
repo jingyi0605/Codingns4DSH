@@ -1060,6 +1060,32 @@ html[data-codingns-mobile-sidebar="on"] .codingns-magpie-page{padding-left:0;--m
 .codingns-magpie-reqcard-sub .codingns-magpie-table-secondary{margin-top:0}
 .codingns-magpie-reqcard-facts{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:${uiFontSize(11)};color:var(--mp-muted);font-variant-numeric:tabular-nums}
 
+@media(max-width:650px){
+.codingns-magpie-view{padding:12px 12px 26px}
+.codingns-magpie-tab{min-height:38px;padding:0 10px}
+.codingns-magpie-toolbar{min-height:40px}
+.codingns-magpie-report-note{font-size:${uiFontSize(12)};line-height:1.5;margin-bottom:10px}
+.codingns-magpie-statcell-label{font-size:${uiFontSize(11)}}
+.codingns-magpie-statcell-value{font-size:${uiFontSize(19)}}
+.codingns-magpie-statcell-detail{font-size:${uiFontSize(11)};white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.codingns-magpie-barchart-plot{height:118px}
+.codingns-magpie-barchart-panel,.codingns-magpie-progress-panel,.codingns-magpie-toplist-panel,.codingns-magpie-history-panel,.codingns-magpie-quota-card,.codingns-magpie-management-editor{padding:12px}
+.codingns-magpie-panel-head{margin-bottom:10px}
+.codingns-magpie-progress-item{padding:9px 0}
+.codingns-magpie-toprow{padding:8px 4px}
+.codingns-magpie-chip{min-height:28px;padding:0 10px}
+.codingns-magpie-quota-icon{width:28px;height:28px;border-radius:8px;font-size:${uiFontSize(12)}}
+.codingns-magpie-quota-topline{gap:8px;margin-bottom:9px}
+.codingns-magpie-quota-card{padding:11px 12px}
+.codingns-magpie-quota-topline h2{font-size:${uiFontSize(13)}}
+.codingns-magpie-quota-topline p{font-size:${uiFontSize(11)}}
+.codingns-magpie-quota-account{font-size:${uiFontSize(12)};margin:-3px 0 7px}
+.codingns-magpie-quota-window{padding:8px 0}
+.codingns-magpie-daily-chart{margin-top:2px;padding-top:6px}
+.codingns-magpie-pagination{padding:8px 10px}
+.codingns-magpie-selection{padding:8px 10px}
+}
+
 @media(max-width:900px){
 .codingns-magpie-table-scroll{display:none}
 .codingns-magpie-reqlist{display:block}
