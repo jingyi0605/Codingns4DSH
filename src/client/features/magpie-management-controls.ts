@@ -36,7 +36,14 @@ const STAYS_POLICY_LABELS: Readonly<Record<string, string>> = {
   off: 'magpie.management.stays.off',
   strict: 'magpie.management.stays.strict',
 }
+/**
+ * The policies a group save may write.
+ *
+ * `free` is read (a newer Magpie, or Magpie's own editor, can set it) and shown by its business
+ * name, but is not offered here: this Host's write allowlist has only verified the ones below.
+ */
 const ROUTING_POLICY_VALUES = ['smart', 'order', 'rotate', 'usage', 'pace', 'weight', 'manual'] as const
+const MANUAL_ROUTING = 'manual'
 const STAYS_POLICY_VALUES = ['auto', 'session', 'turn', 'off', 'strict'] as const
 
 /** Show a policy by Magpie's business name while the Host keeps the raw value for writes. */
@@ -398,6 +405,10 @@ interface GroupDraft {
   readonly models: readonly string[]
   readonly routing: string
   readonly stays: string
+  /** The member a manual group sends every request to, as a member id. */
+  readonly pick: string
+  readonly unlists: boolean
+  readonly fast: readonly string[]
 }
 
 export interface GroupModelCandidate {
@@ -407,6 +418,8 @@ export interface GroupModelCandidate {
   readonly providerName: string | null
   readonly providerAgent?: string | null
   readonly kind: 'model' | 'group' | 'pattern'
+  /** Magpie can send this model in its vendor's fast mode (`memberInfo.canFast`). */
+  readonly canFast?: boolean
 }
 
 export function MagpieGroupsPage({ snapshot, t, onUpdate }: {
@@ -458,15 +471,27 @@ function GroupEditor({ group, candidates, t, onUpdate }: {
     setDraft(groupDraft(group))
     setReview(null)
   }, [group.id, key])
-  const setText = (field: 'name' | 'routing' | 'stays', value: string): void => setDraft(current => ({ ...current, [field]: value }))
+  const setText = (field: 'name' | 'routing' | 'stays' | 'pick', value: string): void => setDraft(current => ({ ...current, [field]: value }))
+  // `fast` is kept in step with the members: a model taken out of the group takes its fast
+  // mode with it, so a later save cannot fast-mode a model the group no longer names.
+  const setModels = (models: readonly string[]): void => setDraft(current => ({ ...current, models, fast: current.fast.filter(model => models.includes(model)) }))
+  const baseline = groupDraft(group)
+  const manual = draft.routing === MANUAL_ROUTING
+  const fast = draft.models.filter(model => draft.fast.includes(model))
+  // A manual group with nothing to send to is not saveable here: this Host refuses that write,
+  // and Magpie would otherwise keep whichever member came first.
+  const missingPick = manual && draft.pick === ''
   const update = (): MagpieRoutingGroupManagementUpdate | null => {
-    const baseline = groupDraft(group)
+    if (missingPick) return null
     const result: MagpieRoutingGroupManagementUpdate = {
       id: group.id,
       ...(draft.name.trim() === baseline.name ? {} : { name: draft.name.trim() }),
       ...(sameStringOrder(draft.models, baseline.models) ? {} : { models: [...draft.models] }),
       ...(draft.routing === baseline.routing ? {} : { routing: draft.routing }),
       ...(draft.stays === baseline.stays ? {} : { stays: draft.stays }),
+      ...(!manual || draft.pick === baseline.pick ? {} : { pick: draft.pick }),
+      ...(draft.unlists === baseline.unlists ? {} : { unlists: draft.unlists }),
+      ...(sameStringSet(fast, baseline.fast) ? {} : { fast }),
     }
     return Object.keys(result).length === 1 ? null : result
   }
@@ -487,6 +512,12 @@ function GroupEditor({ group, candidates, t, onUpdate }: {
   const updateField = update()
   const routingOptions = policyOptions('routing', ROUTING_POLICY_VALUES, draft.routing, t)
   const staysOptions = policyOptions('stays', STAYS_POLICY_VALUES, draft.stays, t)
+  // Magpie's editor offers a member's fast mode only where the model has one
+  // (provider.CanFast); `canFast` is the only per-model field it brings for this.
+  const fastCapable = draft.models.flatMap(id => {
+    const candidate = candidates.find(model => model.id === id)
+    return candidate?.canFast === true ? [candidate] : []
+  })
 
   return createElement('section', { className: 'codingns-magpie-panel codingns-magpie-management-editor' },
     createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('div', undefined,
@@ -509,12 +540,46 @@ function GroupEditor({ group, candidates, t, onUpdate }: {
         value: draft.models,
         candidates,
         t,
-        onChange: models => setDraft(current => ({ ...current, models })),
+        onChange: setModels,
       })),
     createElement('div', { className: 'codingns-magpie-field-row' },
-      createElement(SelectField, { label: t('magpie.management.routing'), value: draft.routing, options: routingOptions, onChange: value => setText('routing', value) }),
-      createElement(SelectField, { label: t('magpie.management.stays'), value: draft.stays, options: staysOptions, onChange: value => setText('stays', value) }),
+      createElement(SelectField, { label: t('magpie.management.routing'), hint: t('magpie.management.routingHint'), value: draft.routing, options: routingOptions, onChange: value => setText('routing', value) }),
+      createElement(SelectField, { label: t('magpie.management.stays'), hint: t('magpie.management.staysHint'), value: draft.stays, options: staysOptions, onChange: value => setText('stays', value) }),
     ),
+    manual && (draft.models.length === 0
+      ? createElement('p', { className: 'codingns-magpie-management-hint' }, t('magpie.management.noSelectedGroupModels'))
+      : createElement(SelectField, {
+        label: t('magpie.management.manualPick'),
+        hint: t('magpie.management.manualPickHint'),
+        value: draft.pick,
+        options: [{ value: '', label: t('magpie.management.manualPickEmpty') }, ...draft.models.map(model => ({ value: model, label: model }))],
+        onChange: value => setText('pick', value),
+      })),
+    fastCapable.length > 0 && createElement('div', { className: 'codingns-magpie-field' },
+      createElement('span', undefined, t('magpie.management.fastMode')),
+      createElement('small', undefined, t('magpie.management.fastModeHint', { model: fastCapable[0]?.id ?? '' })),
+      createElement(CheckboxList, {
+        label: t('magpie.management.fastMode'),
+        options: fastCapable.map(model => ({ id: model.id, label: model.id })),
+        value: fast,
+        disabled: saving,
+        onChange: (id, checked) => setDraft(current => ({
+          ...current,
+          fast: checked ? uniqueStrings([...current.fast, id]) : current.fast.filter(model => model !== id),
+        })),
+      }),
+    ),
+    createElement('label', { className: 'codingns-magpie-checkbox' },
+      createElement('input', {
+        type: 'checkbox',
+        checked: draft.unlists,
+        disabled: saving,
+        onChange: (event: { currentTarget: { checked: boolean } }) => setDraft(current => ({ ...current, unlists: event.currentTarget.checked })),
+      }),
+      createElement('span', undefined, t('magpie.management.unlists')),
+    ),
+    createElement('p', { className: 'codingns-magpie-management-hint' }, t('magpie.management.unlistsHint')),
+    fastCapable.length === 0 && draft.models.length > 0 && createElement('p', { className: 'codingns-magpie-management-hint' }, t('magpie.management.noFastModels')),
     review !== null && createElement('div', { className: 'codingns-magpie-confirm' },
       createElement('strong', undefined, t('magpie.management.reviewGroup')),
       createElement('span', undefined, summarizeGroupUpdate(review, t)),
@@ -538,8 +603,12 @@ function groupDraft(group: MagpieRoutingGroupManagementRecord): GroupDraft {
       ...group.members.filter(member => !member.byPattern).map(member => member.id),
       ...group.patterns,
     ]),
-    routing: group.routing ?? 'smart',
-    stays: group.stays ?? 'auto',
+    // An empty policy is Magpie's Smart and its Auto, as its own editor shows them.
+    routing: group.routing === null || group.routing === '' ? 'smart' : group.routing,
+    stays: group.stays === null || group.stays === '' ? 'auto' : group.stays,
+    pick: group.pick ?? '',
+    unlists: group.unlists === true,
+    fast: group.fast,
   }
 }
 
@@ -563,6 +632,34 @@ function sameStringOrder(left: readonly string[], right: readonly string[]): boo
   return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every(value => right.includes(value))
+}
+
+/** One checkbox per option, for the few per-model switches a save carries. */
+function CheckboxList({ label, options, value, disabled, onChange }: {
+  readonly label: string
+  readonly options: readonly { readonly id: string; readonly label: string }[]
+  readonly value: readonly string[]
+  readonly disabled: boolean
+  readonly onChange: (id: string, checked: boolean) => void
+}): ReactElement {
+  return createElement('div', { className: 'codingns-magpie-checkbox-list', role: 'group', 'aria-label': label },
+    ...options.map(option => createElement('label', { key: option.id, className: 'codingns-magpie-model-option' },
+      createElement('input', {
+        type: 'checkbox',
+        checked: value.includes(option.id),
+        disabled,
+        'aria-label': option.id,
+        onChange: (event: { currentTarget: { checked: boolean } }) => onChange(option.id, event.currentTarget.checked),
+      }),
+      createElement('span', { className: 'codingns-magpie-model-option-copy' },
+        createElement('code', { className: 'codingns-magpie-model-id', title: option.id }, option.label),
+      ),
+    )),
+  )
+}
+
 function groupModelCandidates(snapshot: MagpieManagementSnapshot | null, group: MagpieRoutingGroupManagementRecord): readonly GroupModelCandidate[] {
   const candidates = new Map<string, GroupModelCandidate>()
   const providerNames = new Map((snapshot?.providers ?? []).map(provider => [provider.id, provider.name]))
@@ -580,6 +677,7 @@ function groupModelCandidates(snapshot: MagpieManagementSnapshot | null, group: 
       providerName: member.provider === null ? null : providerNames.get(member.provider) ?? null,
       providerAgent: member.provider === null ? null : providerAgents.get(member.provider) ?? null,
       kind: member.id.startsWith('group/') ? 'group' : 'model',
+      canFast: member.canFast === true,
     })
   }
   for (const pattern of group.patterns) {
@@ -759,8 +857,15 @@ function accountBelongsToProvider(account: MagpieAccountManagementRecord, provid
   return account.agent.toLocaleLowerCase() === providerAgent
 }
 
-function SelectField({ label, value, options, onChange }: { readonly label: string; readonly value: string; readonly options: readonly SelectOption[]; readonly onChange: (value: string) => void }): ReactElement {
+function SelectField({ label, hint, value, options, onChange }: {
+  readonly label: string
+  readonly hint?: string
+  readonly value: string
+  readonly options: readonly SelectOption[]
+  readonly onChange: (value: string) => void
+}): ReactElement {
   return createElement('label', { className: 'codingns-magpie-field' }, createElement('span', undefined, label),
+    hint !== undefined && createElement('small', undefined, hint),
     createElement('select', { value, onChange: (event: { currentTarget: { value: string } }) => onChange(event.currentTarget.value) }, ...options.map(option => createElement('option', { key: option.value, value: option.value }, option.label))),
   )
 }
@@ -788,5 +893,8 @@ function summarizeGroupUpdate(update: MagpieRoutingGroupManagementUpdate, t: Tra
   if (update.models !== undefined) changes.push(t('magpie.management.reviewModels', { count: update.models.length }))
   if (update.routing !== undefined) changes.push(t('magpie.management.reviewRouting', { value: magpiePolicyLabel('routing', update.routing, t) }))
   if (update.stays !== undefined) changes.push(t('magpie.management.reviewStays', { value: magpiePolicyLabel('stays', update.stays, t) }))
+  if (update.pick !== undefined) changes.push(t('magpie.management.reviewPick', { value: update.pick }))
+  if (update.unlists !== undefined) changes.push(t('magpie.management.reviewUnlists', { value: t(update.unlists ? 'magpie.management.on' : 'magpie.management.off') }))
+  if (update.fast !== undefined) changes.push(t('magpie.management.reviewFast', { count: update.fast.length }))
   return changes.join(' · ')
 }

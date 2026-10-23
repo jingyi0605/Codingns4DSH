@@ -253,6 +253,11 @@ export interface MagpieRoutingGroupMember {
   readonly on: boolean | null
   readonly ready: boolean | null
   readonly byPattern: boolean
+  /**
+   * Magpie can send this member in its vendor's fast mode (OpenAI `service_tier: 'priority'`).
+   * Magpie's editor offers the switch only where this is true.
+   */
+  readonly canFast?: boolean
 }
 
 export interface MagpieRoutingGroupManagementRecord {
@@ -263,6 +268,15 @@ export interface MagpieRoutingGroupManagementRecord {
   readonly members: readonly MagpieRoutingGroupMember[]
   readonly usedBy: readonly string[]
   readonly patterns: readonly string[]
+  /**
+   * The member `routing: 'manual'` sends every request to (Magpie's `pick`); null for the
+   * other policies. Without it a saved manual group would reach Magpie with an empty pick.
+   */
+  readonly pick: string | null
+  /** True when Agent model lists show the group alone, not the models it names. */
+  readonly unlists: boolean | null
+  /** Members sent in their vendor's fast mode (OpenAI `service_tier: 'priority'`). */
+  readonly fast: readonly string[]
 }
 
 export interface MagpieManagementSnapshot {
@@ -292,6 +306,12 @@ export interface MagpieRoutingGroupManagementUpdate {
   readonly models?: readonly string[]
   readonly routing?: string
   readonly stays?: string
+  /** The member a manual group sends every request to; required while `routing: 'manual'`. */
+  readonly pick?: string
+  /** Whether Agent model lists show the group alone. */
+  readonly unlists?: boolean
+  /** Members sent in their vendor's fast mode; filtered to the group's models on save. */
+  readonly fast?: readonly string[]
 }
 
 export interface MagpieAccountManagementUpdate {
@@ -304,4 +324,42 @@ export interface MagpieManagementMutationResult {
   readonly changed: 'provider' | 'group' | 'account'
   readonly id: string
   readonly snapshot: MagpieManagementSnapshot
+}
+
+/**
+ * 本机 Magpie 的安装探测结果。
+ *
+ * 探测只能发生在 Host（Node）进程：浏览器读取不到本机 PATH、Windows 注册表和安装目录。
+ * 设置页先读这份结果，再决定 Magpie 管理开关能否启用；Host 写入前也会重新校验。
+ */
+export interface MagpieInstallDetection {
+  /** 是否找到可执行的 Magpie 入口（含 Windows 的 `.cmd`/`.bat` 包装脚本）。 */
+  readonly installed: boolean
+  /** `process.platform` 归一化后的平台名。 */
+  readonly platform: MagpieHostPlatform
+  /** 入口来源；未安装时为 null。 */
+  readonly source: MagpieInstallSource | null
+  /** 解析到的入口绝对路径；未安装或探测失败时为 null。 */
+  readonly command: string | null
+  /** `magpie --version` 归一化后的版本号；未成功运行时为 null。 */
+  readonly version: string | null
+  /** 入口存在但无法运行、版本无法识别时的安全原因；成功或未安装时为 null。 */
+  readonly reason: MagpieDetectionFailure | null
+  /** 探测完成时间，供界面显示结果新鲜度。 */
+  readonly checkedAt: string
+}
+
+export type MagpieHostPlatform = 'macos' | 'windows' | 'linux'
+export type MagpieInstallSource = 'path' | 'custom' | 'common-location'
+export type MagpieDetectionFailure = 'launch' | 'timeout' | 'version'
+
+/**
+ * 设置页“重新检测”提交的可选入口。
+ *
+ * 只接受绝对路径文本：不接受命令参数、shell 片段或裸命令名，避免把用户输入
+ * 变成任意命令执行入口。
+ */
+export interface MagpieDetectionRequest {
+  /** 用户手动填写的入口绝对路径；为空或缺省时只做自动探测。 */
+  readonly commandPath?: string
 }

@@ -406,11 +406,12 @@ test('Magpie module enablement is writable only through the existing settings al
   assert.deepEqual(received, [{ op: 'set', path: ['modules', 'magpieManagement'], value: true }])
 })
 
-test('Magpie Management is opt-in and no longer renders a launch button in settings', () => {
+test('Magpie Management is opt-in, requires a detected Magpie install, and keeps the launch button out of settings', () => {
   assert.equal(magpieManagementFeature.descriptor.enabledByDefault, false)
-  assert.equal(magpieManagementFeature.settingsPanel, undefined)
   assert.equal(magpieManagementFeature.descriptor.ui?.defaultOpen, false)
   assert.match(magpieManagementFeature.descriptor.ui?.description ?? '', /below Plugins in the global sidebar/u)
+  assert.equal(magpieManagementFeature.descriptor.ui?.requirementKey, 'settings.requirement.magpieInstall', 'the settings switch reads the Host detection before allowing enablement')
+  assert.equal(magpieManagementFeature.settingsPanel?.name, 'MagpieInstallPanel', 'the card body only explains detection and install, never launches Magpie')
 })
 
 test('Magpie Web API parsers normalize providers, accounts, and routing groups without returning credentials', () => {
@@ -530,6 +531,12 @@ test('Magpie management inputs fail closed on unknown fields, cross-provider mod
   assert.deepEqual(readProviderUpdate({ id: 'demo', on: false }), { id: 'demo', on: false })
   assert.throws(() => readGroupUpdate({ id: 'fast', routing: 'random' }), /routing policy/u)
   assert.throws(() => readGroupUpdate({ id: 'fast', routing: 'order', secret: 'value' }), /unsupported field/u)
+  assert.deepEqual(readGroupUpdate({ id: 'fast', routing: 'manual', pick: 'demo/model-a' }), { id: 'fast', routing: 'manual', pick: 'demo/model-a' })
+  assert.throws(() => readGroupUpdate({ id: 'fast', routing: 'order', pick: 'demo/model-a' }), /manual routing group/u)
+  assert.throws(() => readGroupUpdate({ id: 'fast', pick: 'not a model' }), /manual routing pick/u)
+  assert.deepEqual(readGroupUpdate({ id: 'fast', unlists: true, fast: ['demo/model-a', 'demo/model-a'] }), { id: 'fast', unlists: true, fast: ['demo/model-a'] })
+  assert.throws(() => readGroupUpdate({ id: 'fast', unlists: 'yes' }), /group listing/u)
+  assert.throws(() => readGroupUpdate({ id: 'fast', fast: ['demo/model-a<b>'] }), /Invalid Magpie group member/u)
   assert.deepEqual(readAccountUpdate({ agent: 'codex', user: 'second@example.test', on: true }), {
     agent: 'codex', user: 'second@example.test', on: true,
   })
@@ -594,6 +601,11 @@ test('Magpie routing-group Web API writes preserve patterns and isolate other gr
   assert.deepEqual(save?.body?.members, ['demo/model-b', 'demo/model-a'])
   assert.deepEqual(save?.body?.match, [])
   assert.equal(save?.body?.affinity, 'turn')
+  // Magpie's handler writes every group field it receives and resets one it does not: a save
+  // must carry the rest of the group back, or it would clear them.
+  assert.equal(save?.body?.unlists, false)
+  assert.deepEqual(save?.body?.fast, [])
+  assert.deepEqual(save?.body?.off, [])
   assert.equal(JSON.stringify(fixture.state.groups[1]), groupBefore)
   assert.equal(JSON.stringify(fixture.state.providers), providerBefore)
 
@@ -603,6 +615,59 @@ test('Magpie routing-group Web API writes preserve patterns and isolate other gr
 
   fixture.changeOtherGroupOnSave = true
   await assert.rejects(service.updateGroup({ id: 'fast-pool', routing: 'order' }), /could not be verified/u)
+})
+
+test('Magpie routing-group writes carry pick, listing, and fast mode through read-back', async () => {
+  const fixture = createManagementWebApiFixture()
+  fixture.state.groups[0] = {
+    id: 'group/fast-pool', name: 'Fast pool', members: ['demo/model-a', 'demo/model-b'], match: [],
+    routing: 'manual', affinity: 'session', pick: 'demo/model-a', unlists: true, fast: ['demo/model-b'],
+    // memberInfo is how Magpie tells a group which member can go fast (provider.CanFast).
+    memberInfo: [{ id: 'demo/model-a', provider: 'demo', name: 'Demo', model: 'model-a' }, { id: 'demo/model-b', provider: 'demo', name: 'Demo', model: 'model-b', canFast: true }],
+    firstToken: 30, patience: 120, sink: true, extra: 'preserve',
+  }
+  const service = new MagpieManagementService({ webApi: fixture.api })
+
+  const before = await service.readSnapshot()
+  assert.equal(before.groups[0]?.pick, 'demo/model-a')
+  assert.equal(before.groups[0]?.unlists, true)
+  assert.deepEqual(before.groups[0]?.fast, ['demo/model-b'])
+  assert.deepEqual(before.groups[0]?.members.map(member => [member.id, member.canFast ?? false]), [
+    ['demo/model-a', false],
+    ['demo/model-b', true],
+  ])
+
+  const result = await service.updateGroup({ id: 'fast-pool', pick: 'demo/model-b', unlists: false, fast: [] })
+  assert.equal(result.snapshot.groups[0]?.pick, 'demo/model-b')
+  assert.equal(result.snapshot.groups[0]?.unlists, false)
+  assert.deepEqual(result.snapshot.groups[0]?.fast, [])
+  const save = fixture.calls.filter(item => item.path === '/api/groups/save').at(-1)
+  assert.equal(save?.body?.pick, 'demo/model-b')
+  assert.deepEqual(save?.body?.fast, [])
+  // Magpie names a group it found itself `group/<id>`; the save must keep that id.
+  assert.equal(save?.body?.id, 'group/fast-pool')
+  // Settings this Host does not edit are still written back, because Magpie resets what a save leaves out.
+  assert.equal(save?.body?.firstToken, 30)
+  assert.equal(save?.body?.patience, 120)
+  assert.equal(save?.body?.sink, true)
+
+  // Without a model to send to, a manual group is refused before anything is written.
+  const savesBefore = fixture.calls.filter(item => item.path === '/api/groups/save').length
+  await assert.rejects(service.updateGroup({ id: 'fast-pool', pick: '' }), /Invalid manual routing pick/u)
+  fixture.state.groups[0]!.pick = null
+  await assert.rejects(service.updateGroup({ id: 'fast-pool', name: 'Renamed' }), /needs the model it sends to/u)
+  assert.equal(fixture.calls.filter(item => item.path === '/api/groups/save').length, savesBefore)
+})
+
+test('Magpie routing-group writes refuse a group whose patterns cannot be read back', async () => {
+  const fixture = createManagementWebApiFixture()
+  // A plugin behind on updates lists its models as null; Magpie still routes the group.
+  fixture.state.groups[1]!.members = null
+  const service = new MagpieManagementService({ webApi: fixture.api })
+  const snapshot = await service.readSnapshot()
+  assert.equal(snapshot.groupStatus, 'unavailable', 'a group whose members cannot be read is not offered as editable')
+  await assert.rejects(service.updateGroup({ id: 'pattern-pool', name: 'Renamed' }), /unavailable/u)
+  assert.equal(fixture.calls.filter(item => item.path === '/api/groups/save').length, 0)
 })
 
 test('Magpie management Web API outages are reported as unavailable without a CLI/key setup branch', async () => {
@@ -631,6 +696,8 @@ function createManagementWebApiFixture(): {
   readonly calls: Array<{ path: string; body: Record<string, unknown> | undefined }>
   readonly api: { requestJson(path: string, options?: { method?: 'GET' | 'POST'; body?: unknown }): Promise<unknown> }
   changeOtherGroupOnSave: boolean
+  /** Like Magpie's own handler: a save writes every group field, so a key left out is reset. */
+  writeAllGroupFields: boolean
 } {
   const state = {
     providers: [
@@ -656,6 +723,7 @@ function createManagementWebApiFixture(): {
     state,
     calls,
     changeOtherGroupOnSave: false,
+    writeAllGroupFields: false,
     api: {
       async requestJson(path, options = {}) {
         const body = options.body !== null && typeof options.body === 'object' && !Array.isArray(options.body)
@@ -690,6 +758,13 @@ function createManagementWebApiFixture(): {
           const current = state.groups.find(group => group.id === `group/${String(body?.id)}` || group.id === body?.id)
           assert.ok(current)
           Object.assign(current, body)
+          if (fixture.writeAllGroupFields) {
+            for (const key of MAGPIE_GROUP_SAVE_FIELDS) {
+              if (body?.[key] !== undefined) continue
+              if (key === 'name' || key === 'members' || key === 'match' || key === 'routing' || key === 'affinity') continue
+              delete current[key]
+            }
+          }
           if (fixture.changeOtherGroupOnSave) state.groups[1]!.name = 'Unexpected side effect'
           return { ok: true }
         }
@@ -705,6 +780,12 @@ function createManagementWebApiFixture(): {
   }
   return fixture
 }
+
+/** Every field Magpie's `/api/groups/save` writes; one left out of the body is reset. */
+const MAGPIE_GROUP_SAVE_FIELDS = [
+  'id', 'from', 'name', 'members', 'match', 'routing', 'pick', 'affinity', 'sink', 'firstToken', 'patience', 'rules',
+  'effort', 'classifier', 'context', 'levels', 'family', 'fast', 'off', 'weights', 'unlists',
+] as const
 
 function cloneRecords<T>(records: readonly T[]): T[] {
   return structuredClone(records)

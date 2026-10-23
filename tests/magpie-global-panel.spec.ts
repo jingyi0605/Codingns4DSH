@@ -167,12 +167,12 @@ test('Magpie dashboard renders as a flat page region rather than a modal overlay
   assert.doesNotMatch(markup, /class="codingns-magpie-toolbar(?! has-tabs")/u, 'the empty management toolbar row is no longer rendered at all')
   assert.doesNotMatch(markup, /MAGPIE \/ GATEWAY|MAGPIE WEB API|codingns-magpie-updated/u, 'the gateway caption and update stamp are gone from the toolbar')
   assert.match(markup, /\.codingns-magpie-statstrip\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}/u, 'phone statistic cells collapse to two columns')
+  assert.match(markup, />路由</u, 'Routing is a top-level native tab')
   assert.match(markup, /codingns-magpie-tabs/u, 'sections are reachable from a top tab bar')
   assert.match(markup, /codingns-magpie-tab is-active" aria-current="page">/, 'the current section is marked on the tab bar')
   assert.doesNotMatch(markup, /codingns-magpie-rail|codingns-magpie-nav-item/u, 'the page no longer draws its own left sidebar next to the DSH sidebar')
   assert.match(markup, />总览</u, 'Overview is a top-level native tab')
   assert.match(markup, />提供商</u)
-  assert.match(markup, />路由</u, 'Routing is a top-level native tab')
   assert.match(markup, />用量</u, 'Usage is a top-level tab')
   assert.doesNotMatch(markup, /nav-item[^>]*>[^<]*账户/u, 'accounts are not a standalone management section')
 })
@@ -279,7 +279,7 @@ test('Magpie management nests primary and secondary accounts under providers', (
     groups: [{
       id: 'fast', name: 'Fast pool', routing: 'order', stays: 'session',
       members: [{ id: 'openai-subscription/model', provider: 'openai-subscription', name: 'Demo Model', model: 'model', on: true, ready: true, byPattern: false }],
-      usedBy: ['Codex'], patterns: [],
+      usedBy: ['Codex'], patterns: [], pick: null, unlists: null, fast: [],
     }],
   }
   const props = {
@@ -393,6 +393,63 @@ test('Magpie provider logo prefers the authenticated Web API asset over inferred
     fallback: 'none',
   }))
   assert.match(markup, /src="data:image\/svg\+xml;base64,PHN2Zy8\+"/u)
+})
+
+test('routing-group editor shows and edits the settings Magpie saves beyond name, models, and policies', () => {
+  const t = (key: string, params?: Record<string, string | number>): string => (zh[key] ?? key).replace(/\{(\w+)\}/gu, (_match, name: string) => String(params?.[name] ?? ''))
+  const base = {
+    capturedAt: '2026-10-23T00:00:00Z',
+    availabilityIssue: null,
+    providerStatus: 'available' as const,
+    providers: [] as const,
+    accountStatus: 'available' as const,
+    accounts: [] as const,
+    accountApiStatus: 'available' as const,
+    groupStatus: 'available' as const,
+  }
+  const manual: MagpieManagementSnapshot = {
+    ...base,
+    groups: [{
+      id: 'split', name: 'Manual split', routing: 'manual', stays: 'auto',
+      members: [
+        { id: 'demo/model-a', provider: 'demo', name: 'Model A', model: 'model-a', on: true, ready: true, byPattern: false, canFast: true },
+        { id: 'demo/model-b', provider: 'demo', name: 'Model B', model: 'model-b', on: true, ready: true, byPattern: false },
+      ],
+      usedBy: [], patterns: [],
+      pick: 'demo/model-b', unlists: true, fast: ['demo/model-a'],
+    }],
+  }
+  const markup = renderToStaticMarkup(createElement(MagpieGroupsPage, {
+    snapshot: manual,
+    t,
+    onUpdate: async () => undefined,
+  }))
+  assert.match(markup, /手动/, 'routing policy options are named in Chinese')
+  assert.match(markup, /固定发送的模型/, 'a manual group shows the model every request goes to')
+  assert.match(markup, /<option value="demo\/model-b" selected="">demo\/model-b<\/option>/u, 'the saved pick is the selected option')
+  assert.match(markup, /name="|checked=""/u, 'the group-only listing and fast mode render as checked switches')
+  assert.match(markup, /快速模式/u, 'fast mode is offered for the member Magpie reports as capable')
+  assert.match(markup, /demo\/model-a/u, 'the fast-capable member is listed')
+  const fastList = markup.slice(markup.indexOf('codingns-magpie-checkbox-list'), markup.indexOf('</div>', markup.indexOf('codingns-magpie-checkbox-list')))
+  assert.match(fastList, /demo\/model-a/u, 'the fast-capable member has a switch')
+  assert.doesNotMatch(fastList, /demo\/model-b/u, 'a member without fast support is not offered a fast-mode switch')
+  assert.match(markup, /Agent 只看到路由组/u)
+  assert.match(markup, /调用策略/u)
+  assert.match(markup, /账户粘性/u)
+
+  const plain: MagpieManagementSnapshot = {
+    ...base,
+    groups: [{
+      id: 'plain', name: 'Plain pool', routing: null, stays: null,
+      members: [{ id: 'demo/model-a', provider: 'demo', name: 'Model A', model: 'model-a', on: true, ready: true, byPattern: false }],
+      usedBy: [], patterns: [], pick: null, unlists: null, fast: [],
+    }],
+  }
+  const plainMarkup = renderToStaticMarkup(createElement(MagpieGroupsPage, { snapshot: plain, t, onUpdate: async () => undefined }))
+  assert.match(plainMarkup, /<option value="smart" selected="">智能<\/option>/u, 'an empty policy reads as Smart, as in Magpie\'s own editor')
+  assert.match(plainMarkup, /<option value="auto" selected="">自动<\/option>/u, 'an empty stickiness reads as Auto')
+  assert.doesNotMatch(plainMarkup, /固定发送的模型/u, 'a non-manual group has no model to pick')
+  assert.match(plainMarkup, /Agent 列表中的模型按原样列出/u, 'without a fast-capable member the editor says so')
 })
 
 test('routing-group model order helper moves selected entries without changing membership', () => {

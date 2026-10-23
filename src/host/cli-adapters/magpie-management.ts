@@ -33,7 +33,11 @@ const PROVIDER_VIEW_FIELDS = new Set([
 ])
 const PROVIDER_MUTABLE_FIELDS = new Set(['name', 'chat', 'responses', 'anthropic', 'gemini', 'models', 'chosen', 'off'])
 const GROUP_VIEW_FIELDS = new Set(['id', 'ready', 'memberInfo', 'holds', 'offers', 'shared', 'patterns', 'ref'])
-const GROUP_MUTABLE_FIELDS = new Set(['name', 'members', 'match', 'patterns', 'routing', 'affinity'])
+/** Every field `/api/groups/save` writes; one left out of the body comes back as Magpie's default. */
+const GROUP_WRITTEN_FIELDS = [
+  'name', 'members', 'match', 'routing', 'affinity', 'pick', 'unlists', 'fast', 'off', 'weights',
+  'sink', 'firstToken', 'patience', 'context', 'family', 'levels', 'effort', 'classifier', 'rules', 'from',
+]
 const LOGIN_CONTAINER_FIELDS = new Set(['accounts', 'logins', 'data', 'users', 'usage', 'providers', 'items'])
 
 export interface MagpieManagementServiceOptions {
@@ -120,6 +124,9 @@ export class MagpieManagementService {
       const currentRecord = before.snapshot.groups.find(item => item.id === update.id)
       if (current === undefined || currentRecord === undefined) throw new Error('Magpie routing group was not found')
 
+      if ((update.routing ?? currentRecord.routing) === 'manual' && (update.pick ?? currentRecord.pick) === null) {
+        throw new TypeError('A manual routing group needs the model it sends to')
+      }
       const protectedBefore = groupConfigFingerprint(current)
       await this.requestApi('/api/groups/save', {
         method: 'POST', body: groupSavePayload(current, currentRecord, update), ...signalOption(signal),
@@ -325,18 +332,29 @@ export function readProviderUpdate(value: unknown): MagpieProviderManagementUpda
 export function readGroupUpdate(value: unknown): MagpieRoutingGroupManagementUpdate {
   const record = asRecord(value)
   if (record === null || typeof record.id !== 'string' || !GROUP_ID.test(record.id)) throw new TypeError('Invalid Magpie routing-group update')
-  assertAllowedKeys(record, ['id', 'name', 'models', 'routing', 'stays'])
+  assertAllowedKeys(record, ['id', 'name', 'models', 'routing', 'stays', 'pick', 'unlists', 'fast'])
   const name = optionalUpdateText(record.name, 120, 'group name')
   const models = record.models === undefined ? undefined : readModelList(record.models, null, true)
   const routing = optionalEnum(record.routing, ROUTING_POLICIES, 'routing policy')
   const stays = optionalEnum(record.stays, STICKINESS_POLICIES, 'stickiness policy')
-  if ([name, models, routing, stays].every(item => item === undefined)) throw new TypeError('Routing-group update has no changes')
+  const pick = optionalMemberId(record.pick, 'manual routing pick')
+  const unlists = optionalUpdateBoolean(record.unlists, 'group listing')
+  const fast = record.fast === undefined ? undefined : readMemberList(record.fast)
+  if (record.pick !== undefined && routing !== undefined && routing !== 'manual') {
+    throw new TypeError('Only a manual routing group sends to a picked model')
+  }
+  if ([name, models, routing, stays, pick, unlists, fast].every(item => item === undefined)) {
+    throw new TypeError('Routing-group update has no changes')
+  }
   return {
     id: record.id,
     ...(name === undefined ? {} : { name }),
     ...(models === undefined ? {} : { models }),
     ...(routing === undefined ? {} : { routing }),
     ...(stays === undefined ? {} : { stays }),
+    ...(pick === undefined ? {} : { pick }),
+    ...(unlists === undefined ? {} : { unlists }),
+    ...(fast === undefined ? {} : { fast }),
   }
 }
 
@@ -464,6 +482,7 @@ function readWebGroup(record: Record<string, unknown>): MagpieRoutingGroupManage
       on: readBooleanOrCount(info?.on),
       ready: optionalBoolean(info?.ready),
       byPattern: false,
+      ...(typeof info?.canFast === 'boolean' ? { canFast: info.canFast } : {}),
     })
   }
   const patterns = readGroupPatterns(record.match, record.patterns)
@@ -472,6 +491,14 @@ function readWebGroup(record: Record<string, unknown>): MagpieRoutingGroupManage
   if (record.usedBy !== undefined || record.agents !== undefined) {
     if (usedBy === null) return null
   }
+  // The member a manual group sends to, and the members sent in their vendor's fast mode.
+  // Both use the same member-id spelling `members` uses, so the editor can compare them.
+  const rawPick = optionalSafeText(record.pick, 512)
+  const pick = rawPick === null ? null : normalizeMemberId(rawPick)
+  if (rawPick !== null && pick === null) return null
+  const fast = record.fast === undefined ? [] : readStringList(record.fast, 2_000)
+  if (fast === null) return null
+  if (fast.some(value => normalizeMemberId(value) === null)) return null
   return {
     id,
     name,
@@ -480,7 +507,16 @@ function readWebGroup(record: Record<string, unknown>): MagpieRoutingGroupManage
     members,
     usedBy: usedBy ?? [],
     patterns,
+    pick,
+    unlists: optionalBoolean(record.unlists),
+    fast,
   }
+}
+
+/** Accept a member id Magpie itself would: a model, a group, or a model at a reasoning level. */
+function normalizeMemberId(value: string): string | null {
+  if (MODEL_ID.test(value) || value.startsWith('group/')) return value
+  return null
 }
 
 function readWebAccount(record: Record<string, unknown>, fallbackAgent?: string): MagpieAccountManagementRecord | null {
@@ -619,17 +655,35 @@ function groupSavePayload(
 ): Record<string, unknown> {
   const payload: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(raw)) {
-    if (GROUP_VIEW_FIELDS.has(key) || GROUP_MUTABLE_FIELDS.has(key)) continue
+    if (GROUP_VIEW_FIELDS.has(key)) continue
     const clone = safeJsonClone(value)
     if (clone !== undefined) payload[key] = clone
   }
+  // A save rewrites `members` and `match` whole, so a group whose patterns were never fully
+  // readable must not be saved: the unreadable ones would be dropped without saying so.
+  if (!groupPatternsReadable(raw)) throw new TypeError('Magpie routing group patterns cannot be read back safely')
   const models = update.models ?? editableGroupModels(current)
-  payload.id = current.id
+  const routing = update.routing ?? current.routing ?? 'smart'
+  // Magpie names a group it found its own way (`group/fast-pool`) and a user's group by its
+  // bare id. Saving under the normalized id would re-key or re-create the group, so the id
+  // goes back exactly as it was read.
+  payload.id = typeof raw.id === 'string' ? raw.id : current.id
   payload.name = update.name ?? current.name
   payload.members = models.filter(model => !isGroupPattern(model))
   payload.match = models.filter(isGroupPattern)
-  payload.routing = update.routing ?? current.routing ?? 'smart'
+  payload.routing = routing
   payload.affinity = update.stays ?? current.stays ?? 'auto'
+  // Every other field a group save writes goes back as it was read: a save that left one out
+  // would reset it to Magpie's default, and a manual group's pick would come back empty.
+  payload.pick = routing === 'manual' ? update.pick ?? current.pick ?? '' : ''
+  payload.unlists = update.unlists ?? current.unlists ?? false
+  payload.fast = (update.fast ?? current.fast).filter(member => (payload.members as readonly string[]).includes(member))
+  payload.off = (readStringList(raw.off, 2_000) ?? []).filter(member => (payload.members as readonly string[]).includes(member))
+  payload.weights = Object.fromEntries(Object.entries(asRecord(raw.weights) ?? {})
+    .filter(([member, weight]) => (payload.members as readonly string[]).includes(member) && optionalInteger(weight) !== null))
+  for (const key of ['sink', 'firstToken', 'patience', 'context', 'family', 'levels', 'effort', 'classifier', 'rules']) {
+    if (raw[key] !== undefined) payload[key] = safeJsonClone(raw[key])
+  }
   return payload
 }
 
@@ -651,9 +705,21 @@ function providerConfigFingerprint(record: Record<string, unknown>): string {
   })
 }
 
+/**
+ * Fingerprint what a group save must leave alone.
+ *
+ * Every field a save writes is covered by `groupUpdateMatches` instead: a save now writes
+ * `pick`, `unlists`, `fast`, `off`, and `weights` as well, and Magpie itself fills `off` with
+ * the members whose provider is switched off. What is left here is everything this Host has
+ * not verified as safe to write.
+ */
 function groupConfigFingerprint(record: Record<string, unknown>): string {
-  const viewOrMutable = new Set([...GROUP_VIEW_FIELDS, ...GROUP_MUTABLE_FIELDS])
-  return stableJson(Object.fromEntries(Object.entries(record).filter(([key]) => !viewOrMutable.has(key))))
+  const savedWithTheRest = new Set([
+    ...GROUP_VIEW_FIELDS, ...GROUP_WRITTEN_FIELDS,
+    // `patterns` is read back into `match`; saving both would contradict itself.
+    'patterns',
+  ])
+  return stableJson(Object.fromEntries(Object.entries(record).filter(([key]) => !savedWithTheRest.has(key))))
 }
 
 function providerRecordFingerprint(record: Record<string, unknown>): string {
@@ -733,7 +799,14 @@ function groupUpdateMatches(update: MagpieRoutingGroupManagementUpdate, saved: M
   for (const key of ['routing', 'stays'] as const) {
     if (update[key] !== undefined && update[key] !== saved[key]) return false
   }
+  if (update.pick !== undefined && update.pick !== saved.pick) return false
+  if (update.unlists !== undefined && update.unlists !== saved.unlists) return false
+  if (update.fast !== undefined && !sameStringSet(update.fast, saved.fast)) return false
   return true
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every(item => right.includes(item))
 }
 
 function editableGroupModels(group: MagpieRoutingGroupManagementRecord): readonly string[] {
@@ -770,6 +843,28 @@ function validatePatterns(values: readonly string[]): readonly string[] | null {
     if (!unique.includes(value)) unique.push(value)
   }
   return unique
+}
+
+/**
+ * Whether every pattern Magpie returned for this group is one this Host would write back.
+ *
+ * Patterns live in the saved `match` list and `patterns` (the model rows they match now). A
+ * `null` `members` list, or a pattern spelling outside the allowed set, cannot be round-tripped:
+ * a save built from the readable half would quietly remove the rest.
+ */
+function groupPatternsReadable(raw: Record<string, unknown>): boolean {
+  const match = readGroupPatterns(raw.match, raw.patterns)
+  if (match === null) return false
+  const current = raw.match !== undefined
+    ? readStringList(raw.match, 500)
+    : Array.isArray(raw.patterns)
+      ? raw.patterns.flatMap(item => {
+        const record = asRecord(item)
+        const pattern = safeText(record?.pattern ?? item, 300)
+        return pattern === null ? [] : [pattern]
+      })
+      : []
+  return current !== null && current.length === match.length
 }
 
 function isGroupPattern(value: string): boolean {
@@ -847,6 +942,23 @@ function readModelList(value: unknown, providerId: string | null, allowPatterns:
   }
   if (allowPatterns && models.length === 0) throw new TypeError('Routing groups need at least one model or pattern')
   return models
+}
+
+/** A group member id as Magpie names it: a model, a group, or a model at a reasoning level. */
+function optionalMemberId(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined
+  const text = safeText(value, 512)
+  if (text === null || !(MODEL_ID.test(text) || text.startsWith('group/'))) throw new TypeError(`Invalid ${label}`)
+  return text
+}
+
+function readMemberList(value: unknown): readonly string[] {
+  if (!Array.isArray(value) || value.length > 2_000) throw new TypeError('Group member list must be an array of at most 2000 entries')
+  const members = value.map(item => safeText(item, 512))
+  if (members.some(item => item === null || !(MODEL_ID.test(item) || item.startsWith('group/')))) {
+    throw new TypeError('Invalid Magpie group member')
+  }
+  return [...new Set(members as string[])]
 }
 
 function localModelId(providerId: string, value: string): string {
