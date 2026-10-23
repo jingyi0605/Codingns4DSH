@@ -8,9 +8,10 @@ import { createGlobalPanelAdapter } from '../src/dsh-capabilities/client/global-
 import type { CodingNsLocale } from '../src/client/locale.js'
 import { aggregateModelUsageRows, MagpieManagementPage, modelBreakdownRows, ModelProgressSection } from '../src/client/features/magpie-management-page.js'
 import { magpieManagementFeature } from '../src/client/features/magpie-management.js'
-import { GroupModelPicker, MagpieGroupsPage, MagpieProvidersPage, reorderModels } from '../src/client/features/magpie-management-controls.js'
+import { GroupModelPicker, MagpieGroupsPage, MagpieProvidersPage, magpiePolicyLabel, reorderModels } from '../src/client/features/magpie-management-controls.js'
 import { MagpieProviderLogo } from '../src/client/features/magpie-provider-logo.js'
 import { installProviderIcons, PROVIDER_ICONS } from '../src/client/provider-icons.js'
+import { en, zh } from '../src/client/locales/magpie.js'
 import type { MagpieManagementSnapshot } from '../src/shared/contracts/magpie-management.js'
 import type { MagpieUsageGroup } from '../src/shared/contracts/magpie-management.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
@@ -318,6 +319,10 @@ test('Magpie management nests primary and secondary accounts under providers', (
   assert.doesNotMatch(groups, /codingns-magpie-group-model-available/u, 'routing groups do not render the full available-model inventory')
   assert.match(groups, /aria-label="添加模型"/u, 'routing groups retain a compact add-model control')
   assert.match(groups, /aria-controls="codingns-magpie-group-model-picker"/u, 'routing groups expose the grouped picker from the compact add control')
+  assert.match(groups, /option value="order"[^>]*>按顺序<\/option>/u, 'routing policy options show Magpie business names')
+  assert.match(groups, /option value="session"[^>]*>整个会话<\/option>/u, 'stickiness options show Magpie business names')
+  assert.match(groups, /codingns-magpie-management-policy">按顺序</u, 'the group list shows the business name instead of the raw policy value')
+  assert.doesNotMatch(groups, /option value="order"[^>]*>order</u, 'raw policy values stay out of the option labels')
   assert.match(providers, /openai-subscription\/backup/u, 'provider editor renders disabled models as available choices')
   assert.match(providers, /class="codingns-magpie-model-name"[^>]*>Backup Model</u, 'provider model names remain visible')
   assert.match(providers, /type="checkbox"/u)
@@ -391,4 +396,16 @@ test('routing-group model order helper moves selected entries without changing m
   assert.deepEqual(reorderModels(['a', 'b', 'c'], 'a', 'c'), ['b', 'a', 'c'])
   assert.deepEqual(reorderModels(['a', 'b', 'c'], 'c', 'a'), ['c', 'a', 'b'])
   assert.deepEqual(reorderModels(['a', 'b'], 'missing', 'b'), ['a', 'b'])
+})
+
+test('routing-group policy labels use Magpie business names and keep unknown values', () => {
+  const enT = (key: string): string => en[key] ?? key
+  const zhT = (key: string): string => zh[key] ?? key
+  assert.equal(magpiePolicyLabel('routing', 'smart', zhT), '智能')
+  assert.equal(magpiePolicyLabel('routing', 'order', enT), 'In order')
+  assert.equal(magpiePolicyLabel('routing', 'usage', zhT), '最少使用')
+  assert.equal(magpiePolicyLabel('routing', 'free', zhT), '免费优先', 'a newer Magpie mode still reads as its business name')
+  assert.equal(magpiePolicyLabel('stays', 'auto', zhT), '自动')
+  assert.equal(magpiePolicyLabel('stays', 'turn', enT), 'Within a turn')
+  assert.equal(magpiePolicyLabel('routing', 'plugin/custom', zhT), 'plugin/custom', 'unknown policies are never relabeled')
 })
