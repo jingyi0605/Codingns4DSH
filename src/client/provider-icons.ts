@@ -48,6 +48,17 @@ const PROVIDER_DEFINITIONS: Readonly<Record<string, ProviderDefinition>> = {
 
 const PROVIDER_ICONS: Record<string, string> = {}
 
+const PROVIDER_ICON_ALIASES: Readonly<Record<string, string>> = {
+  claude: 'claude-code',
+  commandcode: 'command-code',
+  'minimax-code': 'mcode',
+  cursor: 'cursor-cli',
+  agy: 'antigravity',
+  codingns4dsh: 'dsh',
+  'workbuddy-ai': 'workbuddy',
+  'grok-(supergrok)': 'grok',
+}
+
 /** 只由浏览器入口调用，使普通 Node 测试不需要加载 png/svg。 */
 export function installProviderIcons(icons: Readonly<Record<string, string>>): void {
   for (const adapterId of Object.keys(PROVIDER_ICONS)) delete PROVIDER_ICONS[adapterId]
@@ -59,7 +70,9 @@ export function installProviderIcons(icons: Readonly<Record<string, string>>): v
 }
 
 export function providerIconUrl(adapterId: string): string | undefined {
-  return PROVIDER_ICONS[normalizeProviderAdapterId(adapterId)]
+  const normalizedAdapterId = normalizeProviderAdapterId(adapterId)
+  const iconId = normalizeProviderIconId(adapterId)
+  return PROVIDER_ICONS[normalizedAdapterId] ?? PROVIDER_ICONS[iconId]
 }
 
 /**
@@ -78,13 +91,18 @@ export function providerVisual(adapterId: string | undefined, t?: CodingNsTransl
   if (definition === undefined) {
     return { adapterId, displayName: translate('provider.unknown', { adapterId }), iconUrl: undefined, color: PROVIDER_NEUTRAL_COLOR }
   }
-  return { ...definition, displayName: definition.displayNameKey ? translate(definition.displayNameKey) : definition.displayName, iconUrl: PROVIDER_ICONS[normalizedAdapterId] }
+  return { ...definition, displayName: definition.displayNameKey ? translate(definition.displayNameKey) : definition.displayName, iconUrl: providerIconUrl(adapterId) }
 }
 
 /** 兼容旧版 CN profile 的会话快照，但不重新暴露第二个 Provider。 */
 function normalizeProviderAdapterId(adapterId: string): string {
   const normalized = fromCliProviderId(adapterId) ?? adapterId
   return normalized === 'codebuddy-cn' ? 'codebuddy' : normalized
+}
+
+function normalizeProviderIconId(adapterId: string): string {
+  const normalized = adapterId.trim().toLocaleLowerCase().split('/', 1)[0]!.replace(/[\s_]+/gu, '-')
+  return PROVIDER_ICON_ALIASES[normalized] ?? normalized
 }
 
 export { PROVIDER_DEFINITIONS, PROVIDER_ICONS }
