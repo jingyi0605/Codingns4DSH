@@ -1204,6 +1204,64 @@ test('Magpie Web API usage failures return no snapshot and never expose error co
   }
 })
 
+test('上游不提供账号名时保留该厂商的配额，而不是显示成"没有报告配额"', async () => {
+  const sessionId = 'dsh-auto-gpt-6-1-sol'
+  const modelOutput = [
+    'Routing groups', 'auto/gpt-6.1-sol    GPT-6.1 Sol-Auto',
+    "dsh is shown every provider's models · magpie visible dsh", 'http://127.0.0.1:3425/v1',
+  ].join('\n')
+  const service = createWebUsageService({
+    readModels: async () => modelOutput,
+    fetch: (async (url) => {
+      const target = new URL(String(url))
+      if (target.pathname.endsWith('/quotas')) return Response.json({ data: [
+        // Codex 这类量贩账号没有 `user`：请求记录里的 providerAccount 永远对不上它。
+        { provider: 'glorinfo-api-platform', name: 'GAP-Codex', user: null, windows: [{ name: '1 day', amount: 1, limit: 4, unit: 'USD' }] },
+        { provider: 'grox-claude', name: 'Grox-Claude', user: null, windows: [{ name: '1 day', amount: 4, limit: 4, unit: 'USD' }] },
+      ] })
+      if (target.pathname.endsWith('/usage/requests')) return Response.json({ rows: [{
+        route_id: 22, t: '2026-10-23T15:53:00Z', agent: 'dsh', session: sessionId,
+        req: 'group/auto-gpt-6-1-sol', provider: 'glorinfo-api-platform', providerAccount: 'api-key',
+        model: 'gpt-6.1-sol', served: 'gpt-6.1-sol', status: 200,
+      }] })
+      return Response.json(usageReply([{ agent: 'dsh', id: sessionId, input: 8, output: 2, cost: 0.001 }]))
+    }) as typeof fetch,
+  })
+
+  const result = await service.read({ adapterId: 'dsh', modelId: 'auto/gpt-6.1-sol' }, undefined, true, sessionId)
+  assert.deepEqual(result?.upstreamProviders, ['glorinfo-api-platform'])
+  assert.equal(result?.quotaStatus, 'available')
+  assert.deepEqual(result?.quotas.map((quota) => quota.provider), ['glorinfo-api-platform'], 'the routed provider keeps its own quota')
+  assert.equal(result?.quotas[0]?.active, undefined, 'an unknown account name must never be marked as the active account')
+})
+
+test('活动账号按厂商判定，不同厂商的同名账号不会被误标', async () => {
+  const sessionId = 'claude-shared-account-name'
+  const service = createWebUsageService({
+    readModels: async () => [
+      'Routing groups', 'auto/deepseek-v4.1-flash    Deepseek-V4.1-Flash-Auto',
+      "claude is shown every provider's models · magpie visible claude", 'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async (url) => {
+      const target = new URL(String(url))
+      if (target.pathname.endsWith('/quotas')) return Response.json({ data: [
+        { provider: 'workbuddy', name: 'WorkBuddy', user: 'shared@example.com', windows: [{ name: 'Credits', remaining: 70 }] },
+        { provider: 'workbuddy-ai', name: 'WorkBuddy AI', user: 'shared@example.com', windows: [{ name: 'Credits', remaining: 90 }] },
+      ] })
+      if (target.pathname.endsWith('/usage/requests')) return Response.json({ rows: [{
+        route_id: 31, t: '2026-10-23T15:00:00Z', agent: 'claude', session: sessionId,
+        req: 'group/auto-deepseek-v4-1-flash', provider: 'workbuddy', providerAccount: 'shared@example.com',
+        model: 'deepseek-v4.1-flash', served: 'deepseek-v4.1-flash', status: 200,
+      }] })
+      return Response.json(usageReply([{ agent: 'claude', id: sessionId, input: 8, output: 2, cost: 0.001 }]))
+    }) as typeof fetch,
+  })
+
+  const result = await service.read({ adapterId: 'claude-code', modelId: 'auto/deepseek-v4.1-flash[1m]', providerSessionId: sessionId }, undefined, true)
+  const active = result?.quotas.filter((quota) => quota.active === true).map((quota) => quota.provider)
+  assert.deepEqual(active, ['workbuddy'], 'only the routed provider owns the active account')
+})
+
 test('Magpie 自动模型在页面加载后主动解析上游配额并显示圆环', async (t) => {
   let component: ((props: unknown) => unknown) | undefined
   const slots = {

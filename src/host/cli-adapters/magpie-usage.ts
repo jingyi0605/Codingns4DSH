@@ -1153,9 +1153,15 @@ function routeTime(value: string | null | undefined): number {
 /**
  * 选出本会话确实使用过的上游账号配额。
  *
- * 归属必须严格：请求历史里没有出现的账号不能算作本会话的配额。上游完全没有该厂商的
- * 账号维度记录时无法判断，此时保留该厂商全部候选；一旦有记录但都不匹配，则返回空，
- * 宁可显示"没有可用配额"也不能把别的账号的额度说成这个会话的。
+ * 归属必须严格：请求历史里没有出现的账号不能算作本会话的配额。
+ *
+ * - 账号维度能对上：只留命中的账号。
+ * - 上游不提供账号名（Codex 这类量贩账号没有 `user`），无从按账号筛选：保留该厂商
+ *   全部候选。过去这里返回空数组，`quotaStatus` 仍是 `available`，界面就只剩下
+ *   "上游没有报告配额窗口"的空态 —— 明明识别出了 `glorinfo-api-platform`，却看不到
+ *   它的额度。
+ * - 有账号记录但一条都不匹配：返回空，宁可显示"没有可用配额"也不能把别的账号的额度
+ *   说成本会话的。
  */
 function filterSessionQuotas(
   quotas: readonly MagpieQuota[],
@@ -1168,7 +1174,8 @@ function filterSessionQuotas(
       .filter((record) => record.provider === provider && record.account !== null)
       .map((record) => record.account!))
     if (accounts.size === 0) return candidates
-    return candidates.filter((quota) => quota.user !== null && accounts.has(quota.user))
+    const matched = candidates.filter((quota) => quota.user !== null && accounts.has(quota.user))
+    return matched.length > 0 ? matched : candidates.filter((quota) => quota.user === null)
   })
 }
 
@@ -1193,8 +1200,11 @@ function otherProviderAccounts(
  * 标记本会话实际使用过的账号。
  *
  * 只有能追溯到会话请求记录的账号才标 `active`；route 的账号字段优先于请求历史，
- * 因为它来自 Magpie 对这一次请求的精确归属。无法确认时保持未标记，
- * 客户端据此显示"未知活动账号"，而不是随便挑一个账号当"正在使用"。
+ * 因为它来自 Magpie 对这一次请求的精确归属。
+ *
+ * 账号名比对必须同时限定厂商：不同厂商的账号名会重名（WorkBuddy 与 WorkBuddy AI 都有
+ * `zj59122704501@gmail.com`），只比名字会把别的厂商的账号标成本会话正在使用。
+ * 无法确认时保持未标记，客户端据此显示"未知活动账号"，而不是随便挑一个账号当"正在使用"。
  */
 function markSessionAccounts(
   quotas: readonly MagpieQuota[],
@@ -1202,18 +1212,19 @@ function markSessionAccounts(
   route: MagpieRouteUsage | null,
 ): readonly MagpieQuota[] {
   const used = new Set(history
-    .map((record) => record.account)
-    .filter((account): account is string => account !== null))
+    .filter((record) => record.account !== null)
+    .map((record) => `${record.provider}\u0000${record.account!}`))
+  const routedProvider = providerFromRoute(route)
   const routedAccount = route?.providerAccount ?? null
-  if (used.size === 0 && routedAccount === null) return quotas
+  const routedKey = routedAccount === null || routedProvider === null ? null : `${routedProvider}\u0000${routedAccount}`
+  if (used.size === 0 && routedKey === null) return quotas
   // 每个厂商只承认一个活动账号：精确路由优先，其次是首个命中的历史账号。
   const claimed = new Set<string>()
   return quotas.map((quota) => {
     if (quota.user === null) return quota
     const key = `${quota.provider}\u0000${quota.user}`
     if (claimed.has(key)) return quota
-    const candidate = quota.user === routedAccount || used.has(quota.user)
-    if (!candidate) return quota
+    if (key !== routedKey && !used.has(key)) return quota
     claimed.add(key)
     return { ...quota, active: true }
   })
@@ -1546,17 +1557,6 @@ function magpieWebPeriod(period: MagpieDashboardPeriod): 'today' | '7d' | '30d' 
   }
 }
 
-/**
- * 窗口使用的百分比。
- *
- * Magpie 的 `used` 始终是 0–100 的百分比（见其 `auth.usage` 契约），但 `remaining`
- * 不一定：同一份数据里既有 `remaining: 96` 这种百分比，也有 `remaining: 86.57`
- * 配 `amount: 322.25 / limit: 2400` 这种"剩余量"。凡是带 `limit`（或 `amount`）的窗口，
- * `remaining` 一律按数量解释，不能直接当成 0–100 的百分比，否则 WorkBuddy 的
- * `322 / 2400` 会被读成"剩余 86.57%"，和 `display` 里的数量对不上。
- */
-function quotaUsedPercent(record: Record<string, unknown>): number | null {
-  return safePercent(record.used)
 function emptyMagpieDashboard(period: MagpieDashboardPeriod, capturedAt: string): MagpieUsageDashboard {
   return {
     period,
@@ -1578,6 +1578,17 @@ function emptyMagpieDashboard(period: MagpieDashboardPeriod, capturedAt: string)
   }
 }
 
+/**
+ * 窗口使用的百分比。
+ *
+ * Magpie 的 `used` 始终是 0–100 的百分比（见其 `auth.usage` 契约），但 `remaining`
+ * 不一定：同一份数据里既有 `remaining: 96` 这种百分比，也有 `remaining: 86.57`
+ * 配 `amount: 322.25 / limit: 2400` 这种"剩余量"。凡是带 `limit`（或 `amount`）的窗口，
+ * `remaining` 一律按数量解释，不能直接当成 0–100 的百分比，否则 WorkBuddy 的
+ * `322 / 2400` 会被读成"剩余 86.57%"，和 `display` 里的数量对不上。
+ */
+function quotaUsedPercent(record: Record<string, unknown>): number | null {
+  return safePercent(record.used)
 }
 
 function quotaRemainingPercent(record: Record<string, unknown>): number | null {
