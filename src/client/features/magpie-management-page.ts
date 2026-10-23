@@ -1022,6 +1022,9 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-icon-button:active{background:var(--mp-layer)}
 .codingns-magpie-icon-button:focus-visible{outline:2px solid color-mix(in srgb,var(--mp-accent) 55%,transparent);outline-offset:1px}
 .codingns-magpie-icon-button:disabled{opacity:.5;cursor:default;background:transparent;color:var(--mp-muted)}
+.codingns-magpie-refresh-icon{display:block;flex:0 0 auto;transition:transform .2s}
+.codingns-magpie-refresh-icon.is-spinning{animation:magpie-spin .9s linear infinite}
+@media(prefers-reduced-motion:reduce){.codingns-magpie-refresh-icon.is-spinning{animation:none}}
 .codingns-magpie-tabs{display:flex;align-items:center;justify-content:center;gap:2px;justify-self:center;min-width:0;overflow-x:auto;scrollbar-width:none}
 .codingns-magpie-tabs::-webkit-scrollbar{display:none}
 .codingns-magpie-tab{position:relative;display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;min-height:42px;padding:0 12px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--mp-muted);font:inherit;font-size:${uiFontSize(13)};white-space:nowrap;cursor:pointer;transition:color .16s,background .16s}
