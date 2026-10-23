@@ -13,6 +13,45 @@ import { MagpieProviderLogo } from './magpie-provider-logo.js'
 
 type Translate = (key: string, params?: Record<string, string | number>) => string
 
+interface SelectOption {
+  readonly value: string
+  readonly label: string
+}
+
+/** Magpie's own names for routing-group policies; a value it does not name stays as returned. */
+const ROUTING_POLICY_LABELS: Readonly<Record<string, string>> = {
+  smart: 'magpie.management.routing.smart',
+  order: 'magpie.management.routing.order',
+  rotate: 'magpie.management.routing.rotate',
+  usage: 'magpie.management.routing.usage',
+  pace: 'magpie.management.routing.pace',
+  weight: 'magpie.management.routing.weight',
+  manual: 'magpie.management.routing.manual',
+  free: 'magpie.management.routing.free',
+}
+const STAYS_POLICY_LABELS: Readonly<Record<string, string>> = {
+  auto: 'magpie.management.stays.auto',
+  session: 'magpie.management.stays.session',
+  turn: 'magpie.management.stays.turn',
+  off: 'magpie.management.stays.off',
+  strict: 'magpie.management.stays.strict',
+}
+const ROUTING_POLICY_VALUES = ['smart', 'order', 'rotate', 'usage', 'pace', 'weight', 'manual'] as const
+const STAYS_POLICY_VALUES = ['auto', 'session', 'turn', 'off', 'strict'] as const
+
+/** Show a policy by Magpie's business name while the Host keeps the raw value for writes. */
+export function magpiePolicyLabel(kind: 'routing' | 'stays', value: string, t: Translate): string {
+  const key = (kind === 'routing' ? ROUTING_POLICY_LABELS : STAYS_POLICY_LABELS)[value]
+  return key === undefined ? value : t(key)
+}
+
+function policyOptions(kind: 'routing' | 'stays', values: readonly string[], current: string, t: Translate): readonly SelectOption[] {
+  const options = values.map(value => ({ value, label: magpiePolicyLabel(kind, value, t) }))
+  // Keep a policy this Host does not offer visible rather than blanking the select:
+  // a newer Magpie mode or a gateway plugin's routing must still read back.
+  return values.includes(current) ? options : [...options, { value: current, label: magpiePolicyLabel(kind, current, t) }]
+}
+
 export function MagpieProvidersPage({ snapshot, t, onUpdate, onAccountUpdate, writing }: {
   readonly snapshot: MagpieManagementSnapshot | null
   readonly t: Translate
@@ -404,7 +443,7 @@ export function MagpieGroupsPage({ snapshot, t, onUpdate }: {
         }, createElement('span', { className: 'codingns-magpie-management-row-main' },
           createElement('strong', undefined, group.name),
           createElement('small', undefined, `group/${group.id}`),
-        ), createElement('span', { className: 'codingns-magpie-management-policy' }, group.routing ?? '—'))),
+        ), createElement('span', { className: 'codingns-magpie-management-policy' }, group.routing === null ? '—' : magpiePolicyLabel('routing', group.routing, t)))),
       ),
       selected === null
         ? createElement(PanelEmpty, { message: t('magpie.management.noGroups') })
@@ -455,6 +494,8 @@ function GroupEditor({ group, candidates, t, onUpdate }: {
     }
   }
   const updateField = update()
+  const routingOptions = policyOptions('routing', ROUTING_POLICY_VALUES, draft.routing, t)
+  const staysOptions = policyOptions('stays', STAYS_POLICY_VALUES, draft.stays, t)
 
   return createElement('section', { className: 'codingns-magpie-panel codingns-magpie-management-editor' },
     createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('div', undefined,
@@ -481,8 +522,8 @@ function GroupEditor({ group, candidates, t, onUpdate }: {
         onChange: models => setDraft(current => ({ ...current, models })),
       })),
     createElement('div', { className: 'codingns-magpie-field-row' },
-      createElement(SelectField, { label: t('magpie.management.routing'), value: draft.routing, options: ['smart', 'order', 'rotate', 'usage', 'pace', 'weight', 'manual'], onChange: value => setText('routing', value) }),
-      createElement(SelectField, { label: t('magpie.management.stays'), value: draft.stays, options: ['auto', 'session', 'turn', 'off', 'strict'], onChange: value => setText('stays', value) }),
+      createElement(SelectField, { label: t('magpie.management.routing'), value: draft.routing, options: routingOptions, onChange: value => setText('routing', value) }),
+      createElement(SelectField, { label: t('magpie.management.stays'), value: draft.stays, options: staysOptions, onChange: value => setText('stays', value) }),
     ),
     review !== null && createElement('div', { className: 'codingns-magpie-confirm' },
       createElement('strong', undefined, t('magpie.management.reviewGroup')),
@@ -728,9 +769,9 @@ function accountBelongsToProvider(account: MagpieAccountManagementRecord, provid
   return account.agent.toLocaleLowerCase() === providerAgent
 }
 
-function SelectField({ label, value, options, onChange }: { readonly label: string; readonly value: string; readonly options: readonly string[]; readonly onChange: (value: string) => void }): ReactElement {
+function SelectField({ label, value, options, onChange }: { readonly label: string; readonly value: string; readonly options: readonly SelectOption[]; readonly onChange: (value: string) => void }): ReactElement {
   return createElement('label', { className: 'codingns-magpie-field' }, createElement('span', undefined, label),
-    createElement('select', { value, onChange: (event: { currentTarget: { value: string } }) => onChange(event.currentTarget.value) }, ...options.map(option => createElement('option', { key: option, value: option }, option))),
+    createElement('select', { value, onChange: (event: { currentTarget: { value: string } }) => onChange(event.currentTarget.value) }, ...options.map(option => createElement('option', { key: option.value, value: option.value }, option.label))),
   )
 }
 
@@ -761,7 +802,7 @@ function summarizeGroupUpdate(update: MagpieRoutingGroupManagementUpdate, t: Tra
   const changes: string[] = []
   if (update.name !== undefined) changes.push(t('magpie.management.reviewName', { value: update.name }))
   if (update.models !== undefined) changes.push(t('magpie.management.reviewModels', { count: update.models.length }))
-  if (update.routing !== undefined) changes.push(t('magpie.management.reviewRouting', { value: update.routing }))
-  if (update.stays !== undefined) changes.push(t('magpie.management.reviewStays', { value: update.stays }))
+  if (update.routing !== undefined) changes.push(t('magpie.management.reviewRouting', { value: magpiePolicyLabel('routing', update.routing, t) }))
+  if (update.stays !== undefined) changes.push(t('magpie.management.reviewStays', { value: magpiePolicyLabel('stays', update.stays, t) }))
   return changes.join(' · ')
 }
