@@ -83,6 +83,11 @@ export async function runAsyncCommand(
   }).finally(() => { if (limitConcurrency) { runningCommands -= 1; commandQueue.shift()?.() } })
 }
 
+/** 已解析的登录 Shell PATH（未解析时回退当前进程 PATH），供无进程的候选目录探测使用。 */
+export function resolvedCommandPathEntries(): string {
+  return loginShellPath ?? process.env.PATH ?? ''
+}
+
 /** 手动重新检测时允许重新读取一次登录环境；平时所有 CLI 共享同一次解析。 */
 export function invalidateCommandEnvironment(): void {
   commandEnvironmentRevision += 1

@@ -2,8 +2,10 @@ import type { Context } from '@deepseek-ai/cordis'
 // 仅启用 DSH Connection 的 Cordis Context 增强；RPC 结果契约仍使用本文件的内部类型。
 import type {} from '@deepseek-ai/dsh-client-connection'
 import type { IncomingMessage, ServerResponse } from 'node:http'
-import { admitCodingNsPeer } from '../dsh-capabilities/host/connection-peer-adapter.js'
+import { admitCodingNsPeer, isCodingNsOwnerPeer } from '../dsh-capabilities/host/connection-peer-adapter.js'
 import { CODINGNS_SETTINGS_NAMESPACE, isCodingNsSettingsEntryId, type CodingNsSettings } from '../shared/contracts/config.js'
+import { MagpieInstallDetectionService } from './cli-adapters/magpie-detection.js'
+import type { MagpieInstallDetection } from '../shared/contracts/magpie-management.js'
 import { debugInfo, debugWarn } from '../shared/debug.js'
 import { CodingNsRpcError, type CodingNsRpcHandler, type CodingNsRpcTable } from './rpc-table.js'
 import type { DshHostSettingsProvider } from '../dsh-capabilities/host/config-forms-adapter.js'
@@ -50,11 +52,21 @@ function invokeConnectionRpcHandler(
  * 之间的唯一边界：密码只在一次 RPC 请求中经过 Host，refresh token 只进入 Host
  * 凭据存储。
  */
-export function createCodingNsRpcHandler(table: CodingNsRpcTable): CodingNsConnectionRpcHandler {
+export function createCodingNsRpcHandler(
+  table: CodingNsRpcTable,
+  options: { readonly connection?: unknown } = {},
+): CodingNsConnectionRpcHandler {
   // `peer` 是 DSH 0.2 Connection 注入的调用方作用域；0.1 carrier 没有该参数，
   // 因此保留可选形态，让同一处理器可被旧版 HTTP 回退入口复用。
   return async (endpoint, payload, signal, peer?: unknown) => {
     debugInfo('codingns4dsh: host rpc request', { endpoint })
+    // 探测会运行本机 CLI，属于只读但可感知的服务端操作，因此只对 Host 所有者开放；
+    // 中继/子会话等受限 Peer 既不读取安装位置，也不能借此拉起进程；
+    // 旧的 HTTP 回退入口没有 Connection 注入，由接线层统一拒绝（见 handleFetchRpc）。
+    if (endpoint === 'magpie/management/detection' && options.connection !== undefined
+      && !isCodingNsOwnerPeer(options.connection, peer)) {
+      return failure('CODINGNS_RPC_FORBIDDEN', 'Magpie 安装探测只允许 Host 所有者调用')
+    }
     const target = table.resolve(endpoint)
     if (target === null) {
       debugWarn('codingns4dsh: host rpc endpoint not found', { endpoint })
@@ -106,7 +118,7 @@ export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable, setti
       const unregisterSettings = settingsProvider === undefined
         ? undefined
         : table.register('settings', createCodingNsSettingsRpcHandler(settingsProvider))
-      const handler = createCodingNsRpcHandler(table)
+      const handler = createCodingNsRpcHandler(table, { connection })
       // DSH 0.1.7 的 connection.rpc.handle() 会在当前插件 Fiber 中再次读取
       // webServer；该 Fiber 没有 webServer 注入时会直接抛错。这里使用当前
       // Host 已明确注入的 webServer 注册插件自有前缀，避免 Host RPC 装配中断。
@@ -264,16 +276,32 @@ const CODINGNS_RPC_ENDPOINTS = [
   'cli/translation/pending', 'cli/translation/resolve', 'cli/translation/retry-output',
   'cli/management/plan', 'cli/management/start', 'cli/management/status', 'cli/management/cancel',
   'magpie/usage/dashboard', 'magpie/usage/requests',
-  'magpie/management/snapshot', 'magpie/management/provider/update', 'magpie/management/group/update', 'magpie/management/account/update',
+  'magpie/management/snapshot', 'magpie/management/provider/update', 'magpie/management/group/update', 'magpie/management/account/update', 'magpie/management/detection',
 ] as const
 
+/**
+ * 设置写入前置校验。
+ *
+ * 默认拒绝没有安装 Magpie 的本机启用「Magpie 管理与用量」模块。设置页已经按探测结果
+ * 禁用开关，这里再校验一次：旧页面缓存、直接调用 RPC 或探测结果过期时都不能绕过。
+ */
+export interface CodingNsSettingsRpcOptions {
+  /** 返回当前本机 Magpie 探测结果；缺省时由内部探测服务给出。 */
+  readonly detectMagpie?: () => Promise<MagpieInstallDetection>
+}
+
 /** 创建远程设置处理器；只允许 Codingns4DSH 自己的 namespace 和路径编辑。 */
-export function createCodingNsSettingsRpcHandler(provider: DshHostSettingsProvider): CodingNsRpcHandler {
+export function createCodingNsSettingsRpcHandler(
+  provider: DshHostSettingsProvider,
+  options: CodingNsSettingsRpcOptions = {},
+): CodingNsRpcHandler {
+  const detectMagpie = options.detectMagpie ?? (() => new MagpieInstallDetectionService().detect())
   return async (action, payload) => {
     if (action === 'get') return readCodingNsSettings(provider)
     if (action === 'set') {
       if (!provider.writable) throw new CodingNsRpcError('CODINGNS_SETTINGS_READ_ONLY', 'Host 设置提供器当前只读')
       const input = parseSettingsMutation(payload)
+      await assertMagpieInstalled(input.ops, detectMagpie)
       if (typeof provider.mutate === 'function') {
         await provider.mutate(resolveCodingNsSettingsNamespace(provider), input.ops, input.expectedRevision)
       } else if (typeof provider.update === 'function') {
@@ -349,6 +377,33 @@ function parseSettingsOp(value: unknown): CodingNsSettingsOperation {
   return { op: 'set', path, value: value.value }
 }
 
+/** Magpie 管理模块的稳定启用键；设置页与 Host 共用这一个名字。 */
+const MAGPIE_MANAGEMENT_FEATURE = 'magpieManagement'
+
+/**
+ * 启用 Magpie 管理前必须在本机安装 Magpie。
+ *
+ * 只有 `installed && version` 同时成立才算可启用：入口存在但无法运行或版本不识别时，
+ * 启用后所有 Magpie 面板都会失败，因此同样拒绝，并返回稳定错误码交给设置页提示。
+ */
+async function assertMagpieInstalled(
+  operations: readonly CodingNsSettingsOperation[],
+  detect: () => Promise<MagpieInstallDetection>,
+): Promise<void> {
+  const enabling = operations.some((operation) => operation.op === 'set'
+    && operation.value === true
+    && operation.path.length === 2
+    && operation.path[0] === 'modules'
+    && operation.path[1] === MAGPIE_MANAGEMENT_FEATURE)
+  if (!enabling) return
+  const detection = await detect()
+  if (MagpieInstallDetectionService.isUsable(detection)) return
+  throw new CodingNsRpcError(
+    'CODINGNS_MAGPIE_NOT_INSTALLED',
+    '本机未找到可用的 Magpie CLI，启用「Magpie 管理与用量」前请先安装 Magpie',
+  )
+}
+
 /** 兼容仅暴露 update 的旧设置提供器；0.2 SettingsForms 优先走 mutate。 */
 function operationsToPatch(operations: readonly CodingNsSettingsOperation[]): Record<string, unknown> {
   const patch: Record<string, unknown> = {}
@@ -415,6 +470,9 @@ async function handleFetchRpc(
     method: request.method,
     path: new URL(request.url).pathname,
   })
+  // 旧的精确路由没有 Connection Peer；探测会执行本机命令，只在 Connection 通道开放，
+  // 否则任何能访问该路由的调用方都能触发进程启动。
+  if (endpoint === 'magpie/management/detection') return new Response('not found', { status: 404 })
   let body: unknown
   try {
     body = await request.json()
