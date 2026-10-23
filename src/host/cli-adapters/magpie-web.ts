@@ -5,6 +5,7 @@ import { commandEnvironment, resolveCommandPath, terminateChildProcess, WINDOWS,
 const WEB_KEY_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/u
 const START_TIMEOUT_MS = 20_000
 const REQUEST_TIMEOUT_MS = 8_000
+const AUTH_COOKIE_TTL_MS = 5 * 60_000
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 const MAX_ASSET_BYTES = 512 * 1024
 const MAGPIE_ASSET_PATH_PATTERN = /^\/(?:icons|api\/icons)\/[A-Za-z0-9._~%~-]{1,320}$/u
@@ -44,6 +45,9 @@ export class MagpieWebService {
   private stopped = false
   private disposed = false
   private lifecycle = 0
+  private authCookie: string | null = null
+  private authCookieExpiresAt = 0
+  private authLoad: Promise<string> | null = null
 
   constructor(options: MagpieWebServiceOptions = {}) {
     this.requestFetch = options.fetch ?? globalThis.fetch.bind(globalThis)
@@ -78,6 +82,7 @@ export class MagpieWebService {
     const child = this.child
     this.child = null
     this.baseUrl = null
+    this.clearAuthCookie()
     if (child !== null) await this.stopChild(child)
     await this.startup?.catch(() => undefined)
   }
@@ -132,10 +137,10 @@ export class MagpieWebService {
     })
     this.child = child
     child.once('error', () => {
-      if (this.child === child) { this.child = null; this.baseUrl = null }
+      if (this.child === child) { this.child = null; this.baseUrl = null; this.clearAuthCookie() }
     })
     child.once('exit', () => {
-      if (this.child === child) { this.child = null; this.baseUrl = null }
+      if (this.child === child) { this.child = null; this.baseUrl = null; this.clearAuthCookie() }
     })
 
     const deadline = Date.now() + this.startupTimeoutMs
@@ -179,6 +184,7 @@ export class MagpieWebService {
   private async fetchJson(baseUrl: URL, key: string, path: string, options: MagpieWebRequestOptions): Promise<unknown> {
     const response = await this.fetchAuthenticated(baseUrl, key, path, 'application/json', options)
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403) this.clearAuthCookie()
       await discard(response)
       throw new Error(`Magpie Web API returned HTTP ${response.status}`)
     }
@@ -190,6 +196,7 @@ export class MagpieWebService {
   private async fetchAssetDataUrl(baseUrl: URL, key: string, path: string, options: Pick<MagpieWebRequestOptions, 'signal'>): Promise<string | null> {
     const response = await this.fetchAuthenticated(baseUrl, key, path, 'image/*', options)
     if (!response.ok) {
+      if (response.status === 401 || response.status === 403) this.clearAuthCookie()
       await discard(response)
       return null
     }
@@ -205,20 +212,7 @@ export class MagpieWebService {
   private async fetchAuthenticated(baseUrl: URL, key: string, path: string, accept: string, options: MagpieWebRequestOptions): Promise<Response> {
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout])
-    const loginUrl = new URL('/', baseUrl)
-    loginUrl.searchParams.set('k', key)
-    const login = await this.requestFetch(loginUrl, {
-      method: 'GET', redirect: 'manual', cache: 'no-store', signal,
-      headers: { accept: 'text/html' },
-    })
-    const location = login.headers.get('location')
-    const cookie = readPortCookie(login.headers, baseUrl, key)
-    await discard(login)
-    if (login.status !== 303 || location === null || cookie === null) throw new Error('Magpie Web authentication failed')
-    const redirected = new URL(location, baseUrl)
-    if (redirected.origin !== baseUrl.origin || redirected.pathname !== '/' || redirected.search !== '' || redirected.hash !== '') {
-      throw new Error('Magpie Web returned an unexpected authentication redirect')
-    }
+    const cookie = await this.getAuthCookie(baseUrl, key, signal)
     return this.requestFetch(new URL(path, baseUrl), {
       method: options.method ?? 'GET', redirect: 'error', cache: 'no-store', signal,
       headers: {
@@ -228,6 +222,37 @@ export class MagpieWebService {
       },
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
     })
+  }
+
+  private async getAuthCookie(baseUrl: URL, key: string, signal: AbortSignal): Promise<string> {
+    if (this.authCookie !== null && Date.now() < this.authCookieExpiresAt) return this.authCookie
+    if (this.authLoad !== null) return awaitWithSignal(this.authLoad, signal)
+    const load = (async (): Promise<string> => {
+      const loginUrl = new URL('/', baseUrl)
+      loginUrl.searchParams.set('k', key)
+      const login = await this.requestFetch(loginUrl, {
+        method: 'GET', redirect: 'manual', cache: 'no-store', signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        headers: { accept: 'text/html' },
+      })
+      const location = login.headers.get('location')
+      const cookie = readPortCookie(login.headers, baseUrl, key)
+      await discard(login)
+      if (login.status !== 303 || location === null || cookie === null) throw new Error('Magpie Web authentication failed')
+      const redirected = new URL(location, baseUrl)
+      if (redirected.origin !== baseUrl.origin || redirected.pathname !== '/' || redirected.search !== '' || redirected.hash !== '') {
+        throw new Error('Magpie Web returned an unexpected authentication redirect')
+      }
+      this.authCookie = cookie
+      this.authCookieExpiresAt = Date.now() + AUTH_COOKIE_TTL_MS
+      return cookie
+    })()
+    this.authLoad = load
+    try { return await load } finally { if (this.authLoad === load) this.authLoad = null }
+  }
+
+  private clearAuthCookie(): void {
+    this.authCookie = null
+    this.authCookieExpiresAt = 0
   }
 
   private async stopChild(child: ChildProcess): Promise<void> {
@@ -309,3 +334,12 @@ async function readBoundedBytes(response: Response, maximum: number): Promise<Ui
 async function discard(response: Response): Promise<void> { await response.body?.cancel().catch(() => undefined) }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 function delay(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)) }
+
+function awaitWithSignal<T>(task: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('请求已取消'))
+  return new Promise<T>((resolve, reject) => {
+    const abort = (): void => reject(signal.reason instanceof Error ? signal.reason : new Error('请求已取消'))
+    signal.addEventListener('abort', abort, { once: true })
+    task.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
+  })
+}

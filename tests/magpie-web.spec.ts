@@ -65,7 +65,6 @@ test('Magpie Web starts on a loopback ephemeral port, authenticates, and stops o
   assert.deepEqual(calls.map(call => [call.method, call.url.pathname]), [
     ['GET', '/'],
     ['GET', '/api/providers'],
-    ['GET', '/'],
     ['GET', '/api/settings'],
   ])
   await service.dispose()
@@ -177,7 +176,7 @@ test('Magpie Web fetches only bounded image assets through the authenticated ses
   assert.equal(await service.requestAssetDataUrl('/icons/workbuddy-color.svg'), 'data:image/svg+xml;base64,PHN2Zy8+')
   assert.equal(await service.requestAssetDataUrl('/icons/missing.svg'), null)
   await assert.rejects(service.requestAssetDataUrl('/icons/%2e%2e%2fsecret.svg'), /Invalid Magpie Web asset route/u)
-  assert.deepEqual(requests, ['/', '/api/providers', '/', '/icons/workbuddy-color.svg', '/', '/icons/missing.svg'])
+  assert.deepEqual(requests, ['/', '/api/providers', '/icons/workbuddy-color.svg', '/icons/missing.svg'])
   await service.dispose()
 })
 
