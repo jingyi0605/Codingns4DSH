@@ -99,13 +99,19 @@ export function calculateMagpiePopoverPlacement(rootLeft: number, viewportWidth:
   return { left: left - rootLeft, width }
 }
 
-/** 移动端订阅入口只保留图标，完整数据仍可在点击后的弹层中查看。 */
+/**
+ * 移动端订阅入口只保留图标，完整数据仍可在点击后的弹层中查看。
+ * 弹层高度上限固定为浏览器可视高度的 75%：先写 `vh` 兜底，再由 `dvh` 覆盖，
+ * 使移动端工具栏收展后仍按真实可视区计算；超出部分在弹层内部纵向滚动。
+ */
+export const SUBSCRIPTION_RESPONSIVE_CSS = '@media (max-width: 768px){.codingns4dsh-subscription-trigger{gap:0!important;padding-left:4px!important;padding-right:4px!important}.codingns4dsh-subscription-label,.codingns4dsh-subscription-value{display:none!important}.codingns4dsh-subscription-popover{position:fixed!important;left:12px!important;right:12px!important;bottom:48px!important;width:auto!important;min-width:0!important;max-width:none!important;max-height:75vh!important;max-height:75dvh!important;overflow-x:hidden!important;overflow-y:auto!important;overscroll-behavior:contain!important;box-sizing:border-box!important}}'
+
 function installSubscriptionStyles(): void {
   if (typeof document === 'undefined' || document.querySelector(`style[data-plugin-css="${SUBSCRIPTION_STYLE_ID}"]`) !== null) return
   const style = document.createElement('style')
   style.dataset.plugin = 'codingns4dsh'
   style.dataset.pluginCss = SUBSCRIPTION_STYLE_ID
-  style.textContent = '@media (max-width: 768px){.codingns4dsh-subscription-trigger{gap:0!important;padding-left:4px!important;padding-right:4px!important}.codingns4dsh-subscription-label,.codingns4dsh-subscription-value{display:none!important}.codingns4dsh-subscription-popover{position:fixed!important;left:12px!important;right:12px!important;bottom:48px!important;width:auto!important;min-width:0!important;max-width:none!important;max-height:calc(100vh - 72px)!important;overflow:auto!important}}' + RESET_BUTTON_CSS + MAGPIE_ROUTE_CSS
+  style.textContent = SUBSCRIPTION_RESPONSIVE_CSS + RESET_BUTTON_CSS + MAGPIE_ROUTE_CSS
   document.head.appendChild(style)
 }
 
