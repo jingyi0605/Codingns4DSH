@@ -769,12 +769,6 @@ function StateBadge({ state, label, t }: { readonly state: 'on' | 'off' | 'unkno
   return createElement('span', { className: `codingns-magpie-state is-${state}` }, label ?? t(state === 'on' ? 'magpie.management.on' : state === 'off' ? 'magpie.management.off' : 'magpie.management.unknown'))
 }
 
-function PanelHeading({ eyebrow, title }: { readonly eyebrow: string; readonly title: string }): ReactElement {
-  return createElement('div', { className: 'codingns-magpie-view-heading' }, createElement('div', undefined,
-    createElement('div', { className: 'codingns-magpie-eyebrow' }, eyebrow), createElement('h1', undefined, title),
-  ))
-}
-
 function PanelEmpty({ message }: { readonly message: string }): ReactElement {
   return createElement('div', { className: 'codingns-magpie-panel codingns-magpie-management-empty', role: 'note' }, message)
 }
