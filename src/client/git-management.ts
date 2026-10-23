@@ -383,21 +383,16 @@ function GitPanel(props: GitTabProps): ReactElement {
   const stageAll = (): void => { void run('git/stage', { targets: unstaged.map((item) => item.path) }) }
   const discardAll = (): void => { void run('git/discard', { targets: changes.map((item) => item.path) }) }
   const panel = createElement('section', { className: gitPanelClass.panel, style: panelStyle, 'data-git-management-panel': 'true' },
-    // 面板标题已由 Sidebar 标签页渲染，这里不再重复；只保留视图切换与操作菜单。
-    createElement('header', { style: headerStyle },
-      gridVisible ? createElement('div', { className: gitPanelClass.columnSwitch, style: columnSwitchStyle },
-        createElement(SegmentedControl<'files' | 'history'>, {
-          id: 'codingns4dsh-git-view', value: activeColumn, onChange: setActiveColumn, label: t('git.viewSwitcherLabel'),
-          options: [
-            { value: 'files', label: t('git.switchToFiles'), title: t('git.switchToFiles') },
-            { value: 'history', label: t('git.switchToHistory'), title: t('git.switchToHistory') },
-          ],
-        }),
-      ) : null,
-      createElement('div', { style: headerActionsStyle },
-        createElement(GitOperationsMenu, { busy, activeOperation, hasRemote: Boolean(status?.snapshot.hasRemote || branches?.remote.length), canUndo: history.length > 0, hasMoreVersions: history.length < historyTotalCount, stagedCount: staged.length, unstagedCount: unstaged.length, onStageAll: stageAll, onDiscardAll: discardAll, onLoadMore: loadMoreHistory, onOperation: runGitOperation, t }),
-      ),
-    ),
+    // 面板标题已由 Sidebar 标签页渲染，这里不再重复；只保留单列时的视图切换与摘要行内的操作菜单。
+    gridVisible ? createElement('header', { className: gitPanelClass.columnSwitch, style: columnSwitchStyle },
+      createElement(SegmentedControl<'files' | 'history'>, {
+        id: 'codingns4dsh-git-view', value: activeColumn, onChange: setActiveColumn, label: t('git.viewSwitcherLabel'),
+        options: [
+          { value: 'files', label: t('git.switchToFiles'), title: t('git.switchToFiles') },
+          { value: 'history', label: t('git.switchToHistory'), title: t('git.switchToHistory') },
+        ],
+      }),
+    ) : null,
     toast === null ? null : createElement('div', { role: toast.kind === 'error' ? 'alert' : 'status', 'aria-live': 'polite', style: { ...dshSettingsToastStyle, position: 'absolute', top: 8, right: 'auto', left: '50%', transform: 'translateX(-50%)', width: 'min(300px, calc(100% - 24px))', pointerEvents: 'none', borderColor: toast.kind === 'error' ? dshThemeColor.error : toast.kind === 'success' ? dshThemeColor.success : dshThemeColor.border } }, toast.message),
     status === null ? createElement('div', { style: emptyStyle }, t('git.readingStatus')) : null,
     status !== null && status.snapshot.enabled === false ? createElement('section', { style: sectionStyle },
@@ -405,7 +400,11 @@ function GitPanel(props: GitTabProps): ReactElement {
       createElement('div', { style: mutedStyle }, t('git.initHint')),
       createElement('button', { type: 'button', disabled: busy, onClick: () => void run('git/init', {}), className: `${gitPanelClass.button} ${gitPanelClass.buttonPrimary}`, style: primaryButtonStyle }, t('git.init')),
     ) : null,
-    status !== null ? createElement('div', { style: summaryStyle }, t('git.summary', { staged: staged.length, unstaged: unstaged.length, total: historyTotalCount, scope: historyScope === 'all' ? t('git.allBranches') : t('git.currentBranch') })) : null,
+    status !== null ? createElement('div', { style: summaryRowStyle },
+      // 操作菜单与摘要同处一行并靠右：双列时它留在全宽摘要行，不再被挤到标题行末尾。
+      createElement('div', { style: summaryStyle }, t('git.summary', { staged: staged.length, unstaged: unstaged.length, total: historyTotalCount, scope: historyScope === 'all' ? t('git.allBranches') : t('git.currentBranch') })),
+      createElement(GitOperationsMenu, { busy, activeOperation, hasRemote: Boolean(status.snapshot.hasRemote || branches?.remote.length), canUndo: history.length > 0, hasMoreVersions: history.length < historyTotalCount, stagedCount: staged.length, unstagedCount: unstaged.length, onStageAll: stageAll, onDiscardAll: discardAll, onLoadMore: loadMoreHistory, onOperation: runGitOperation, t }),
+    ) : null,
     status !== null && status.snapshot.enabled !== false ? createElement('div', { className: gitPanelClass.contentGrid, style: contentGridStyle, 'data-active-column': activeColumn },
       createElement('div', { className: gitPanelClass.column, style: columnStyle, 'data-git-column': 'files' },
         createElement('section', { style: commitSectionStyle },
@@ -481,7 +480,7 @@ function GitOperationsMenu({ busy, activeOperation, hasRemote, canUndo, hasMoreV
   const run = (action: () => void): (() => void) => () => { setOpen(false); action() }
   const operationText = activeOperation === null ? null : t('git.operationInProgress', { operation: gitOperationLabel(activeOperation, t) })
   const operationBadge = operationText === null ? null : createElement('span', { role: 'status', 'aria-live': 'polite', style: operationStatusStyle }, createElement('span', { className: gitPanelClass.progress, 'aria-hidden': 'true' }, '⟳'), operationText)
-  return createElement('div', { ref: rootRef, style: menuStyle },
+  return createElement('div', { ref: rootRef, style: menuStyle, 'data-git-operations-menu': 'true' },
     operationBadge,
     createElement('button', { type: 'button', disabled: busy, className: gitPanelClass.menuTrigger, style: iconActionStyle, title: t('git.operationsMenu'), 'aria-label': t('git.operationsMenu'), 'aria-haspopup': 'menu', 'aria-expanded': open, onClick: () => setOpen((value) => !value) }, '⋯'),
     open && createElement('div', { role: 'menu', 'aria-label': t('git.operationsMenu'), className: gitPanelClass.menu, style: menuPopupStyle },
@@ -1176,12 +1175,12 @@ function graphRailStyle(lane: number, stroke: string, dashed = false): CSSProper
 
 // 面板根节点不再铺底色：DSH 右侧栏的其它面板都是透明的，继承 Sidebar 表面色才不会出现色块接缝。
 const panelStyle: CSSProperties = { position: 'relative', userSelect: 'none', boxSizing: 'border-box', display: 'flex', flexDirection: 'column', gap: 12, height: '100%', minHeight: 0, padding: '12px 14px 20px', overflow: 'auto', color: dshThemeColor.labelPrimary }
-const headerStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, minHeight: 28 }
 const tabTitleStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', minWidth: 0, color: dshThemeColor.labelPrimary, fontSize: uiFontSize(12) }
-const headerActionsStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 4 }
-// SegmentedControl 自带 indicator 与键盘走查；外层占满面板宽度后再将控件居中。
+// SegmentedControl 自带 indicator 与键盘走查；外层占满面板宽度后再将控件居中。类名负责在双列时整行隐藏。
 const columnSwitchStyle: CSSProperties = { alignItems: 'center', justifyContent: 'center', width: '100%', minWidth: 0 }
-const summaryStyle: CSSProperties = { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) }
+// 摘要行：文本占满剩余宽度，Git 操作菜单固定贴右，双列全宽时也不会被换到下一行。
+const summaryRowStyle: CSSProperties = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, minWidth: 0, minHeight: 24 }
+const summaryStyle: CSSProperties = { minWidth: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) }
 const contentGridStyle: CSSProperties = { display: 'grid', alignItems: 'start', gap: 12 }
 const columnStyle: CSSProperties = { flexDirection: 'column', gap: 12, minWidth: 0 }
 // 卡片用 layer-1：与 DSH 内置卡片同层，暗色下只比侧栏表面亮一档。
@@ -1246,7 +1245,7 @@ const primaryButtonStyle: CSSProperties = { minHeight: 30, padding: '5px 12px', 
 const branchSelectStyle: CSSProperties = { maxWidth: 150, borderRadius: 8, padding: '3px 5px', fontSize: uiFontSize(11) }
 const scopeSelectStyle: CSSProperties = { ...branchSelectStyle, maxWidth: 92 }
 const loadMoreButtonStyle: CSSProperties = { minHeight: 30, borderRadius: 8, padding: '4px 9px', fontSize: uiFontSize(12) }
-const menuStyle: CSSProperties = { position: 'relative', flex: '0 0 auto' }
+const menuStyle: CSSProperties = { position: 'relative', flex: '0 0 auto', marginLeft: 'auto' }
 const operationStatusStyle: CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 5, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), whiteSpace: 'nowrap' }
 const menuPopupStyle: CSSProperties = { position: 'absolute', right: 0, zIndex: 2, display: 'flex', flexDirection: 'column', gap: 2, minWidth: 120, padding: 4 }
 const iconActionStyle: CSSProperties = { width: 28, height: 28 }

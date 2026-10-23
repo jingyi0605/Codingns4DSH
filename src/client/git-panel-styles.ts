@@ -56,6 +56,7 @@ const gitPanelCss = `
 .${gitPanelClass.contentGrid}[data-active-column='files']>[data-git-column='history'],.${gitPanelClass.contentGrid}[data-active-column='history']>[data-git-column='files']{display:none}
 /* Column visibility depends on the scrollport width, never on the rendered grid tracks. */
 @container codingns4dsh-git (min-width:612px){
+  /* Two columns already show both trees, so the single-column view switch would be a dead control. */
   .${gitPanelClass.columnSwitch}{display:none}
   .${gitPanelClass.contentGrid}{grid-template-columns:repeat(2,minmax(0,1fr))}
   .${gitPanelClass.contentGrid}[data-active-column]>[data-git-column]{display:flex}

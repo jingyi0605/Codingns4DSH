@@ -98,6 +98,19 @@ test('Git layout changes preserve both column trees, draft input, and click hand
     }
   }
   assert.equal(measurements, 0, 'Content resizing must not trigger grid reads or React layout updates')
+  // 操作菜单与摘要同处一行并贴右：双列时它不再被挤到标题行，标题行只保留单列视图切换。
+  const summaryRow = elementWhere(tree, (element) => element.props.style?.minHeight === 24 && element.props.style?.justifyContent === 'space-between')!
+  assert.ok(summaryRow, 'The summary line must be one flex row')
+  const summaryParts = summaryRow.props.children as ReactNode[]
+  assert.equal(summaryParts.length, 2, 'The row holds the summary text and the operations menu')
+  const summaryText = summaryParts[0] as ReactElement<any>
+  assert.match(String(summaryText.props.children), /条提交（全部分支）/u)
+  const operationsMenu = summaryParts[1] as ReactElement<any>
+  assert.equal(operationsMenu.type.name, 'GitOperationsMenu')
+  assert.equal(operationsMenu.props.onOperation instanceof Function, true)
+  const header = elementWhere(tree, (element) => element.type === 'header')!
+  assert.ok(elementWhere(header, (element) => element.props.id === 'codingns4dsh-git-view'))
+  assert.equal(elementWhere(header, (element) => element.props.onOperation === undefined && element.props['aria-haspopup'] === 'menu'), undefined, 'The operations menu no longer rides the title row')
   const beforeRefresh = rpcCalls.length
   const refresh = elementWhere(tree, (element) => element.type === 'button' && element.props.children === panel.props.t('git.refresh'))!
   assert.equal(refresh.props.disabled, false)
