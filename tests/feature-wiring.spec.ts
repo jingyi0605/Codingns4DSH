@@ -561,7 +561,8 @@ test('Magpie 管理与用量模块默认关闭，紧随外部 Agent 设置并允
   assert.deepEqual(magpieManagementFeature.descriptor.dependencies, ['cliAdapters'])
   assert.deepEqual(magpieManagementFeature.descriptor.requires, [{ capability: 'sidebar.global-panel', required: false, fallback: 'disable' }])
   assert.equal(magpieManagementFeature.descriptor.ui?.labelKey, 'feature.magpieManagement.label')
-  assert.equal(magpieManagementFeature.settingsPanel, undefined)
+  assert.equal(magpieManagementFeature.descriptor.ui?.requirementKey, 'settings.requirement.magpieInstall')
+  assert.equal(magpieManagementFeature.settingsPanel?.name, 'MagpieInstallPanel')
   assert.equal(CLIENT_FEATURES.indexOf(magpieManagementFeature), CLIENT_FEATURES.indexOf(cliAdaptersFeature) + 1)
 
   let received: unknown
