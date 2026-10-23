@@ -34,6 +34,13 @@ export interface FeatureUiDescriptor {
   legacyFallback?: boolean
   /** 旧版兼容提示使用的 locale key；未提供时使用通用提示。 */
   legacyFallbackKey?: string
+  /**
+   * 本机未安装所依赖的服务端程序时显示的提示键。
+   *
+   * 只对有用例的模块提供：设置页在探测到未安装时禁用标题栏开关，并在卡片内显示这条
+   * 原因；缺省表示该模块不依赖任何需要探测的本机程序。
+   */
+  requirementKey?: string
 }
 
 export interface FeatureDescriptor {

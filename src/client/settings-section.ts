@@ -31,6 +31,7 @@ import {
 import { useCodingNsTranslator } from './locale.js'
 import { CODINGNS_VERSION, DSH_COMPATIBILITY, isLegacyDshVersion } from '../shared/contracts/version.js'
 import type { CodingNsSettingsSnapshot, CodingNsSettingsStore } from '../dsh-capabilities/settings-store.js'
+import { useMagpieInstallRequirement } from './feature-requirement.js'
 import type { SettingsNotice } from './features/types.js'
 import { CodingNsSettingsPromo, CODINGNS_GITHUB_URL } from './settings-promo.js'
 import { SettingsSwitch } from './settings-controls.js'
@@ -143,10 +144,21 @@ function FeatureCard({ entry, snapshot, services, restartStates, notify }: Featu
   const temporarilyDisabled = module.descriptor.disabled === true
   const enabled = !temporarilyDisabled && versionCompatible && requestedEnabled
   const panel = module.settingsPanel
-  // 常驻模块不提供关闭入口；设置未就绪或只读时也不允许切换。
-  const switchDisabled = temporarilyDisabled || ui.alwaysEnabled === true || !versionCompatible || snapshot.status === 'loading' || !snapshot.writable
+  // 依赖本机程序的模块（例如 Magpie）先探测，未安装时不允许启用。
+  // 只有声明了 requirementKey 的卡片才读取探测结果；其余模块既不请求，也不显示任何检测提示。
+  const needsRequirement = ui.requirementKey !== undefined
+  const installedRequirement = useMagpieInstallRequirement(needsRequirement ? services : null)
+  const requirement = needsRequirement ? installedRequirement : null
+  const requirementBlocked = requirement !== null && requirement.state === 'missing'
+  // 常驻模块不提供关闭入口；设置未就绪、只读或本机缺少依赖时也不允许切换。
+  const switchDisabled = temporarilyDisabled || ui.alwaysEnabled === true || !versionCompatible
+    || snapshot.status === 'loading' || !snapshot.writable || requirementBlocked
 
   const toggle = (next: boolean): void => {
+    if (requirementBlocked) {
+      notify({ kind: 'error', message: t(requirement.requirementKey) })
+      return
+    }
     if (!versionCompatible) {
       notify({ kind: 'error', message: t('settings.versionBlocked', {
         version: services.dshVersion,
@@ -220,6 +232,13 @@ function FeatureCard({ entry, snapshot, services, restartStates, notify }: Featu
       temporarilyDisabled
         ? createElement('div', { role: 'status', style: { marginBottom: 10, color: dshThemeColor.labelSecondary } }, t('settings.maintenanceDisabled'))
         : null,
+      requirement === null || requirement.state === 'ready'
+        ? null
+        : createElement('div', {
+          role: requirement.state === 'missing' ? 'alert' : 'status',
+          'data-codingns-requirement': requirement.state,
+          style: { marginBottom: 10, color: requirement.state === 'missing' ? dshThemeColor.error : dshThemeColor.labelSecondary },
+        }, t(requirement.state === 'missing' ? requirement.requirementKey : requirement.checkingKey)),
       !hasOpened || panel === undefined ? null : createElement(panel, { services, enabled, snapshot, notify }),
     ),
   )
