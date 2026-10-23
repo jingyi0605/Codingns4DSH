@@ -1047,8 +1047,6 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-live-dot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#3f9d6b);box-shadow:0 0 0 4px color-mix(in srgb,var(--dsw-alias-state-success-primary,#3f9d6b) 12%,transparent)}
 .codingns-magpie-main{flex:1 1 0;min-width:0;min-height:0;overflow:auto;overscroll-behavior:contain;background:var(--mp-surface)}
 .codingns-magpie-view{max-width:1320px;margin:0 auto;padding:18px clamp(16px,2.4vw,28px) 40px}
-.codingns-magpie-view-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:0 0 19px}
-.codingns-magpie-view-heading h1{margin:5px 0 0;font-size:${uiFontSize(27)};line-height:1.1;letter-spacing:-.045em}
 .codingns-magpie-panel{min-width:0;border:.5px solid var(--mp-line);border-radius:var(--mp-radius);background:var(--mp-card)}
 .codingns-magpie-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:13px}
 .codingns-magpie-panel-head h2{margin:0;font-size:${uiFontSize(14)};font-weight:600}.codingns-magpie-panel-head p{margin:4px 0 0;color:var(--mp-muted);font-size:${uiFontSize(13)};line-height:1.5}
