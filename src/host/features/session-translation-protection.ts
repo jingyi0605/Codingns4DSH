@@ -179,7 +179,8 @@ function jsonRanges(value: string): TextRange[] {
 
 function literalRanges(value: string): TextRange[] {
   const ranges: TextRange[] = []
-  const literals = /@@CODINGNS_TRANSLATION_\d+@@|\{\{[a-z][a-z0-9_]*\}\}|(?:https?|file):\/\/[^\s)]+|["'「](?:[~/]|\.\.?\/|[A-Za-z]:[\\/])[^"'」\r\n]+["'」]|(?<![\p{L}\p{N}_])(?:~\/|\.\.?\/|\/|\\\\|[A-Za-z]:[\\/]|(?:[\p{L}\p{N}_.-]+[\\/])+)[^\s"'<>「」]+|(?:^|\n)[ \t]*(?:[$>#]\s+|(?:npm|pnpm|yarn|bun|git|node|python|python3|cargo|docker|kubectl|curl|ssh|chmod|chown|mkdir|rmdir|rm|cp|mv|ls|cat|echo|export|make)\s+)[^\n]+/gimu
+  // Unquoted paths stop at Chinese prose punctuation; quoted/known literals may contain it.
+  const literals = /@@CODINGNS_TRANSLATION_\d+@@|\{\{[a-z][a-z0-9_]*\}\}|(?:https?|file):\/\/[^\s)]+|["'「](?:[~/]|\.\.?\/|\\\\|[A-Za-z]:[\\/]|(?:[\p{L}\p{N}_.-]+[\\/])+)[^"'」\r\n]+["'」]|(?<![\p{L}\p{N}_])(?:~\/|\.\.?\/|\/|\\\\|[A-Za-z]:[\\/]|(?:[\p{L}\p{N}_.-]+[\\/])+)[^\s"'<>「」，。；：！？、]+|(?:^|\n)[ \t]*(?:[$>#]\s+|(?:npm|pnpm|yarn|bun|git|node|python|python3|cargo|docker|kubectl|curl|ssh|chmod|chown|mkdir|rmdir|rm|cp|mv|ls|cat|echo|export|make)\s+)[^\n]+/gimu
   for (const match of value.matchAll(literals)) {
     const leadingSpace = match[0].length - match[0].trimStart().length
     ranges.push({ start: match.index + leadingSpace, end: match.index + match[0].length })

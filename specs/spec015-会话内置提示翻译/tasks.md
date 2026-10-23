@@ -115,3 +115,66 @@ Cold preparation decreased 2.270 s (47.63%); full-turn median decreased 2.155 s 
 Sanitized evidence and reproducible scripts are saved in `C:/Users/Administrator/.config/codingns4dsh/translation-local-prose-20261020/`. The manifest includes the baseline definition and final normalized source hashes. The final patch and new catalog source are retained alongside the results. Both temporary test listeners were stopped. Automatic command policy rejected the combined stop/delete command without a specific reason; the process-only lifecycle script then succeeded. Temporary credential/authentication files were not deleted by another mechanism after that rejection.
 
 Both temporary comparison worktrees were removed after preserving code and results; unrelated existing worktrees remain. Temporary Host profiles remain under `C:/Users/Administrator/AppData/Local/Temp/codingns-translation-local-9d93c955/`, including the credential/authentication files whose deletion was rejected. No benchmark listener remains on ports 17892/17893.
+
+## 2026-10-24 path/prose boundary fix
+
+- [x] DONE: Prevent unquoted paths from swallowing adjacent Chinese instructions. Observable result: a first-turn message beginning with a PPT path followed by a Chinese comma sends translated prose while preserving the path verbatim. Depends on the existing literal-protection and input-translation services; no new dependency. Read requirements 2/5/7, Design / Data ownership, and the protection/native translation suites first. Change `src/host/features/session-translation-protection.ts`, `tests/session-translation-protection.spec.ts`, `tests/session-translation-native.spec.ts`, and this spec's design/task records. Exclude UI changes, history migration, provider changes, builds, live-profile operations, commits, and publishing. Verify failing-first regressions, source-loaded translation/attachment suites, type/version/capability checks, and `git diff --check`.
+
+Branch: `fix/translation-path-prose-boundary`, created from local `main` at `afc7bd66b4077bd421ac17e1bb9fb4de91f742b0`.
+
+The new protection regressions failed before the source fix: 37 passed, 4 failed. The original message shape was mistaken for one protected path, causing an early return without a translation-provider call. Unquoted paths now stop at `，。；：！？、`; quoted/code/known-literal paths still preserve spaces and punctuation. Quoted relative and UNC paths use the same path-prefix recognition so punctuation-bearing names remain protected too. All 41 protection tests pass, including the reported first-turn wording for Claude Code and native DSH. Two additional first-turn integration tests exercise the real translation service through pre-step and native/external submission, preserving original audit text and checking the actual external-driver prompt with exactly one translation request.
+
+Final source verification: **274/274 tests passed across 18 files**, zero failures or skips. The selection includes all `session-translation*.spec.ts`, all `interaction-translation*.spec.ts`, `session-prompt-translation.spec.ts`, and `attachment-prompt-language.spec.ts`:
+
+```powershell
+$tests = @(Get-ChildItem -LiteralPath 'tests' -File | Where-Object { $_.Name -like 'session-translation*.spec.ts' -or $_.Name -like 'interaction-translation*.spec.ts' } | Sort-Object Name | ForEach-Object { 'tests/' + $_.Name })
+$tests += @('tests/session-prompt-translation.spec.ts', 'tests/attachment-prompt-language.spec.ts')
+node --import ./tests/register-source-loader.mjs --test --test-concurrency=1 @tests
+node ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit
+node scripts/check-version-sync.mjs
+node scripts/check-capability-retirement.mjs
+git diff --check
+```
+
+Type, version, capability and whitespace checks pass. The source test log is local `data/logs/translation-path-prose-28756cce48124be9961315932eaea590.log`. React server-rendering tests emit existing `useLayoutEffect` warnings. No bundle build, live-provider translation, browser/Stage0 operation, installation, commit, or publishing was performed; installed-runtime verification remains unperformed.
+
+An expanded 19-file run that also included `cli-adapters-attachments.spec.ts` passed 280/283 tests. Its three failures reproduce on unchanged `main` in a separate worktree (6/9 attachment tests pass): the Claude fake child lacks `.once`, and ACP/Gemini assertions construct Windows file URIs incorrectly. These baseline failures remain outside this fix. The temporary baseline worktree remains at `C:/Users/Administrator/AppData/Local/Temp/codingns-translation-baseline-a28fa387cc3a47b8b0fc553b4594a66f`, with a `node_modules` junction to this checkout. Automatic command policy rejected its cleanup command before execution; no alternate deletion was attempted.
+
+Environment note: installed pnpm 11.22.0 automatically ran dependency synchronization before `pnpm run typecheck`, updated local `node_modules` from older DSH packages to the versions in `package.json`, and then stopped on `ERR_PNPM_IGNORED_BUILDS` for `@deepseek-ai/dsh-subprocess-local`. The generated `pnpm-workspace.yaml` and lockfile changes were removed/reverted to their initial state; no dependency metadata changes remain. Subsequent checks used the direct Node commands above, and the final 274-test run and baseline comparison used the synchronized dependencies. The local dependency synchronization was not undone; no dependency build scripts were approved.
+
+## 2026-10-24 isolated Stage0 verification
+
+- [x] DONE: Configure an isolated Stage0 and verify the path/prose fix with live translation. Observable result: three real first-turn sessions complete with translated prose and an unchanged full path, including Claude's actual provider input. Depends on the completed path-boundary fix and a working existing Stage0 DeepSeek API-key reference. Read `scripts/run-dsh-stage0.sh`, `scripts/stage0-runtime.mjs`, `dsh-stage0.patch.yml`, and the Stage0 development notes first. Change only local runtime/profile/verification files and this task evidence; no production source change. Exclude Desktop configuration, existing Stage0 state, original sessions, unrelated attachment fixes, release and publishing. Verify a successful build, built-output tests, authenticated Stage0 RPC, persisted DSH audit events, and Claude raw history. Browser UI remains outside the completed acceptance.
+
+No existing Stage0 server or compiler watcher was running. Installed a dedicated DSH `0.2.1-rc.2` runtime using the existing local pnpm `10.7.1` with `--ignore-scripts`; no dependency build scripts were enabled. The runtime installation reports upstream OpenTelemetry peer-version warnings. Built the current branch successfully with `pnpm run build` using pnpm 10.7.1. The build reports existing dynamic-import/deprecated-option warnings. Built-output tests passed **43/43**, zero failures/skips:
+
+```powershell
+node --import ./tests/register-css-loader.mjs --test --test-concurrency=1 tests/session-translation-native.spec.ts tests/session-translation.spec.ts
+```
+
+The dedicated Stage0 runs on **127.0.0.1:17894** using Home `C:/Users/Administrator/.dsh-stage0-path-prose`, profile `stage0`, state `C:/Users/Administrator/.config/codingns4dsh/stage0-path-prose/state`, and a source junction to this checkout. Existing Desktop and `.dsh-stage0-020` profiles/sessions were not modified. Only the existing Stage0 `DEEPSEEK_API_KEY` ref was copied into the new Host credential store; browser authentication and Desktop credentials were not copied. Telemetry is disabled in this profile. Watch mode is off to retain a stable tested build; normal Stage0 HMR remains available. The server is left running for manual inspection.
+
+Live verification passed **3/3** with real `deepseek-official / deepseek-flash` input translation:
+
+| Case | Session | Evidence |
+| --- | --- | --- |
+| Native, unquoted Chinese PPT path immediately followed by a Chinese comma and prose | `session-stage0-path-prose-07425356-8158-425e-a8f9-b0e8941fac30` | Native persisted input is translated, audit original unchanged; translation 1284 ms |
+| Claude Code, same path/prose shape, model `hl/claude-opus-5-5` | `session-stage0-path-prose-b9549c38-5519-457e-a2b4-e240e8a5dfb3` | Claude raw provider history contains the exact translated input; translation 828 ms |
+| Native, quoted path whose filename contains Chinese comma/semicolon | `session-stage0-path-prose-9b5f47bc-4aee-4e72-9436-1a0f27e90127` | Complete punctuation-bearing path preserved exactly once, surrounding prose translated; translation 1188 ms |
+
+Each session completed, returned `STAGE0_PATH_PROSE_OK`, and made zero tool calls. No actual courseware was read or modified. The test message uses the reported Chinese instructional wording with a synthetic path inside the isolated workspace and a no-tools regression-test instruction. Verification checks that no Chinese remains outside the preserved path, the original audit text is exact, the successful translation model is recorded, and the turn has a completed terminal outcome.
+
+The first verifier attempt incorrectly required `rawStoreRef` to be persisted immediately for Claude; it is optional despite a valid `providerSessionId`. The test was corrected to locate that session ID's real Claude JSONL and reverify the already-completed sessions without sending duplicate turns. This was a verifier assumption, not a product-code change.
+
+Local reproducible entry points and evidence (no credentials in JSON evidence):
+
+```powershell
+# Inspect persisted evidence without sending more prompts:
+node "$env:USERPROFILE/.config/codingns4dsh/stage0-path-prose/stage0-path-prose-verify.mjs" --resume
+# Create three new verification sessions:
+node "$env:USERPROFILE/.config/codingns4dsh/stage0-path-prose/stage0-path-prose-verify.mjs"
+# Start only when port 17894 is free; otherwise use the existing server:
+pwsh.exe -NoLogo -NoProfile -File "$env:USERPROFILE/.config/codingns4dsh/stage0-path-prose/start.ps1"
+```
+
+`environment.json`, `verification.json`, `verification-attempt1.json`, `built-tests.log`, `launcher.pid`, and the saved RPC/verifier scripts are under `C:/Users/Administrator/.config/codingns4dsh/stage0-path-prose/`. `stdout.log` contains the private browser authentication URL and must not be shared. All configuration, sessions and credentials remain local, outside tracked source. Browser rendering/click behavior was not tested; HTTP/RPC and real provider verification do not establish UI acceptance. No commit, merge, push or release was performed.

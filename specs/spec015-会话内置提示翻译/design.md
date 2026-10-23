@@ -8,6 +8,8 @@ The existing translator owns language/model selection, placeholder validation, u
 
 Recognize complete path spans before merging known literals, so a working-directory prefix cannot split a longer path. Match identifier literals at token boundaries to avoid protecting fragments of ordinary words.
 
+Unquoted paths stop at Chinese prose punctuation (`，。；：！？、`) so adjacent instructions remain translatable. Chinese letters and full-width parentheses remain valid path content. Paths whose names contain those punctuation delimiters must be quoted, enclosed in Markdown code, or supplied as known literals; those explicit forms retain the full path, including spaces and punctuation.
+
 ## Integration boundaries
 
 `agent/pre-step` translates accepted injected messages after downstream middleware returns, independently of whether a human message was translated. Retain source identity and original text in separate metadata; never convert an injected message to a human message.

@@ -699,6 +699,54 @@ test('原生会话显式开启时，输入和输出均覆盖默认关闭，并�
   } finally { await harness.features.disable('cliAdapters'); translation.dispose() }
 })
 
+for (const adapterId of ['dsh', 'codex'] as const) {
+  test(`${adapterId} submits translated prose following a Chinese path on the first turn`, async () => {
+    const sources: string[] = []
+    const translation = createSessionTranslationService({
+      llm: {
+        listProviders: () => [{ id: 'native', name: 'Native' }],
+        listModels: async () => [{ id: 'translator', name: 'Translator' }],
+        stream(options: any) {
+          const source = options.messages[0].content[0].text.split('SOURCE TEXT BEGIN\n')[1].split('\nSOURCE TEXT END')[0]
+          sources.push(source)
+          return (async function* () {
+            yield { type: 'text-delta', text: JSON.stringify({ translation: source.replace('请阅读并给出明确规划。', 'Please read it and provide a concrete plan.') }) }
+            yield { type: 'finish', reason: { kind: 'stop' } }
+          })()
+        },
+      },
+      get: (name: string) => name === 'agentDefaultModel'
+        ? { currentSelection: () => ({ provider: 'native', model: 'translator' }) }
+        : undefined,
+    }, '0.2.1-alpha.2')!
+    translation.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
+    translation.activate()
+    const executions: Record<string, unknown>[] = []
+    const harness = createHarness({ translation: translation as never, adapterId, translationEnabled: true, executions }) as Harness & { start(): Promise<void> }
+    await harness.start()
+    try {
+      const path = 'C:\\课程\\深搜进阶2（剪枝）\\剪枝20261021.pptx'
+      const text = `${path}，请阅读并给出明确规划。`
+      const translated = `${path}，Please read it and provide a concrete plan.`
+      const original = Object.freeze({ role: 'user', source: Object.freeze({ kind: 'user' }), content: Object.freeze([{ type: 'text', text }]) })
+      const decision = await harness.preStepListener({ agent: { id: 'native-session' }, messages: [original], turn: 1, step: 1 },
+        async () => ({ kind: 'enter', messages: [original] })) as any
+      const record = decision.messages[0].source.codingnsTranslationInput
+      assert.equal(record.original, text)
+      assert.equal(record.translated, translated)
+      assert.deepEqual(record.model, { provider: 'native', model: 'translator' })
+      if (adapterId === 'codex') {
+        assert.deepEqual(decision.messages[0].content, original.content)
+        for await (const _chunk of harness.llmListener({ sessionId: 'native-session', messages: decision.messages }, async function* () {})) {}
+        assert.equal(executions.length, 1)
+        assert.equal(executions[0]!.prompt, translated)
+      } else assert.equal(decision.messages[0].content[0].text, translated)
+      assert.equal(original.content[0]!.text, text)
+      assert.deepEqual(sources, ['@@CODINGNS_TRANSLATION_0@@，请阅读并给出明确规划。'])
+    } finally { await harness.features.disable('cliAdapters'); translation.dispose() }
+  })
+}
+
 test('DSH 原生会话输出翻译不改写工具调用与 usage', async () => {
   const translation = createTranslation()
   const harness = createHarness({ translation }) as Harness & { start(): Promise<void> }
