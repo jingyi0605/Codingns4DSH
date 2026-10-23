@@ -27,6 +27,8 @@ import { attachMagpieSessionNames, MagpieUsageService, magpieAgentForAdapter, ty
 import { MagpieManagementService } from './magpie-management.js'
 import { MagpieWebService } from './magpie-web.js'
 import type { MagpieDashboardPeriod } from '../../shared/contracts/magpie-management.js'
+import { MagpieInstallDetectionService, type MagpieDetectionServiceOptions } from './magpie-detection.js'
+import type { MagpieDetectionRequest } from '../../shared/contracts/magpie-management.js'
 import { createMagpieSessionRouting } from './magpie-session-routing.js'
 import { normalizeSubagentBridgeSettings, normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsHostServices } from '../features/types.js'
@@ -78,6 +80,9 @@ export function createCliAdaptersFeature(options: {
   magpieUsage?: MagpieUsageService
   magpieManagement?: MagpieManagementService
   magpieWeb?: MagpieWebService
+  /** 本机 Magpie 安装探测；测试可注入固定的平台与命令结果。 */
+  magpieDetection?: MagpieInstallDetectionService
+  magpieDetectionOptions?: MagpieDetectionServiceOptions
 } = {}): FeatureModule<CodingNsHostServices> {
   return {
     descriptor: {
@@ -104,7 +109,10 @@ export function createCliAdaptersFeature(options: {
         return new ProviderSubscriptionService({ commandCode: new CommandCodeSubscriptionService({ timeoutMs }), timeoutMs })
       }
       let subscriptions = buildSubscriptions(context.services.settings?.get())
-      const magpieWeb = options.magpieWeb ?? new MagpieWebService()
+      let magpieDetection = options.magpieDetection ?? new MagpieInstallDetectionService(options.magpieDetectionOptions)
+      // 最近一次可用的 Magpie 入口；探测会随用户指定的路径变化而重建，Web 服务总是读最新值。
+      let magpieCommand: string | null = null
+      const magpieWeb = options.magpieWeb ?? new MagpieWebService({ startupCommand: () => magpieCommand })
       const magpieUsage = options.magpieUsage ?? new MagpieUsageService({ lifetimeSignal: lifetime.signal, webApi: magpieWeb })
       const magpieManagement = options.magpieManagement ?? new MagpieManagementService({ webApi: magpieWeb })
       let magpieWebDesired = false
@@ -126,7 +134,14 @@ export function createCliAdaptersFeature(options: {
         })
         magpieWebSync = next.catch(() => undefined)
       }
-      scheduleMagpieWebSync(context.services.settings?.get().modules.magpieManagement === true)
+      // 设置里可能保留了“已启用”，但本机没有可用 Magpie（换机、卸载或安装损坏）。
+      // 这种情况下不拉起 Magpie Web，等用户安装后重新检测再启用。
+      let magpieInstalled = await magpieDetection.detect().then((detection) => {
+        const usable = MagpieInstallDetectionService.isUsable(detection)
+        magpieCommand = usable ? detection.command : null
+        return usable
+      }, () => false)
+      scheduleMagpieWebSync(context.services.settings?.get().modules.magpieManagement === true && magpieInstalled)
       context.resources.add(async () => {
         magpieWebDesired = false
         await magpieWeb.stop()
@@ -406,11 +421,24 @@ export function createCliAdaptersFeature(options: {
         }
       }))
       context.resources.add(context.services.rpc.register('magpie', async (action, payload, rpcContext) => {
+        const rpcSignal = asRecord(rpcContext)?.signal
+        const signal = isAbortSignal(rpcSignal) ? rpcSignal : lifetime.signal
+        // 安装探测本身就是启用前的判断依据，因此不要求模块已启用。
+        if (action === 'management/detection') {
+          const request = readMagpieDetectionRequest(payload)
+          const force = readMagpieDetectionForce(payload)
+          // 手动指定的入口只对本次会话有效；重新指定后换成新的探测服务，旧结果不再复用。
+          if (request.commandPath !== undefined) {
+            magpieDetection = new MagpieInstallDetectionService({ ...options.magpieDetectionOptions, customCommand: request.commandPath })
+          }
+          // 指定的入口随请求带入，保证“指定路径”和“结果”来自同一次探测。
+          const detection = await magpieDetection.detect(request, { force: force || request.commandPath !== undefined })
+          magpieCommand = MagpieInstallDetectionService.isUsable(detection) ? detection.command : null
+          return detection
+        }
         if (context.services.settings?.get().modules.magpieManagement !== true) {
           throw new CodingNsRpcError('CODINGNS_MAGPIE_DISABLED', 'Magpie management is disabled')
         }
-        const rpcSignal = asRecord(rpcContext)?.signal
-        const signal = isAbortSignal(rpcSignal) ? rpcSignal : lifetime.signal
         switch (action) {
           case 'usage/dashboard': {
             const dashboard = await magpieUsage.readDashboard(readMagpieDashboardPeriod(payload), signal)
@@ -500,7 +528,18 @@ export function createCliAdaptersFeature(options: {
             subscriptions = buildSubscriptions(next)
           }
           syncSubagentBridgeSettings(next.subagentBridge)
-          scheduleMagpieWebSync(next.modules.magpieManagement === true)
+          const magpieWanted = next.modules.magpieManagement === true
+          // 只在“需要启动”时重新探测；停用时立即回收，退出探测的旧结果不覆盖新状态。
+          void (magpieWanted && !magpieInstalled
+            ? magpieDetection.detect({}, { force: true }).then(
+              detection => MagpieInstallDetectionService.isUsable(detection),
+              () => false,
+            )
+            : Promise.resolve(magpieInstalled)).then((installed) => {
+            magpieInstalled = installed
+            if (next.modules.magpieManagement !== true) scheduleMagpieWebSync(false)
+            else if (installed) scheduleMagpieWebSync(true)
+          })
         }))
       }
 
@@ -1988,6 +2027,19 @@ function readMagpieDashboardPeriod(payload: unknown): MagpieDashboardPeriod {
   const value = asRecord(payload)?.period
   if (value === 'today' || value === 'week' || value === 'month' || value === 'all') return value
   throw new TypeError('Magpie usage period must be today, week, month, or all')
+}
+
+/** 探测载荷只接受可选入口路径；其余字段一律忽略，避免把参数带进命令行。 */
+function readMagpieDetectionRequest(payload: unknown): MagpieDetectionRequest {
+  const record = asRecord(payload)
+  if (record === null || typeof record.commandPath !== 'string') return {}
+  const commandPath = record.commandPath.trim()
+  return commandPath === '' ? {} : { commandPath }
+}
+
+/** `force` 只在用户主动重新检测时出现；缺省复用短期探测结果。 */
+function readMagpieDetectionForce(payload: unknown): boolean {
+  return asRecord(payload)?.force === true
 }
 
 function readMagpieRequestOptions(payload: unknown): {

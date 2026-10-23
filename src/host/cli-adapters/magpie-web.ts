@@ -19,6 +19,8 @@ export interface MagpieWebRequestOptions {
 export interface MagpieWebServiceOptions {
   readonly fetch?: typeof fetch
   readonly resolveCommand?: () => Promise<string | null>
+  /** 安装探测已经解析出的入口；设置后优先于 PATH 查找，避免两套解析结果不一致。 */
+  readonly startupCommand?: () => string | null
   readonly spawn?: typeof spawn
   readonly webKey?: string
   readonly environment?: NodeJS.ProcessEnv
@@ -30,6 +32,7 @@ export interface MagpieWebServiceOptions {
 export class MagpieWebService {
   private readonly requestFetch: typeof fetch
   private readonly resolveCommand: NonNullable<MagpieWebServiceOptions['resolveCommand']>
+  private readonly startupCommand: (() => string | null) | null
   private readonly spawnProcess: NonNullable<MagpieWebServiceOptions['spawn']>
   private readonly environment: NodeJS.ProcessEnv
   private readonly cwd: string
@@ -45,6 +48,7 @@ export class MagpieWebService {
   constructor(options: MagpieWebServiceOptions = {}) {
     this.requestFetch = options.fetch ?? globalThis.fetch.bind(globalThis)
     this.resolveCommand = options.resolveCommand ?? (() => resolveCommandPath('magpie'))
+    this.startupCommand = options.startupCommand ?? null
     this.spawnProcess = options.spawn ?? spawn
     this.environment = options.environment ?? process.env
     this.cwd = options.cwd ?? process.cwd()
@@ -105,7 +109,8 @@ export class MagpieWebService {
   }
 
   private async startMagpieWeb(lifecycle: number): Promise<void> {
-    const command = await this.resolveCommand()
+    // 探测结果可能来自用户手动指定的入口，或 Windows 上只有 `.cmd` 的 npm 全局安装。
+    const command = this.startupCommand?.() ?? await this.resolveCommand()
     if (command === null) throw new Error('Magpie CLI is unavailable')
     if (this.stopped || lifecycle !== this.lifecycle) throw new Error('Magpie Web startup was cancelled')
     const invocation = WINDOWS && /\.(?:cmd|bat)$/iu.test(command)
