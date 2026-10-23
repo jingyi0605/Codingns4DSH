@@ -9,6 +9,7 @@ import type { CodingNsLocale } from '../src/client/locale.js'
 import { aggregateModelUsageRows, MagpieManagementPage, modelBreakdownRows, ModelProgressSection } from '../src/client/features/magpie-management-page.js'
 import { magpieManagementFeature } from '../src/client/features/magpie-management.js'
 import { GroupModelPicker, MagpieGroupsPage, MagpieProvidersPage, reorderModels } from '../src/client/features/magpie-management-controls.js'
+import { MagpieProviderLogo } from '../src/client/features/magpie-provider-logo.js'
 import { installProviderIcons, PROVIDER_ICONS } from '../src/client/provider-icons.js'
 import type { MagpieManagementSnapshot } from '../src/shared/contracts/magpie-management.js'
 import type { MagpieUsageGroup } from '../src/shared/contracts/magpie-management.js'
@@ -361,6 +362,29 @@ test('Magpie management nests primary and secondary accounts under providers', (
   }))
   assert.match(filteredPicker, /Claude/u)
   assert.doesNotMatch(filteredPicker, /Backup Model/u)
+})
+
+test('Magpie provider logo uses the shared resolver for gateway and model identities', () => {
+  const previousIcons = { ...PROVIDER_ICONS }
+  installProviderIcons({ dsh: 'asset:dsh', magpie: 'asset:magpie' })
+  try {
+    const markup = renderToStaticMarkup(createElement(MagpieProviderLogo, {
+      identities: ['magpie', 'deepseek-v4.1-flash'],
+      fallback: 'none',
+    }))
+    assert.match(markup, /src="asset:dsh"/u)
+  } finally {
+    installProviderIcons(previousIcons)
+  }
+})
+
+test('Magpie provider logo prefers the authenticated Web API asset over inferred icons', () => {
+  const markup = renderToStaticMarkup(createElement(MagpieProviderLogo, {
+    identities: ['unknown-provider'],
+    logoDataUrl: 'data:image/svg+xml;base64,PHN2Zy8+',
+    fallback: 'none',
+  }))
+  assert.match(markup, /src="data:image\/svg\+xml;base64,PHN2Zy8\+"/u)
 })
 
 test('routing-group model order helper moves selected entries without changing membership', () => {

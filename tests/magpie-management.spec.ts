@@ -83,7 +83,7 @@ test('Magpie dashboard session rows show an exact DSH title without fuzzy matche
 
 test('Magpie quota cards and history preserve nullable windows and exact observed names', () => {
   const cards = parseMagpieQuotaCards({ data: [{
-    provider: 'example-provider', name: 'Example Provider', kind: 'oauth', user: 'user-label',
+    provider: 'example-provider', name: 'Example Provider', icon: 'example-provider-color', kind: 'oauth', user: 'user-label',
     plan: 'pro', alias: 'work', balance: 'available', readAt: '2026-10-22T00:00:00Z',
     windows: [{ name: 'weekly', used: 45, remaining: 55, resetsAt: '2026-10-29T00:00:00Z', amount: 45, limit: 100, unit: 'requests' }],
     daily: { days: [{ day: '2026-10-22', used: 12 }] },
@@ -94,6 +94,7 @@ test('Magpie quota cards and history preserve nullable windows and exact observe
   }] })
 
   assert.equal(cards?.[0]?.windows[0]?.remainingPercent, 55)
+  assert.equal(cards?.[0]?.icon, 'example-provider-color')
   assert.deepEqual(cards?.[0]?.daily, [{ day: '2026-10-22', used: 12 }])
   assert.equal(history?.[0]?.lines[0]?.points[0]?.left, 55)
   assert.equal(parseMagpieQuotaCards({ data: [{ provider: 'bad', name: 'Bad', windows: 'invalid' }] }), null)
@@ -125,6 +126,29 @@ test('Magpie dashboard endpoint failures stay independent and expose history ava
     '/api/usage/quotas',
     '/api/usage/quotas/history?days=30',
   ])
+})
+
+test('Magpie quota icons are fetched through the Host Web API and attached as data URLs', async () => {
+  const assets: string[] = []
+  const service = new MagpieUsageService({
+    webApi: {
+      async requestJson(path) {
+        if (path.includes('/usage?')) return { calls: 1, series: [] }
+        if (path === '/api/usage/quotas') return { data: [{ provider: 'workbuddy', name: 'WorkBuddy', icon: 'workbuddy-color', windows: [] }] }
+        if (path.includes('/quotas/history')) return []
+        throw new Error(`unexpected route ${path}`)
+      },
+      async requestAssetDataUrl(path) {
+        assets.push(path)
+        return path === '/icons/workbuddy-color.svg' ? 'data:image/svg+xml;base64,PHN2Zy8+' : null
+      },
+    },
+  })
+
+  const dashboard = await service.readDashboard('today')
+  assert.deepEqual(assets, ['/icons/workbuddy-color.svg'])
+  assert.equal(dashboard.quotas[0]?.icon, 'workbuddy-color')
+  assert.equal(dashboard.quotas[0]?.logoDataUrl, 'data:image/svg+xml;base64,PHN2Zy8+')
 })
 
 test('Magpie dashboard reports an automatic Web API startup/authentication failure', async () => {

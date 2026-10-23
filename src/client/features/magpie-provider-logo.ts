@@ -1,19 +1,19 @@
 import { createElement } from 'react'
 import type { ReactElement } from 'react'
-import { providerIconUrl } from '../provider-icons.js'
+import { providerIconUrlForIdentities } from '../provider-icons.js'
 
 export interface MagpieProviderLogoProps {
   readonly identities: readonly (string | null | undefined)[]
+  /** A Host-fetched Magpie asset takes precedence over local icon inference. */
+  readonly logoDataUrl?: string | null | undefined
   readonly size?: number
   readonly className?: string
   readonly fallback?: 'initial' | 'none'
 }
 
-export function MagpieProviderLogo({ identities, size = 24, className = 'codingns-magpie-provider-logo', fallback = 'initial' }: MagpieProviderLogoProps): ReactElement | null {
+export function MagpieProviderLogo({ identities, logoDataUrl, size = 24, className = 'codingns-magpie-provider-logo', fallback = 'initial' }: MagpieProviderLogoProps): ReactElement | null {
   const identity = identities.find((value) => value !== undefined && value !== null && value.trim() !== '')
-  const iconUrl = identities
-    .flatMap((value) => value === undefined || value === null ? [] : [providerIconUrl(value)])
-    .find((value): value is string => value !== undefined)
+  const iconUrl = logoDataUrl?.trim() || providerIconUrlForIdentities(identities)
   const style = { width: size, height: size }
   if (iconUrl !== undefined) {
     return createElement('img', {

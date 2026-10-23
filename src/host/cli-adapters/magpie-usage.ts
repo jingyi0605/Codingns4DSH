@@ -39,6 +39,7 @@ const MAGPIE_CLI_TIMEOUT_MS = 10_000
 const MAGPIE_HTTP_TIMEOUT_MS = 3_000
 const MAX_MAGPIE_CLI_OUTPUT_BYTES = 512 * 1024
 const MAX_MAGPIE_RESPONSE_BYTES = 2 * 1024 * 1024
+const MAX_MAGPIE_ICON_FETCHES = 64
 const MAX_MAGPIE_MODELS = 10_000
 const MAX_MODEL_TOKEN_LIMIT = 1_000_000_000
 const MAGPIE_MODEL_ID_PATTERN = '[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._:/-]*)+'
@@ -136,7 +137,7 @@ export interface MagpieUsageServiceOptions {
   readonly now?: () => number
   readonly timeoutMs?: number
   /** Shared authenticated Web process for the full management dashboard. */
-  readonly webApi?: Pick<MagpieWebService, 'requestJson'>
+  readonly webApi?: Pick<MagpieWebService, 'requestJson'> & Partial<Pick<MagpieWebService, 'requestAssetDataUrl'>>
   /** Shared catalog CLI work is cancelled when its owning Host feature stops, not by one RPC caller. */
   readonly lifetimeSignal?: AbortSignal
 }
@@ -304,6 +305,7 @@ export class MagpieUsageService {
     ])
     const parsedUsage = usage.ok ? parseMagpieDashboardUsage(usage.value) : null
     const parsedQuotas = quotas.ok ? parseMagpieQuotaCards(quotas.value) : null
+    const quotasWithLogos = parsedQuotas === null ? null : await this.attachQuotaLogos(parsedQuotas, signal)
     const parsedHistory = history.ok ? parseMagpieQuotaHistory(history.value) : null
     return {
       period,
@@ -318,8 +320,8 @@ export class MagpieUsageService {
       accounts: parsedUsage?.accounts ?? [],
       sessions: parsedUsage?.sessions ?? [],
       sessionCount: parsedUsage?.sessionCount ?? null,
-      quotaStatus: parsedQuotas === null ? 'unavailable' : 'available',
-      quotas: parsedQuotas ?? [],
+      quotaStatus: quotasWithLogos === null ? 'unavailable' : 'available',
+      quotas: quotasWithLogos ?? [],
       quotaHistoryStatus: parsedHistory === null ? 'unavailable' : 'available',
       quotaHistory: parsedHistory ?? [],
     }
@@ -421,9 +423,10 @@ export class MagpieUsageService {
       ? routeProviders
       : [providerFromModelId(modelId, agent)].filter((provider): provider is string => provider !== null)
     const upstreamProvider = upstreamProviders[0] ?? null
-    const quotas = allQuotas === null
+    const matchingQuotas = allQuotas === null
       ? []
       : filterSessionQuotas(allQuotas, upstreamProviders, routeHistory)
+    const quotas = allQuotas === null ? [] : await this.attachQuotaLogos(matchingQuotas, signal)
 
     return {
       agent,
@@ -440,6 +443,37 @@ export class MagpieUsageService {
       quotaStatus: allQuotas === null ? 'unavailable' : upstreamProviders.length === 0 ? 'provider-unavailable' : 'available',
       quotas,
     }
+  }
+
+  private async attachQuotaLogos<T extends { readonly icon?: string }>(quotas: readonly T[], signal?: AbortSignal): Promise<readonly (T & { readonly logoDataUrl?: string })[]> {
+    const requestAssetDataUrl = this.webApi?.requestAssetDataUrl
+    if (typeof requestAssetDataUrl !== 'function') return quotas
+    const icons = [...new Set(quotas
+      .map((quota) => quota.icon)
+      .filter((icon): icon is string => icon !== undefined))].slice(0, MAX_MAGPIE_ICON_FETCHES)
+    if (icons.length === 0) return quotas
+    const logos = new Map<string, string | null>()
+    await Promise.all(icons.map(async (icon) => {
+      logos.set(icon, await this.readMagpieLogoDataUrl(icon, signal))
+    }))
+    return quotas.map((quota) => {
+      const logoDataUrl = quota.icon === undefined ? null : logos.get(quota.icon) ?? null
+      return logoDataUrl === null ? quota : { ...quota, logoDataUrl }
+    })
+  }
+
+  private async readMagpieLogoDataUrl(icon: string, signal?: AbortSignal): Promise<string | null> {
+    const requestAssetDataUrl = this.webApi?.requestAssetDataUrl
+    if (typeof requestAssetDataUrl !== 'function') return null
+    for (const path of magpieIconAssetPaths(icon)) {
+      try {
+        const value = await requestAssetDataUrl.call(this.webApi, path, signal === undefined ? {} : { signal })
+        if (value !== null && value !== '') return value
+      } catch {
+        signal?.throwIfAborted()
+      }
+    }
+    return null
   }
 
   private async loadCatalog(agent: MagpieAgent, signal?: AbortSignal): Promise<MagpieModelCatalog | null> {
@@ -1060,6 +1094,7 @@ export function parseMagpieQuotas(value: unknown): readonly MagpieQuota[] | null
     quotas.push({
       provider,
       name,
+      ...optionalQuotaIcon(record.icon),
       kind: routeText(record.kind),
       user: routeText(record.user),
       plan: routeText(record.plan),
@@ -1149,6 +1184,7 @@ export function parseMagpieQuotaCards(value: unknown): readonly MagpieDashboardQ
     quotas.push({
       provider,
       name,
+      ...optionalQuotaIcon(record.icon),
       kind: routeText(record.kind),
       user: routeText(record.user),
       plan: routeText(record.plan),
@@ -1366,6 +1402,21 @@ function readQuotaWindow(record: Record<string, unknown>, name: string): MagpieQ
     unit: routeText(record.unit),
     holdsWhy: routeText(record.holdsWhy),
   }
+}
+
+function optionalQuotaIcon(value: unknown): { readonly icon?: string } {
+  const icon = routeText(value)
+  if (icon === null) return {}
+  if (/^file:[A-Za-z0-9][A-Za-z0-9._~-]{0,255}$/u.test(icon)) return { icon }
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(icon) ? { icon } : {}
+}
+
+function magpieIconAssetPaths(icon: string): readonly string[] {
+  if (/^file:[A-Za-z0-9][A-Za-z0-9._~-]{0,255}$/u.test(icon)) {
+    return [`/api/icons/${encodeURIComponent(icon.slice('file:'.length))}`]
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(icon)) return []
+  return [`/icons/${icon}.svg`, `/icons/${icon}.png`]
 }
 
 function providerFromRoute(route: MagpieRouteUsage | null): string | null {

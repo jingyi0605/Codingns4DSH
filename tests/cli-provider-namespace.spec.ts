@@ -10,7 +10,7 @@ import { CodingNsRpcTable } from '../src/host/rpc-table.js'
 import { FeatureRegistry } from '../src/features/registry.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
 import { fromCliProviderId, toCliProviderId } from '../src/shared/cli-provider-route.js'
-import { installProviderIcons, providerIconUrl, providerVisual, PROVIDER_ICONS } from '../src/client/provider-icons.js'
+import { installProviderIcons, providerIconUrl, providerIconUrlForIdentities, providerVisual, resolveProviderIconId, PROVIDER_ICONS } from '../src/client/provider-icons.js'
 import { PROVIDER_ICON_FILES } from '../src/shared/provider-icon-resources.js'
 
 const collidingProviders = ['gemini', 'opencode', 'qoder', 'zcode', 'workbuddy']
@@ -203,6 +203,31 @@ test('Magpie provider identities resolve to cached plugin logos', () => {
     for (const filename of Object.values(PROVIDER_ICON_FILES)) {
       assert.equal(existsSync(new URL(`../assets/provider-icons/${filename}`, import.meta.url)), true, `${filename} exists`)
     }
+  } finally {
+    installProviderIcons(previousIcons)
+  }
+})
+
+test('Magpie multi-identity logo resolution prefers providers and infers bare model families', () => {
+  const previousIcons = { ...PROVIDER_ICONS }
+  installProviderIcons(Object.fromEntries(Object.entries(PROVIDER_ICON_FILES).map(([provider, filename]) => [provider, `asset:${filename}`])))
+  try {
+    const cases: readonly [readonly string[], string][] = [
+      [['magpie', 'deepseek-v4.1-flash'], 'dsh'],
+      [['magpie/codex', 'gpt-6.1-sol'], 'codex'],
+      [['openai-subscription', 'gpt-6.1-sol'], 'codex'],
+      [['glorinfo-api-platform', 'GAP-Codex'], 'codex'],
+      [['grok', 'grok-4.7'], 'grok'],
+      [['deepseek-v4.1-flash'], 'dsh'],
+      [['codingns-cli-claude-code'], 'claude-code'],
+      [['WorkBuddy AI'], 'workbuddy'],
+    ]
+    for (const [identities, expected] of cases) {
+      assert.equal(resolveProviderIconId(identities), expected, identities.join(', '))
+      assert.equal(providerIconUrlForIdentities(identities), `asset:${PROVIDER_ICON_FILES[expected]}`, identities.join(', '))
+    }
+    assert.equal(resolveProviderIconId(['magpie', 'unknown-model']), 'magpie')
+    assert.equal(resolveProviderIconId(['unknown-provider', 'unknown-model']), undefined)
   } finally {
     installProviderIcons(previousIcons)
   }

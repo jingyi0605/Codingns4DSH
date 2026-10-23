@@ -10,6 +10,7 @@ import type { CodingNsRpcClient } from './features/types.js'
 import { callCliRpc } from './cli-catalog.js'
 import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { providerIconUrl } from './provider-icons.js'
+import { MagpieProviderLogo } from './features/magpie-provider-logo.js'
 import { subscribeSessionAdapters } from './session-adapter-cache.js'
 import { loadCliSessionConfig } from './cli-session-config-cache.js'
 import { dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from './theme.js'
@@ -612,7 +613,10 @@ function createMagpieProviderBadges(usage: MagpieUsageSnapshot, style: Record<st
 function createMagpieQuotaCard(quota: MagpieQuota, t: CodingNsTranslator, index: number): ReactElement {
   return createElement('div', { key: `${quota.provider}-${quota.user ?? 'account'}-${index}`, style: magpieQuotaCardStyle },
     createElement('div', { style: magpieQuotaCardHeadingStyle },
-      createElement('span', { style: magpieQuotaNameStyle }, quota.alias ?? quota.name),
+      createElement('span', { style: magpieQuotaNameWithLogoStyle },
+        createElement(MagpieProviderLogo, { identities: [quota.provider, quota.name], logoDataUrl: quota.logoDataUrl, size: 20, className: 'codingns4dsh-magpie-quota-logo', fallback: 'none' }),
+        createElement('span', { style: magpieQuotaNameStyle }, quota.alias ?? quota.name),
+      ),
       createElement('span', { style: magpieQuotaHeadingMetaStyle }, quota.plan ?? quota.provider),
     ),
     (quota.user !== null || quota.balance !== null) && createElement('div', { style: magpieQuotaIdentityStyle },
@@ -1503,6 +1507,7 @@ const magpieProviderBadgeStyle = { flex: 'none', maxWidth: 220, overflow: 'hidde
 const magpieEmptyStateStyle = { display: 'grid', placeItems: 'center', minHeight: 36, padding: '8px 10px', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: '17px', textAlign: 'center' as const }
 const magpieQuotaCardStyle = { display: 'grid', gap: 5, marginTop: 7, padding: '9px 10px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 9, background: dshThemeColor.surfaceSubtle }
 const magpieQuotaCardHeadingStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 10 }
+const magpieQuotaNameWithLogoStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, minWidth: 0, overflow: 'hidden' }
 const magpieQuotaNameStyle = { minWidth: 0, overflow: 'hidden', color: dshThemeColor.labelPrimary, fontSize: uiFontSize(13), fontWeight: 650, textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
 const magpieQuotaHeadingMetaStyle = { flex: 'none', maxWidth: 160, overflow: 'hidden', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
 const magpieQuotaIdentityStyle = { display: 'flex', flexWrap: 'wrap' as const, gap: '3px 12px', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), lineHeight: '15px', overflowWrap: 'anywhere' as const }

@@ -68,6 +68,10 @@ export interface MagpieDashboardQuotaWindow {
 export interface MagpieDashboardQuota {
   readonly provider: string
   readonly name: string
+  /** Magpie's built-in icon name or a `file:` asset identifier. */
+  readonly icon?: string
+  /** Host-fetched Magpie icon, inlined so the Client never needs Magpie's cookie. */
+  readonly logoDataUrl?: string
   readonly kind: string | null
   readonly user: string | null
   readonly plan: string | null

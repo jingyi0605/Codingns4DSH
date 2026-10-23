@@ -783,7 +783,7 @@ function QuotaCard({ quota, t }: { readonly quota: MagpieDashboardQuota; readonl
   const dailyValues = quota.daily.map((point) => point.used).filter((value): value is number => value !== null)
   return createElement('article', { className: 'codingns-magpie-panel codingns-magpie-quota-card' },
     createElement('div', { className: 'codingns-magpie-quota-topline' },
-      createElement(MagpieProviderLogo, { identities: [quota.provider, quota.name], size: 52, className: 'codingns-magpie-quota-icon codingns-magpie-provider-logo' }),
+      createElement(MagpieProviderLogo, { identities: [quota.provider, quota.name], logoDataUrl: quota.logoDataUrl, size: 52, className: 'codingns-magpie-quota-icon codingns-magpie-provider-logo' }),
       createElement('div', undefined,
         createElement('h2', undefined, quota.alias ?? quota.name),
         createElement('p', undefined, quota.plan ?? quota.kind ?? quota.provider),

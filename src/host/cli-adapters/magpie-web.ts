@@ -6,6 +6,9 @@ const WEB_KEY_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/u
 const START_TIMEOUT_MS = 20_000
 const REQUEST_TIMEOUT_MS = 8_000
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+const MAX_ASSET_BYTES = 512 * 1024
+const MAGPIE_ASSET_PATH_PATTERN = /^\/(?:icons|api\/icons)\/[A-Za-z0-9._~%~-]{1,320}$/u
+const MAGPIE_IMAGE_TYPES = new Set(['image/gif', 'image/jpeg', 'image/png', 'image/svg+xml', 'image/webp', 'image/x-icon'])
 
 export interface MagpieWebRequestOptions {
   readonly method?: 'GET' | 'POST'
@@ -89,6 +92,18 @@ export class MagpieWebService {
     return this.fetchJson(this.baseUrl, this.key, path, options)
   }
 
+  /** Fetch a Magpie-owned image through the authenticated Web session. */
+  async requestAssetDataUrl(path: string, options: Pick<MagpieWebRequestOptions, 'signal'> = {}): Promise<string | null> {
+    let decodedPath: string
+    try { decodedPath = decodeURIComponent(path) } catch { throw new TypeError('Invalid Magpie Web asset route') }
+    if (!MAGPIE_ASSET_PATH_PATTERN.test(path) || path.includes('..') || decodedPath.includes('..') || decodedPath.includes('\\')) {
+      throw new TypeError('Invalid Magpie Web asset route')
+    }
+    await this.start()
+    if (this.baseUrl === null || this.child === null) throw new Error('Magpie Web is not running')
+    return this.fetchAssetDataUrl(this.baseUrl, this.key, path, options)
+  }
+
   private async startMagpieWeb(lifecycle: number): Promise<void> {
     const command = await this.resolveCommand()
     if (command === null) throw new Error('Magpie CLI is unavailable')
@@ -157,6 +172,32 @@ export class MagpieWebService {
   }
 
   private async fetchJson(baseUrl: URL, key: string, path: string, options: MagpieWebRequestOptions): Promise<unknown> {
+    const response = await this.fetchAuthenticated(baseUrl, key, path, 'application/json', options)
+    if (!response.ok) {
+      await discard(response)
+      throw new Error(`Magpie Web API returned HTTP ${response.status}`)
+    }
+    const value = await readBoundedJson(response)
+    if (value === null) throw new Error('Magpie Web API returned an invalid or oversized response')
+    return value
+  }
+
+  private async fetchAssetDataUrl(baseUrl: URL, key: string, path: string, options: Pick<MagpieWebRequestOptions, 'signal'>): Promise<string | null> {
+    const response = await this.fetchAuthenticated(baseUrl, key, path, 'image/*', options)
+    if (!response.ok) {
+      await discard(response)
+      return null
+    }
+    const contentType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLocaleLowerCase() ?? ''
+    if (!MAGPIE_IMAGE_TYPES.has(contentType)) {
+      await discard(response)
+      return null
+    }
+    const bytes = await readBoundedBytes(response, MAX_ASSET_BYTES)
+    return bytes === null ? null : `data:${contentType};base64,${Buffer.from(bytes).toString('base64')}`
+  }
+
+  private async fetchAuthenticated(baseUrl: URL, key: string, path: string, accept: string, options: MagpieWebRequestOptions): Promise<Response> {
     const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS)
     const signal = options.signal === undefined ? timeout : AbortSignal.any([options.signal, timeout])
     const loginUrl = new URL('/', baseUrl)
@@ -173,22 +214,15 @@ export class MagpieWebService {
     if (redirected.origin !== baseUrl.origin || redirected.pathname !== '/' || redirected.search !== '' || redirected.hash !== '') {
       throw new Error('Magpie Web returned an unexpected authentication redirect')
     }
-    const response = await this.requestFetch(new URL(path, baseUrl), {
+    return this.requestFetch(new URL(path, baseUrl), {
       method: options.method ?? 'GET', redirect: 'error', cache: 'no-store', signal,
       headers: {
-        accept: 'application/json',
+        accept,
         cookie,
         ...(options.body === undefined ? {} : { 'content-type': 'application/json' }),
       },
       ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
     })
-    if (!response.ok) {
-      await discard(response)
-      throw new Error(`Magpie Web API returned HTTP ${response.status}`)
-    }
-    const value = await readBoundedJson(response)
-    if (value === null) throw new Error('Magpie Web API returned an invalid or oversized response')
-    return value
   }
 
   private async stopChild(child: ChildProcess): Promise<void> {
@@ -243,6 +277,28 @@ async function readBoundedJson(response: Response): Promise<unknown | null> {
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
     return JSON.parse(new TextDecoder().decode(bytes)) as unknown
   } catch { return null }
+}
+
+async function readBoundedBytes(response: Response, maximum: number): Promise<Uint8Array | null> {
+  const length = Number(response.headers.get('content-length'))
+  if (Number.isFinite(length) && length > maximum) { await discard(response); return null }
+  const reader = response.body?.getReader()
+  if (reader === undefined) return null
+  const chunks: Uint8Array[] = []
+  let size = 0
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      size += value.byteLength
+      if (size > maximum) { await reader.cancel(); return null }
+      chunks.push(value)
+    }
+  } finally { reader.releaseLock() }
+  const bytes = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
+  return bytes
 }
 
 async function discard(response: Response): Promise<void> { await response.body?.cancel().catch(() => undefined) }

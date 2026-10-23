@@ -1,5 +1,6 @@
 import { resolveCodingNsTranslator, type CodingNsTranslator } from './locale.js'
 import { fromCliProviderId } from '../shared/cli-provider-route.js'
+import { PROVIDER_ICON_FILES } from '../shared/provider-icon-resources.js'
 
 export interface ProviderVisual {
   readonly adapterId: string | null
@@ -52,12 +53,52 @@ const PROVIDER_ICON_ALIASES: Readonly<Record<string, string>> = {
   claude: 'claude-code',
   commandcode: 'command-code',
   'minimax-code': 'mcode',
+  minimax: 'mcode',
   cursor: 'cursor-cli',
   agy: 'antigravity',
   codingns4dsh: 'dsh',
   'workbuddy-ai': 'workbuddy',
   'grok-(supergrok)': 'grok',
+  openai: 'codex',
+  'openai-api': 'codex',
+  'openai-subscription': 'codex',
+  'codex-subscription': 'codex',
+  anthropic: 'claude-code',
+  'anthropic-subscription': 'claude-code',
+  'claude-subscription': 'claude-code',
+  'gemini-cli': 'gemini',
+  'google-gemini': 'gemini',
+  'codebuddy-cn': 'codebuddy',
+  deepseek: 'dsh',
+  'deepseek-api': 'dsh',
+  'deepseek-harness': 'dsh',
+  'deepseek-subscription': 'dsh',
+  supergrok: 'grok',
 }
+
+const MODEL_PROVIDER_PATTERNS: readonly [RegExp, string][] = [
+  [/(?:^|[\-/])deepseek(?:[-./]|$)/u, 'dsh'],
+  [/(?:^|[\-/])codex(?:[-./]|$)/u, 'codex'],
+  [/(?:^|[\-/])gpt(?:[-./]|$)/u, 'codex'],
+  [/(?:^|[\-/])(?:claude|opus|sonnet|haiku)(?:[-./]|$)/u, 'claude-code'],
+  [/(?:^|[\-/])gemini(?:[-./]|$)/u, 'gemini'],
+  [/(?:^|[\-/])kimi(?:[-./]|$)/u, 'kimi'],
+  [/(?:^|[\-/])grok(?:[-./]|$)/u, 'grok'],
+  [/(?:^|[\-/])(?:minimax|mcode)(?:[-./]|$)/u, 'mcode'],
+  [/(?:^|[\-/])workbuddy(?:[-./]|$)/u, 'workbuddy'],
+  [/(?:^|[\-/])codebuddy(?:[-./]|$)/u, 'codebuddy'],
+  [/(?:^|[\-/])cursor(?:[-./]|$)/u, 'cursor-cli'],
+  [/(?:^|[\-/])qoder(?:[-./]|$)/u, 'qoder'],
+  [/(?:^|[\-/])command(?:-?code)(?:[-./]|$)/u, 'command-code'],
+  [/(?:^|[\-/])zcode(?:[-./]|$)/u, 'zcode'],
+  [/(?:^|[\-/])antigravity(?:[-./]|$)/u, 'antigravity'],
+]
+
+const KNOWN_PROVIDER_ICON_IDS = new Set([
+  ...Object.keys(PROVIDER_DEFINITIONS),
+  ...Object.keys(PROVIDER_ICON_FILES),
+  ...Object.values(PROVIDER_ICON_ALIASES),
+])
 
 /** 只由浏览器入口调用，使普通 Node 测试不需要加载 png/svg。 */
 export function installProviderIcons(icons: Readonly<Record<string, string>>): void {
@@ -70,9 +111,26 @@ export function installProviderIcons(icons: Readonly<Record<string, string>>): v
 }
 
 export function providerIconUrl(adapterId: string): string | undefined {
-  const normalizedAdapterId = normalizeProviderAdapterId(adapterId)
-  const iconId = normalizeProviderIconId(adapterId)
-  return PROVIDER_ICONS[normalizedAdapterId] ?? PROVIDER_ICONS[iconId]
+  return providerIconUrlForIdentities([adapterId])
+}
+
+/**
+ * Resolve one canonical provider asset ID from the identities emitted by a
+ * Magpie record. Specific provider identities win over the Magpie gateway;
+ * model-family inference is only used when no provider identity is known.
+ */
+export function resolveProviderIconId(identities: readonly (string | null | undefined)[]): string | undefined {
+  const candidates = providerIconCandidates(identities)
+  return candidates[0]
+}
+
+/** Resolve and load a logo for a record that may expose several identities. */
+export function providerIconUrlForIdentities(identities: readonly (string | null | undefined)[]): string | undefined {
+  for (const iconId of providerIconCandidates(identities)) {
+    const iconUrl = PROVIDER_ICONS[iconId]
+    if (iconUrl !== undefined) return iconUrl
+  }
+  return undefined
 }
 
 /**
@@ -100,9 +158,57 @@ function normalizeProviderAdapterId(adapterId: string): string {
   return normalized === 'codebuddy-cn' ? 'codebuddy' : normalized
 }
 
-function normalizeProviderIconId(adapterId: string): string {
-  const normalized = adapterId.trim().toLocaleLowerCase().split('/', 1)[0]!.replace(/[\s_]+/gu, '-')
-  return PROVIDER_ICON_ALIASES[normalized] ?? normalized
+function providerIconCandidates(identities: readonly (string | null | undefined)[]): readonly string[] {
+  const specific: string[] = []
+  const inferred: string[] = []
+  const gateway: string[] = []
+  const seen = new Set<string>()
+  let hasSpecificProvider = false
+
+  const add = (target: string[], iconId: string): void => {
+    if (seen.has(iconId)) return
+    seen.add(iconId)
+    target.push(iconId)
+  }
+
+  for (const identity of identities) {
+    if (identity === undefined || identity === null || identity.trim() === '') continue
+    const normalized = normalizeProviderIdentity(identity)
+    const cliAdapterId = fromCliProviderId(normalized)
+    const values = [
+      ...(cliAdapterId === undefined ? [] : [normalizeProviderIdentity(cliAdapterId)]),
+      normalized,
+      ...normalized.split('/').filter((value) => value !== '').reverse(),
+    ]
+    for (const value of values) {
+      const iconId = canonicalProviderIconId(value)
+      if (iconId === undefined) continue
+      if (iconId === 'magpie') add(gateway, iconId)
+      else {
+        hasSpecificProvider = true
+        add(specific, iconId)
+      }
+    }
+    for (const value of values) {
+      for (const [pattern, iconId] of MODEL_PROVIDER_PATTERNS) {
+        if (pattern.test(value)) add(inferred, iconId)
+      }
+    }
+  }
+
+  // Do not let a gateway label mask the actual provider or a recognizable model family.
+  return hasSpecificProvider ? specific : [...inferred, ...gateway]
+}
+
+function canonicalProviderIconId(value: string): string | undefined {
+  const normalized = normalizeProviderIdentity(value)
+  const aliased = PROVIDER_ICON_ALIASES[normalized] ?? normalized
+  if (KNOWN_PROVIDER_ICON_IDS.has(aliased) || PROVIDER_ICONS[aliased] !== undefined) return aliased
+  return undefined
+}
+
+function normalizeProviderIdentity(value: string): string {
+  return value.trim().toLocaleLowerCase().replace(/[\s_]+/gu, '-')
 }
 
 export { PROVIDER_DEFINITIONS, PROVIDER_ICONS }

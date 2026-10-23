@@ -145,6 +145,42 @@ test('Magpie Web rejects unsafe routes, redirects, and oversized JSON without re
   await service.dispose()
 })
 
+test('Magpie Web fetches only bounded image assets through the authenticated session', async () => {
+  const child = new EventEmitter() as ChildProcess & { stdout: PassThrough; pid: undefined; exitCode: number | null; signalCode: NodeJS.Signals | null }
+  child.stdout = new PassThrough()
+  child.pid = undefined
+  child.exitCode = null
+  child.signalCode = null
+  child.kill = (() => { child.exitCode = 0; queueMicrotask(() => child.emit('exit', 0, null)); return true }) as ChildProcess['kill']
+  const requests: string[] = []
+  const service = new MagpieWebService({
+    webKey: '0123456789abcdef',
+    resolveCommand: async () => '/mock/bin/magpie',
+    spawn: (() => {
+      queueMicrotask(() => child.stdout.write('magpie web on http://127.0.0.1:54324/\n'))
+      return child
+    }) as typeof import('node:child_process').spawn,
+    fetch: (async (input) => {
+      const url = new URL(String(input))
+      requests.push(url.pathname)
+      if (url.pathname === '/') return new Response(null, {
+        status: 303,
+        headers: { location: '/', 'set-cookie': 'magpie_web_54324=0123456789abcdef; Path=/' },
+      })
+      if (url.pathname === '/api/providers') return Response.json({ providers: [] })
+      if (url.pathname === '/icons/workbuddy-color.svg') return new Response('<svg/>', { headers: { 'content-type': 'image/svg+xml' } })
+      if (url.pathname === '/icons/missing.svg') return new Response(null, { status: 404 })
+      throw new Error(`unexpected path ${url.pathname}`)
+    }) as typeof fetch,
+  })
+
+  assert.equal(await service.requestAssetDataUrl('/icons/workbuddy-color.svg'), 'data:image/svg+xml;base64,PHN2Zy8+')
+  assert.equal(await service.requestAssetDataUrl('/icons/missing.svg'), null)
+  await assert.rejects(service.requestAssetDataUrl('/icons/%2e%2e%2fsecret.svg'), /Invalid Magpie Web asset route/u)
+  assert.deepEqual(requests, ['/', '/api/providers', '/', '/icons/workbuddy-color.svg', '/', '/icons/missing.svg'])
+  await service.dispose()
+})
+
 test('installed Magpie Web API end-to-end in a temporary isolated profile', { skip: process.env.CODINGNS_MAGPIE_WEB_INTEGRATION !== '1' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'codingns-magpie-web-integration-'))
   const home = join(root, 'home')
