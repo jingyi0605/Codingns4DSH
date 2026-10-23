@@ -4,7 +4,7 @@ import { setImmediate } from 'node:timers/promises'
 import test from 'node:test'
 import { MagpieUsageService, magpieAgentForAdapter, parseMagpieCliVersion, parseMagpieModelMetadata, parseMagpieModelOutput, parseMagpieQuotas } from '../src/host/cli-adapters/magpie-usage.js'
 import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js'
-import { calculateMagpiePopoverPlacement, registerSubscriptionSlot } from '../src/client/subscription-slot.js'
+import { SUBSCRIPTION_RESPONSIVE_CSS, calculateMagpiePopoverPlacement, registerSubscriptionSlot } from '../src/client/subscription-slot.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 
 const fixture = (name: string) => readFile(new URL(`./fixtures/${name}`, import.meta.url), 'utf8')
@@ -43,6 +43,22 @@ test('Magpie usage popover stays within viewport and shifts left of an open righ
   assert.deepEqual(calculateMagpiePopoverPlacement(800, 1200, 900), { left: -312, width: 400 })
   assert.deepEqual(calculateMagpiePopoverPlacement(500, 1200, 300), { left: -488, width: 276 })
   assert.deepEqual(calculateMagpiePopoverPlacement(16, 1280, null), { left: 0, width: 400 })
+})
+
+test('移动端用量弹层高度不超过浏览器可视高度的 75%，超出部分内部滚动', () => {
+  const mobileRule = SUBSCRIPTION_RESPONSIVE_CSS.match(/@media \(max-width: 768px\)\{.*?\}\}/u)?.[0]
+  assert.ok(mobileRule, '必须保留移动端媒体查询')
+  const popoverRule = mobileRule.match(/\.codingns4dsh-subscription-popover\{[^}]*\}/u)?.[0]
+  assert.ok(popoverRule, '移动端弹层必须由注入样式约束')
+  // 75vh 兜底、75dvh 覆盖：后者按移动端真实可视区计算，二者都不得写成整屏。
+  assert.match(popoverRule, /max-height:75vh!important/u)
+  assert.match(popoverRule, /max-height:75dvh!important/u)
+  assert.doesNotMatch(popoverRule, /max-height:(?:100vh|100dvh|calc\(100vh - 72px\))/u)
+  assert.match(popoverRule, /overflow-y:auto!important/u)
+  assert.match(popoverRule, /overflow-x:hidden!important/u)
+  // 弹层仍是底部浮层，不能因为限制高度而脱离视口。
+  assert.match(popoverRule, /position:fixed!important/u)
+  assert.match(popoverRule, /bottom:48px!important/u)
 })
 
 test('Magpie 0.1.1295 目录输出按准确 Agent ID 和模型 ID 解析', async () => {
