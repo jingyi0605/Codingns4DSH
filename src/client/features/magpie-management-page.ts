@@ -51,11 +51,16 @@ const PERIODS: readonly { readonly id: MagpieDashboardPeriod; readonly key: stri
   { id: 'month', key: 'magpie.month' },
   { id: 'all', key: 'magpie.all' },
 ]
-/** Top-level tab order mirrors native Magpie: Overview, Providers, Routing, Usage. */
+/**
+ * Top-level tab order mirrors native Magpie: Overview, Providers, Routing groups, Usage.
+ *
+ * The third tab edits the `group/<id>` entries Magpie draws under "Routing groups"; its label
+ * says so, because a provider editor on the Providers tab also edits that provider's routing.
+ */
 const PAGE_TABS: readonly { readonly id: PageTab; readonly label: string; readonly icon: string }[] = [
   { id: 'overview', label: 'magpie.overview', icon: '◫' },
   { id: 'providers', label: 'magpie.management.providers', icon: '◈' },
-  { id: 'groups', label: 'magpie.routing', icon: '⇄' },
+  { id: 'groups', label: 'magpie.management.groupsTab', icon: '⇄' },
   { id: 'usage', label: 'magpie.usage', icon: '◷' },
 ]
 /** Native Magpie order inside Usage: Subscriptions, Sessions, Requests. */
