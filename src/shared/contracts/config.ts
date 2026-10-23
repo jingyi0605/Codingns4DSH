@@ -105,6 +105,8 @@ export interface CodingNsSettings {
   mobileAccess: MobileAccessSettings
   /** 用量查询设置：超时控制单次网络查询，间隔控制自动刷新。 */
   subscriptionUsage: SubscriptionUsageSettings
+  /** 订阅用量页面的显示选项；存在 Host，刷新页面或换设备后都保持一致。 */
+  subscriptionReports?: SubscriptionReportSettings
   /** 全局智能助理设置；不绑定当前页面会话。 */
   assistant: AssistantSettings
   /**
@@ -181,6 +183,28 @@ export function normalizeSubscriptionUsageSettings(value: unknown): Subscription
     timeoutSecs: clampSettingsInteger(record.timeoutSecs, SUBSCRIPTION_USAGE_TIMEOUT_SECS_LIMITS, DEFAULT_SUBSCRIPTION_USAGE_SETTINGS.timeoutSecs),
     refreshIntervalMins: clampSettingsInteger(record.refreshIntervalMins, SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MINS_LIMITS, DEFAULT_SUBSCRIPTION_USAGE_SETTINGS.refreshIntervalMins),
   }
+}
+
+/** 订阅用量卡片上进度条与百分比的口径：已用多少，还是还剩多少。 */
+export type SubscriptionQuotaView = 'used' | 'remaining'
+
+/**
+ * 订阅用量页面的显示选项。
+ *
+ * 只保存"看哪个口径"这类纯展示偏好：它不改变 Host 拉取的数据，也不影响任何
+ * 额度计算，因此可以安全地下发给所有客户端并在跨设备时保持一致。
+ */
+export interface SubscriptionReportSettings {
+  /** 订阅卡默认展示已用还是剩余；口径只影响读法，不改变数据来源。 */
+  quotaView: SubscriptionQuotaView
+}
+
+export const DEFAULT_SUBSCRIPTION_REPORT_SETTINGS: SubscriptionReportSettings = { quotaView: 'remaining' }
+
+/** 归一化订阅用量显示选项：只接受两个已知口径，其余一律回落默认值。 */
+export function normalizeSubscriptionReportSettings(value: unknown): SubscriptionReportSettings {
+  const record = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
+  return { quotaView: record.quotaView === 'used' || record.quotaView === 'remaining' ? record.quotaView : DEFAULT_SUBSCRIPTION_REPORT_SETTINGS.quotaView }
 }
 
 function clampSettingsInteger(value: unknown, limits: { readonly min: number; readonly max: number }, fallback: number): number {
@@ -530,6 +554,7 @@ export const CODINGNS_WORKSPACE_SESSION_ENHANCEMENT_FIELD = 'workspaceSessionEnh
 export const CODINGNS_FILE_MANAGEMENT_FIELD = 'fileManagement'
 export const CODINGNS_MOBILE_ACCESS_FIELD = 'mobileAccess'
 export const CODINGNS_SUBSCRIPTION_USAGE_FIELD = 'subscriptionUsage'
+export const CODINGNS_SUBSCRIPTION_REPORTS_FIELD = 'subscriptionReports'
 export const CODINGNS_SESSION_TRANSLATION_FIELD = 'sessionTranslation'
 export const CODINGNS_GIT_MANAGEMENT_FIELD = 'gitManagement'
 export const CODINGNS_ASSISTANT_FIELD = 'assistant'
@@ -583,6 +608,7 @@ export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   fileManagement: DEFAULT_FILE_MANAGEMENT_SETTINGS,
   mobileAccess: DEFAULT_MOBILE_ACCESS_SETTINGS,
   subscriptionUsage: DEFAULT_SUBSCRIPTION_USAGE_SETTINGS,
+  subscriptionReports: DEFAULT_SUBSCRIPTION_REPORT_SETTINGS,
   assistant: DEFAULT_ASSISTANT_SETTINGS,
   lanAccessDsh: {
     autoStart: false,

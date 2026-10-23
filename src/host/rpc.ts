@@ -415,7 +415,7 @@ function operationsToPatch(operations: readonly CodingNsSettingsOperation[]): Re
 }
 
 function isAllowedSettingsPath(path: readonly string[]): boolean {
-  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage', 'sessionTranslation', 'gitManagement', 'assistant'].includes(path[0] ?? '')
+  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage', 'subscriptionReports', 'sessionTranslation', 'gitManagement', 'assistant'].includes(path[0] ?? '')
   if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'magpieManagement', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'quickApps', 'mobileAccess', 'peerHost', 'globalVoiceAssistant', 'sessionTranslation'].includes(path[1] ?? '')
   if (path[0] === 'workspaceSessionEnhancement') {
     return path.length === 2 && [
@@ -435,6 +435,10 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
   }
   if (path[0] === 'subscriptionUsage') {
     return path.length === 2 && ['timeoutSecs', 'refreshIntervalMins'].includes(path[1] ?? '')
+  }
+  // 订阅用量页面的显示口径同样是 Host 级设置：放行单个字段，避免整个对象被覆盖。
+  if (path[0] === 'subscriptionReports') {
+    return path.length === 2 && path[1] === 'quotaView'
   }
   if (path[0] === 'sessionTranslation') {
     const fields = ['inputEnabled', 'reasoningEnabled', 'assistantEnabled']

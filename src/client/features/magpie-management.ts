@@ -54,6 +54,8 @@ function MagpieManagementPanel({ services, onClose }: {
   return createElement(MagpieManagementPage, {
     rpc: services.rpc,
     locale: services.locale,
+    // 订阅卡的「已用 / 剩余」口径存在 Host 设置里，页面通过同一个存储读写。
+    settings: services.settings,
     onClose,
   })
 }

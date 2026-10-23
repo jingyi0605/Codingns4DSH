@@ -255,6 +255,11 @@ export const CodingNsSettingsSchema = z.object({
       .max(SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MINS_LIMITS.max)
       .default(DEFAULT_CODINGNS_SETTINGS.subscriptionUsage.refreshIntervalMins),
   }).default(DEFAULT_CODINGNS_SETTINGS.subscriptionUsage),
+  // 订阅用量页面的显示口径存在 Host：刷新页面、换浏览器或换设备后读法保持一致。
+  subscriptionReports: z.object({
+    quotaView: z.union([z.const('used'), z.const('remaining')])
+      .default(DEFAULT_CODINGNS_SETTINGS.subscriptionReports?.quotaView ?? 'remaining'),
+  }).default(DEFAULT_CODINGNS_SETTINGS.subscriptionReports ?? { quotaView: 'remaining' }),
 }) as unknown as z<CodingNsSettings>
 
 /**

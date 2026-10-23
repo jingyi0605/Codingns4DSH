@@ -1,4 +1,4 @@
-import { createElement, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type {
   MagpieDashboardPeriod,
@@ -18,6 +18,14 @@ import type {
   MagpieUsageSeriesPoint,
   MagpieUsageSession,
 } from '../../shared/contracts/magpie-management.js'
+import {
+  CODINGNS_SUBSCRIPTION_REPORTS_FIELD,
+  DEFAULT_SUBSCRIPTION_REPORT_SETTINGS,
+  normalizeSubscriptionReportSettings,
+  type SubscriptionQuotaView,
+  type SubscriptionReportSettings,
+} from '../../shared/contracts/config.js'
+import type { CodingNsSettingsSnapshot, CodingNsSettingsStore } from '../../dsh-capabilities/settings-store.js'
 import type { CodingNsLocale } from '../locale.js'
 import { useCodingNsTranslator } from '../locale.js'
 import type { CodingNsRpcClient } from './types.js'
@@ -43,6 +51,12 @@ type MagpiePageProps = {
   /** Optional initial tab, used by tests and static previews; the page owns the state after mount. */
   readonly initialPageTab?: PageTab
   readonly initialUsageTab?: UsageTab
+  /**
+   * Host 设置存储；提供后订阅卡的「已用 / 剩余」口径会读取并写回 Host 设置。
+   *
+   * 不提供时页面仍然可以渲染（测试和静态预览都走这条路径），此时口径恒为默认值。
+   */
+  readonly settings?: CodingNsSettingsStore<{ readonly subscriptionReports?: SubscriptionReportSettings }> | undefined
 }
 
 const PERIODS: readonly { readonly id: MagpieDashboardPeriod; readonly key: string }[] = [
@@ -71,8 +85,67 @@ const USAGE_TABS: readonly { readonly id: UsageTab; readonly label: string; read
 ]
 const PAGE_SIZE = 50
 
-export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview', initialUsageTab = 'quotas' }: MagpiePageProps): ReactElement {
+/** 订阅卡显示口径的切换项；顺序与截图一致：先「已用」，再「剩余」。 */
+const QUOTA_VIEWS: readonly { readonly id: SubscriptionQuotaView; readonly label: string }[] = [
+  { id: 'used', label: 'magpie.quotaViewUsed' },
+  { id: 'remaining', label: 'magpie.quotaViewRemaining' },
+]
+
+/**
+ * 读取 Host 保存的订阅卡显示口径，并返回一个写入函数。
+ *
+ * 设置只影响读法，所以读取失败或没有设置存储时静默回落到默认值：
+ * 页面照常显示额度，不会因为偏好读不到而变成空态。
+ */
+export function useQuotaView(
+  settings: MagpiePageProps['settings'],
+): {
+  readonly quotaView: SubscriptionQuotaView
+  readonly selectQuotaView: (next: SubscriptionQuotaView) => void
+  readonly writable: boolean
+  readonly saveFailed: boolean
+} {
+  const [saveFailed, setSaveFailed] = useState(false)
+  // `settings` 可能是 undefined；用稳定的空实现代替它交给 useSyncExternalStore。
+  const subscribe = useCallback(
+    (listener: () => void) => (settings === undefined ? () => undefined : settings.subscribe(listener)),
+    [settings],
+  )
+  const read = useCallback(
+    (): CodingNsSettingsSnapshot<{ readonly subscriptionReports?: SubscriptionReportSettings }> =>
+      settings === undefined
+        ? EMPTY_QUOTA_VIEW_SNAPSHOT
+        : settings.getSnapshot(),
+    [settings],
+  )
+  const snapshot = useSyncExternalStore(subscribe, read, read)
+  const quotaView = normalizeSubscriptionReportSettings(snapshot.value?.subscriptionReports).quotaView
+  const writable = settings !== undefined && snapshot.status === 'ready' && snapshot.writable
+  const selectQuotaView = useCallback((next: SubscriptionQuotaView): void => {
+    if (settings === undefined) return
+    setSaveFailed(false)
+    void settings.mutate([{
+      op: 'set',
+      path: [CODINGNS_SUBSCRIPTION_REPORTS_FIELD, 'quotaView'],
+      value: next,
+    }]).then((accepted) => {
+      if (!accepted) setSaveFailed(true)
+    }).catch(() => setSaveFailed(true))
+  }, [settings])
+  return { quotaView, selectQuotaView, writable, saveFailed }
+}
+
+/** 没有设置存储时的稳定空快照；`useSyncExternalStore` 要求同一引用。 */
+const EMPTY_QUOTA_VIEW_SNAPSHOT: CodingNsSettingsSnapshot<{ readonly subscriptionReports?: SubscriptionReportSettings }> = {
+  value: undefined,
+  revision: undefined,
+  writable: false,
+  status: 'unavailable',
+}
+
+export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview', initialUsageTab = 'quotas', settings }: MagpiePageProps): ReactElement {
   const t = useCodingNsTranslator(locale)
+  const { quotaView, selectQuotaView, writable: quotaViewWritable, saveFailed: quotaViewSaveFailed } = useQuotaView(settings)
   const [pageTab, setPageTab] = useState<PageTab>(initialPageTab)
   const [usageTab, setUsageTab] = useState<UsageTab>(initialUsageTab)
   const section = pageTab === 'usage' ? usageTab : pageTab
@@ -294,6 +367,17 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
           }, t(entry.label))),
         ),
       ),
+      // 口径切换只作用于「订阅」页的额度卡；其他用量报表没有"剩余"这个概念。
+      section === 'quotas' && createElement('div', { className: 'codingns-magpie-toolbar-right' },
+        createElement(QuotaViewSwitch, {
+          value: quotaView,
+          // 没有设置存储（测试/静态预览）时控件只展示、不写回，因此不禁用。
+          disabled: settings === undefined ? false : !quotaViewWritable,
+          failed: quotaViewSaveFailed,
+          onChange: selectQuotaView,
+          t,
+        }),
+      ),
     ),
     createElement('main', { className: 'codingns-magpie-main' },
       section === 'providers' || section === 'groups'
@@ -318,7 +402,7 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
                   ? createElement(SessionsPage, { dashboard, sessions: filteredSessions, search: sessionSearch, onSearch: setSessionSearch, onOpenSession: openSession, t })
                   : section === 'requests'
                     ? createElement(RequestsPage, { page: requestPage, loading: requestLoading, error: requestError, selectedSession, offset: requestOffset, onOffsetChange: setRequestOffset, onClearSession: clearSession, t })
-                    : createElement(QuotasPage, { dashboard, loading: dashboardLoading, t }),
+                    : createElement(QuotasPage, { dashboard, loading: dashboardLoading, quotaView, t }),
     ),
   )
 }
@@ -668,7 +752,63 @@ function NativeRequestCard({ request, t }: { readonly request: MagpieUsageReques
   )
 }
 
-export function QuotasPage({ dashboard, loading, t }: { readonly dashboard: MagpieUsageDashboard | null; readonly loading: boolean; readonly t: (key: string, params?: Record<string, string | number>) => string }): ReactElement {
+/**
+ * 订阅卡显示口径的切换控件。
+ *
+ * 与原生 Magpie 一样是一个两段式分段控件，固定贴在工具栏最右侧；选中结果写回
+ * Host 设置，因此刷新页面或换设备后仍保持同一读法。设置不可写时按钮禁用而不隐藏，
+ * 避免控件在布局里消失导致工具栏跳动。
+ */
+export function QuotaViewSwitch({ value, disabled, failed, onChange, t }: {
+  readonly value: SubscriptionQuotaView
+  readonly disabled: boolean
+  readonly failed: boolean
+  readonly onChange: (next: SubscriptionQuotaView) => void
+  readonly t: (key: string, params?: Record<string, string | number>) => string
+}): ReactElement {
+  const label = t('magpie.quotaViewLabel')
+  return createElement('div', { className: 'codingns-magpie-quota-view', role: 'group', 'aria-label': label },
+    // 图标只提供视觉锚点；口径名称放在 aria-label 里，读屏仍能读出整个控件。
+    createElement('span', { className: 'codingns-magpie-quota-view-icon', 'aria-hidden': true, title: failed ? t('magpie.quotaViewFailed') : label },
+      createElement(QuotaViewIcon, {}),
+    ),
+    createElement('div', { className: 'codingns-magpie-quota-view-segment' },
+      ...QUOTA_VIEWS.map((entry) => createElement('button', {
+        key: entry.id,
+        type: 'button',
+        className: `codingns-magpie-quota-view-option${value === entry.id ? ' is-active' : ''}`,
+        'aria-pressed': value === entry.id,
+        disabled,
+        onClick: () => {
+          if (value !== entry.id) onChange(entry.id)
+        },
+      }, t(entry.label))),
+    ),
+  )
+}
+
+/** 口径控件左侧的圆形图标：半实心圆表示"部分已用"，与进度条的语义一致。 */
+function QuotaViewIcon(): ReactElement {
+  return createElement('svg', {
+    width: 15,
+    height: 15,
+    viewBox: '0 0 16 16',
+    fill: 'none',
+    'aria-hidden': true,
+    className: 'codingns-magpie-quota-view-icon-svg',
+  },
+    createElement('circle', { cx: 8, cy: 8, r: 6.25, stroke: 'currentColor', strokeWidth: 1.5, opacity: 0.45 }),
+    createElement('path', { d: 'M8 1.75a6.25 6.25 0 0 1 0 12.5z', fill: 'currentColor' }),
+  )
+}
+
+export function QuotasPage({ dashboard, loading, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTINGS.quotaView, t }: {
+  readonly dashboard: MagpieUsageDashboard | null
+  readonly loading: boolean
+  /** 额度卡的显示口径；省略时按默认（剩余）渲染，保持既有调用方的读法。 */
+  readonly quotaView?: SubscriptionQuotaView
+  readonly t: (key: string, params?: Record<string, string | number>) => string
+}): ReactElement {
   const quotaUnavailable = dashboard?.quotaStatus !== 'available'
   const quotas = dashboard?.quotas ?? []
   const quotaHistory = dashboard?.quotaHistory ?? []
@@ -677,7 +817,7 @@ export function QuotasPage({ dashboard, loading, t }: { readonly dashboard: Magp
       ? createElement(EmptyState, { message: t(dashboard === null && loading ? 'magpie.loading' : 'magpie.quotaUnavailable'), loading: dashboard === null && loading })
       : quotas.length === 0
         ? createElement(EmptyState, { message: t('magpie.noQuotas') })
-        : createElement('div', { className: 'codingns-magpie-quota-grid' }, ...groupQuotaRowsByProvider(quotas).map((group) => createElement(QuotaGroupCard, { key: group.provider, group, t }))),
+        : createElement('div', { className: 'codingns-magpie-quota-grid' }, ...groupQuotaRowsByProvider(quotas).map((group) => createElement(QuotaGroupCard, { key: group.provider, group, quotaView, t }))),
     createElement('section', { className: 'codingns-magpie-panel codingns-magpie-history-panel' },
       createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('div', undefined,
         createElement('h2', undefined, t('magpie.quotaHistory')),
@@ -778,8 +918,9 @@ function ProgressSection({ title, rows, t, onOpen, header, limit = 8 }: {
  * 同一厂商的多个账号（如 WorkBuddy 的 4 个）共用一张卡，避免每个账号各占一张卡导致
  * 同类账号被拆散在网格各处；单账号厂商的读法与改造前一致。
  */
-function QuotaGroupCard({ group, t }: {
+function QuotaGroupCard({ group, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTINGS.quotaView, t }: {
   readonly group: ReturnType<typeof groupQuotaRowsByProvider<MagpieDashboardQuota>>[number]
+  readonly quotaView?: SubscriptionQuotaView
   readonly t: (key: string, params?: Record<string, string | number>) => string
 }): ReactElement {
   const first = group.accounts[0]!
@@ -810,6 +951,7 @@ function QuotaGroupCard({ group, t }: {
     ...visible.map((quota, index) => createElement(QuotaAccountSection, {
       key: `${group.provider}:${quota.user ?? index}`,
       quota,
+      quotaView,
       t,
       // 单账号时不重复显示账号段头，保持与改造前一致的读法。
       showHeading: multi,
@@ -818,8 +960,9 @@ function QuotaGroupCard({ group, t }: {
 }
 
 /** 卡内单个账号：账号行、窗口进度条与每日用量。 */
-function QuotaAccountSection({ quota, t, showHeading }: {
+function QuotaAccountSection({ quota, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTINGS.quotaView, t, showHeading }: {
   readonly quota: MagpieDashboardQuota
+  readonly quotaView?: SubscriptionQuotaView
   readonly t: (key: string, params?: Record<string, string | number>) => string
   readonly showHeading: boolean
 }): ReactElement {
@@ -836,12 +979,21 @@ function QuotaAccountSection({ quota, t, showHeading }: {
       ? createElement('div', { className: 'codingns-magpie-inline-empty' }, t('magpie.noLimit'))
       : quota.windows.map((window) => {
         const used = window.usedPercent ?? (window.remainingPercent === null ? null : 100 - window.remainingPercent)
+        const remaining = window.remainingPercent ?? (used === null ? null : 100 - used)
+        // 口径只改读法：同一组百分比既可以读成"已用多少"，也可以读成"还剩多少"，
+        // 进度条宽度随口径取对应值，顶部标签也换成对应的本地化文案。
+        const barPercent = quotaView === 'used' ? used : remaining
+        const headline = quotaView === 'used'
+          ? (used === null ? window.display ?? '—' : t('magpie.used', { percent: Math.round(used) }))
+          : (window.remainingPercent === null ? window.display ?? '—' : t('magpie.remaining', { percent: Math.round(window.remainingPercent) }))
         return createElement('div', { key: window.name, className: 'codingns-magpie-quota-window' },
           createElement('div', { className: 'codingns-magpie-quota-window-head' },
             createElement('strong', undefined, window.name),
-            createElement('span', undefined, window.remainingPercent === null ? window.display ?? '—' : t('magpie.remaining', { percent: Math.round(window.remainingPercent) })),
+            createElement('span', undefined, headline),
           ),
-          createElement('div', { className: 'codingns-magpie-track quota-track' }, used === null ? null : createElement('span', { style: { width: `${Math.max(0, Math.min(100, used))}%` } })),
+          createElement('div', { className: 'codingns-magpie-track quota-track' }, used === null || remaining === null
+            ? null
+            : createElement('span', { style: { width: `${Math.max(0, Math.min(100, barPercent ?? 0))}%` } })),
           createElement('div', { className: 'codingns-magpie-quota-foot' },
             createElement('span', undefined, window.amount !== null && window.limit !== null ? `${formatValue(window.amount)} / ${formatValue(window.limit)} ${window.unit ?? ''}` : window.display ?? ''),
             window.resetsAt !== null && createElement('span', undefined, t('magpie.resets', { time: formatTimestamp(window.resetsAt) })),
@@ -1134,6 +1286,17 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-usage-tab{flex:0 0 auto;min-height:26px;padding:0 13px;border:0;border-radius:999px;background:transparent;color:var(--mp-muted);font:inherit;font-size:${uiFontSize(13)};white-space:nowrap;cursor:pointer;transition:background .16s,color .16s}
 .codingns-magpie-usage-tab:hover{color:var(--mp-ink)}
 .codingns-magpie-usage-tab.is-active{background:var(--mp-surface);color:var(--mp-ink);font-weight:600;box-shadow:var(--dsw-elevation-soft,0 1px 2px rgba(0,0,0,.12))}
+/* 订阅口径切换贴工具栏最右：左键居中，说明图标与分段控件组成一个整体，不参与左侧标签的换行。 */
+.codingns-magpie-toolbar-right{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex:0 0 auto;margin-left:auto;min-width:0}
+.codingns-magpie-quota-view{display:flex;align-items:center;gap:8px;flex:0 0 auto;min-width:0;color:var(--mp-muted);font-size:${uiFontSize(13)}}
+.codingns-magpie-quota-view-icon{display:grid;place-items:center;flex:0 0 auto;width:22px;height:22px;color:var(--mp-muted)}
+.codingns-magpie-quota-view-icon-svg{display:block}
+.codingns-magpie-quota-view-segment{display:flex;align-items:center;gap:2px;padding:2px;border-radius:999px;background:var(--mp-layer)}
+.codingns-magpie-quota-view-option{flex:0 0 auto;min-height:26px;padding:0 13px;border:0;border-radius:999px;background:transparent;color:var(--mp-muted);font:inherit;font-size:${uiFontSize(13)};white-space:nowrap;cursor:pointer;transition:background .16s,color .16s}
+.codingns-magpie-quota-view-option:hover{color:var(--mp-ink)}
+.codingns-magpie-quota-view-option.is-active{background:var(--mp-surface);color:var(--mp-ink);font-weight:600;box-shadow:var(--dsw-elevation-soft,0 1px 2px rgba(0,0,0,.12))}
+.codingns-magpie-quota-view-option:focus-visible{outline:2px solid color-mix(in srgb,var(--mp-accent) 55%,transparent);outline-offset:1px}
+.codingns-magpie-quota-view-option:disabled{opacity:.5;cursor:not-allowed}
 .codingns-magpie-statstrip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border:.5px solid var(--mp-line);border-radius:var(--mp-radius);background:var(--mp-card);margin-bottom:14px;overflow:hidden}
 .codingns-magpie-statcell{display:flex;flex-direction:column;gap:5px;min-width:0;padding:15px 18px;border-left:.5px solid var(--mp-line)}
 .codingns-magpie-statcell:first-child{border-left:0}
