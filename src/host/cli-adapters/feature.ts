@@ -1071,12 +1071,25 @@ function normalizeDshModelGroup(value: unknown): CodingNsCliModelCatalog['groups
 /**
  * DSH 原生 Provider 可能只返回一个 finish(stop)。不能把这个空回合当作成功，
  * 否则 Session 会落下一条空 assistant/message，用户只能看到“一秒结束”。
+ *
+ * error finish 携带 Provider 的真实失败原因（状态码、上游错误消息、错误码），
+ * 必须原样透传：替换成统一文案会把 400/429/凭证失效等不同故障折叠成同一句
+ * “未返回任何有效事件”，既无法排查也不可分类告警。统一兜底文案只用于一种
+ * 情形——流以 stop（或无 finish）干净结束且没有任何有效事件，此时没有任何
+ * 原始错误可透传。
  */
 async function* guardDshNativeStream(next: () => AsyncIterable<unknown>): AsyncIterable<unknown> {
   let meaningful = false
   const terminal: unknown[] = []
   for await (const chunk of next()) {
     if (isDshFinishChunk(chunk)) {
+      // error finish 本身就是“有效事件”：立即透传，并标记 meaningful，
+      // 让此前缓冲的非 error finish（正常情况下不会出现）也在收尾时放出。
+      if (isDshErrorFinishChunk(chunk)) {
+        meaningful = true
+        yield chunk
+        continue
+      }
       terminal.push(chunk)
       continue
     }
@@ -1105,6 +1118,12 @@ async function* delegationErrorStream(message: string): AsyncIterable<unknown> {
 function isDshFinishChunk(value: unknown): boolean {
   const record = asRecord(value)
   return record?.type === 'finish'
+}
+
+/** error finish（reason.kind === 'error'）携带 Provider 的原始失败，是必须透传的有效事件。 */
+function isDshErrorFinishChunk(value: unknown): boolean {
+  const record = asRecord(value)
+  return record?.type === 'finish' && asRecord(record.reason)?.kind === 'error'
 }
 
 function isMeaningfulDshChunk(value: unknown): boolean {

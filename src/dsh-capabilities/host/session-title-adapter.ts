@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { randomUUID } from 'node:crypto'
 import { createDshCapabilityRegistry } from '../routes.js'
+import { fromCliProviderId } from '../../shared/cli-provider-route.js'
 import { fallbackOptimizedSessionTitle, isCompleteSessionTitle, normalizeGeneratedSessionTitle, SESSION_TITLE_SYSTEM_PROMPT } from '../../shared/session-title.js'
 
 interface TitleInput { readonly seq: number; readonly text: string }
@@ -29,7 +30,10 @@ interface TitleRequest {
   readonly currentTitle?: unknown
   readonly [key: string]: unknown
 }
-interface LlmRuntime { stream(options: Readonly<Record<string, unknown>>): AsyncIterable<Record<string, any>> }
+interface LlmRuntime {
+  resolveModelInfo?(provider: string, model: string, signal?: AbortSignal): Promise<{ reasoning?: { efforts: readonly { id: string }[] } }>
+  stream(options: Readonly<Record<string, unknown>>): AsyncIterable<Record<string, any>>
+}
 interface EventRuntime { on(name: string, listener: (options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>, options: { global: true }): unknown }
 
 export interface SessionTitleOptimizationAdapter {
@@ -38,7 +42,8 @@ export interface SessionTitleOptimizationAdapter {
 }
 
 /**
- * 保留原生提供方和模型，不替换全局标题生成器，也不影响普通对话/压缩请求。
+ * 原生 API 路由保持不变，CLI 虚拟路由改用已配置的 DSH 原生默认模型。
+ * 不替换全局标题生成器，也不影响普通对话/压缩请求。
  * 仅在原生标题的 llm/stream 边界增强提示词；接纳、手动命名保护及并发取代仍由 DSH 管理。
  */
 export function createSessionTitleOptimizationAdapter(ctx: unknown, dshVersion: string): SessionTitleOptimizationAdapter | undefined {
@@ -68,7 +73,9 @@ export function createSessionTitleOptimizationAdapter(ctx: unknown, dshVersion: 
     active.add(controller)
     const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(30_000), ...(request.signal === undefined ? [] : [request.signal])])
     try {
-      const title = await nested.run(true, () => generateTitle(llm, session, request, inputs, signal))
+      signal.throwIfAborted()
+      const routed = await resolveTitleRequest(ctx, llm, request, signal)
+      const title = await nested.run(true, () => generateTitle(llm, session, routed, inputs, signal))
       signal.throwIfAborted()
       yield { type: 'block-start', index: 0, blockType: 'text' }
       yield { type: 'text-delta', index: 0, text: title }
@@ -102,6 +109,32 @@ export function createSessionTitleOptimizationAdapter(ctx: unknown, dshVersion: 
   }
 }
 
+/** CLI Provider 只承载 Agent 回合，不具备原生辅助文本调用能力。 */
+async function resolveTitleRequest(ctx: unknown, llm: LlmRuntime, request: TitleRequest, signal: AbortSignal): Promise<TitleRequest> {
+  if (fromCliProviderId(request.provider) === undefined) return request
+  let selection: { provider?: unknown; model?: unknown; reasoningEffort?: unknown } | undefined
+  try {
+    const service = (ctx as { get?(name: string): unknown }).get?.('agentDefaultModel') as {
+      currentSelection?(): typeof selection
+    } | undefined
+    selection = service?.currentSelection?.()
+  } catch { /* 精简 Host 可能没有原生默认模型服务，按缺少配置处理。 */ }
+  const provider = typeof selection?.provider === 'string' ? selection.provider.trim() : ''
+  const model = typeof selection?.model === 'string' ? selection.model.trim() : ''
+  if (!provider || !model || fromCliProviderId(provider) !== undefined) {
+    throw Object.assign(new Error('Session title generation requires a configured native DSH default model or an explicit native title model.'), {
+      code: 'CODINGNS_SESSION_TITLE_NATIVE_MODEL_REQUIRED',
+    })
+  }
+  // 与原生标题生成器一致，改道后按目标模型选择最低思考档位，避免消耗短标题预算。
+  const info = await llm.resolveModelInfo?.(provider, model, signal)
+  signal.throwIfAborted()
+  const reasoningEffort = llm.resolveModelInfo === undefined
+    ? typeof selection?.reasoningEffort === 'string' ? selection.reasoningEffort : undefined
+    : info?.reasoning?.efforts[0]?.id
+  return { ...request, provider, model, reasoningEffort }
+}
+
 /**
  * 把「当前标题」并入标题系统提示。
  *
@@ -132,6 +165,7 @@ async function generateTitle(llm: LlmRuntime, session: NativeSession, request: T
       titleProvider: 'codingns-title-optimization', messageSeqs: inputs.map((input) => input.seq),
       route: { provider: request.provider, model: request.model },
       system: options.system, messages, maxTokens: options.maxTokens,
+      ...(request.reasoningEffort === undefined ? {} : { reasoningEffort: request.reasoningEffort }),
     })
     const text = await readStreamTitle(llm.stream(options), signal)
     const title = normalizeGeneratedSessionTitle(text)

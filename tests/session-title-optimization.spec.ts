@@ -5,6 +5,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { Context } from '@deepseek-ai/cordis'
 import { createSessionTitleOptimizationAdapter } from '../src/dsh-capabilities/host/session-title-adapter.js'
 import { createSessionTitleOptimizationFeature } from '../src/host/features/session-title-optimization.js'
+import { createDshVirtualProviderRegistration } from '../src/host/cli-adapters/dsh-virtual-providers.js'
 import { WorkspaceSessionEnhancementPanel } from '../src/client/features/workspace-session-enhancement-panel.js'
 import { CodingNsSettingsSchema } from '../src/host/settings.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
@@ -20,7 +21,7 @@ import type { CodingNsSettingsOperation } from '../src/dsh-capabilities/settings
 type Reply = string | Error | ((options: any) => AsyncIterable<any>)
 
 /** 模拟原生流中间件的递归调用、持久标题投影和模型终态，不访问运行中的宿主。 */
-function fixture(replies: Reply[] = ['排查 PeerHost 远程会话访问问题'], extra: Record<string, unknown> = {}) {
+function fixture(replies: Reply[] = ['排查 PeerHost 远程会话访问问题'], extra: Record<string, unknown> = {}, defaultSelection?: unknown) {
   let listener: any
   let removals = 0
   const calls: any[] = [], logs: any[] = []
@@ -31,6 +32,7 @@ function fixture(replies: Reply[] = ['排查 PeerHost 远程会话访问问题']
   } }
   const llm = {
     listProviders: () => [], listModels: async () => [],
+    resolveModelInfo: undefined as undefined | ((provider: string, model: string, signal?: AbortSignal) => Promise<{ reasoning?: { efforts: readonly { id: string }[] } }>),
     stream(options: any): AsyncIterable<any> {
       const next = async function* () {
         calls.push(options)
@@ -45,6 +47,7 @@ function fixture(replies: Reply[] = ['排查 PeerHost 远程会话访问问题']
   }
   const ctx = {
     llm, sessions: { get: () => session }, sessionTitle: { get: () => title },
+    get(name: string) { return name === 'agentDefaultModel' ? { currentSelection: () => defaultSelection } : undefined },
     on(_name: string, callback: any) { listener = callback; return () => { listener = undefined; removals++ } },
   }
   const adapter = createSessionTitleOptimizationAdapter(ctx, '0.2.1-alpha.1')!
@@ -154,6 +157,136 @@ test('模型失败的兜底优先保留完整短语，长文字显式省略并�
   assert.ok(Buffer.byteLength(long) <= 80)
   assert.ok(long.length > '通过 Peerhost访问远程工作区会'.length)
   assert.equal(fallbackOptimizedSessionTitle('发布 0.2.1-beta.7'), '发布 0.2.1-beta.7')
+})
+
+const pathPrompt = String.raw`"C:\课程资料\强化课程\强化\强化上\搜索\深搜进阶2（剪枝）\剪枝20261021.pptx"，这个ppt的p6是一个全排列题目的dfs搜索树，但是没有题目只有搜索树看不清楚，你把全排列题目简化后放上去`
+
+test('路径开头的兜底优先保留任务描述，盘符和 URL 冒号不是断句', () => {
+  assert.equal(fallbackOptimizedSessionTitle(pathPrompt), '这个ppt的p6是一个全排列题目的dfs搜索树')
+  for (const path of [String.raw`C:\课程\搜索\剪枝20261021.pptx`, String.raw`"C:\My Courses\搜索\剪枝20261021.pptx"`]) {
+    assert.equal(fallbackOptimizedSessionTitle(`${path}，补充全排列题目`), '补充全排列题目')
+    assert.equal(fallbackOptimizedSessionTitle(path), '剪枝20261021.pptx')
+  }
+  const embedded = fallbackOptimizedSessionTitle(String.raw`检查 C:\项目\一个非常长的目录名称\另一个非常长的目录名称\配置文件.json 的内容`)
+  assert.match(embedded, /…$/u)
+  assert.notEqual(embedded, '检查 C')
+  assert.ok(Buffer.byteLength(embedded) <= 80)
+  const url = fallbackOptimizedSessionTitle(`https://example.com/${'long-path/'.repeat(12)} 检查访问问题`)
+  assert.match(url, /^https:\/\/.+…$/u)
+})
+
+test('CLI 标题请求使用配置的 DSH 原生默认模型，重概括与日志沿用该路由', async (t) => {
+  const f = fixture(['过长标题'.repeat(30), '为全排列搜索树补充题目'], {
+    provider: 'codingns-cli-claude-code', model: 'claude-opus-5.5', reasoningEffort: 'max',
+  }, { provider: 'native-provider', model: 'native-model', reasoningEffort: 'off' })
+  t.after(() => f.adapter.dispose())
+  f.adapter.setEnabled(true)
+  assert.equal(await output(f.ctx.llm.stream(f.request)), '为全排列搜索树补充题目')
+  assert.equal(f.calls.length, 2)
+  for (const call of f.calls) {
+    assert.equal(call.provider, 'native-provider')
+    assert.equal(call.model, 'native-model')
+    assert.equal(call.reasoningEffort, 'off')
+    assert.equal(call.sessionId, f.request.sessionId)
+    assert.equal(call.purpose, 'session-title')
+  }
+  assert.deepEqual(f.calls[1].messages.at(-2).source, { kind: 'model', provider: 'native-provider', model: 'native-model' })
+  assert.equal(f.logs.length, 2)
+  assert.ok(f.logs.every((log) => log.data.route.provider === 'native-provider' && log.data.route.model === 'native-model'))
+  assert.equal(f.request.provider, 'codingns-cli-claude-code', '保留原生冻结请求')
+})
+
+test('CLI 标题改道后采用原生模型最低思考档位，避免短输出预算被思考耗尽', async (t) => {
+  const f = fixture([async function* (options) {
+    if (options.reasoningEffort !== 'off') {
+      yield { type: 'finish', reason: { kind: 'max-tokens' } }
+      return
+    }
+    yield { type: 'text-delta', text: '为全排列搜索树补充题目' }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  }], { provider: 'codingns-cli-codex', model: 'cli-model', reasoningEffort: 'max' }, {
+    provider: 'native', model: 'chat', reasoningEffort: 'high',
+  })
+  t.after(() => f.adapter.dispose())
+  f.ctx.llm.resolveModelInfo = async (provider, model, signal) => {
+    assert.equal(provider, 'native')
+    assert.equal(model, 'chat')
+    assert.ok(signal instanceof AbortSignal)
+    return { reasoning: { efforts: [{ id: 'off' }, { id: 'high' }] } }
+  }
+  f.adapter.setEnabled(true)
+  assert.equal(await output(f.ctx.llm.stream(f.request)), '为全排列搜索树补充题目')
+  assert.equal(f.logs[0].data.reasoningEffort, 'off')
+})
+
+test('CLI 标题缺少原生默认模型时明确失败，路径兜底不伪造模型成功', async (t) => {
+  for (const selection of [undefined, {}, { provider: 'native', model: '' }, { provider: 'codingns-cli-codex', model: 'gpt-6' }]) {
+    const f = fixture([], {
+      provider: 'codingns-cli-claude-code', model: 'claude-opus-5.5',
+      messages: [{ role: 'user', content: [{ type: 'text', text: `Generate the session title from this JSON array of human messages:\n${JSON.stringify([{ seq: 1, text: pathPrompt }])}` }] }],
+    }, selection)
+    t.after(() => f.adapter.dispose())
+    f.adapter.setEnabled(true)
+    await assert.rejects(output(f.ctx.llm.stream(f.request)), { code: 'CODINGNS_SESSION_TITLE_NATIVE_MODEL_REQUIRED' })
+    assert.equal(f.calls.length, 0, '不能调用虚拟 Provider 或随意选择目录中的模型')
+    assert.equal(f.read().title, '这个ppt的p6是一个全排列题目的dfs搜索树')
+    assert.equal(f.read().source.kind, 'fallback')
+  }
+})
+
+test('CLI 改道查询模型能力时保留失败与取消，不启动后续生成', async (t) => {
+  for (const cancel of [false, true]) {
+    const f = fixture([], { provider: 'codingns-cli-codex', model: 'cli-model' }, { provider: 'native', model: 'chat' })
+    t.after(() => f.adapter.dispose())
+    let started!: () => void
+    const ready = new Promise<void>((resolve) => { started = resolve })
+    let resolveInfo!: (info: {}) => void
+    f.ctx.llm.resolveModelInfo = async () => {
+      started()
+      if (!cancel) throw Object.assign(new Error('model lookup failed'), { code: 'MODEL_LOOKUP_FAILED' })
+      return new Promise((resolve) => { resolveInfo = resolve })
+    }
+    f.adapter.setEnabled(true)
+    const pending = output(f.ctx.llm.stream(f.request))
+    const rejected = assert.rejects(pending, cancel ? /cancelled lookup/u : { code: 'MODEL_LOOKUP_FAILED' })
+    await ready
+    if (cancel) {
+      f.controller.abort(new Error('cancelled lookup'))
+      resolveInfo({})
+    }
+    await rejected
+    assert.equal(f.calls.length, 0)
+    assert.equal(f.logs.some((log) => log.type === 'session/title-llm-request'), false)
+    if (cancel) assert.equal(f.logs.length, 0, '取消能力查询不能补写兜底')
+  }
+})
+
+test('CLI 标题路由仍保留原生认证失败、人工命名保护与取消', async (t) => {
+  for (const cancel of [false, true]) {
+    let started!: () => void
+    let fail!: (error: Error) => void
+    const ready = new Promise<void>((resolve) => { started = resolve })
+    const f = fixture([async function* (options) {
+      started()
+      await new Promise<void>((_resolve, reject) => {
+        fail = reject
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true })
+      })
+    }], { provider: 'codingns-cli-claude-code', model: 'cli-model', reasoningEffort: 'max' }, { provider: 'native', model: 'chat' })
+    t.after(() => f.adapter.dispose())
+    f.adapter.setEnabled(true)
+    const pending = output(f.ctx.llm.stream(f.request))
+    await ready
+    assert.equal(f.calls[0].reasoningEffort, undefined, '不能把 CLI 思考强度传给原生模型')
+    if (cancel) f.controller.abort(new Error('native cancelled'))
+    else {
+      f.rename()
+      fail(Object.assign(new Error('credential rejected'), { code: 'INVALID_CREDENTIAL' }))
+    }
+    await assert.rejects(pending, cancel ? /native cancelled/u : { code: 'INVALID_CREDENTIAL' })
+    assert.equal(f.calls.length, 1)
+    assert.equal(f.read().title, cancel ? '通过 Peerhost访问远程工作区会' : '我的手动标题')
+  }
 })
 
 test('开关关闭时原请求及结果原样透传，开启后使用原模型并记录实际请求', async (t) => {
@@ -306,10 +439,14 @@ test('真实 Cordis 服务探测和 waterfall 保留其他中间件，嵌套调�
   const app = new Context()
   t.after(() => app.fiber.dispose())
   const calls: any[] = [], observed: any[] = []
+  let virtualAdapter: any
+  let selection = { provider: 'native-api', model: 'title-model' }
   const llm = {
     listProviders: () => [], listModels: async () => [],
+    registerAdapter(_providers: string[], value: unknown) { virtualAdapter = value; return () => { virtualAdapter = undefined } },
     stream(options: any): AsyncIterable<any> {
       return (app as any).waterfall(llm, 'llm/stream', options, async function* (request: any) {
+        if (request.provider === 'codingns-cli-claude-code') { yield* virtualAdapter.stream(request); return }
         calls.push(request)
         yield { type: 'text-delta', index: 0, text: '优化工作区会话标题生成' }
         yield { type: 'finish', reason: { kind: 'stop' } }
@@ -320,6 +457,7 @@ test('真实 Cordis 服务探测和 waterfall 保留其他中间件，嵌套调�
     ctx.provide('llm', llm)
     ctx.provide('sessionTitle', f.ctx.sessionTitle)
     ctx.provide('sessions', f.ctx.sessions)
+    ctx.provide('agentDefaultModel', { currentSelection: () => selection })
     // 模拟先于标题优化安装的 CLI 中间件：标题请求继续走原生链。
     ;(ctx as any).on('llm/stream', async function* (options: any, next: () => AsyncIterable<any>) {
       observed.push(options)
@@ -337,8 +475,19 @@ test('真实 Cordis 服务探测和 waterfall 保留其他中间件，嵌套调�
   assert.equal(calls.length, 1)
   assert.match(calls[0].system, /12～24/u)
   assert.equal(observed.length, 2, '外层与嵌套请求都保留先前的中间件')
+  const virtual = createDshVirtualProviderRegistration(app)!
+  t.after(() => virtual.dispose())
+  virtual.setProviders(['claude-code'])
+  const cliRequest = { ...f.request, provider: 'codingns-cli-claude-code', model: 'cli-model' }
+  assert.equal(await output(llm.stream(cliRequest)), '优化工作区会话标题生成')
+  assert.equal(calls.at(-1).provider, 'native-api', '真实 Cordis 中从 Context 读取默认模型，不能落到虚拟 Provider')
+  selection = { provider: 'other-native-api', model: 'other-title-model' }
+  await output(llm.stream(cliRequest))
+  assert.equal(calls.at(-1).model, 'other-title-model', '每次调用读取当前配置')
+  assert.equal(observed.length, 6)
   adapter.dispose()
   adapter.dispose()
+  await assert.rejects(output(llm.stream(cliRequest)), /CODINGNS_EXTERNAL_PROVIDER_STREAM_NOT_INTERCEPTED/u)
   await output(llm.stream(f.request))
   assert.equal(calls.at(-1), f.request, '释放后不残留标题中间件')
 })

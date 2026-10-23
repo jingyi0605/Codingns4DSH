@@ -31,21 +31,27 @@ export function isCompleteSessionTitle(value: string): boolean {
 
 /** 失败时优先保留完整的首句/短语；无断句边界时明确标注省略，而不是伪装成完整标题。 */
 export function fallbackOptimizedSessionTitle(input: string): string {
-  const text = input.replace(/(?:\u001b\]|\u009d)(?:(?!\u0007|\u001b\\)[\s\S])*(?:\u0007|\u001b\\|$)/gu, '')
+  const clean = input.replace(/(?:\u001b\]|\u009d)(?:(?!\u0007|\u001b\\)[\s\S])*(?:\u0007|\u001b\\|$)/gu, '')
     .replace(/(?:\u001b\[|\u009b)[0-?]*[ -/]*[@-~]/gu, '')
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u206f\ufeff]/gu, '')
     .replace(/\s+/gu, ' ').trim()
+  // 文件路径是任务对象；有后续说明时优先展示说明，只有路径时保留文件名。
+  const leadingPath = /^@?(?:(["'`])([A-Za-z]:[\\/].+?)\1|([A-Za-z]:[\\/][^\s，,；;。！？!?]+))(?=$|[\s，,；;：:])/u.exec(clean)
+  const path = leadingPath?.[2] ?? leadingPath?.[3]
+  const description = leadingPath === null ? '' : clean.slice(leadingPath[0].length).replace(/^[\s，,；;：:]+/u, '')
+  const text = path === undefined ? clean : description || path.split(/[\\/]/u).filter(Boolean).at(-1) || clean
   if (!text) return ''
   if (isCompleteSessionTitle(text)) return text
-  const clauses = text.match(/[^。！？!?，,；;：:]+[。！？!?，,；;：:]?/gu) ?? []
+  // ASCII 冒号可能属于盘符、URL 或时间，不能据此把前缀当成完整短语。
+  const clauses = text.match(/[^。！？!?，,；;：]+[。！？!?，,；;：]?/gu) ?? []
   let complete = ''
   let prefix = ''
   for (const clause of clauses) {
     prefix += clause
-    const candidate = prefix.replace(/[。！？!?，,；;：:]$/u, '').trim()
+    const candidate = prefix.replace(/[。！？!?，,；;：]$/u, '').trim()
     if (!isCompleteSessionTitle(candidate)) break
     // 最后一个片段没有标点时不是可信的断句边界。
-    if (/[。！？!?，,；;：:]$/u.test(prefix)) complete = candidate
+    if (/[。！？!?，,；;：]$/u.test(prefix)) complete = candidate
   }
   if (complete) return complete
   let bounded = ''
