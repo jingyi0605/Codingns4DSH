@@ -248,3 +248,50 @@ function creditQuota(provider: string, name: string, remaining: number, limit: n
     daily: { since: null, days: [] },
   }
 }
+
+
+
+test('所有账号默认展开，多账号卡片不再藏起后几个账号', () => {
+  const multi = [
+    { ...quota('workbuddy'), user: 'a@example.com' },
+    { ...quota('workbuddy'), user: 'b@example.com' },
+    { ...quota('workbuddy'), user: 'c@example.com' },
+  ]
+  const markup = renderToStaticMarkup(createElement(QuotasPage, { dashboard: dashboard(multi), loading: false, t }))
+  for (const account of ['a@example.com', 'b@example.com', 'c@example.com']) {
+    assert.ok(markup.includes(account), `${account} is visible without clicking`)
+  }
+  assert.equal((markup.match(/codingns-magpie-quota-account-head/gu) ?? []).length, 3, 'every account keeps its own heading')
+  assert.match(markup, /aria-expanded="true"/u, 'the collapse affordance starts expanded')
+  assert.match(markup, /收起其余账号/u, 'the toggle offers to collapse, not to expand')
+  assert.doesNotMatch(markup, /另 \d+ 个/u, 'no account is reported as hidden by default')
+})
+
+test('订阅磁贴用多列流式排布，短卡不留大片空白', () => {
+  const renderer = createHookRenderer(
+    () => createElement(MagpieManagementPage, {
+      rpc: { call: async () => ({ ok: true as const, value: null }) },
+      locale,
+      onClose: () => undefined,
+      initialPageTab: 'usage',
+      initialUsageTab: 'quotas',
+      settings: memorySettings(),
+    }),
+    {},
+  )
+  const markup = renderToStaticMarkup(renderer.render() as never)
+  renderer.dispose()
+
+  const grid = /\.codingns-magpie-quota-grid\{([^}]*)\}/u.exec(markup)?.[1] ?? ''
+  assert.match(grid, /column-width:340px/u, 'the tile width drives how many columns fit')
+  assert.match(grid, /column-gap:12px/u, 'columns keep the shared gap')
+  assert.doesNotMatch(grid, /display:grid/u, 'the tile container is a multi-column flow, not a row grid')
+  assert.doesNotMatch(grid, /grid-template-columns/u, 'no row-based column template')
+
+  const card = /\.codingns-magpie-quota-card\{display:inline-block[^}]*\}/u.exec(markup)?.[0] ?? ''
+  assert.match(card, /width:100%/u, 'a tile fills its column')
+  assert.match(card, /break-inside:avoid/u, 'a tile is never split across two columns')
+  assert.match(card, /page-break-inside:avoid/u, 'the same guard is provided for paged rendering')
+
+  assert.match(markup, /\.codingns-magpie-quota-grid\{column-width:auto;column-count:1\}/u, 'phones fall back to a single column')
+})
