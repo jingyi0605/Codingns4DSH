@@ -269,10 +269,11 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
           type: 'button',
           className: 'codingns-magpie-icon-button',
           disabled: dashboardLoading || managementLoading || managementWriting,
+          'aria-busy': dashboardLoading || managementLoading,
           onClick: () => setRefreshKey((value) => value + 1),
           'aria-label': t(dashboardLoading || managementLoading ? 'magpie.refreshing' : 'magpie.refresh'),
           title: t(dashboardLoading || managementLoading ? 'magpie.refreshing' : 'magpie.refresh'),
-        }, createElement(RefreshIcon)),
+        }, createElement(RefreshIcon, { busy: dashboardLoading || managementLoading })),
       ),
     ),
     usageReports && createElement('div', { className: 'codingns-magpie-toolbar has-tabs' },
@@ -820,7 +821,6 @@ function Sparkline({ values }: { readonly values: readonly number[] }): ReactEle
   )
 }
 
-
 function EmptyState({ message, loading = false }: { readonly message: string; readonly loading?: boolean }): ReactElement {
   return createElement('div', { className: `codingns-magpie-empty${loading ? ' is-loading' : ''}`, role: loading ? 'status' : 'note' },
     createElement('span', { className: 'codingns-magpie-empty-mark', 'aria-hidden': true }, loading ? createElement('span', { className: 'codingns-magpie-spinner' }) : '∅'),
@@ -834,12 +834,17 @@ function InlineNotice({ message }: { readonly message: string }): ReactElement {
 
 
 
-function RefreshIcon(): ReactElement {
-  return createElement('svg', { width: 17, height: 17, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.8, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true },
-    createElement('path', { d: 'M20 11a8 8 0 0 0-14.8-3L3 11' }), createElement('path', { d: 'M3 5v6h6' }),
-    createElement('path', { d: 'M4 13a8 8 0 0 0 14.8 3L21 13' }), createElement('path', { d: 'M21 19v-6h-6' }),
+/** 刷新图标沿用 DSH 的 1.6 描边简约样式；加载时整体旋转，静默重绘状态下保持静止。 */
+/** 刷新图标沿用 DSH 的 1.6 描边简约样式；加载时整体旋转，静默重绘状态下保持静止。 */
+function RefreshIcon({ busy = false }: { readonly busy?: boolean }): ReactElement {
+  return createElement('svg', {
+    className: `codingns-magpie-refresh-icon${busy ? ' is-spinning' : ''}`,
+    width: 16, height: 16, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.6,
+    strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': true,
+  },
+    createElement('path', { d: 'M20 11a8 8 0 1 0-2.3 5.6' }), createElement('path', { d: 'M20 4.5V11h-6.5' }),
   )
-}
+
 
 
 function SearchIcon(): ReactElement {
@@ -1014,6 +1019,9 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-topbar-right{display:flex;align-items:center;justify-self:end;gap:8px;min-width:0}
 .codingns-magpie-icon-button{display:grid;place-items:center;flex:0 0 auto;width:30px;height:30px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--mp-muted);cursor:pointer;transition:background .15s,color .15s}
 .codingns-magpie-icon-button:hover{background:var(--mp-hover);color:var(--mp-ink)}
+.codingns-magpie-icon-button:active{background:var(--mp-layer)}
+.codingns-magpie-icon-button:focus-visible{outline:2px solid color-mix(in srgb,var(--mp-accent) 55%,transparent);outline-offset:1px}
+.codingns-magpie-icon-button:disabled{opacity:.5;cursor:default;background:transparent;color:var(--mp-muted)}
 .codingns-magpie-tabs{display:flex;align-items:center;justify-content:center;gap:2px;justify-self:center;min-width:0;overflow-x:auto;scrollbar-width:none}
 .codingns-magpie-tabs::-webkit-scrollbar{display:none}
 .codingns-magpie-tab{position:relative;display:inline-flex;align-items:center;gap:7px;flex:0 0 auto;min-height:42px;padding:0 12px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--mp-muted);font:inherit;font-size:${uiFontSize(13)};white-space:nowrap;cursor:pointer;transition:color .16s,background .16s}
