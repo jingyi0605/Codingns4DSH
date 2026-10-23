@@ -163,8 +163,8 @@ export function formatQuotaBalance(balance: QuotaBalance): string {
 export interface QuotaCreditBalance {
   /** 剩余可用的积分。 */
   readonly remaining: number
-  /** 额度上限；上游只给一个数时与 `remaining` 相同。 */
-  readonly limit: number
+  /** 额度上限；上游只给百分比或总数时可能缺失。 */
+  readonly limit: number | null
   /** 上游单位（`credits`、`points` 等）；只有窗口名时可退回窗口名。 */
   readonly unit: string
   /** 上游给出的展示原文（如 `0 / 350`），用于 tooltip 与弹层。 */
@@ -180,25 +180,16 @@ export function readWindowCreditBalance(window: MagpieQuotaWindow): QuotaCreditB
   const named = QUOTA_CREDIT_UNIT_PATTERN.test(window.name)
   const typed = unit !== '' && QUOTA_CREDIT_UNIT_PATTERN.test(unit)
   if (!named && !typed) return null
-  const remaining = window.amount ?? window.runsOut
-  const limit = window.limit
-  if (remaining !== null && Number.isFinite(remaining)) {
-    return {
-      remaining,
-      limit: limit !== null && Number.isFinite(limit) ? limit : remaining,
-      unit: unit !== '' ? unit : window.name.trim(),
-      display: window.display,
-    }
+  const unitLabel = unit !== '' ? unit : window.name.trim()
+  // 上游按数量记账时，`amount` 就是剩余量（Magpie 契约：`amount of limit used`）。
+  if (window.amount !== null && Number.isFinite(window.amount)) {
+    const limit = window.limit !== null && Number.isFinite(window.limit) ? window.limit : null
+    return { remaining: window.amount, limit, unit: unitLabel, display: window.display }
   }
-  // 窗口只给百分比时，用百分比乘上限还原剩余积分（WorkBuddy AI 的 `0 / 130`）。
+  // 没有数量时上游给的是百分比：用百分比乘上限还原剩余量。
   const percent = quotaWindowRemaining(window)
-  if (percent === null || limit === null || !Number.isFinite(limit)) return null
-  return {
-    remaining: (limit * percent) / 100,
-    limit,
-    unit: unit !== '' ? unit : window.name.trim(),
-    display: window.display,
-  }
+  if (percent === null || window.limit === null || !Number.isFinite(window.limit)) return null
+  return { remaining: (window.limit * percent) / 100, limit: window.limit, unit: unitLabel, display: window.display }
 }
 
 /**
@@ -224,7 +215,9 @@ export function resolveQuotaCreditBalance(quota: MagpieQuota): QuotaCreditBalanc
 export function formatQuotaCredits(credits: QuotaCreditBalance): string {
   if (credits.display !== null && credits.display.trim() !== '') return credits.display.trim()
   const unit = credits.unit === '' ? '' : ` ${credits.unit}`
-  return `${formatQuotaNumber(credits.remaining)} / ${formatQuotaNumber(credits.limit)}${unit}`
+  return credits.limit === null
+    ? `${formatQuotaNumber(credits.remaining)}${unit}`
+    : `${formatQuotaNumber(credits.remaining)} / ${formatQuotaNumber(credits.limit)}${unit}`
 }
 
 /**

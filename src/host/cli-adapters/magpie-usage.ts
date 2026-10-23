@@ -1222,8 +1222,8 @@ export function parseMagpieQuotaCards(value: unknown): readonly MagpieDashboardQ
       if (window === null || windowName === null) return []
       return [{
         name: windowName,
-        usedPercent: safePercent(window.used),
-        remainingPercent: safePercent(window.remaining),
+        usedPercent: quotaUsedPercent(window),
+        remainingPercent: quotaRemainingPercent(window),
         resetsAt: routeText(window.resetsAt),
         display: routeText(window.display),
         amount: safeDecimal(window.amount),
@@ -1456,11 +1456,33 @@ function magpieWebPeriod(period: MagpieDashboardPeriod): 'today' | '7d' | '30d' 
   }
 }
 
+/**
+ * 窗口使用的百分比。
+ *
+ * Magpie 的 `used` 始终是 0–100 的百分比（见其 `auth.usage` 契约），但 `remaining`
+ * 不一定：同一份数据里既有 `remaining: 96` 这种百分比，也有 `remaining: 86.57`
+ * 配 `amount: 322.25 / limit: 2400` 这种"剩余量"。凡是带 `limit`（或 `amount`）的窗口，
+ * `remaining` 一律按数量解释，不能直接当成 0–100 的百分比，否则 WorkBuddy 的
+ * `322 / 2400` 会被读成"剩余 86.57%"，和 `display` 里的数量对不上。
+ */
+function quotaUsedPercent(record: Record<string, unknown>): number | null {
+  return safePercent(record.used)
+}
+
+function quotaRemainingPercent(record: Record<string, unknown>): number | null {
+  const counted = safeDecimal(record.limit) !== null || safeDecimal(record.amount) !== null
+  if (counted) {
+    const used = quotaUsedPercent(record)
+    return used === null ? null : 100 - used
+  }
+  return safePercent(record.remaining)
+}
+
 function readQuotaWindow(record: Record<string, unknown>, name: string): MagpieQuotaWindow {
   return {
     name,
-    usedPercent: safePercent(record.used),
-    remainingPercent: safePercent(record.remaining),
+    usedPercent: quotaUsedPercent(record),
+    remainingPercent: quotaRemainingPercent(record),
     resetsAt: routeText(record.resetsAt),
     display: routeText(record.display),
     amount: safeDecimal(record.amount),

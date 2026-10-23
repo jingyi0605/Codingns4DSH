@@ -321,6 +321,30 @@ test('Magpie /v1/magpie/quotas 只保留安全的提供商配额字段', () => {
   assert.equal(parseMagpieQuotas({ data: [{ provider: 'workbuddy', name: 'WorkBuddy', windows: 'invalid' }] }), null)
 })
 
+test('数量窗口的 remaining 是剩余量而不是百分比', () => {
+  // 实测上游：Magpie 的 `used` 永远是 0–100 百分比，而带 amount/limit 的窗口
+  // 其 `remaining` 是数量（322.25 / 2400），不能当成百分比读。
+  // `remaining` 取一个明显不等于 `100 - used` 的值，否则两种读法会碰巧相等。
+  const counted = parseMagpieQuotas([{
+    provider: 'workbuddy', name: 'WorkBuddy', user: '白云5',
+    windows: [{ name: 'Credits', used: 40, remaining: 2160, display: '1440 / 3600', amount: 1440, limit: 3600, unit: 'credits' }],
+  }])
+  assert.equal(counted?.[0]?.windows[0]?.usedPercent, 40)
+  assert.equal(counted?.[0]?.windows[0]?.remainingPercent, 60, 'the remaining share is derived from used, not read as a count')
+  // 只给上限、没有 amount 的窗口同样是数量形式（WorkBuddy AI 的 `0 / 350`）。
+  const limited = parseMagpieQuotas([{
+    provider: 'workbuddy-ai', name: 'WorkBuddy AI', user: 'account@example.com',
+    windows: [{ name: 'Credits', used: 0, remaining: 100, display: '0 / 350', limit: 350, unit: 'credits' }],
+  }])
+  assert.equal(limited?.[0]?.windows[0]?.remainingPercent, 100)
+  // 没有数量的窗口仍按上游给的 remaining 百分比读取。
+  const percentOnly = parseMagpieQuotas([{
+    provider: 'codex', name: 'Codex', user: 'me@example.com',
+    windows: [{ name: '5 hours', used: 3, remaining: 97 }],
+  }])
+  assert.equal(percentOnly?.[0]?.windows[0]?.remainingPercent, 97)
+})
+
 test('Magpie metadata enriches exact model matches for DSH and every verified external Agent', async () => {
   const adapters = [
     ['dsh', 'dsh'], ['codex', 'codex'],
