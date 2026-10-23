@@ -16,6 +16,28 @@ const usageReply = (sessions: unknown[] = [{
   sessions,
 })
 
+function fakeMagpieWebApi(fetcher: typeof fetch) {
+  return {
+    async requestJson(path: string, options: { method?: 'GET' | 'POST'; body?: unknown; signal?: AbortSignal } = {}): Promise<unknown> {
+      const response = await fetcher(new URL(path, 'http://127.0.0.1:3430'), {
+        method: options.method ?? 'GET',
+        signal: options.signal,
+        ...(options.body === undefined ? {} : { body: JSON.stringify(options.body) }),
+      })
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new Error(`mock Magpie Web API returned HTTP ${response.status}`)
+      }
+      return response.json() as Promise<unknown>
+    },
+  }
+}
+
+function createWebUsageService(options: ConstructorParameters<typeof MagpieUsageService>[0] = {}): MagpieUsageService {
+  const fetcher = options.fetch ?? (async () => Response.json({})) as typeof fetch
+  return new MagpieUsageService({ ...options, webApi: options.webApi ?? fakeMagpieWebApi(fetcher) })
+}
+
 test('Magpie usage popover stays within viewport and shifts left of an open right sidebar', () => {
   assert.deepEqual(calculateMagpiePopoverPlacement(800, 1200, null), { left: -12, width: 400 })
   assert.deepEqual(calculateMagpiePopoverPlacement(800, 1200, 900), { left: -312, width: 400 })
@@ -68,7 +90,7 @@ test('Magpie catalog retains valid model IDs when the CLI omits their display na
   assert.equal(catalog.names.size, 0, 'an absent display label must not create a name alias')
 })
 
-test('DSH、OpenCode 和全部外部 Agent 适配器按目录确认 Magpie Agent 身份', async () => {
+test('supported adapter IDs map to exact Magpie Web usage Agent identities', async () => {
   const adapters = [
     ['dsh', 'dsh'],
     ['claude-code', 'claude'],
@@ -91,17 +113,9 @@ test('DSH、OpenCode 和全部外部 Agent 适配器按目录确认 Magpie Agent
 
   for (const [adapterId, expectedAgent] of adapters) {
     assert.equal(magpieAgentForAdapter(adapterId), expectedAgent, adapterId)
-    const output = [
-      'Example provider',
-      'example-provider/model-one    Model One',
-      `${expectedAgent} is shown every provider's models · magpie visible ${expectedAgent}`,
-      'http://127.0.0.1:3425/v1',
-    ].join('\n')
-    const service = new MagpieUsageService({
-      readModels: async (agent) => {
-        assert.equal(agent, expectedAgent)
-        return output
-      },
+    const service = createWebUsageService({
+      readModels: async () => { throw new Error('compact usage must not call Magpie CLI') },
+      readVersion: async () => { throw new Error('compact usage must not check Magpie CLI version') },
       fetch: (async () => Response.json(usageReply([{
         agent: expectedAgent, id: 'provider-session', input: 4, output: 2, cost: 0.001,
       }]))) as typeof fetch,
@@ -570,47 +584,55 @@ test('Magpie reasoning false clears stale levels, while missing fields retain Ag
   assert.deepEqual(enriched.groups[0]!.models[1]!.efforts, ['low', 'high'])
 })
 
-test('Magpie API 只在目录精确命中后读取，并把汇总、当前会话和路由分开', async () => {
-  const modelOutput = await fixture('magpie-models-claude.txt')
-  const calls: Array<{ url: string; authorization: string | null }> = []
+test('Magpie compact usage reads only Web API usage and exact session ledger data', async () => {
+  const calls: Array<{ url: string; method: string }> = []
+  const fetcher = (async (input, init) => {
+    const url = new URL(String(input))
+    calls.push({ url: `${url.pathname}${url.search}`, method: init?.method ?? 'GET' })
+    if (url.pathname === '/api/usage/requests') return Response.json({ rows: [{
+      route_id: 7, t: '2026-10-20T11:59:00Z', agent: 'claude', session: 'agent-session-1',
+      req: 'example-provider/model-one', provider: 'example-provider', providerAccount: 'primary',
+      model: 'example-provider/model-one', served: 'example-provider/model-one', effort: 'high', status: 200,
+    }] })
+    if (url.pathname === '/api/usage/quotas') return Response.json({ data: [{ provider: 'example-provider', name: 'Example Provider', user: 'primary', windows: [] }] })
+    return Response.json(usageReply())
+  }) as typeof fetch
   const service = new MagpieUsageService({
-    readModels: async () => modelOutput,
+    readModels: async () => { throw new Error('compact usage must not call Magpie CLI') },
+    readVersion: async () => { throw new Error('compact usage must not check Magpie CLI version') },
     now: () => Date.parse('2026-10-20T12:00:00.000Z'),
-    fetch: (async (url, init) => {
-      calls.push({ url: String(url), authorization: new Headers(init?.headers).get('authorization') })
-      if (String(url).includes('/route?')) {
-        return Response.json({
-          session: 'agent-session-1', seq: 7,
-          route: {
-            asked: 'example-provider/model-one', group: 'balanced', rule: { name: 'primary' },
-            model: 'example-provider/model-one', effort: 'high', done: true, status: 200,
-            served: 'example-provider/model-one', tries: [{ model: 'example-provider/model-one', done: true }],
-          },
-        })
-      }
-      if (String(url).includes('/quotas')) return Response.json({ data: [{ provider: 'example-provider', name: 'Example Provider', windows: [] }] })
-      return Response.json(usageReply())
-    }) as typeof fetch,
+    webApi: fakeMagpieWebApi(fetcher),
   })
 
   const result = await service.read({ adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, undefined, true)
   assert.deepEqual(calls.map((call) => call.url), [
-    'http://127.0.0.1:3425/v1/magpie/usage?period=today',
-    'http://127.0.0.1:3425/v1/magpie/quotas',
-    'http://127.0.0.1:3425/v1/magpie/route?session=agent-session-1',
-    'http://127.0.0.1:3425/v1/magpie/usage/requests?period=today&q=agent-session-1&limit=100',
+    '/api/usage?period=today',
+    '/api/usage/quotas',
+    '/api/usage/requests?period=today&offset=0&limit=100&q=agent-session-1',
   ])
-  assert.ok(calls.every((call) => call.authorization === 'Bearer magpie'))
+  assert.ok(calls.every((call) => call.method === 'GET'))
   assert.equal(result?.usageStatus, 'available')
   assert.deepEqual(result?.aggregate, { calls: 3, errors: 1, inputTokens: 300, outputTokens: 90, cacheReadTokens: 20, cacheWriteTokens: 8, costUsd: 0.0325 })
   assert.deepEqual(result?.session, { id: 'agent-session-1', agent: 'claude', calls: null, errors: null, inputTokens: 120, outputTokens: 30, cacheReadTokens: 12, cacheWriteTokens: 4, costUsd: 0.0125 })
   assert.equal(result?.routeStatus, 'available')
-  assert.equal(result?.route?.rule, 'primary')
-  assert.equal(result?.route?.tries[0]?.failed, false)
+  assert.equal(result?.route?.asked, 'example-provider/model-one')
+  assert.equal(result?.route?.routeId, 7)
   assert.equal(result?.upstreamProvider, 'example-provider')
   assert.deepEqual(result?.upstreamProviders, ['example-provider'])
-  assert.deepEqual(result?.quotas, [{ provider: 'example-provider', name: 'Example Provider', kind: null, user: null, plan: null, alias: null, balance: null, readAt: null, windows: [] }])
+  assert.deepEqual(result?.quotas, [{ provider: 'example-provider', name: 'Example Provider', kind: null, user: 'primary', plan: null, alias: null, balance: null, readAt: null, windows: [] }])
   assert.doesNotMatch(JSON.stringify(result), /Bearer|Authorization|prompt|response body/u)
+})
+
+test('Magpie usage service without the Host-owned Web API fails closed instead of starting a process', async () => {
+  const service = new MagpieUsageService({
+    readModels: async () => { throw new Error('usage must not call Magpie CLI') },
+    readVersion: async () => { throw new Error('usage must not check Magpie CLI version') },
+  })
+  const dashboard = await service.readDashboard('today')
+  assert.equal(dashboard.availabilityIssue, 'web-api-unavailable')
+  assert.equal(await service.read({
+    adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1',
+  }), null)
 })
 
 test('Magpie 的持久请求记录补足过期路由，并只关联此会话用过的上游账号配额', async () => {
@@ -619,7 +641,7 @@ test('Magpie 的持久请求记录补足过期路由，并只关联此会话用�
     "claude is shown every provider's models · magpie visible claude", 'http://127.0.0.1:3425/v1',
   ].join('\n')
   const sessionId = 'claude-history-session'
-  const service = new MagpieUsageService({
+  const service = createWebUsageService({
     readModels: async () => modelOutput,
     fetch: (async (url) => {
       const target = new URL(String(url))
@@ -665,7 +687,7 @@ test('Magpie 不会在账号不匹配时回退显示该提供商唯一的其他�
     'Routing groups', 'workbuddy/deepseek-v4.1-flash    Deepseek-V4.1-Flash',
     "claude is shown every provider's models · magpie visible claude", 'http://127.0.0.1:3425/v1',
   ].join('\n')
-  const service = new MagpieUsageService({
+  const service = createWebUsageService({
     readModels: async () => modelOutput,
     fetch: (async (url) => {
       const target = new URL(String(url))
@@ -688,7 +710,7 @@ test('Magpie 不会在账号不匹配时回退显示该提供商唯一的其他�
 })
 
 test('Claude [1m] model markers do not block verified Magpie usage', async () => {
-  const service = new MagpieUsageService({
+  const service = createWebUsageService({
     readModels: async () => [
       'Routing groups', 'auto/deepseek-v4.1-flash    Deepseek-V4.1-Flash-Auto',
       "claude is shown every provider's models · magpie visible claude", 'http://127.0.0.1:3425/v1',
@@ -713,17 +735,18 @@ test('DSH 用 Magpie 的实际网关 client 身份关联会话、路由和上游
     'Routing groups', 'auto/gpt-6.1-sol    GPT-6.1 Sol-Auto',
     "dsh is shown every provider's models · magpie visible dsh", 'http://127.0.0.1:3425/v1',
   ].join('\n')
-  const urls: string[] = []
-  const service = new MagpieUsageService({
+  const urls: URL[] = []
+  const service = createWebUsageService({
     readModels: async () => modelOutput,
     fetch: (async (url) => {
-      const target = String(url)
+      const target = new URL(String(url))
       urls.push(target)
-      if (target.includes('/route?')) return Response.json({
-        session: 'dsh-provider-session',
-        route: { asked: 'group/auto-gpt-6-1-sol', model: 'glorinfo-api-platform/gpt-6.1-sol', served: 'gpt-6.1-sol', done: true, status: 200, tries: [] },
-      })
-      if (target.includes('/quotas')) return Response.json({ data: [{ provider: 'glorinfo-api-platform', name: 'GAP-Codex', windows: [] }] })
+      if (target.pathname.endsWith('/usage/requests')) return Response.json({ rows: [{
+        route_id: 15, t: '2026-10-21T14:00:00Z', agent: 'codingns4dsh', session: 'dsh-provider-session',
+        req: 'group/auto-gpt-6-1-sol', provider: 'glorinfo-api-platform', model: 'gpt-6.1-sol',
+        served: 'gpt-6.1-sol', status: 200,
+      }] })
+      if (target.pathname.endsWith('/quotas')) return Response.json({ data: [{ provider: 'glorinfo-api-platform', name: 'GAP-Codex', windows: [] }] })
       return Response.json(usageReply([{ agent: 'codingns4dsh', id: 'dsh-provider-session', input: 12, output: 4, cost: 0.001 }]))
     }) as typeof fetch,
   })
@@ -735,8 +758,8 @@ test('DSH 用 Magpie 的实际网关 client 身份关联会话、路由和上游
   assert.equal(result?.upstreamProvider, 'glorinfo-api-platform')
   assert.deepEqual(result?.upstreamProviders, ['glorinfo-api-platform'])
   assert.equal(result?.quotas[0]?.name, 'GAP-Codex')
-  assert.ok(urls.includes('http://127.0.0.1:3425/v1/magpie/route?session=dsh-provider-session'))
-  assert.ok(urls.includes('http://127.0.0.1:3425/v1/magpie/usage/requests?period=today&q=dsh-provider-session&limit=100'))
+  assert.ok(urls.some(url => url.pathname === '/api/usage' && url.searchParams.get('period') === 'today'))
+  assert.ok(urls.some(url => url.pathname === '/api/usage/requests' && url.searchParams.get('q') === 'dsh-provider-session'))
 })
 
 test('原生 DSH 使用 DSH 会话 ID 关联 Magpie 用量、路由和上游配额', async () => {
@@ -745,7 +768,7 @@ test('原生 DSH 使用 DSH 会话 ID 关联 Magpie 用量、路由和上游配�
     'Routing groups', 'auto/gpt-6.1-sol    GPT-6.1 Sol-Auto',
     "dsh is shown every provider's models · magpie visible dsh", 'http://127.0.0.1:3425/v1',
   ].join('\n')
-  const service = new MagpieUsageService({
+  const service = createWebUsageService({
     readModels: async () => modelOutput,
     fetch: (async (url) => {
       const target = new URL(String(url))
@@ -800,13 +823,13 @@ test('原生 DSH 的待用模型优先于上次使用模型以识别 Magpie 用�
     assert.equal(session.modelId, 'auto/deepseek-v4.1-flash')
     assert.equal(session.providerId, 'magpie')
 
-    const service = new MagpieUsageService({
+    const service = createWebUsageService({
       readModels: async (agent) => [
         'Routing groups', 'auto/deepseek-v4.1-flash    DeepSeek V4.1 Flash Auto',
         `${agent} is shown every provider's models · magpie visible ${agent}`,
         'http://127.0.0.1:3425/v1',
       ].join('\n'),
-      fetch: (async () => Response.json({})) as typeof fetch,
+      fetch: (async () => Response.json(usageReply([{ agent: 'dsh', id: sessionId, input: 1, output: 1, cost: 0.001 }]))) as typeof fetch,
     })
     assert.notEqual(await service.read(session, undefined, false, sessionId), null)
   } finally {
@@ -815,7 +838,7 @@ test('原生 DSH 的待用模型优先于上次使用模型以识别 Magpie 用�
 })
 
 test('尚无路由时不把 auto 模型别名冒充成上游提供商', async () => {
-  const service = new MagpieUsageService({
+  const service = createWebUsageService({
     readModels: async () => [
       'Routing groups', 'auto/gpt-6.1-sol    GPT-6.1 Sol-Auto',
       "dsh is shown every provider's models · magpie visible dsh", 'http://127.0.0.1:3425/v1',
@@ -830,21 +853,20 @@ test('尚无路由时不把 auto 模型别名冒充成上游提供商', async ()
 })
 
 test('Codex 仅使用 Codex 目录与精确匹配的 Codex 会话', async () => {
-  const modelOutput = await fixture('magpie-models-codex.txt')
-  const agents: string[] = []
+  let cliReads = 0
   const urls: string[] = []
-  const service = new MagpieUsageService({
-    readModels: async (agent) => { agents.push(agent); return modelOutput },
+  const service = createWebUsageService({
+    readModels: async () => { cliReads += 1; return null },
     fetch: (async (url) => {
       urls.push(String(url))
       return Response.json(usageReply([{ agent: 'codex', id: 'codex-thread-7', input: 8, output: 2, cost: 0.001 }]))
     }) as typeof fetch,
   })
   const result = await service.read({ adapterId: 'codex', modelId: 'example-provider/model-one', providerSessionId: 'codex-thread-7' })
-  assert.deepEqual(agents, ['codex'])
+  assert.equal(cliReads, 0, 'compact usage does not shell out to Magpie CLI')
   assert.deepEqual(urls, [
-    'http://127.0.0.1:3425/v1/magpie/usage?period=today',
-    'http://127.0.0.1:3425/v1/magpie/quotas',
+    'http://127.0.0.1:3430/api/usage?period=today',
+    'http://127.0.0.1:3430/api/usage/quotas',
   ])
   assert.equal(result?.agent, 'codex')
   assert.equal(result?.session?.id, 'codex-thread-7')
@@ -858,7 +880,7 @@ test('Command Code 的 magpie/provider/model 拼法按 Magpie 目录精确匹配
     "commandcode is shown every provider's models · magpie visible commandcode",
     'http://127.0.0.1:3425/v1',
   ].join('\n')
-  const service = new MagpieUsageService({
+  const service = createWebUsageService({
     readModels: async (agent) => { assert.equal(agent, 'commandcode'); return modelOutput },
     fetch: (async () => Response.json(usageReply([{ agent: 'commandcode', id: 'command-session-1', input: 8, output: 2, cost: 0.001 }]))) as typeof fetch,
   })
@@ -878,7 +900,7 @@ test('Command Code 使用 CodingNS 网关 Agent 身份时仍能关联会话、�
     "commandcode is shown every provider's models · magpie visible commandcode",
     'http://127.0.0.1:3425/v1',
   ].join('\n')
-  const service = new MagpieUsageService({
+  const service = createWebUsageService({
     readModels: async () => modelOutput,
     fetch: (async (url) => {
       const target = new URL(String(url))
@@ -916,7 +938,7 @@ test('Command Code 使用 Host 注入的 DSH 会话 ID 归档，同时保留 ACP
   const providerSessionId = 'command-acp-session'
   const dshSessionId = 'session-command-code'
   const urls: string[] = []
-  const service = new MagpieUsageService({
+  const service = createWebUsageService({
     readModels: async () => [
       'Example provider',
       'example-provider/model-one    Model One',
@@ -952,14 +974,14 @@ test('Command Code 使用 Host 注入的 DSH 会话 ID 归档，同时保留 ACP
   assert.equal(result?.routeStatus, 'available')
   assert.equal(result?.route?.routeId, 7)
   assert.ok(urls.some((url) => url.includes(`q=${dshSessionId}`)))
-  assert.ok(urls.some((url) => url.includes(`session=${dshSessionId}`)))
+  assert.ok(urls.every((url) => !url.includes(`q=${providerSessionId}`)))
 })
 
 test('Command Code 旧 ACP 子进程仍按 ACP 会话 ID 归档时面板能回退关联', async () => {
   const providerSessionId = 'command-acp-session'
   const dshSessionId = 'session-command-code'
   const urls: string[] = []
-  const service = new MagpieUsageService({
+  const service = createWebUsageService({
     readModels: async () => [
       'Example provider',
       'example-provider/model-one    Model One',
@@ -994,14 +1016,13 @@ test('Command Code 旧 ACP 子进程仍按 ACP 会话 ID 归档时面板能回�
   assert.equal(result?.routeStatus, 'available')
   assert.equal(result?.route?.routeId, 9)
   assert.ok(urls.some((url) => url.includes(`q=${providerSessionId}`)))
-  assert.ok(urls.some((url) => url.includes(`session=${providerSessionId}`)))
 })
 
-test('Magpie 不把与 DSH 会话 ID 相同的回退值当作 Agent 会话', async () => {
-  const modelOutput = await fixture('magpie-models-codex.txt')
+test('Magpie does not treat a DSH session ID as a provider session ID', async () => {
   const urls: string[] = []
-  const service = new MagpieUsageService({
-    readModels: async () => modelOutput,
+  let cliReads = 0
+  const service = createWebUsageService({
+    readModels: async () => { cliReads += 1; return null },
     fetch: (async (url) => {
       urls.push(String(url))
       return Response.json(usageReply([{ agent: 'codex', id: 'shared-id', input: 8, output: 2, cost: 0.001 }]))
@@ -1014,45 +1035,49 @@ test('Magpie 不把与 DSH 会话 ID 相同的回退值当作 Agent 会话', asy
     true,
     'shared-id',
   )
-  assert.equal(result?.sessionId, null)
-  assert.equal(result?.session, null)
-  assert.equal(result?.routeStatus, 'session-unavailable')
-  assert.deepEqual(urls, [
-    'http://127.0.0.1:3425/v1/magpie/usage?period=today',
-    'http://127.0.0.1:3425/v1/magpie/quotas',
-  ])
+  assert.equal(result, null)
+  assert.equal(cliReads, 0)
+  assert.deepEqual(urls, [])
 })
 
-test('非 Magpie 模型、其他适配器和未匹配的 Agent 会话都不会查询路由', async () => {
-  const modelOutput = await fixture('magpie-models-claude.txt')
-  let requests = 0
-  let listed: string[] = []
-  const service = new MagpieUsageService({
-    readModels: async (agent) => { listed.push(agent); return modelOutput },
-    fetch: (async (url) => { if (!String(url).includes('/quotas')) requests++; return Response.json(usageReply([{ agent: 'codex', id: 'some-other-session', input: 1, output: 1, cost: 0 }])) }) as typeof fetch,
+test('compact usage requires an exact Magpie Agent/session match from Web API data', async () => {
+  const paths: string[] = []
+  let cliReads = 0
+  const service = createWebUsageService({
+    readModels: async () => { cliReads += 1; return null },
+    fetch: (async (url) => {
+      const target = new URL(String(url))
+      paths.push(target.pathname)
+      return target.pathname.endsWith('/quotas')
+        ? Response.json([])
+        : Response.json(usageReply([{ agent: 'codex', id: 'some-other-session', input: 1, output: 1, cost: 0 }]))
+    }) as typeof fetch,
   })
 
   assert.equal(await service.read({ adapterId: 'claude-code', modelId: 'example-provider/not-listed', providerSessionId: 'agent-session-1' }, undefined, true), null)
   assert.equal(await service.read({ adapterId: 'other-agent', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, undefined, true), null)
-  const unmatched = await service.read({ adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, undefined, true)
-  assert.deepEqual(listed, ['claude'])
-  assert.equal(requests, 1, 'only the verified catalog model should reach the Gateway')
-  assert.equal(unmatched?.usageStatus, 'available')
-  assert.equal(unmatched?.session, null)
-  assert.equal(unmatched?.routeStatus, 'unavailable')
+  assert.equal(await service.read({ adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, undefined, true), null)
+  assert.equal(cliReads, 0, 'usage reads never query the CLI model catalog')
+  assert.equal(paths.filter(path => path === '/api/usage').length, 2)
+  assert.equal(paths.some(path => path === '/api/usage/requests'), false, 'no request is made without a matching Agent/session aggregate')
 })
 
-test('一个订阅请求取消时不会取消同一 Agent 的共享目录读取', async () => {
-  const modelOutput = await fixture('magpie-models-claude.txt')
-  const lifetime = new AbortController()
+test('aborting one compact usage read does not cancel a concurrent Web API read', async () => {
   const caller = new AbortController()
-  let releaseModels!: (value: string) => void
-  let modelCalls = 0
-  const modelRead = new Promise<string>((resolve) => { releaseModels = resolve })
-  const service = new MagpieUsageService({
-    lifetimeSignal: lifetime.signal,
-    readModels: async (_agent, signal) => { modelCalls++; assert.equal(signal, lifetime.signal); return modelRead },
-    fetch: (async () => Response.json(usageReply())) as typeof fetch,
+  let usageCalls = 0
+  const service = createWebUsageService({
+    fetch: (async (url, init) => {
+      const target = new URL(String(url))
+      if (target.pathname === '/api/usage/quotas') return Response.json([])
+      if (target.pathname === '/api/usage') {
+        usageCalls += 1
+        if (usageCalls === 1) return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => reject(new Error('cancelled')), { once: true })
+        })
+        return Response.json(usageReply())
+      }
+      throw new Error(`unexpected Web API path ${target.pathname}`)
+    }) as typeof fetch,
   })
   const session = { adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }
   const cancelledRead = service.read(session, caller.signal)
@@ -1060,47 +1085,52 @@ test('一个订阅请求取消时不会取消同一 Agent 的共享目录读取'
   await setImmediate()
   caller.abort()
   await assert.rejects(cancelledRead)
-  releaseModels(modelOutput)
   assert.equal((await survivingRead)?.usageStatus, 'available')
-  assert.equal(modelCalls, 1)
+  assert.equal(usageCalls, 2)
 })
 
-test('路由响应必须回显同一个会话，HTTP 错误或用量 API 不可用时不泄漏原始错误', async () => {
-  const modelOutput = await fixture('magpie-models-claude.txt')
-  let routeResponse: Response = Response.json({ session: 'different-session', route: { asked: 'private' } })
+test('Web API request rows are exact-matched and failed reads do not leak raw errors', async () => {
+  let routeRows: unknown[] = [{
+    agent: 'claude', session: 'different-session', provider: 'private-provider', req: 'private',
+  }]
   let usageStatus = 200
-  const service = new MagpieUsageService({
-    readModels: async () => modelOutput,
-    fetch: (async (url) => String(url).includes('/route?')
-      ? routeResponse
-      : Response.json(usageStatus === 200 ? usageReply() : { error: 'do-not-forward-this-error' }, { status: usageStatus })) as typeof fetch,
+  let routeStatus = 200
+  const service = createWebUsageService({
+    fetch: (async (url) => {
+      const target = new URL(String(url))
+      if (target.pathname.endsWith('/usage/requests')) return Response.json({ rows: routeRows }, { status: routeStatus })
+      if (target.pathname.endsWith('/quotas')) return Response.json([])
+      return Response.json(usageStatus === 200 ? usageReply() : { error: 'do-not-forward-this-error' }, { status: usageStatus })
+    }) as typeof fetch,
   })
 
   const mismatched = await service.read({ adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, undefined, true)
-  assert.equal(mismatched?.routeStatus, 'unavailable')
+  assert.equal(mismatched?.routeStatus, 'no-route')
   assert.equal(mismatched?.route, null)
   assert.doesNotMatch(JSON.stringify(mismatched), /different-session|private/u)
 
-  routeResponse = Response.json({ session: 'agent-session-1', route: null })
+  routeRows = []
   const noRoute = await service.read({ adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, undefined, true)
   assert.equal(noRoute?.routeStatus, 'no-route')
 
+  routeStatus = 403
+  const routeUnavailable = await service.read({ adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, undefined, true)
+  assert.equal(routeUnavailable?.routeStatus, 'unavailable')
+
   usageStatus = 403
   const unavailable = await service.read({ adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, undefined, true)
-  assert.equal(unavailable?.usageStatus, 'unavailable')
+  assert.equal(unavailable, null)
   assert.doesNotMatch(JSON.stringify(unavailable), /do-not-forward-this-error/u)
 })
 
-test('取消 Host 请求会中止正在等待的 Magpie 路由读取', async () => {
-  const modelOutput = await fixture('magpie-models-claude.txt')
+test('cancelling the Host request aborts the in-flight Magpie Web API ledger read', async () => {
   const controller = new AbortController()
   let routeSignal: AbortSignal | undefined
   let markRouteStarted!: () => void
   const routeStarted = new Promise<void>((resolve) => { markRouteStarted = resolve })
-  const service = new MagpieUsageService({
-    readModels: async () => modelOutput,
+  const service = createWebUsageService({
     fetch: (async (url, init) => {
-      if (!String(url).includes('/route?')) return Response.json(usageReply())
+      if (!String(url).includes('/usage/requests')) return Response.json(usageReply())
       routeSignal = init?.signal ?? undefined
       markRouteStarted()
       return new Promise((_resolve, reject) => {
@@ -1111,30 +1141,17 @@ test('取消 Host 请求会中止正在等待的 Magpie 路由读取', async () 
   const request = service.read({ adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, controller.signal, true)
   await routeStarted
   controller.abort()
-  const result = await request
+  await assert.rejects(request)
   assert.equal(routeSignal?.aborted, true)
-  assert.equal(result?.routeStatus, 'unavailable')
 })
 
-test('网关超时、无效 JSON 和超大响应均按不可用处理', async () => {
-  const modelOutput = await fixture('magpie-models-claude.txt')
-  const timeoutService = new MagpieUsageService({
-    readModels: async () => modelOutput,
-    timeoutMs: 5,
-    fetch: (async (_url, init) => new Promise((resolve, reject) => {
-      const timer = setTimeout(() => resolve(Response.json(usageReply())), 25)
-      init?.signal?.addEventListener('abort', () => { clearTimeout(timer); reject(new Error('local gateway timeout')) }, { once: true })
-    })) as typeof fetch,
-  })
+test('Magpie Web API usage failures return no snapshot and never expose error content', async () => {
   const session = { adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }
-  assert.equal((await timeoutService.read(session))?.usageStatus, 'unavailable')
-
-  for (const response of [
-    new Response('not json'),
-    new Response(' '.repeat(2 * 1024 * 1024 + 1)),
-  ]) {
-    const service = new MagpieUsageService({ readModels: async () => modelOutput, fetch: (async () => response) as typeof fetch })
-    assert.equal((await service.read(session))?.usageStatus, 'unavailable')
+  for (const response of [Response.json({ error: 'do-not-forward-this-error' }, { status: 403 }), new Response('not json')]) {
+    const service = createWebUsageService({ fetch: (async (url) => String(url).endsWith('/api/usage/quotas') ? Response.json([]) : response) as typeof fetch })
+    const result = await service.read(session)
+    assert.equal(result, null)
+    assert.doesNotMatch(JSON.stringify(result), /do-not-forward-this-error|not json/u)
   }
 })
 

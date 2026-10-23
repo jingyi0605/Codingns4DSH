@@ -1903,7 +1903,7 @@ test('CLI 功能模块登记 cli RPC，停用后注销命名空间', async () =>
   const features = new FeatureRegistry({ rpc: table })
   features.register(createCliAdaptersFeature({ registry }))
   await features.start('cliAdapters')
-  assert.deepEqual(table.namespaces(), ['cli'])
+  assert.deepEqual(table.namespaces(), ['cli', 'magpie'])
   assert.deepEqual(await table.resolve('cli/catalog')?.handler('catalog', {}), [])
   await features.disable('cliAdapters')
   assert.deepEqual(table.namespaces(), [])
@@ -2044,8 +2044,18 @@ test('Host 通过只读 Magpie 用量检测显示快照，否则回退普通订�
       } : null
     },
   }
-  const features = new FeatureRegistry({ rpc: table })
-  features.register(createCliAdaptersFeature({ registry, magpieUsage: magpieUsage as never }))
+  const settings = {
+    get: () => ({ modules: { magpieManagement: true } }),
+    watch: () => () => undefined,
+  }
+  const magpieWeb = {
+    async start() {},
+    async stop() {},
+    async dispose() {},
+    async requestJson() { throw new Error('Unexpected Web API request') },
+  }
+  const features = new FeatureRegistry({ rpc: table, settings })
+  features.register(createCliAdaptersFeature({ registry, magpieUsage: magpieUsage as never, magpieWeb: magpieWeb as never }))
   await features.start('cliAdapters')
   t.after(() => features.disable('cliAdapters'))
   registry.setSession('magpie-rpc-session', { adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'provider-session' })

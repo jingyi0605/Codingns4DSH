@@ -5,36 +5,31 @@ import { registerSubscriptionSlot } from '../data/build/dist/client/subscription
 import { MagpieUsageService } from '../src/host/cli-adapters/magpie-usage.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 
-test('Pi Magpie selections resolve the verified model ID and routed upstream usage', async () => {
+test('Pi Magpie session usage reads the Web API and resolves the routed upstream provider', async () => {
   const modelId = 'magpie/auto/deepseek-v4.1-flash'
   const sessionId = 'pi-provider-session'
   const urls: string[] = []
   const service = new MagpieUsageService({
-    readModels: async (agent) => {
-      assert.equal(agent, 'pi')
-      return [
-        'Example provider',
-        'auto/deepseek-v4.1-flash    Deepseek-V4.1-Flash-Auto',
-        "pi is shown every provider's models · magpie visible pi",
-        'http://127.0.0.1:3425/v1',
-      ].join('\n')
+    readModels: async () => { throw new Error('usage reads must not call Magpie CLI') },
+    readVersion: async () => { throw new Error('usage reads must not check Magpie CLI version') },
+    webApi: {
+      async requestJson(path: string) {
+        urls.push(path)
+        if (path === '/api/usage?period=today') return {
+          calls: 1, errors: 0, input: 1200, output: 80, cache_read: 200, cache_write: 0, cost: 0.001,
+          sessions: [{ agent: 'pi', id: sessionId, calls: 1, errors: 0, input: 1200, output: 80, cache_read: 200, cache_write: 0, cost: 0.001 }],
+        }
+        if (path === '/api/usage/quotas') return { data: [{
+          provider: 'workbuddy', name: 'WorkBuddy', windows: [{ name: 'Credits', used: 27, remaining: 73 }],
+        }] }
+        if (path.startsWith('/api/usage/requests?')) return { rows: [{
+          route_id: 1, t: '2026-10-21T14:00:00Z', agent: 'pi', session: sessionId,
+          req: 'auto/deepseek-v4.1-flash', provider: 'workbuddy', model: 'deepseek-v4.1-flash',
+          served: 'deepseek-v4.1-flash', status: 200,
+        }] }
+        throw new Error(`Unexpected Magpie Web API path: ${path}`)
+      },
     },
-    fetch: (async (url) => {
-      const target = new URL(String(url))
-      urls.push(`${target.pathname}${target.search}`)
-      if (target.pathname.endsWith('/quotas')) return Response.json({ data: [{
-        provider: 'workbuddy', name: 'WorkBuddy', windows: [{ name: 'Credits', used: 27, remaining: 73 }],
-      }] })
-      if (target.pathname.endsWith('/route')) return Response.json({
-        session: sessionId,
-        route: { asked: 'auto/deepseek-v4.1-flash', model: 'workbuddy/deepseek-v4.1-flash', served: 'deepseek-v4.1-flash', done: true, status: 200, tries: [] },
-      })
-      if (target.pathname.endsWith('/usage/requests')) return Response.json({ rows: [] })
-      return Response.json({
-        calls: 1, errors: 0, input: 1200, output: 80, cache_read: 200, cache_write: 0, cost: 0.001,
-        sessions: [{ agent: 'pi', id: sessionId, calls: 1, errors: 0, input: 1200, output: 80, cache_read: 200, cache_write: 0, cost: 0.001 }],
-      })
-    }) as typeof fetch,
   })
   const session = { adapterId: 'pi', modelId, providerSessionId: sessionId }
 
@@ -43,12 +38,13 @@ test('Pi Magpie selections resolve the verified model ID and routed upstream usa
   assert.equal(initial?.session?.id, sessionId)
   assert.equal(initial?.upstreamProvider, null, 'the local `magpie` provider must not be mistaken for the routed upstream')
   assert.equal(initial?.quotaStatus, 'provider-unavailable', 'automatic routing should be resolved from this session route')
-  assert.equal(urls.some((url) => url.includes('/route?')), false, 'the initial read stays aggregate-only')
+  assert.deepEqual(urls, ['/api/usage?period=today', '/api/usage/quotas'], 'the initial read stays aggregate-only')
 
   const routed = await service.read(session, undefined, true)
   assert.equal(routed?.routeStatus, 'available')
   assert.equal(routed?.upstreamProvider, 'workbuddy')
   assert.equal(routed?.quotas[0]?.windows[0]?.remainingPercent, 73)
+  assert.equal(urls.at(-1), '/api/usage/requests?period=today&offset=0&limit=100&q=pi-provider-session')
 })
 
 test('Pi sessions using a Magpie model render the Magpie usage component', async (t) => {

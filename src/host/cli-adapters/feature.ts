@@ -24,9 +24,13 @@ import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
 import { CommandCodeSubscriptionService } from './command-code-subscription.js'
 import { ProviderSubscriptionService } from './provider-subscription.js'
 import { MagpieUsageService, magpieAgentForAdapter } from './magpie-usage.js'
+import { MagpieManagementService } from './magpie-management.js'
+import { MagpieWebService } from './magpie-web.js'
+import type { MagpieDashboardPeriod } from '../../shared/contracts/magpie-management.js'
 import { createMagpieSessionRouting } from './magpie-session-routing.js'
 import { normalizeSubagentBridgeSettings, normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsHostServices } from '../features/types.js'
+import { CodingNsRpcError } from '../rpc-table.js'
 import { setAdapterRegistry } from './registry-holder.js'
 import { createDshVirtualProviderRegistration } from './dsh-virtual-providers.js'
 import { dispatchBridgeSubagent, type BridgeAgentRegistry } from '../cli-bridge/dispatch.js'
@@ -67,7 +71,13 @@ import { createAgentTeamTool } from '../cli-bridge/team-tool.js'
 import { TeamInputTracker, isTeamInputMessage, pendingPeerInput } from './team-input.js'
 import { withTeamSupport } from '../cli-bridge/team-adapters.js'
 
-export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapterRegistry; updateCheck?: CliUpdateCheckOptions; magpieUsage?: MagpieUsageService } = {}): FeatureModule<CodingNsHostServices> {
+export function createCliAdaptersFeature(options: {
+  registry?: CodingNsCliAdapterRegistry
+  updateCheck?: CliUpdateCheckOptions
+  magpieUsage?: MagpieUsageService
+  magpieManagement?: MagpieManagementService
+  magpieWeb?: MagpieWebService
+} = {}): FeatureModule<CodingNsHostServices> {
   return {
     descriptor: {
       name: 'cliAdapters',
@@ -93,7 +103,35 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
         return new ProviderSubscriptionService({ commandCode: new CommandCodeSubscriptionService({ timeoutMs }), timeoutMs })
       }
       let subscriptions = buildSubscriptions(context.services.settings?.get())
-      const magpieUsage = options.magpieUsage ?? new MagpieUsageService({ lifetimeSignal: lifetime.signal })
+      const magpieWeb = options.magpieWeb ?? new MagpieWebService()
+      const magpieUsage = options.magpieUsage ?? new MagpieUsageService({ lifetimeSignal: lifetime.signal, webApi: magpieWeb })
+      const magpieManagement = options.magpieManagement ?? new MagpieManagementService({ webApi: magpieWeb })
+      let magpieWebDesired = false
+      let magpieWebSync: Promise<void> = Promise.resolve()
+      const scheduleMagpieWebSync = (enabled: boolean): void => {
+        magpieWebDesired = enabled
+        if (!enabled) void magpieWeb.stop().catch(() => undefined)
+        const next = magpieWebSync.then(async () => {
+          if (magpieWebDesired !== enabled) return
+          if (!enabled) {
+            await magpieWeb.stop()
+            return
+          }
+          try {
+            await magpieWeb.start()
+          } catch (error) {
+            console.warn('codingns4dsh: Magpie Web startup failed; the next Web API request will retry', error)
+          }
+        })
+        magpieWebSync = next.catch(() => undefined)
+      }
+      scheduleMagpieWebSync(context.services.settings?.get().modules.magpieManagement === true)
+      context.resources.add(async () => {
+        magpieWebDesired = false
+        await magpieWeb.stop()
+        await magpieWebSync
+        await magpieWeb.dispose()
+      })
       let subscriptionSettings = JSON.stringify(context.services.settings?.get().subscriptionUsage ?? null)
       // 注入的 registry 自带 SessionStore；只有自建时才有本地 store 变量。
       const sessionStore = options.registry?.sessionRecords
@@ -332,7 +370,8 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             const subscription = readSubscriptionRequest(payload)
             const requestSignal = signal ?? lifetime.signal
             const session = subscription.sessionId === undefined ? undefined : registry.getSession(subscription.sessionId)
-            if (session !== undefined && session.adapterId === subscription.adapterId) {
+            if (context.services.settings?.get().modules.magpieManagement === true
+              && session !== undefined && session.adapterId === subscription.adapterId) {
               const magpie = await magpieUsage.read(session, requestSignal, subscription.includeRoute, subscription.sessionId)
               requestSignal.throwIfAborted()
               if (magpie !== null) return { providerUsage: null, magpie }
@@ -360,6 +399,29 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             })
           }
           default: throw new Error(`未知 CLI RPC: cli/${action}`)
+        }
+      }))
+      context.resources.add(context.services.rpc.register('magpie', async (action, payload, rpcContext) => {
+        if (context.services.settings?.get().modules.magpieManagement !== true) {
+          throw new CodingNsRpcError('CODINGNS_MAGPIE_DISABLED', 'Magpie management is disabled')
+        }
+        const rpcSignal = asRecord(rpcContext)?.signal
+        const signal = isAbortSignal(rpcSignal) ? rpcSignal : lifetime.signal
+        switch (action) {
+          case 'usage/dashboard':
+            return magpieUsage.readDashboard(readMagpieDashboardPeriod(payload), signal)
+          case 'usage/requests':
+            return magpieUsage.readRequestPage(readMagpieRequestOptions(payload), signal)
+          case 'management/snapshot':
+            return magpieManagement.readSnapshot(signal)
+          case 'management/provider/update':
+            return magpieManagement.updateProvider(payload, signal)
+          case 'management/group/update':
+            return magpieManagement.updateGroup(payload, signal)
+          case 'management/account/update':
+            return magpieManagement.updateAccount(payload, signal)
+          default:
+            throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `Unknown Magpie RPC: ${action}`)
         }
       }))
 
@@ -432,6 +494,7 @@ export function createCliAdaptersFeature(options: { registry?: CodingNsCliAdapte
             subscriptions = buildSubscriptions(next)
           }
           syncSubagentBridgeSettings(next.subagentBridge)
+          scheduleMagpieWebSync(next.modules.magpieManagement === true)
         }))
       }
 
@@ -1913,6 +1976,57 @@ function findCwdInValue(value: unknown, depth: number): string | undefined {
     if (found !== undefined) return found
   }
   return undefined
+}
+
+function readMagpieDashboardPeriod(payload: unknown): MagpieDashboardPeriod {
+  const value = asRecord(payload)?.period
+  if (value === 'today' || value === 'week' || value === 'month' || value === 'all') return value
+  throw new TypeError('Magpie usage period must be today, week, month, or all')
+}
+
+function readMagpieRequestOptions(payload: unknown): {
+  readonly period: MagpieDashboardPeriod
+  readonly offset: number
+  readonly limit: number
+  readonly sessionId?: string
+  readonly sessionAgent?: string
+} {
+  const record = asRecord(payload)
+  if (record === null) throw new TypeError('Magpie request page must be an object')
+  const period = readMagpieDashboardPeriod(record)
+  const offset = record.offset === undefined ? 0 : record.offset
+  const limit = record.limit === undefined ? 50 : record.limit
+  if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0 || offset > 1_000_000) {
+    throw new TypeError('Magpie request offset is out of bounds')
+  }
+  if (typeof limit !== 'number' || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+    throw new TypeError('Magpie request limit must be between 1 and 100')
+  }
+  const sessionId = readOptionalMagpieIdentity(record.sessionId, 512)
+  const sessionAgent = readOptionalMagpieIdentity(record.sessionAgent, 64)
+  if ((sessionId === undefined) !== (sessionAgent === undefined)) {
+    throw new TypeError('Magpie session details require both sessionId and sessionAgent')
+  }
+  if (sessionAgent !== undefined && !/^[a-z0-9][a-z0-9-]*$/u.test(sessionAgent)) {
+    throw new TypeError('Magpie session Agent is invalid')
+  }
+  return {
+    period,
+    offset,
+    limit,
+    ...(sessionId === undefined ? {} : { sessionId }),
+    ...(sessionAgent === undefined ? {} : { sessionAgent }),
+  }
+}
+
+function readOptionalMagpieIdentity(value: unknown, maxLength: number): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') throw new TypeError('Magpie session identity must be text')
+  const text = value.trim()
+  if (text === '' || text.length > maxLength || /[\u0000-\u001f\u007f]/u.test(text)) {
+    throw new TypeError('Magpie session identity is invalid')
+  }
+  return text
 }
 
 function asRecord(value: unknown): Record<string, any> | null { return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, any> : null }

@@ -263,6 +263,8 @@ const CODINGNS_RPC_ENDPOINTS = [
   'cli/catalog', 'cli/catalog/refresh', 'cli/models', 'cli/translation/models', 'cli/skills', 'cli/adapter/set', 'cli/session/get', 'cli/session/set', 'cli/session/list', 'cli/session/adapter-map', 'cli/session/archive', 'cli/session/steer', 'cli/session/follow-up', 'cli/session/interrupt', 'cli/subscription', 'cli/subscription/reset', 'cli/team/status', 'cli/team/members', 'cli/team/tasks', 'cli/team/task', 'cli/team/spawn', 'cli/team/message', 'cli/team/task/create', 'cli/team/task/update', 'cli/team/wait', 'cli/team/interrupt',
   'cli/translation/pending', 'cli/translation/resolve', 'cli/translation/retry-output',
   'cli/management/plan', 'cli/management/start', 'cli/management/status', 'cli/management/cancel',
+  'magpie/usage/dashboard', 'magpie/usage/requests',
+  'magpie/management/snapshot', 'magpie/management/provider/update', 'magpie/management/group/update', 'magpie/management/account/update',
 ] as const
 
 /** 创建远程设置处理器；只允许 Codingns4DSH 自己的 namespace 和路径编辑。 */
@@ -359,7 +361,7 @@ function operationsToPatch(operations: readonly CodingNsSettingsOperation[]): Re
 
 function isAllowedSettingsPath(path: readonly string[]): boolean {
   if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage', 'sessionTranslation', 'gitManagement', 'assistant'].includes(path[0] ?? '')
-  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'quickApps', 'mobileAccess', 'peerHost', 'globalVoiceAssistant', 'sessionTranslation'].includes(path[1] ?? '')
+  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'magpieManagement', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'quickApps', 'mobileAccess', 'peerHost', 'globalVoiceAssistant', 'sessionTranslation'].includes(path[1] ?? '')
   if (path[0] === 'workspaceSessionEnhancement') {
     return path.length === 2 && [
       'showAdapterLogo', 'showArchivedSessions', 'showWorkspaceHiding', 'hiddenWorkspaceIds',

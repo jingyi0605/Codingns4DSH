@@ -28,6 +28,7 @@ import type {
   MagpieUsageSession,
 } from '../../shared/contracts/magpie-management.js'
 import { commandEnvironment, resolveCommandPath, runAsyncCommand, WINDOWS, withCommandSignal } from './process-utils.js'
+import type { MagpieWebService } from './magpie-web.js'
 
 const MAGPIE_CATALOG_TTL_MS = 60_000
 const MAGPIE_MODEL_METADATA_TTL_MS = 60_000
@@ -126,6 +127,8 @@ export interface MagpieUsageServiceOptions {
   readonly fetch?: typeof fetch
   readonly now?: () => number
   readonly timeoutMs?: number
+  /** Shared authenticated Web process for the full management dashboard. */
+  readonly webApi?: Pick<MagpieWebService, 'requestJson'>
   /** Shared catalog CLI work is cancelled when its owning Host feature stops, not by one RPC caller. */
   readonly lifetimeSignal?: AbortSignal
 }
@@ -138,11 +141,7 @@ export interface MagpieUsageRequestOptions {
   readonly sessionAgent?: string
 }
 
-/**
- * Reads Magpie's public local Gateway API only after its CLI confirms that the
- * current Agent model is in that Agent's catalog. No Agent or Magpie config
- * files are opened here; the provider session ID is supplied by the Host.
- */
+/** Reads usage from the authenticated local Magpie Web API and exact-matches session identity. */
 export class MagpieUsageService {
   private readonly readModels: NonNullable<MagpieUsageServiceOptions['readModels']>
   private readonly readVersion: NonNullable<MagpieUsageServiceOptions['readVersion']>
@@ -150,6 +149,7 @@ export class MagpieUsageService {
   private readonly now: () => number
   private readonly timeoutMs: number
   private readonly lifetimeSignal: AbortSignal | undefined
+  private readonly webApi: MagpieUsageServiceOptions['webApi']
   /** Agent CLI verification remains isolated; model metadata below is Gateway-wide and shared. */
   private readonly catalogs = new Map<MagpieAgent, CatalogCacheEntry>()
   private readonly catalogLoads = new Map<MagpieAgent, Promise<MagpieModelCatalog | null>>()
@@ -170,6 +170,7 @@ export class MagpieUsageService {
     this.now = options.now ?? Date.now
     this.timeoutMs = options.timeoutMs ?? MAGPIE_HTTP_TIMEOUT_MS
     this.lifetimeSignal = options.lifetimeSignal
+    this.webApi = options.webApi
   }
 
   async read(
@@ -182,10 +183,6 @@ export class MagpieUsageService {
     const agent = magpieAgentForAdapter(session.adapterId)
     const requestedModelId = cleanText(session.modelId)
     if (agent === null || requestedModelId === null) return null
-
-    const catalog = await this.loadCatalog(agent, signal)
-    const modelId = resolveCatalogModelId(agent, requestedModelId, catalog, requestedModelId)
-    if (catalog === null || modelId === null) return null
 
     const providerSessionId = cleanText(session.providerSessionId)
     const nativeSessionId = cleanText(dshSessionId)
@@ -204,7 +201,8 @@ export class MagpieUsageService {
     const fallbackSessionId = agent === 'commandcode' && nativeSessionId !== null && sessionId !== null && nativeSessionId !== sessionId
       ? sessionId
       : null
-    return this.readFromGateway(agent, requestedModelId, catalog.gatewayOrigin, sessionId, magpieSessionId, fallbackSessionId, signal, includeRoute)
+    if (magpieSessionId === null) return null
+    return this.readFromWeb(agent, requestedModelId, sessionId, magpieSessionId, fallbackSessionId, signal, includeRoute)
   }
 
   /**
@@ -287,20 +285,14 @@ export class MagpieUsageService {
     return metadata?.get(id) ?? null
   }
 
-  /** Read bounded, graph-ready usage and quota data for the separate dashboard. */
+  /** Read bounded, graph-ready usage and quota data through authenticated Magpie Web. */
   async readDashboard(period: MagpieDashboardPeriod, signal?: AbortSignal): Promise<MagpieUsageDashboard> {
     signal?.throwIfAborted()
-    const catalog = await this.loadCatalog('dsh', signal)
-    if (catalog === null) {
-      const unavailableIssue = this.catalogs.get('dsh')?.unavailableIssue ?? 'model-catalog-unavailable'
-      return unavailableDashboard(period, unavailableIssue, this.now())
-    }
-    if (catalog.gatewayOrigin === null) return unavailableDashboard(period, 'model-catalog-unavailable', this.now())
-
+    const webPeriod = magpieWebPeriod(period)
     const [usage, quotas, history] = await Promise.all([
-      this.readGatewayJson(catalog.gatewayOrigin, `/v1/magpie/usage?period=${period}`, signal),
-      this.readGatewayJson(catalog.gatewayOrigin, '/v1/magpie/quotas/cards', signal),
-      this.readGatewayJson(catalog.gatewayOrigin, '/v1/magpie/quotas/history?days=30', signal),
+      this.readWebJson(`/api/usage?period=${webPeriod}`, signal),
+      this.readWebJson('/api/usage/quotas', signal),
+      this.readWebJson('/api/usage/quotas/history?days=30', signal),
     ])
     const parsedUsage = usage.ok ? parseMagpieDashboardUsage(usage.value) : null
     const parsedQuotas = quotas.ok ? parseMagpieQuotaCards(quotas.value) : null
@@ -308,7 +300,7 @@ export class MagpieUsageService {
     return {
       period,
       capturedAt: new Date(this.now()).toISOString(),
-      availabilityIssue: null,
+      availabilityIssue: !usage.ok && !quotas.ok && !history.ok ? 'web-api-unavailable' : null,
       usageStatus: parsedUsage === null ? 'unavailable' : 'available',
       aggregate: parsedUsage?.aggregate ?? null,
       series: parsedUsage?.series ?? [],
@@ -325,7 +317,7 @@ export class MagpieUsageService {
     }
   }
 
-  /** Read one bounded ledger page and exact-match session identities on Host. */
+  /** Read one bounded Web API ledger page and exact-match session identities on Host. */
   async readRequestPage(options: MagpieUsageRequestOptions, signal?: AbortSignal): Promise<MagpieUsageRequestPage | null> {
     signal?.throwIfAborted()
     if (!isMagpieDashboardPeriod(options.period)
@@ -337,11 +329,9 @@ export class MagpieUsageService {
       || (options.sessionAgent !== undefined && (sessionAgent === null || !isMagpieAgentId(sessionAgent)))
       || ((sessionId === null) !== (sessionAgent === null))) return null
 
-    const catalog = await this.loadCatalog('dsh', signal)
-    if (catalog?.gatewayOrigin === null || catalog === null) return null
-    const query = new URLSearchParams({ period: options.period, limit: String(options.limit), offset: String(options.offset) })
+    const query = new URLSearchParams({ period: magpieWebPeriod(options.period), limit: String(options.limit), offset: String(options.offset) })
     if (sessionId !== null) query.set('q', sessionId)
-    const response = await this.readGatewayJson(catalog.gatewayOrigin, `/v1/magpie/usage/requests?${query.toString()}`, signal)
+    const response = await this.readWebJson(`/api/usage/requests?${query.toString()}`, signal)
     if (!response.ok) return null
     const root = asRecord(response.value)
     const rawRows = root?.rows
@@ -371,24 +361,19 @@ export class MagpieUsageService {
     }
   }
 
-  private async readFromGateway(
+  private async readFromWeb(
     agent: MagpieAgent,
     modelId: string,
-    gatewayOrigin: string | null,
     sessionId: string | null,
     magpieSessionId: string | null,
     fallbackSessionId: string | null,
     signal: AbortSignal | undefined,
     includeRoute: boolean,
-  ): Promise<MagpieUsageSnapshot> {
+  ): Promise<MagpieUsageSnapshot | null> {
     const capturedAt = new Date(this.now()).toISOString()
-    if (gatewayOrigin === null) {
-      const snapshot = unavailableMagpieSnapshot(agent, modelId, sessionId, this.now(), capturedAt)
-      return magpieSessionId === null ? { ...snapshot, routeStatus: 'session-unavailable' } : snapshot
-    }
     const [usageResult, quotaResult] = await Promise.all([
-      this.readGatewayJson(gatewayOrigin, '/v1/magpie/usage?period=today', signal),
-      this.readGatewayJson(gatewayOrigin, '/v1/magpie/quotas', signal),
+      this.readWebJson('/api/usage?period=today', signal),
+      this.readWebJson('/api/usage/quotas', signal),
     ])
     const aggregate = usageResult.ok ? readTotals(usageResult.value) : null
     const primarySession = usageResult.ok && magpieSessionId !== null
@@ -399,35 +384,26 @@ export class MagpieUsageService {
       : null
     const sessionUsage = primarySession ?? fallbackSession
     const resolvedSessionId = primarySession !== null ? magpieSessionId : fallbackSession !== null ? fallbackSessionId : magpieSessionId
-    // A providerSessionId is not enough to prove that Magpie knows this Agent
-    // session. Require the exact Agent + ID pair in Magpie's own usage result
-    // before asking the route endpoint, and then verify its echoed identity.
-    const canReadRoute = includeRoute && resolvedSessionId !== null && resolvedSessionId.length <= 128 && sessionUsage !== null
-    const routeResultPromise = canReadRoute
-      ? this.readGatewayJson(gatewayOrigin, `/v1/magpie/route?session=${encodeURIComponent(resolvedSessionId)}`, signal)
-      : Promise.resolve({ ok: false as const })
-    const routeHistoryResultPromise = canReadRoute
-      ? this.readGatewayJson(gatewayOrigin, `/v1/magpie/usage/requests?period=today&q=${encodeURIComponent(resolvedSessionId)}&limit=100`, signal)
-      : Promise.resolve({ ok: false as const })
-    const [routeResult, routeHistoryResult] = await Promise.all([routeResultPromise, routeHistoryResultPromise])
-    const routeRead = resolvedSessionId === null
-      ? { status: 'session-unavailable' as const, route: null }
-      : !includeRoute
-        ? { status: 'not-requested' as const, route: null }
-        : !canReadRoute
-          ? { status: 'unavailable' as const, route: null }
-        : !routeResult.ok
-          ? { status: 'unavailable' as const, route: null }
-          : readRoute(routeResult.value, resolvedSessionId)
-    const routeHistory = routeHistoryResult.ok && resolvedSessionId !== null && sessionUsage !== null
+    if (sessionUsage === null) return null
+    const canReadRoute = includeRoute && resolvedSessionId !== null && resolvedSessionId.length <= 128
+    const routeHistoryResult = canReadRoute
+      ? await this.readWebJson(`/api/usage/requests?period=today&offset=0&limit=100&q=${encodeURIComponent(resolvedSessionId)}`, signal)
+      : { ok: false as const }
+    const routeRows = routeHistoryResult.ok ? asRecord(routeHistoryResult.value)?.rows : null
+    const routeHistoryValid = Array.isArray(routeRows) && routeRows.length <= 500
+    const routeHistory = routeHistoryResult.ok && routeHistoryValid && resolvedSessionId !== null
       ? readSessionRouteHistory(routeHistoryResult.value, agent, resolvedSessionId)
       : []
-    const route = routeRead.route === null
-      ? routeHistory[0]?.route ?? null
-      : enrichRouteWithHistory(routeRead.route, routeHistory)
+    const route = routeHistory[0]?.route ?? null
     const routeStatus = route !== null
       ? 'available' as const
-      : routeRead.status
+      : resolvedSessionId === null
+        ? 'session-unavailable' as const
+        : !includeRoute
+          ? 'not-requested' as const
+          : !canReadRoute || !routeHistoryValid
+            ? 'unavailable' as const
+            : 'no-route' as const
     const allQuotas = quotaResult.ok ? parseMagpieQuotas(quotaResult.value) : null
     const routeProviders = [...new Set([
       providerFromRoute(route),
@@ -580,47 +556,15 @@ export class MagpieUsageService {
       return { ok: false }
     }
   }
-}
 
-function unavailableMagpieSnapshot(agent: string, modelId: string, sessionId: string | null, now: number, capturedAt = new Date(now).toISOString()): MagpieUsageSnapshot {
-  return {
-    agent,
-    modelId,
-    capturedAt,
-    usageStatus: 'unavailable',
-    aggregate: null,
-    sessionId,
-    session: null,
-    routeStatus: sessionId === null ? 'session-unavailable' : 'unavailable',
-    route: null,
-    upstreamProvider: providerFromModelId(modelId, agent),
-    quotaStatus: 'unavailable',
-    quotas: [],
-  }
-}
-
-function unavailableDashboard(
-  period: MagpieDashboardPeriod,
-  availabilityIssue: Extract<MagpieDashboardAvailabilityIssue, 'cli-unavailable' | 'cli-version-unsupported' | 'model-catalog-unavailable'>,
-  now: number,
-): MagpieUsageDashboard {
-  return {
-    period,
-    capturedAt: new Date(now).toISOString(),
-    availabilityIssue,
-    usageStatus: 'unavailable',
-    aggregate: null,
-    series: [],
-    agents: [],
-    providers: [],
-    models: [],
-    accounts: [],
-    sessions: [],
-    sessionCount: null,
-    quotaStatus: 'unavailable',
-    quotas: [],
-    quotaHistoryStatus: 'unavailable',
-    quotaHistory: [],
+  private async readWebJson(path: string, signal?: AbortSignal): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false }> {
+    if (this.webApi === undefined) return { ok: false }
+    try {
+      return { ok: true, value: await this.webApi.requestJson(path, signal === undefined ? {} : { signal }) }
+    } catch {
+      signal?.throwIfAborted()
+      return { ok: false }
+    }
   }
 }
 
@@ -876,8 +820,7 @@ async function runMagpieCommand(args: readonly string[], signal?: AbortSignal): 
 
 /**
  * Magpie IDs normally match adapter IDs. Keep naming differences explicit;
- * every result is still checked against Magpie's own catalog output before
- * any Gateway request is made.
+ * it is used for exact Agent identity matching in Magpie usage records.
  */
 export function magpieAgentForAdapter(adapterId: CodingNsCliAdapterId): MagpieAgent | null {
   const agent = MAGPIE_AGENT_BY_ADAPTER[adapterId]
@@ -965,43 +908,6 @@ function readSession(value: unknown, agent: MagpieAgent, sessionId: string): Mag
   return record !== null && usageAgent !== null && totals !== null ? { id: sessionId, agent: usageAgent, ...totals } : null
 }
 
-function readRoute(value: unknown, expectedSessionId: string): { readonly status: 'available' | 'no-route' | 'unavailable'; readonly route: MagpieRouteUsage | null } {
-  const envelope = asRecord(value)
-  if (envelope === null || cleanText(envelope.session) !== expectedSessionId || !('route' in envelope)) return { status: 'unavailable', route: null }
-  if (envelope.route === null) return { status: 'no-route', route: null }
-  const record = asRecord(envelope.route)
-  if (record === null) return { status: 'unavailable', route: null }
-  const tries = Array.isArray(record.tries)
-    ? record.tries.slice(0, 20).flatMap((item) => {
-        const attempt = asRecord(item)
-        if (attempt === null) return []
-        const model = routeText(attempt.model)
-        const provider = routeText(attempt.provider)
-        return [{
-          model: model !== null && provider !== null && !model.includes('/') ? `${provider}/${model}` : model ?? provider,
-          failed: routeText(attempt.fail) !== null,
-        }]
-      })
-    : []
-  return {
-    status: 'available',
-    route: {
-      asked: routeText(record.asked),
-      group: routeText(record.group),
-      rule: readRule(record.rule),
-      model: routeText(record.model),
-      effort: routeText(record.effort),
-      tries,
-      done: typeof record.done === 'boolean' ? record.done : null,
-      status: routeStatusText(record.status),
-      served: routeText(record.served),
-      routeId: safeRouteId(record.id),
-      time: routeText(record.time),
-      providerAccount: routeText(record.providerAccount),
-    },
-  }
-}
-
 /** Read the durable request ledger when Magpie's short in-memory trace has expired. */
 function readSessionRouteHistory(value: unknown, agent: MagpieAgent, sessionId: string): readonly MagpieSessionRouteRecord[] {
   const rows = asRecord(value)?.rows
@@ -1046,17 +952,6 @@ function routeTime(value: string | null | undefined): number {
   if (value === null || value === undefined) return 0
   const time = Date.parse(value)
   return Number.isFinite(time) ? time : 0
-}
-
-function enrichRouteWithHistory(route: MagpieRouteUsage, history: readonly MagpieSessionRouteRecord[]): MagpieRouteUsage {
-  if (route.routeId === undefined || route.routeId === null) return route
-  const record = history.find((item) => item.route.routeId === route.routeId)
-  if (record === undefined) return route
-  return {
-    ...route,
-    time: route.time ?? record.route.time ?? null,
-    providerAccount: route.providerAccount ?? record.account,
-  }
 }
 
 function filterSessionQuotas(
@@ -1383,6 +1278,15 @@ function sumNullable(left: number | null, right: number | null): number | null {
 
 function isMagpieDashboardPeriod(value: unknown): value is MagpieDashboardPeriod {
   return value === 'today' || value === 'week' || value === 'month' || value === 'all'
+}
+
+function magpieWebPeriod(period: MagpieDashboardPeriod): 'today' | '7d' | '30d' | 'all' {
+  switch (period) {
+    case 'today': return 'today'
+    case 'week': return '7d'
+    case 'month': return '30d'
+    case 'all': return 'all'
+  }
 }
 
 function readQuotaWindow(record: Record<string, unknown>, name: string): MagpieQuotaWindow {
