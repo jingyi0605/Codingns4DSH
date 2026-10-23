@@ -33,7 +33,7 @@ import { callCodingNsRpcResult } from '../rpc-call.js'
 import { uiFontSize } from '../font-scale.js'
 import { MagpieProviderLogo } from './magpie-provider-logo.js'
 import { MagpieGroupsPage, MagpieProvidersPage } from './magpie-management-controls.js'
-import { groupQuotaRowsByProvider } from './subscription-quota-groups.js'
+import { groupQuotaRowsByProvider, resolveQuotaAccountBalance } from './subscription-quota-groups.js'
 
 /** Top-level native tabs: Overview stands alone; Providers and Routing manage Magpie; Usage hosts its reports. */
 type PageTab = 'overview' | 'providers' | 'groups' | 'usage'
@@ -959,7 +959,13 @@ function QuotaGroupCard({ group, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTING
   )
 }
 
-/** 卡内单个账号：账号行、窗口进度条与每日用量。 */
+/**
+ * 卡内单个账号：账号行、余额、窗口进度条与每日用量。
+ *
+ * 有百分比的账号走进度条；没有百分比但有余额的账号（New-API 的 `$74.14`、
+ * Sub2api 的钱包余额、按积分计量的 WorkBuddy）单独显示余额行，与 Magpie 原生卡片
+ * 一致——过去这些账号只剩一条空进度条，余额被完全藏起来。
+ */
 function QuotaAccountSection({ quota, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTINGS.quotaView, t, showHeading }: {
   readonly quota: MagpieDashboardQuota
   readonly quotaView?: SubscriptionQuotaView
@@ -968,6 +974,9 @@ function QuotaAccountSection({ quota, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SE
 }): ReactElement {
   // `daily` 现在带 `since`，按日点位于 `days` 里。
   const dailyValues = quota.daily.days.map((point) => point.used).filter((value): value is number => value !== null)
+  const balance = resolveQuotaAccountBalance(quota)
+  // 只有真正带百分比的窗口才画进度条；纯金额窗口在余额行里已经有完整读法。
+  const percentWindows = quota.windows.filter((window) => window.usedPercent !== null || window.remainingPercent !== null)
   return createElement('div', { className: 'codingns-magpie-quota-account-block' },
     showHeading && createElement('div', { className: 'codingns-magpie-quota-account-head' },
       createElement('strong', undefined, quota.alias ?? quota.name),
@@ -975,9 +984,13 @@ function QuotaAccountSection({ quota, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SE
       quota.plan !== null && createElement('small', undefined, quota.plan),
     ),
     !showHeading && quota.user !== null && createElement('div', { className: 'codingns-magpie-quota-account' }, t('magpie.account', { account: quota.user })),
+    balance !== null && createElement('div', { className: 'codingns-magpie-quota-balance' },
+      createElement('span', { className: 'codingns-magpie-quota-balance-label' }, t('magpie.balance')),
+      createElement('strong', { className: balance.money ? 'codingns-magpie-quota-balance-value is-money' : 'codingns-magpie-quota-balance-value', title: balance.raw }, balance.text),
+    ),
     quota.windows.length === 0
-      ? createElement('div', { className: 'codingns-magpie-inline-empty' }, t('magpie.noLimit'))
-      : quota.windows.map((window) => {
+      ? balance === null && createElement('div', { className: 'codingns-magpie-inline-empty' }, t('magpie.noLimit'))
+      : percentWindows.length > 0 && percentWindows.map((window) => {
         const used = window.usedPercent ?? (window.remainingPercent === null ? null : 100 - window.remainingPercent)
         const remaining = window.remainingPercent ?? (used === null ? null : 100 - used)
         // 口径只改读法：同一组百分比既可以读成"已用多少"，也可以读成"还剩多少"，
@@ -1000,6 +1013,10 @@ function QuotaAccountSection({ quota, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SE
           ),
         )
       }),
+    // 有余额但没有百分比的账号，把重置时间单独留在余额下面。
+    balance !== null && percentWindows.length === 0 && quota.windows.some((window) => window.resetsAt !== null) && createElement('div', { className: 'codingns-magpie-quota-foot' },
+      ...quota.windows.filter((window) => window.resetsAt !== null).map((window) => createElement('span', { key: window.name }, t('magpie.resets', { time: formatTimestamp(window.resetsAt!) }))),
+    ),
     quota.daily.days.length > 1 && createElement('div', { className: 'codingns-magpie-daily-chart' },
       createElement(Sparkline, { values: dailyValues }),
       createElement('small', undefined, t('magpie.dailyUsage')),
@@ -1267,6 +1284,10 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-quota-grid{column-width:340px;column-gap:12px;margin-bottom:13px}
 /* 卡片不能被拆到两列里：标题与它的额度必须留在同一块。 */
 .codingns-magpie-quota-card{display:inline-block;width:100%;margin:0 0 12px;vertical-align:top;padding:17px;break-inside:avoid;page-break-inside:avoid}.codingns-magpie-quota-topline{display:flex;align-items:center;gap:10px;margin-bottom:13px}.codingns-magpie-quota-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:9px;background:var(--mp-layer);color:var(--mp-accent);font-weight:700}.codingns-magpie-quota-topline h2{margin:0;font-size:${uiFontSize(14)};font-weight:600}.codingns-magpie-quota-topline p{margin:3px 0 0;color:var(--mp-caption);font-size:${uiFontSize(13)}}.codingns-magpie-quota-account{margin:-5px 0 11px;color:var(--mp-muted);font-size:${uiFontSize(13)}}.codingns-magpie-quota-count{margin-left:auto;flex:none;min-height:26px;padding:0 9px;border:1px solid var(--mp-line);border-radius:999px;background:transparent;color:var(--mp-muted);font-size:${uiFontSize(12)};cursor:pointer;white-space:nowrap}.codingns-magpie-quota-count:hover{color:var(--mp-fg);border-color:var(--mp-accent)}.codingns-magpie-quota-count:focus-visible{outline:none;box-shadow:0 0 0 2px var(--mp-accent)}.codingns-magpie-quota-account-block + .codingns-magpie-quota-account-block{margin-top:12px;padding-top:11px;border-top:1px solid var(--mp-line)}.codingns-magpie-quota-account-head{display:flex;align-items:baseline;gap:8px;min-width:0;margin-bottom:9px;font-size:${uiFontSize(13)}}.codingns-magpie-quota-account-head strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.codingns-magpie-quota-account-head span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mp-muted);font-size:${uiFontSize(12)}}.codingns-magpie-quota-account-head small{margin-left:auto;flex:none;color:var(--mp-caption);font-size:${uiFontSize(12)}}
+.codingns-magpie-quota-balance{display:flex;align-items:baseline;justify-content:space-between;gap:10px;min-width:0;margin:0 0 4px;padding:9px 0 2px}
+.codingns-magpie-quota-balance-label{flex:0 0 auto;color:var(--mp-muted);font-size:${uiFontSize(13)}}
+.codingns-magpie-quota-balance-value{min-width:0;overflow:hidden;color:var(--mp-ink);font-size:${uiFontSize(15)};font-weight:600;font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap}
+.codingns-magpie-quota-balance-value.is-money{font-size:${uiFontSize(17)};letter-spacing:-.01em}
 .codingns-magpie-quota-window{padding:11px 0;border-top:.5px solid var(--mp-line)}.codingns-magpie-quota-window-head,.codingns-magpie-quota-foot,.codingns-magpie-history-line-head{display:flex;align-items:center;justify-content:space-between;gap:9px}.codingns-magpie-quota-window-head{font-size:${uiFontSize(13)};font-weight:500}.codingns-magpie-quota-window-head span{color:var(--mp-muted);font-variant-numeric:tabular-nums}.quota-track{height:6px}.quota-track span{background:linear-gradient(90deg,var(--mp-accent),color-mix(in srgb,var(--mp-accent) 55%,transparent))}.codingns-magpie-quota-foot{color:var(--mp-caption);font-size:${uiFontSize(12)}}
 .codingns-magpie-daily-chart{display:grid;grid-template-columns:1fr auto;align-items:center;gap:9px;margin-top:4px;padding-top:10px;border-top:.5px solid var(--mp-line);color:var(--mp-muted);font-size:${uiFontSize(12)}}.codingns-magpie-sparkline{width:100%;height:30px;overflow:visible}.codingns-magpie-sparkline polyline{stroke:var(--mp-accent);stroke-width:2;vector-effect:non-scaling-stroke}
 .codingns-magpie-history-panel{padding:17px;margin-top:14px}.codingns-magpie-history-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.codingns-magpie-history-card{padding:12px;border:1px solid var(--mp-line);border-radius:9px;background:var(--mp-card)}.codingns-magpie-history-card>strong,.codingns-magpie-history-card>small{display:block}.codingns-magpie-history-card>strong{font-size:${uiFontSize(13)};font-weight:600}.codingns-magpie-history-card>small{margin-top:3px;color:var(--mp-caption);font-size:${uiFontSize(12)}}.codingns-magpie-history-line{margin-top:10px}.codingns-magpie-history-line-head{font-size:${uiFontSize(12)}}.codingns-magpie-history-line-head span:last-child{font-variant-numeric:tabular-nums;font-weight:650}

@@ -249,7 +249,29 @@ function creditQuota(provider: string, name: string, remaining: number, limit: n
   }
 }
 
+test('没有百分比的账号显示余额，不再只剩空进度条', () => {
+  const dashboardRows = [
+    balanceOnlyQuota('newapi', 'newapi', '$74.14'),
+    balanceOnlyQuota('sub2apis', 'Sub2apis', '$88018.15'),
+  ]
+  const markup = renderToStaticMarkup(createElement(QuotasPage, { dashboard: dashboard(dashboardRows), loading: false, t }))
+  assert.match(markup, /\$74\.14/u, 'New-API money balance is visible')
+  assert.match(markup, /\$88018\.15/u, 'Sub2api wallet balance is visible')
+  assert.match(markup, /余额/u, 'balances are labelled')
+  assert.match(markup, /codingns-magpie-quota-balance-value is-money/u, 'money balances use the money style')
+  assert.doesNotMatch(markup, /codingns-magpie-quota-window/u, 'no percentage windows means no empty progress bars')
+  assert.doesNotMatch(markup, /未报告额度上限/u, 'a reported balance replaces the "no limit" placeholder')
+})
 
+test('按积分计量的账号显示剩余 / 上限，而不是被当成百分比', () => {
+  const markup = renderToStaticMarkup(createElement(QuotasPage, {
+    dashboard: dashboard([creditQuota('workbuddy', 'WorkBuddy', 2077.75, 2400)]),
+    loading: false,
+    t,
+  }))
+  assert.match(markup, /2,?077\.75 \/ 2,?400 积分/u, 'credit allowance keeps its own unit and its limit')
+  assert.match(markup, /codingns-magpie-quota-balance-value"/u, 'credits render as a plain value, not as money')
+})
 
 test('所有账号默认展开，多账号卡片不再藏起后几个账号', () => {
   const multi = [

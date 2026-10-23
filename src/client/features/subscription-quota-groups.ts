@@ -193,12 +193,12 @@ export function readWindowCreditBalance(window: MagpieQuotaWindow): QuotaCreditB
 }
 
 /**
- * 读取账号的积分数余额。
+ * 读取账号的积分余额。
  *
  * 只认带积分含义的窗口或单位，普通的百分比窗口（`5 hours`、`7 days`）不参与，
  * 避免把"剩余 73%"说成"73 积分"。
  */
-export function resolveQuotaCreditBalance(quota: MagpieQuota): QuotaCreditBalance | null {
+export function resolveQuotaCreditBalance(quota: { readonly windows: readonly MagpieQuotaWindow[] }): QuotaCreditBalance | null {
   for (const window of quota.windows) {
     const credit = readWindowCreditBalance(window)
     if (credit !== null) return credit
@@ -634,4 +634,77 @@ export function groupQuotaRowsByProvider<T extends {
       accounts,
     }
   })
+}
+
+/**
+ * 余额解析只需要账号的 `balance` 与 `windows`。
+ *
+ * 订阅弹层的 `MagpieQuota` 与用量页的 `MagpieDashboardQuota` 窗口结构略有差异
+ * （后者没有 `startsAt`），因此这里只约束实际用到的字段，两处共用同一个解析器。
+ */
+export interface QuotaAccountBalanceSource {
+  readonly balance: string | null
+  readonly windows: readonly MagpieQuotaWindowLike[]
+}
+
+/** 余额解析用到的窗口字段；其余字段（`startsAt`、`runsOut` 等）与本逻辑无关。 */
+export interface MagpieQuotaWindowLike {
+  readonly name: string
+  readonly usedPercent: number | null
+  readonly remainingPercent: number | null
+  readonly display: string | null
+  readonly amount: number | null
+  readonly limit: number | null
+  readonly unit: string | null
+}
+
+/** 账号余额的读法：金额（`$74.14`）或计数额度（`2,077.75 / 2,400 积分`）。 */
+export interface QuotaAccountBalance {
+  /** 展示文本；金额已带币种符号。 */
+  readonly text: string
+  /** 是否为货币金额；用于决定是否按金额样式（等宽数字、较大字号）渲染。 */
+  readonly money: boolean
+  /** 上游原文，放在 tooltip 里供追溯。 */
+  readonly raw: string
+}
+
+/**
+ * 读取一个账号在"没有百分比可言"时的余额。
+ *
+ * 订阅页的额度卡过去只画百分比进度条，New-API（`$74.14`）、Sub2api（钱包余额
+ * `$88018.15`）和按积分计量的 WorkBuddy（`2,077.75 / 2,400 积分`）这类账号
+ * 就只剩一条空进度条，看不到真正的余额。这里按 Magpie 原生卡片的顺序取数：
+ *
+ * 1. 上游给出带币种的 `balance` → 直接就是金额；
+ * 2. 某个窗口带明确的币种单位且给了 `amount / limit`（如 Command Code 的
+ *    `$8.04 / $10.00`）→ 按币种拼成金额文本，符号与原生写法一样放在数值前；
+ * 3. 账号上有按积分计量的窗口 → `剩余 / 上限 + 单位`；
+ * 4. 只有 `amount / limit` 而没有币种 → 原样拼上单位。
+ *
+ * 都没有时返回 null，交给调用方显示"未报告额度上限"。
+ */
+export function resolveQuotaAccountBalance(quota: QuotaAccountBalanceSource): QuotaAccountBalance | null {
+  const money = parseQuotaBalance(quota.balance)
+  if (money !== null) return { text: formatQuotaBalance(money), money: money.money, raw: money.raw }
+  // 先看显式币种窗口：Command Code 的窗口名是「积分」，但 `unit` 是 `$`，
+  // 这时 `$8.04 / $10.00` 才是原生读法，不能被积分分支先截走。
+  for (const window of quota.windows) {
+    if (window.amount === null || window.limit === null) continue
+    if (!Number.isFinite(window.amount) || !Number.isFinite(window.limit)) continue
+    const symbol = QUOTA_CURRENCY_SYMBOLS.get((window.unit?.trim() ?? '').toUpperCase())
+    if (symbol === undefined) continue
+    // 币种符号按 Magpie 原生写法放在数值前（`$8.04 / $10.00`）。
+    const text = `${symbol}${formatQuotaNumber(window.amount)} / ${symbol}${formatQuotaNumber(window.limit)}`
+    return { text, money: true, raw: text }
+  }
+  const credits = resolveQuotaCreditBalance({ windows: quota.windows as readonly MagpieQuotaWindow[] })
+  if (credits !== null) return { text: formatQuotaCredits(credits), money: false, raw: credits.display ?? formatQuotaCredits(credits) }
+  for (const window of quota.windows) {
+    if (window.amount === null || window.limit === null) continue
+    if (!Number.isFinite(window.amount) || !Number.isFinite(window.limit)) continue
+    const unit = window.unit?.trim() ?? ''
+    const text = `${formatQuotaNumber(window.amount)} / ${formatQuotaNumber(window.limit)}${unit === '' ? '' : ` ${unit}`}`
+    return { text, money: false, raw: text }
+  }
+  return null
 }
