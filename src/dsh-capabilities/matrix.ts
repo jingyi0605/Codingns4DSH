@@ -48,6 +48,7 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('theme.runtime', 'theme-runtime', 'client', '>=0.1.5-rc.3 <=0.1.7-rc.2', 'supported', ['client/theme.ts']),
   route('conversation.tool-call', 'conversation-events', 'client', '>=0.1.5-rc.3 <=0.1.7-rc.2', 'supported', ['client/external-tool-stream.ts']),
   route('sidebar.right', 'sidebar-right-tabs', 'client', '>=0.1.5-rc.3 <=0.1.7-rc.2', 'supported', ['client/terminal/ui.ts']),
+  route('sidebar.global-panel', 'sidebar-panellist-main-020', 'client', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/client/global-panel-adapter.ts', 'client/features/magpie-management.ts']),
   route('typert.remote', 'remote-result', 'host', '>=0.1.5-rc.3 <=0.1.7-rc.2', 'supported', ['host/terminal/terminal-controller.ts', 'client/terminal/model.ts']),
   route('peer-host.store', 'peer-host-store', 'host', '>=0.1.5-rc.3 <=0.1.7-rc.2', 'supported', ['host/features/peer-host.ts']),
   route('peer-host.handshake', 'peer-host-handshake', 'host', '>=0.1.5-rc.3 <=0.1.7-rc.2', 'supported', ['host/features/peer-host.ts']),

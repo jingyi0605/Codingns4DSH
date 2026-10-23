@@ -1,0 +1,767 @@
+import { createElement, useEffect, useMemo, useState } from 'react'
+import type { ReactElement } from 'react'
+import type {
+  MagpieAccountManagementUpdate,
+  MagpieAccountManagementRecord,
+  MagpieManagementSnapshot,
+  MagpieProviderManagementRecord,
+  MagpieProviderManagementUpdate,
+  MagpieRoutingGroupManagementRecord,
+  MagpieRoutingGroupManagementUpdate,
+} from '../../shared/contracts/magpie-management.js'
+import { MagpieProviderLogo } from './magpie-provider-logo.js'
+
+type Translate = (key: string, params?: Record<string, string | number>) => string
+
+export function MagpieProvidersPage({ snapshot, t, onUpdate, onAccountUpdate, writing }: {
+  readonly snapshot: MagpieManagementSnapshot | null
+  readonly t: Translate
+  readonly onUpdate: (update: MagpieProviderManagementUpdate) => Promise<void>
+  readonly onAccountUpdate: (update: MagpieAccountManagementUpdate) => Promise<void>
+  readonly writing: boolean
+}): ReactElement {
+  const providers = snapshot?.providers ?? []
+  const [selectedId, setSelectedId] = useState<string | null>(providers[0]?.id ?? null)
+  const selected = providers.find(provider => provider.id === selectedId) ?? providers[0] ?? null
+  const unlinkedAccounts = snapshot?.accountStatus === 'available'
+    ? snapshot.accounts.filter(account => !providers.some(provider => accountBelongsToProvider(account, provider)))
+    : []
+  const accountApiNote = snapshot?.accountApiStatus === 'available'
+    ? 'magpie.management.accountApiReady'
+    : 'magpie.management.accountApiUnavailable'
+  useEffect(() => {
+    if (selected !== null && selected.id !== selectedId) setSelectedId(selected.id)
+  }, [selected, selectedId])
+
+  return createElement('div', { className: 'codingns-magpie-view' },
+    createElement(PanelHeading, { eyebrow: '01 / PROVIDERS', title: t('magpie.management.providers') }),
+    createElement('div', { className: 'codingns-magpie-management-note' }, t('magpie.management.providerAccountHierarchy')),
+    createElement('div', { className: 'codingns-magpie-management-note' }, t(accountApiNote)),
+    snapshot?.providerStatus === 'partial' && createElement('div', { className: 'codingns-magpie-management-note' }, t('magpie.management.providersPartial')),
+    snapshot?.providerStatus === 'unavailable'
+      ? createElement(PanelEmpty, { message: t('magpie.management.providersUnavailable') })
+      : providers.length === 0
+        ? createElement(PanelEmpty, { message: t('magpie.management.noProviders') })
+        : createElement('div', { className: 'codingns-magpie-management-grid' },
+      createElement('nav', { className: 'codingns-magpie-panel codingns-magpie-management-list', 'aria-label': t('magpie.management.providers') },
+        ...providers.map(provider => createElement('button', {
+          key: provider.id,
+          type: 'button',
+          className: `codingns-magpie-management-row${provider.id === selected?.id ? ' is-active' : ''}`,
+          'aria-pressed': provider.id === selected?.id,
+          onClick: () => setSelectedId(provider.id),
+        },
+          createElement(MagpieProviderLogo, { identities: [provider.accountAgent, provider.id, provider.name], size: 24, className: 'codingns-magpie-provider-logo codingns-magpie-provider-logo-compact' }),
+          createElement('span', { className: 'codingns-magpie-management-row-main' },
+            createElement('strong', undefined, provider.name),
+            createElement('small', undefined, provider.id),
+          ),
+          createElement(StateBadge, { state: provider.state === 'on' ? 'on' : provider.state === 'off' ? 'off' : 'unknown', t }),
+        )),
+      ),
+      selected === null
+        ? createElement(PanelEmpty, { message: t('magpie.management.noProviders') })
+        : createElement(ProviderEditor, { provider: selected, snapshot, t, onUpdate, onAccountUpdate, writing }),
+    ),
+    unlinkedAccounts.length > 0 && createElement('section', { className: 'codingns-magpie-panel codingns-magpie-management-editor' },
+      createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('div', undefined,
+        createElement('h2', undefined, t('magpie.management.unlinkedAccounts')),
+        createElement('p', undefined, t('magpie.management.unlinkedAccountsNote')),
+      )),
+      createElement(AccountGrid, {
+        accounts: unlinkedAccounts,
+        allAccounts: snapshot?.accounts ?? [],
+        accountApiStatus: snapshot?.accountApiStatus ?? 'unavailable',
+        writing,
+        t,
+        onUpdate: onAccountUpdate,
+      }),
+    ),
+  )
+}
+
+function ProviderEditor({ provider, snapshot, t, onUpdate, onAccountUpdate, writing }: {
+  readonly provider: MagpieProviderManagementRecord
+  readonly snapshot: MagpieManagementSnapshot | null
+  readonly t: Translate
+  readonly onUpdate: (update: MagpieProviderManagementUpdate) => Promise<void>
+  readonly onAccountUpdate: (update: MagpieAccountManagementUpdate) => Promise<void>
+  readonly writing: boolean
+}): ReactElement {
+  const editableEndpoints = provider.endpoints.filter(endpoint => endpoint.editable)
+  const endpointKey = editableEndpoints.map(endpoint => `${endpoint.field}:${endpoint.url}`).join('|')
+  const modelsKey = provider.models.map(model => `${model.id}:${model.exposed ? 'on' : 'off'}`).join('|')
+  const [name, setName] = useState(provider.name)
+  const [endpointField, setEndpointField] = useState(editableEndpoints[0]?.field ?? '')
+  const [endpointUrl, setEndpointUrl] = useState(editableEndpoints[0]?.url ?? '')
+  const [enabledModelIds, setEnabledModelIds] = useState<readonly string[]>(() => provider.models.filter(model => model.exposed).map(model => model.id))
+  const [review, setReview] = useState<MagpieProviderManagementUpdate | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState('')
+  useEffect(() => {
+    setName(provider.name)
+    setEndpointField(editableEndpoints[0]?.field ?? '')
+    setEndpointUrl(editableEndpoints[0]?.url ?? '')
+    setEnabledModelIds(provider.models.filter(model => model.exposed).map(model => model.id))
+    setReview(null)
+  }, [provider.id, provider.name, endpointKey, modelsKey])
+
+  const endpoint = editableEndpoints.find(item => item.field === endpointField)
+  const proposed = (): MagpieProviderManagementUpdate | null => {
+    const models = provider.models.filter(model => enabledModelIds.includes(model.id)).map(model => model.id)
+    const currentModels = provider.models.filter(model => model.exposed).map(model => model.id)
+    const update: MagpieProviderManagementUpdate = {
+      id: provider.id,
+      ...(name.trim() === provider.name ? {} : { name: name.trim() }),
+      ...(endpoint === undefined || endpointUrl.trim() === endpoint.url ? {} : { endpointField: endpoint.field, endpointUrl: endpointUrl.trim() }),
+      ...(provider.modelsEditable && models.join('\n') !== currentModels.join('\n') ? { models } : {}),
+    }
+    return Object.keys(update).length === 1 ? null : update
+  }
+  const requestReview = (): void => {
+    setNotice('')
+    setReview(proposed())
+  }
+  const apply = async (): Promise<void> => {
+    if (review === null) return
+    setSaving(true)
+    setNotice('')
+    try {
+      await onUpdate(review)
+      setReview(null)
+      setNotice(t('magpie.management.saved'))
+    } catch {
+      setNotice(t('magpie.management.saveFailed'))
+    } finally {
+      setSaving(false)
+    }
+  }
+  const modelControlsDisabled = !provider.modelsEditable || saving || writing
+  const toggleModel = (id: string, enabled: boolean): void => {
+    setEnabledModelIds(current => enabled
+      ? current.includes(id) ? current : [...current, id]
+      : current.filter(item => item !== id))
+  }
+  const setAllModels = (enabled: boolean): void => {
+    setEnabledModelIds(enabled ? provider.models.map(model => model.id) : [])
+  }
+
+  return createElement('section', { className: 'codingns-magpie-panel codingns-magpie-management-editor' },
+    createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('div', undefined,
+      createElement('div', { className: 'codingns-magpie-provider-heading' },
+        createElement(MagpieProviderLogo, { identities: [provider.accountAgent, provider.id, provider.name], size: 30, className: 'codingns-magpie-provider-logo' }),
+        createElement('h2', undefined, provider.name),
+      ),
+      createElement('p', undefined, provider.id),
+    )),
+    createElement('div', { className: 'codingns-magpie-management-statusline' },
+      createElement(StateBadge, { state: provider.state === 'on' ? 'on' : provider.state === 'off' ? 'off' : 'unknown', t }),
+      provider.state !== 'unknown' && createElement('button', {
+        type: 'button',
+        className: 'codingns-magpie-text-button',
+        disabled: saving || writing,
+        onClick: () => {
+          setNotice('')
+          setReview({ id: provider.id, on: provider.state === 'off' })
+        },
+      }, t(provider.state === 'on' ? 'magpie.management.turnProviderOff' : 'magpie.management.turnProviderOn')),
+      provider.account !== null && createElement('span', undefined, t('magpie.management.providerAccount', { account: provider.account })),
+      createElement('span', undefined, provider.modelCount === null ? t('magpie.management.modelCountUnknown') : t('magpie.management.modelCounts', { exposed: provider.exposedModelCount ?? provider.models.length, total: provider.modelCount })),
+    ),
+    createElement(ProviderAccounts, { provider, snapshot, t, onUpdate: onAccountUpdate, writing }),
+    createElement('label', { className: 'codingns-magpie-field' },
+      createElement('span', undefined, t('magpie.management.providerName')),
+      createElement('input', { value: name, maxLength: 80, onChange: (event: { currentTarget: { value: string } }) => setName(event.currentTarget.value) }),
+    ),
+    provider.endpoints.filter(item => !item.editable).length > 0 && createElement('div', { className: 'codingns-magpie-management-note' }, t('magpie.management.credentialEndpointReadOnly')),
+    editableEndpoints.length > 0 && createElement('div', { className: 'codingns-magpie-field-row' },
+      createElement('label', { className: 'codingns-magpie-field' },
+        createElement('span', undefined, t('magpie.management.endpointType')),
+        createElement('select', {
+          value: endpointField,
+          onChange: (event: { currentTarget: { value: string } }) => {
+            const next = provider.endpoints.find(item => item.field === event.currentTarget.value)
+            if (next !== undefined) {
+              setEndpointField(next.field)
+              setEndpointUrl(next.url)
+            }
+          },
+        }, ...editableEndpoints.map(item => createElement('option', { key: item.field, value: item.field }, item.field))),
+      ),
+      createElement('label', { className: 'codingns-magpie-field' },
+        createElement('span', undefined, t('magpie.management.endpointUrl')),
+        createElement('input', { value: endpointUrl, maxLength: 2048, onChange: (event: { currentTarget: { value: string } }) => setEndpointUrl(event.currentTarget.value), spellCheck: false }),
+      ),
+    ),
+    createElement('div', { className: 'codingns-magpie-field' },
+      createElement('span', undefined, t('magpie.management.exposedModels')),
+      createElement('small', undefined, t(provider.modelsEditable ? 'magpie.management.providerModelsHint' : 'magpie.management.providerModelsUnavailable')),
+      provider.models.length === 0
+        ? createElement('div', { className: 'codingns-magpie-inline-empty' }, t('magpie.management.noProviderModels'))
+        : createElement('div', { className: 'codingns-magpie-model-editor', role: 'group', 'aria-label': t('magpie.management.exposedModels') },
+          createElement('div', { className: 'codingns-magpie-model-actions' },
+            createElement('button', { type: 'button', disabled: modelControlsDisabled, onClick: () => setAllModels(true) }, t('magpie.management.enableAllModels')),
+            createElement('button', { type: 'button', disabled: modelControlsDisabled, onClick: () => setAllModels(false) }, t('magpie.management.disableAllModels')),
+          ),
+          ...provider.models.map(model => createElement('label', { key: model.id, className: `codingns-magpie-model-option${model.exposed ? ' is-exposed' : ''}`, 'data-model-id': model.id },
+            createElement('input', {
+              type: 'checkbox',
+              checked: enabledModelIds.includes(model.id),
+              disabled: modelControlsDisabled,
+              'aria-label': model.id,
+              onChange: (event: { currentTarget: { checked: boolean } }) => toggleModel(model.id, event.currentTarget.checked),
+            }),
+            createElement('span', { className: 'codingns-magpie-model-option-copy' },
+              createElement('strong', { className: 'codingns-magpie-model-name', title: model.name ?? model.id }, model.name ?? model.id),
+              createElement('code', { className: 'codingns-magpie-model-id', title: model.id }, model.id),
+            ),
+          )),
+        ),
+    ),
+    review !== null && createElement('div', { className: 'codingns-magpie-confirm' },
+      createElement('strong', undefined, t('magpie.management.reviewProvider')),
+      createElement('span', undefined, summarizeProviderUpdate(review, t)),
+      createElement('div', { className: 'codingns-magpie-management-actions' },
+        createElement('button', { type: 'button', disabled: saving || writing, onClick: () => setReview(null) }, t('magpie.management.cancel')),
+        createElement('button', { type: 'button', className: 'is-primary', disabled: saving || writing, onClick: () => void apply() }, saving || writing ? t('magpie.management.saving') : t('magpie.management.apply')),
+      ),
+    ),
+    notice !== '' && createElement('div', { className: 'codingns-magpie-management-message', role: 'status' }, notice),
+    review === null && createElement('div', { className: 'codingns-magpie-management-actions' },
+      createElement('button', { type: 'button', disabled: writing, onClick: () => { setName(provider.name); setEndpointUrl(editableEndpoints.find(item => item.field === endpointField)?.url ?? ''); setEnabledModelIds(provider.models.filter(model => model.exposed).map(model => model.id)); setNotice('') } }, t('magpie.management.reset')),
+      createElement('button', { type: 'button', className: 'is-primary', disabled: writing || proposed() === null, onClick: requestReview }, t('magpie.management.reviewChanges')),
+    ),
+  )
+}
+
+function ProviderAccounts({ provider, snapshot, t, onUpdate, writing }: {
+  readonly provider: MagpieProviderManagementRecord
+  readonly snapshot: MagpieManagementSnapshot | null
+  readonly t: Translate
+  readonly onUpdate: (update: MagpieAccountManagementUpdate) => Promise<void>
+  readonly writing: boolean
+}): ReactElement {
+  if (snapshot?.accountStatus !== 'available') {
+    return createElement('div', { className: 'codingns-magpie-management-note' }, t('magpie.management.accountsUnavailable'))
+  }
+  const accounts = snapshot.accounts.filter(account => accountBelongsToProvider(account, provider))
+  return createElement('section', undefined,
+    createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('div', undefined,
+      createElement('h3', undefined, t('magpie.management.accounts')),
+      createElement('p', undefined, t('magpie.management.accountRoleNote')),
+    )),
+    accounts.length === 0
+      ? createElement('div', { className: 'codingns-magpie-inline-empty' }, t('magpie.management.noLinkedAccounts'))
+      : createElement(AccountGrid, {
+        accounts,
+        allAccounts: snapshot.accounts,
+        accountApiStatus: snapshot.accountApiStatus,
+        writing,
+        t,
+        onUpdate,
+      }),
+  )
+}
+
+function AccountGrid({ accounts, allAccounts, accountApiStatus, writing, t, onUpdate }: {
+  readonly accounts: readonly MagpieAccountManagementRecord[]
+  readonly allAccounts: readonly MagpieAccountManagementRecord[]
+  readonly accountApiStatus: MagpieManagementSnapshot['accountApiStatus']
+  readonly writing: boolean
+  readonly t: Translate
+  readonly onUpdate: (update: MagpieAccountManagementUpdate) => Promise<void>
+}): ReactElement {
+  const sorted = [...accounts].sort((left, right) => Number(right.active === true) - Number(left.active === true))
+  return createElement('div', { className: 'codingns-magpie-management-account-grid' }, ...sorted.map(account => createElement(AccountCard, {
+    key: `${account.agent}:${account.user}`,
+    account,
+    siblingAccounts: allAccounts.filter(item => item.agent.toLocaleLowerCase() === account.agent.toLocaleLowerCase()),
+    accountApiStatus,
+    writing,
+    t,
+    onUpdate,
+  })))
+}
+
+function AccountCard({ account, siblingAccounts, accountApiStatus, writing, t, onUpdate }: {
+  readonly account: MagpieAccountManagementRecord
+  readonly siblingAccounts: readonly MagpieAccountManagementRecord[]
+  readonly accountApiStatus: MagpieManagementSnapshot['accountApiStatus']
+  readonly writing: boolean
+  readonly t: Translate
+  readonly onUpdate: (update: MagpieAccountManagementUpdate) => Promise<void>
+}): ReactElement {
+  const [reviewOn, setReviewOn] = useState<boolean | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState('')
+  const roleKey = account.active === true ? 'magpie.management.primaryAccount' : account.active === false ? 'magpie.management.secondaryAccount' : 'magpie.management.unknown'
+  const stateKey = account.on === true
+    ? 'magpie.management.inRotation'
+    : account.active === true
+      ? 'magpie.management.primaryPaused'
+      : account.on === false
+        ? 'magpie.management.outOfRotation'
+        : 'magpie.management.unknown'
+  const activeInRotation = siblingAccounts.filter(item => item.on === true).length
+  const isLastInRotation = account.on === true && activeInRotation <= 1
+  const apply = async (): Promise<void> => {
+    if (reviewOn === null) return
+    setSaving(true)
+    setNotice('')
+    try {
+      await onUpdate({ agent: account.agent, user: account.user, on: reviewOn })
+      setReviewOn(null)
+      setNotice(t('magpie.management.saved'))
+    } catch {
+      setNotice(t('magpie.management.accountSaveFailed'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return createElement('article', { className: 'codingns-magpie-panel codingns-magpie-management-account' },
+    createElement('div', { className: 'codingns-magpie-quota-topline' },
+      createElement(MagpieProviderLogo, { identities: [account.agent], size: 34, className: 'codingns-magpie-quota-icon codingns-magpie-provider-logo' }),
+      createElement('div', undefined, createElement('h2', undefined, account.alias ?? account.user), createElement('p', undefined, `${account.agent}${account.plan ? ` · ${account.plan}` : ''}`)),
+    ),
+    createElement('div', { className: 'codingns-magpie-management-statusline' },
+      createElement(StateBadge, { state: account.active === true ? 'on' : account.active === false ? 'off' : 'unknown', label: t(roleKey), t }),
+      createElement(StateBadge, { state: account.on === true ? 'on' : account.on === false ? 'off' : 'unknown', label: t(stateKey), t }),
+    ),
+    createElement('div', { className: 'codingns-magpie-management-actions' },
+      createElement('button', {
+        type: 'button',
+        className: 'codingns-magpie-text-button',
+        disabled: accountApiStatus !== 'available' || account.on === null || saving || writing || isLastInRotation,
+        title: accountApiStatus === 'available' ? undefined : t('magpie.management.accountApiRequired'),
+        onClick: () => {
+          setNotice('')
+          setReviewOn(account.on !== true)
+        },
+      }, t(account.on === true ? account.active === true ? 'magpie.management.pausePrimary' : 'magpie.management.removeFromRotation' : 'magpie.management.addToRotation')),
+      isLastInRotation && createElement('small', undefined, t('magpie.management.lastAccountInRotation')),
+    ),
+    account.balance !== null && createElement('div', { className: 'codingns-magpie-management-balance' }, account.balance),
+    account.windows.length === 0
+      ? createElement('div', { className: 'codingns-magpie-inline-empty' }, t('magpie.management.noAccountWindows'))
+      : account.windows.map(window => createElement('div', { key: window.name, className: 'codingns-magpie-management-window' },
+        createElement('div', { className: 'codingns-magpie-quota-window-head' }, createElement('strong', undefined, window.name), createElement('span', undefined, window.display ?? (window.remaining === null ? '—' : t('magpie.remaining', { percent: Math.round(window.remaining) })))),
+        window.used !== null && window.remaining !== null && createElement('div', { className: 'codingns-magpie-track quota-track' }, createElement('span', { style: { width: `${Math.max(0, Math.min(100, window.used))}%` } })),
+        window.resetsAt !== null && createElement('small', undefined, t('magpie.resets', { time: window.resetsAt })),
+      )),
+    account.readAt !== null && createElement('small', { className: 'codingns-magpie-management-readat' }, t('magpie.management.readAt', { time: account.readAt })),
+    reviewOn !== null && createElement('div', { className: 'codingns-magpie-confirm' },
+      createElement('strong', undefined, t('magpie.management.reviewAccount')),
+      createElement('span', undefined, t(reviewOn ? 'magpie.management.reviewAccountOn' : 'magpie.management.reviewAccountOff', { account: account.alias ?? account.user })),
+      createElement('div', { className: 'codingns-magpie-management-actions' },
+        createElement('button', { type: 'button', disabled: saving || writing, onClick: () => setReviewOn(null) }, t('magpie.management.cancel')),
+        createElement('button', { type: 'button', className: 'is-primary', disabled: saving || writing, onClick: () => void apply() }, saving || writing ? t('magpie.management.saving') : t('magpie.management.apply')),
+      ),
+    ),
+    notice !== '' && createElement('div', { className: 'codingns-magpie-management-message', role: 'status' }, notice),
+  )
+}
+
+interface GroupDraft {
+  readonly name: string
+  readonly models: readonly string[]
+  readonly routing: string
+  readonly stays: string
+}
+
+export interface GroupModelCandidate {
+  readonly id: string
+  readonly name: string | null
+  readonly provider: string | null
+  readonly providerName: string | null
+  readonly providerAgent?: string | null
+  readonly kind: 'model' | 'group' | 'pattern'
+}
+
+export function MagpieGroupsPage({ snapshot, t, onUpdate }: {
+  readonly snapshot: MagpieManagementSnapshot | null
+  readonly t: Translate
+  readonly onUpdate: (update: MagpieRoutingGroupManagementUpdate) => Promise<void>
+}): ReactElement {
+  const groups = snapshot?.groups ?? []
+  const [selectedId, setSelectedId] = useState<string | null>(groups[0]?.id ?? null)
+  const selected = groups.find(group => group.id === selectedId) ?? groups[0] ?? null
+  useEffect(() => {
+    if (selected !== null && selected.id !== selectedId) setSelectedId(selected.id)
+  }, [selected, selectedId])
+  if (snapshot?.groupStatus !== 'available') return createElement(PanelEmpty, { message: t('magpie.management.groupsUnavailable') })
+  if (groups.length === 0) return createElement(PanelEmpty, { message: t('magpie.management.noGroups') })
+  return createElement('div', { className: 'codingns-magpie-view' },
+    createElement(PanelHeading, { eyebrow: '02 / ROUTING', title: t('magpie.management.groups') }),
+    createElement('div', { className: 'codingns-magpie-management-grid' },
+      createElement('nav', { className: 'codingns-magpie-panel codingns-magpie-management-list', 'aria-label': t('magpie.management.groups') },
+        ...groups.map(group => createElement('button', {
+          key: group.id,
+          type: 'button',
+          className: `codingns-magpie-management-row${group.id === selected?.id ? ' is-active' : ''}`,
+          'aria-pressed': group.id === selected?.id,
+          onClick: () => setSelectedId(group.id),
+        }, createElement('span', { className: 'codingns-magpie-management-row-main' },
+          createElement('strong', undefined, group.name),
+          createElement('small', undefined, `group/${group.id}`),
+        ), createElement('span', { className: 'codingns-magpie-management-policy' }, group.routing ?? '—'))),
+      ),
+      selected === null
+        ? createElement(PanelEmpty, { message: t('magpie.management.noGroups') })
+        : createElement(GroupEditor, { group: selected, candidates: groupModelCandidates(snapshot, selected), t, onUpdate }),
+    ),
+  )
+}
+
+function GroupEditor({ group, candidates, t, onUpdate }: {
+  readonly group: MagpieRoutingGroupManagementRecord
+  readonly candidates: readonly GroupModelCandidate[]
+  readonly t: Translate
+  readonly onUpdate: (update: MagpieRoutingGroupManagementUpdate) => Promise<void>
+}): ReactElement {
+  const [draft, setDraft] = useState<GroupDraft>(() => groupDraft(group))
+  const [review, setReview] = useState<MagpieRoutingGroupManagementUpdate | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [notice, setNotice] = useState('')
+  const key = JSON.stringify(group)
+  useEffect(() => {
+    setDraft(groupDraft(group))
+    setReview(null)
+  }, [group.id, key])
+  const setText = (field: 'name' | 'routing' | 'stays', value: string): void => setDraft(current => ({ ...current, [field]: value }))
+  const update = (): MagpieRoutingGroupManagementUpdate | null => {
+    const baseline = groupDraft(group)
+    const result: MagpieRoutingGroupManagementUpdate = {
+      id: group.id,
+      ...(draft.name.trim() === baseline.name ? {} : { name: draft.name.trim() }),
+      ...(sameStringOrder(draft.models, baseline.models) ? {} : { models: [...draft.models] }),
+      ...(draft.routing === baseline.routing ? {} : { routing: draft.routing }),
+      ...(draft.stays === baseline.stays ? {} : { stays: draft.stays }),
+    }
+    return Object.keys(result).length === 1 ? null : result
+  }
+  const apply = async (): Promise<void> => {
+    if (review === null) return
+    setSaving(true)
+    setNotice('')
+    try {
+      await onUpdate(review)
+      setReview(null)
+      setNotice(t('magpie.management.saved'))
+    } catch {
+      setNotice(t('magpie.management.saveFailed'))
+    } finally {
+      setSaving(false)
+    }
+  }
+  const updateField = update()
+
+  return createElement('section', { className: 'codingns-magpie-panel codingns-magpie-management-editor' },
+    createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('div', undefined,
+      createElement('h2', undefined, group.name),
+      createElement('p', undefined, `group/${group.id}`),
+    )),
+    createElement('div', { className: 'codingns-magpie-management-statusline' },
+      createElement('span', undefined, t('magpie.management.membersCount', { count: group.members.length })),
+      group.usedBy.length > 0 && createElement('span', undefined, t('magpie.management.usedBy', { agents: group.usedBy.join(', ') })),
+    ),
+    createElement('div', { className: 'codingns-magpie-management-note' }, t('magpie.management.groupReadbackNote')),
+    group.members.length > 0 && createElement('div', { className: 'codingns-magpie-management-members' },
+      ...group.members.map(member => createElement('span', { key: member.id, className: `codingns-magpie-member-chip${member.ready === false ? ' is-muted' : ''}`, title: member.name ?? member.id }, member.id)),
+    ),
+    createElement('label', { className: 'codingns-magpie-field' }, createElement('span', undefined, t('magpie.management.groupName')),
+      createElement('input', { value: draft.name, maxLength: 120, onChange: (event: { currentTarget: { value: string } }) => setText('name', event.currentTarget.value) })),
+    createElement('div', { className: 'codingns-magpie-field' }, createElement('span', undefined, t('magpie.management.groupModels')),
+      createElement('small', undefined, t('magpie.management.groupModelsHint')),
+      createElement(GroupModelEditor, {
+        key: group.id,
+        value: draft.models,
+        candidates,
+        t,
+        onChange: models => setDraft(current => ({ ...current, models })),
+      })),
+    createElement('div', { className: 'codingns-magpie-field-row' },
+      createElement(SelectField, { label: t('magpie.management.routing'), value: draft.routing, options: ['smart', 'order', 'rotate', 'usage', 'pace', 'weight', 'manual'], onChange: value => setText('routing', value) }),
+      createElement(SelectField, { label: t('magpie.management.stays'), value: draft.stays, options: ['auto', 'session', 'turn', 'off', 'strict'], onChange: value => setText('stays', value) }),
+    ),
+    review !== null && createElement('div', { className: 'codingns-magpie-confirm' },
+      createElement('strong', undefined, t('magpie.management.reviewGroup')),
+      createElement('span', undefined, summarizeGroupUpdate(review, t)),
+      createElement('div', { className: 'codingns-magpie-management-actions' },
+        createElement('button', { type: 'button', disabled: saving, onClick: () => setReview(null) }, t('magpie.management.cancel')),
+        createElement('button', { type: 'button', className: 'is-primary', disabled: saving, onClick: () => void apply() }, saving ? t('magpie.management.saving') : t('magpie.management.apply')),
+      ),
+    ),
+    notice !== '' && createElement('div', { className: 'codingns-magpie-management-message', role: 'status' }, notice),
+    review === null && createElement('div', { className: 'codingns-magpie-management-actions' },
+      createElement('button', { type: 'button', onClick: () => { setDraft(groupDraft(group)); setNotice('') } }, t('magpie.management.reset')),
+      createElement('button', { type: 'button', className: 'is-primary', disabled: updateField === null, onClick: () => { setNotice(''); setReview(updateField) } }, t('magpie.management.reviewChanges')),
+    ),
+  )
+}
+
+function groupDraft(group: MagpieRoutingGroupManagementRecord): GroupDraft {
+  return {
+    name: group.name,
+    models: uniqueStrings([
+      ...group.members.filter(member => !member.byPattern).map(member => member.id),
+      ...group.patterns,
+    ]),
+    routing: group.routing ?? 'smart',
+    stays: group.stays ?? 'auto',
+  }
+}
+
+export function reorderModels(models: readonly string[], sourceId: string, targetId: string): readonly string[] {
+  if (sourceId === targetId) return [...models]
+  const sourceIndex = models.indexOf(sourceId)
+  const targetIndex = models.indexOf(targetId)
+  if (sourceIndex < 0 || targetIndex < 0) return [...models]
+  const next = [...models]
+  const [moved] = next.splice(sourceIndex, 1)
+  if (moved === undefined) return [...models]
+  next.splice(sourceIndex < targetIndex ? targetIndex - 1 : targetIndex, 0, moved)
+  return next
+}
+
+function uniqueStrings(values: readonly string[]): readonly string[] {
+  return [...new Set(values)]
+}
+
+function sameStringOrder(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
+}
+
+function groupModelCandidates(snapshot: MagpieManagementSnapshot | null, group: MagpieRoutingGroupManagementRecord): readonly GroupModelCandidate[] {
+  const candidates = new Map<string, GroupModelCandidate>()
+  const providerNames = new Map((snapshot?.providers ?? []).map(provider => [provider.id, provider.name]))
+  const providerAgents = new Map((snapshot?.providers ?? []).map(provider => [provider.id, provider.accountAgent]))
+  for (const provider of snapshot?.providers ?? []) {
+    for (const model of provider.models) {
+      if (!candidates.has(model.id)) candidates.set(model.id, { id: model.id, name: model.name, provider: provider.id, providerName: provider.name, providerAgent: provider.accountAgent, kind: 'model' })
+    }
+  }
+  for (const member of group.members) {
+    if (!candidates.has(member.id)) candidates.set(member.id, {
+      id: member.id,
+      name: member.name,
+      provider: member.provider,
+      providerName: member.provider === null ? null : providerNames.get(member.provider) ?? null,
+      providerAgent: member.provider === null ? null : providerAgents.get(member.provider) ?? null,
+      kind: member.id.startsWith('group/') ? 'group' : 'model',
+    })
+  }
+  for (const pattern of group.patterns) {
+    if (!candidates.has(pattern)) candidates.set(pattern, { id: pattern, name: null, provider: null, providerName: null, kind: 'pattern' })
+  }
+  return [...candidates.values()]
+}
+
+function GroupModelEditor({ value, candidates, t, onChange }: {
+  readonly value: readonly string[]
+  readonly candidates: readonly GroupModelCandidate[]
+  readonly t: Translate
+  readonly onChange: (models: readonly string[]) => void
+}): ReactElement {
+  const [draggingId, setDraggingId] = useState<string | null>(null)
+  const candidateById = new Map(candidates.map(candidate => [candidate.id, candidate]))
+  const fallback = (id: string): GroupModelCandidate => ({
+    id,
+    name: null,
+    provider: null,
+    providerName: null,
+    providerAgent: null,
+    kind: id.startsWith('group/') ? 'group' : id.includes('*') || id.startsWith('re:') ? 'pattern' : 'model',
+  })
+  const selected = value.map(id => candidateById.get(id) ?? fallback(id))
+  const unselected = candidates.filter(candidate => !value.includes(candidate.id))
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerQuery, setPickerQuery] = useState('')
+  const move = (id: string, delta: -1 | 1): void => {
+    const index = value.indexOf(id)
+    const targetIndex = index + delta
+    if (index < 0 || targetIndex < 0 || targetIndex >= value.length) return
+    const targetId = value[targetIndex]
+    if (targetId !== undefined) onChange(reorderModels(value, id, targetId))
+  }
+  const drop = (event: { preventDefault: () => void; dataTransfer?: { getData: (type: string) => string } }, targetId: string): void => {
+    event.preventDefault()
+    const sourceId = draggingId ?? event.dataTransfer?.getData('text/plain') ?? ''
+    if (sourceId !== '') onChange(reorderModels(value, sourceId, targetId))
+    setDraggingId(null)
+  }
+  const renderOption = (candidate: GroupModelCandidate, enabled: boolean, index: number): ReactElement => createElement('div', {
+    key: candidate.id,
+    className: `codingns-magpie-group-model-option${enabled ? ' is-selected' : ''}${draggingId === candidate.id ? ' is-dragging' : ''}`,
+    draggable: enabled && candidate.kind !== 'pattern',
+    'data-model-id': candidate.id,
+    onDragStart: enabled && candidate.kind !== 'pattern' ? (event: { dataTransfer?: { setData: (type: string, value: string) => void; effectAllowed?: string } }) => {
+      setDraggingId(candidate.id)
+      event.dataTransfer?.setData('text/plain', candidate.id)
+      if (event.dataTransfer !== undefined) event.dataTransfer.effectAllowed = 'move'
+    } : undefined,
+    onDragEnd: () => setDraggingId(null),
+    onDragOver: enabled && candidate.kind !== 'pattern' ? (event: { preventDefault: () => void; dataTransfer?: { dropEffect?: string } }) => {
+      event.preventDefault()
+      if (event.dataTransfer !== undefined) event.dataTransfer.dropEffect = 'move'
+    } : undefined,
+    onDrop: enabled && candidate.kind !== 'pattern' ? (event: { preventDefault: () => void; dataTransfer?: { getData: (type: string) => string } }) => drop(event, candidate.id) : undefined,
+  },
+    createElement('label', { className: 'codingns-magpie-group-model-check' },
+      createElement('input', {
+        type: 'checkbox',
+        checked: value.includes(candidate.id),
+        'aria-label': candidate.id,
+        onChange: (event: { currentTarget: { checked: boolean } }) => onChange(event.currentTarget.checked ? addGroupModel(value, candidate, candidateById) : value.filter(id => id !== candidate.id)),
+      }),
+      createElement('span', { className: 'codingns-magpie-group-model-order', 'aria-hidden': true }, String(index + 1)),
+      createElement(MagpieProviderLogo, { identities: [candidate.providerAgent, candidate.provider, candidate.providerName], size: 20, className: 'codingns-magpie-provider-logo codingns-magpie-provider-logo-compact', fallback: 'none' }),
+      createElement('span', { className: 'codingns-magpie-model-option-copy' },
+        createElement('strong', { className: 'codingns-magpie-model-name', title: candidate.name ?? candidate.id }, candidate.name ?? candidate.id),
+        createElement('span', { className: 'codingns-magpie-model-meta' },
+          candidate.provider !== null && createElement('span', { className: 'codingns-magpie-model-provider', title: candidate.provider }, candidate.provider),
+          createElement('code', { className: 'codingns-magpie-model-id', title: candidate.id }, candidate.id),
+        ),
+      ),
+    ),
+    enabled && candidate.kind !== 'pattern' && createElement('div', { className: 'codingns-magpie-group-model-actions' },
+      createElement('button', { type: 'button', disabled: index === 0, 'aria-label': t('magpie.management.moveModelUp', { model: candidate.id }), onClick: () => move(candidate.id, -1) }, '↑'),
+      createElement('button', { type: 'button', disabled: index === value.length - 1, 'aria-label': t('magpie.management.moveModelDown', { model: candidate.id }), onClick: () => move(candidate.id, 1) }, '↓'),
+    ),
+  )
+
+  return createElement('div', { className: 'codingns-magpie-group-model-editor', role: 'list' },
+    selected.length === 0 && createElement('div', { className: 'codingns-magpie-inline-empty' }, t('magpie.management.noSelectedGroupModels')),
+    ...selected.map((candidate, index) => renderOption(candidate, true, index)),
+    unselected.length > 0 && createElement('div', { className: 'codingns-magpie-group-model-add' },
+      createElement('button', {
+        type: 'button',
+        className: 'codingns-magpie-group-model-add-button',
+        'aria-label': t('magpie.management.addGroupModel'),
+        'aria-expanded': pickerOpen,
+        'aria-controls': 'codingns-magpie-group-model-picker',
+        onClick: () => setPickerOpen(open => !open),
+      }, createElement('span', { className: 'codingns-magpie-group-model-add-icon', 'aria-hidden': true }, '+'), t('magpie.management.addGroupModel')),
+      pickerOpen && createElement(GroupModelPicker, {
+        candidates: unselected,
+        value,
+        query: pickerQuery,
+        t,
+        onQueryChange: setPickerQuery,
+        onSelect: candidate => {
+          onChange(addGroupModel(value, candidate, candidateById))
+          setPickerOpen(false)
+          setPickerQuery('')
+        },
+      }),
+    ),
+  )
+}
+
+export function GroupModelPicker({ candidates, value, query, t, onQueryChange, onSelect }: {
+  readonly candidates: readonly GroupModelCandidate[]
+  readonly value: readonly string[]
+  readonly query: string
+  readonly t: Translate
+  readonly onQueryChange: (value: string) => void
+  readonly onSelect: (candidate: GroupModelCandidate) => void
+}): ReactElement {
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const filtered = candidates.filter(candidate => [candidate.name, candidate.id, candidate.provider, candidate.providerName]
+    .some(value => value?.toLocaleLowerCase().includes(normalizedQuery) === true))
+  const groups = new Map<string, { readonly label: string; readonly candidates: GroupModelCandidate[] }>()
+  for (const candidate of filtered) {
+    const key = candidate.provider ?? 'other'
+    const group = groups.get(key)
+    if (group !== undefined) group.candidates.push(candidate)
+    else groups.set(key, { label: candidate.providerName ?? candidate.provider ?? t('magpie.management.otherGroupModels'), candidates: [candidate] })
+  }
+  return createElement('div', { id: 'codingns-magpie-group-model-picker', className: 'codingns-magpie-group-model-picker', role: 'dialog', 'aria-label': t('magpie.management.addGroupModel') },
+    createElement('div', { className: 'codingns-magpie-group-model-picker-search' },
+      createElement('span', { 'aria-hidden': true }, '⌕'),
+      createElement('input', {
+        type: 'search',
+        value: query,
+        autoFocus: true,
+        placeholder: t('magpie.management.searchGroupModels'),
+        'aria-label': t('magpie.management.searchGroupModels'),
+        onChange: (event: { currentTarget: { value: string } }) => onQueryChange(event.currentTarget.value),
+      }),
+    ),
+    createElement('div', { className: 'codingns-magpie-group-model-picker-list', role: 'listbox' },
+      groups.size === 0
+        ? createElement('div', { className: 'codingns-magpie-inline-empty' }, t('magpie.management.noMatchingGroupModels'))
+        : [...groups.entries()].map(([key, group]) => createElement('section', { key, className: 'codingns-magpie-group-model-picker-group' },
+          createElement('h4', { className: 'codingns-magpie-group-model-picker-heading' }, group.label),
+          ...group.candidates.map(candidate => createElement('button', {
+            key: candidate.id,
+            type: 'button',
+            className: 'codingns-magpie-group-model-picker-option',
+            role: 'option',
+            'aria-selected': value.includes(candidate.id),
+            onClick: () => onSelect(candidate),
+          },
+            createElement(MagpieProviderLogo, { identities: [candidate.providerAgent, candidate.provider, candidate.providerName], size: 24, className: 'codingns-magpie-provider-logo codingns-magpie-provider-logo-compact', fallback: 'none' }),
+            createElement('span', { className: 'codingns-magpie-model-option-copy' },
+              createElement('strong', { className: 'codingns-magpie-model-name', title: candidate.name ?? candidate.id }, candidate.name ?? candidate.id),
+              createElement('span', { className: 'codingns-magpie-model-meta' },
+                candidate.provider !== null && createElement('span', { className: 'codingns-magpie-model-provider', title: candidate.provider }, candidate.provider),
+                createElement('code', { className: 'codingns-magpie-model-id', title: candidate.id }, candidate.id),
+              ),
+            ),
+          )),
+        )),
+    ),
+  )
+}
+
+function addGroupModel(value: readonly string[], candidate: GroupModelCandidate, candidateById: ReadonlyMap<string, GroupModelCandidate>): readonly string[] {
+  if (value.includes(candidate.id)) return [...value]
+  if (candidate.kind === 'pattern') return [...value, candidate.id]
+  const firstPattern = value.findIndex(id => candidateById.get(id)?.kind === 'pattern' || id.includes('*') || id.startsWith('re:'))
+  if (firstPattern < 0) return [...value, candidate.id]
+  return [...value.slice(0, firstPattern), candidate.id, ...value.slice(firstPattern)]
+}
+
+function accountBelongsToProvider(account: MagpieAccountManagementRecord, provider: MagpieProviderManagementRecord): boolean {
+  const providerAgent = (provider.accountAgent ?? provider.id).toLocaleLowerCase()
+  return account.agent.toLocaleLowerCase() === providerAgent
+}
+
+function SelectField({ label, value, options, onChange }: { readonly label: string; readonly value: string; readonly options: readonly string[]; readonly onChange: (value: string) => void }): ReactElement {
+  return createElement('label', { className: 'codingns-magpie-field' }, createElement('span', undefined, label),
+    createElement('select', { value, onChange: (event: { currentTarget: { value: string } }) => onChange(event.currentTarget.value) }, ...options.map(option => createElement('option', { key: option, value: option }, option))),
+  )
+}
+
+function StateBadge({ state, label, t }: { readonly state: 'on' | 'off' | 'unknown'; readonly label?: string; readonly t: Translate }): ReactElement {
+  return createElement('span', { className: `codingns-magpie-state is-${state}` }, label ?? t(state === 'on' ? 'magpie.management.on' : state === 'off' ? 'magpie.management.off' : 'magpie.management.unknown'))
+}
+
+function PanelHeading({ eyebrow, title }: { readonly eyebrow: string; readonly title: string }): ReactElement {
+  return createElement('div', { className: 'codingns-magpie-view-heading' }, createElement('div', undefined,
+    createElement('div', { className: 'codingns-magpie-eyebrow' }, eyebrow), createElement('h1', undefined, title),
+  ))
+}
+
+function PanelEmpty({ message }: { readonly message: string }): ReactElement {
+  return createElement('div', { className: 'codingns-magpie-panel codingns-magpie-management-empty', role: 'note' }, message)
+}
+
+function summarizeProviderUpdate(update: MagpieProviderManagementUpdate, t: Translate): string {
+  const changes: string[] = []
+  if (update.name !== undefined) changes.push(t('magpie.management.reviewName', { value: update.name }))
+  if (update.endpointUrl !== undefined) changes.push(t('magpie.management.reviewEndpoint', { field: update.endpointField ?? '', value: update.endpointUrl }))
+  if (update.models !== undefined) changes.push(t('magpie.management.reviewModels', { count: update.models.length }))
+  if (update.on !== undefined) changes.push(t('magpie.management.reviewProviderStatus', { value: t(update.on ? 'magpie.management.on' : 'magpie.management.off') }))
+  return changes.join(' · ')
+}
+
+function summarizeGroupUpdate(update: MagpieRoutingGroupManagementUpdate, t: Translate): string {
+  const changes: string[] = []
+  if (update.name !== undefined) changes.push(t('magpie.management.reviewName', { value: update.name }))
+  if (update.models !== undefined) changes.push(t('magpie.management.reviewModels', { count: update.models.length }))
+  if (update.routing !== undefined) changes.push(t('magpie.management.reviewRouting', { value: update.routing }))
+  if (update.stays !== undefined) changes.push(t('magpie.management.reviewStays', { value: update.stays }))
+  return changes.join(' · ')
+}

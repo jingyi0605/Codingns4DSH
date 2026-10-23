@@ -27,6 +27,7 @@ export type DshCapabilityId =
   | 'conversation.interaction-translation'
   | 'conversation.message-presentation'
   | 'sidebar.right'
+  | 'sidebar.global-panel'
   | 'typert.remote'
   | 'typert.context'
   | 'typert.stream'

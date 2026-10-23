@@ -18,6 +18,7 @@ import * as assistantWorkbenchDictionary from './locales/assistantWorkbench.js'
 import * as subagentCollapsedDictionary from './locales/subagentCollapsed.js'
 import * as quickAppsDictionary from './locales/quickApps.js'
 import * as cliManagementDictionary from './locales/cliManagement.js'
+import * as magpieDictionary from './locales/magpie.js'
 
 /** Codingns4DSH 自有词典命名空间。词典缺少的语言由 DSH 自动回退到英文。 */
 export const CODINGNS_LOCALE_NS = 'codingns' as const
@@ -970,6 +971,7 @@ const en: Record<string, string> = {
   ...subagentCollapsedDictionary.en,
   ...quickAppsDictionary.en,
   ...cliManagementDictionary.en,
+  ...magpieDictionary.en,
 }
 
 const zh: Record<string, string> = {
@@ -990,6 +992,7 @@ const zh: Record<string, string> = {
   ...subagentCollapsedDictionary.zh,
   ...quickAppsDictionary.zh,
   ...cliManagementDictionary.zh,
+  ...magpieDictionary.zh,
 }
 
 /** 在当前 Client Cordis 作用域注册中英文词典。 */

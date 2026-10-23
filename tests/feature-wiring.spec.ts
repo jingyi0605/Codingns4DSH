@@ -6,10 +6,12 @@ import { CodingNsRpcError, CodingNsRpcTable } from '../data/build/dist/host/rpc-
 import { createAuthFeature } from '../data/build/dist/host/features/index.js'
 import {
   cliAdaptersFeature,
+  CLIENT_FEATURES,
   debugFeature,
   globalVoiceAssistantFeature,
   lanAccessFeature,
   mobileAccessFeature,
+  magpieManagementFeature,
   reverseProxyFeature,
   sessionTranslationFeature,
   terminalEnhancementFeature,
@@ -551,6 +553,28 @@ test('外部 Agent 作为独立 Client 设置模块登记且默认启用', () =>
   assert.equal(cliAdaptersFeature.descriptor.ui?.labelKey, 'feature.cliAdapters.label')
   assert.equal(cliAdaptersFeature.descriptor.ui?.alwaysEnabled, undefined)
   assert.equal(cliAdaptersFeature.settingsPanel?.name, 'CliAdaptersPanel')
+})
+
+test('Magpie 管理与用量模块默认关闭，紧随外部 Agent 设置并允许启用设置写入', async () => {
+  assert.equal(magpieManagementFeature.descriptor.name, 'magpieManagement')
+  assert.equal(magpieManagementFeature.descriptor.enabledByDefault, false)
+  assert.deepEqual(magpieManagementFeature.descriptor.dependencies, ['cliAdapters'])
+  assert.deepEqual(magpieManagementFeature.descriptor.requires, [{ capability: 'sidebar.global-panel', required: false, fallback: 'disable' }])
+  assert.equal(magpieManagementFeature.descriptor.ui?.labelKey, 'feature.magpieManagement.label')
+  assert.equal(magpieManagementFeature.settingsPanel, undefined)
+  assert.equal(CLIENT_FEATURES.indexOf(magpieManagementFeature), CLIENT_FEATURES.indexOf(cliAdaptersFeature) + 1)
+
+  let received: unknown
+  const handler = createCodingNsSettingsRpcHandler({
+    writable: true,
+    describe: () => [{ ns: 'codingns', revision: 1, value: settingsOf({}) }],
+    get: () => settingsOf({}),
+    mutate: async (_namespace: string, ops: unknown) => { received = ops },
+  } as never)
+  await handler('set', {
+    ops: [{ op: 'set', path: ['modules', 'magpieManagement'], value: true }],
+  })
+  assert.deepEqual(received, [{ op: 'set', path: ['modules', 'magpieManagement'], value: true }])
 })
 
 test('终端增强作为默认关闭且重启生效的独立设置模块登记', () => {

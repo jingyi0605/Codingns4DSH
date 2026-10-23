@@ -4,6 +4,7 @@ import { lanAccessFeature } from './lan-access.js'
 import { reverseProxyFeature } from './reverse-proxy.js'
 import { loginProtectionFeature } from './login-protection.js'
 import { cliAdaptersFeature } from './cli-adapters.js'
+import { magpieManagementFeature } from './magpie-management.js'
 import { terminalEnhancementFeature } from './terminal-enhancement.js'
 import { workspaceSessionEnhancementFeature } from './workspace-session-enhancement.js'
 import { mobileAccessFeature } from './mobile-access.js'
@@ -23,6 +24,7 @@ export const CLIENT_FEATURES: readonly CodingNsClientFeatureModule[] = [
   loginProtectionFeature,
   reverseProxyFeature,
   cliAdaptersFeature,
+  magpieManagementFeature,
   workspaceSessionEnhancementFeature,
   mobileAccessFeature,
   terminalEnhancementFeature,
@@ -63,6 +65,7 @@ export function settingsModules(
 
 export { lanAccessFeature, loginProtectionFeature, reverseProxyFeature, cliAdaptersFeature, workspaceSessionEnhancementFeature, mobileAccessFeature, terminalEnhancementFeature, debugFeature, gitManagementFeature, fileManagementFeature, peerHostFeature }
 export { globalVoiceAssistantFeature } from './global-voice-assistant.js'
+export { magpieManagementFeature } from './magpie-management.js'
 export { subagentCollapsedLineageFeature } from './subagent-collapsed-lineage.js'
 export { sessionTranslationFeature } from './session-translation.js'
 export { ClientSherpaVoiceAdapter } from '../sherpa-voice-adapter.js'

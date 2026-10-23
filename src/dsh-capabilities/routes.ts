@@ -14,6 +14,7 @@ import { createWorkspaceDirectoryBrowser, supportsWorkspaceDirectory } from './h
 import { createSessionPerformanceAdapter, supportsSessionPerformance } from './host/session-performance-adapter.js'
 import { createSessionPerformancePresentation, supportsSessionPerformancePresentation } from './client/session-performance-adapter.js'
 import { createAgentTeamAdapter, supportsExternalAgentTeam } from './host/agent-team-adapter.js'
+import { createGlobalPanelAdapter, supportsGlobalPanel } from './client/global-panel-adapter.js'
 
 /**
  * 注册 Codingns4DSH 当前实际消费的 DSH 服务能力。
@@ -71,6 +72,8 @@ export function createDshCapabilityRegistry(
     addDsh020HostRoutes(add, range020)
     addPeerHostHostRoutes(add)
   } else {
+    add({ id: 'sidebar-panellist-main-020', capability: 'sidebar.global-panel', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
+      detect: supportsGlobalPanel, create: createGlobalPanelAdapter })
     add({ id: 'session-performance-presentation-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-rc.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformancePresentation, create: createSessionPerformancePresentation })
     add({ id: 'sidebar-footer-action-021', capability: 'sidebar.footer-action', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: ctx => supportsQuickAppFooter(read(ctx, 'slots')), create: ctx => read(ctx, 'slots') })
