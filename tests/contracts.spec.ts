@@ -211,7 +211,7 @@ test('不兼容 DSH 版本给出稳定错误码', () => {
   assert.equal(isDshVersionCompatible('0.2.1-alpha.1'), true)
   assert.equal(isDshVersionCompatible('0.2.1-beta.1'), true)
   assert.equal(isDshVersionCompatible('0.2.1-rc.2'), true)
-  assert.equal(isDshVersionCompatible('0.2.1-rc.3'), false)
+  assert.equal(isDshVersionCompatible('0.2.1-rc.3'), true)
   assert.equal(isDshVersionCompatible('0.2.1'), false)
   assert.equal(isDshVersionCompatible('0.3.0'), false)
   assert.equal(isDshVersionCompatible('0.1.7-rc.2'), false)

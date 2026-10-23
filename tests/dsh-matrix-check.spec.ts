@@ -46,10 +46,10 @@ test('Desktop runtime 等于当前测试版本时通过', () => {
 })
 
 test('Desktop runtime 超过当前验证版本时被拒绝', () => {
-  const result = runMatrix(makeRuntimeRoot('0.2.1-rc.3'))
+  const result = runMatrix(makeRuntimeRoot('0.2.1'))
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /不在插件兼容范围/u)
-  assert.match(result.stderr, /0\.2\.1-rc\.3/u)
+  assert.match(result.stderr, /0\.2\.1/u)
 })
 
 test('Desktop runtime 超出兼容范围下界时被拒绝', () => {

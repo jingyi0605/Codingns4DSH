@@ -96,14 +96,14 @@ function harness(rootAdapter = 'dsh') {
   }
 }
 
-test('Team routes retain alpha.2 support through rc.2 and reject old and future fixtures', async () => {
+test('Team routes retain alpha.2 support through rc.3 and reject old and future fixtures', async () => {
   const h = harness()
   try {
-    for (const version of ['0.2.1-alpha.2', '0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2']) {
+    for (const version of ['0.2.1-alpha.2', '0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3']) {
       const profile = createDshCapabilityRegistry(version, 'host', h.context).getProfile(h.context)
       for (const role of ['member', 'lead'] as const) assert.equal(profile.capabilities.get(`agent-team.external-${role}`)?.status, 'ready')
     }
-    for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-rc.3']) {
+    for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1']) {
       const profile = createDshCapabilityRegistry(version, 'host', h.context).getProfile(h.context)
       assert.equal(profile.capabilities.get('agent-team.external-member')?.status, 'unavailable')
       assert.ok(profile.diagnostics.some(item => item.capability === 'agent-team.external-member' && item.code === 'CAPABILITY_VERSION_UNSUPPORTED'))
