@@ -30,6 +30,7 @@ import { MagpieGroupsPage, MagpieProvidersPage } from './magpie-management-contr
 type PageTab = 'overview' | 'providers' | 'groups' | 'usage'
 type UsageTab = 'quotas' | 'sessions' | 'requests'
 type ChartMetric = 'calls' | 'tokens' | 'cost'
+export type ModelBreakdownMode = 'aggregate' | 'account'
 type MagpiePageProps = {
   readonly rpc: CodingNsRpcClient
   readonly locale: CodingNsLocale
@@ -334,6 +335,7 @@ export function OverviewPage({ dashboard, loading, error, chartMetric, onChartMe
   readonly t: (key: string, params?: Record<string, string | number>) => string
   readonly onOpenSession: (session: MagpieUsageSession) => void
 }): ReactElement {
+  const [modelBreakdownMode, setModelBreakdownMode] = useState<ModelBreakdownMode>('aggregate')
   const metrics = dashboard?.aggregate
   if (dashboard === null || dashboard.usageStatus === 'unavailable' || metrics == null) {
     return createElement(EmptyState, { message: t(error ? 'magpie.usageUnavailable' : 'magpie.noUsage'), loading })
@@ -364,7 +366,7 @@ export function OverviewPage({ dashboard, loading, error, chartMetric, onChartMe
       createElement(BarChart, { points: dashboard.series, metric: chartMetric, label: t(`magpie.chart.${chartMetric}`) }),
     ),
     createElement(ProgressSection, { title: t('magpie.byAgent'), rows: dashboard.agents, t }),
-    createElement(ProgressSection, { title: t('magpie.byModel'), rows: dashboard.models, t }),
+    createElement(ModelProgressSection, { rows: dashboard.models, mode: modelBreakdownMode, onModeChange: setModelBreakdownMode, t }),
     dashboard.sessions.length > 0 && createElement(ProgressSection, {
       title: t('magpie.topSessions'),
       rows: dashboard.sessions.map((session) => ({
@@ -382,6 +384,34 @@ export function OverviewPage({ dashboard, loading, error, chartMetric, onChartMe
       },
     }),
   )
+}
+
+export function ModelProgressSection({ rows, mode, onModeChange, t }: {
+  readonly rows: readonly MagpieUsageGroup[]
+  readonly mode: ModelBreakdownMode
+  readonly onModeChange: (mode: ModelBreakdownMode) => void
+  readonly t: (key: string, params?: Record<string, string | number>) => string
+}): ReactElement {
+  const controls = createElement('div', { className: 'codingns-magpie-chart-switch', role: 'group', 'aria-label': t('magpie.modelBreakdown') },
+    ...(['aggregate', 'account'] as const).map((value) => createElement('button', {
+      key: value,
+      type: 'button',
+      className: mode === value ? 'is-active' : '',
+      'aria-pressed': mode === value,
+      onClick: () => onModeChange(value),
+    }, value === 'aggregate' ? t('magpie.modelAggregate') : t('magpie.modelPerAccount'))),
+  )
+  const displayRows = modelBreakdownRows(rows, mode)
+  return createElement(ProgressSection, {
+    // The two modes have different row identity semantics; remount the list so React cannot
+    // retain an account row when returning to the aggregated view.
+    key: `model-breakdown-${mode}`,
+    title: t('magpie.byModel'),
+    rows: displayRows,
+    t,
+    header: controls,
+    ...(mode === 'aggregate' ? { limit: 8 } : {}),
+  })
 }
 
 export function SessionsPage({ dashboard, sessions, search, onSearch, onOpenSession, t }: {
@@ -705,17 +735,20 @@ function BarChart({ points, metric, label }: { readonly points: readonly MagpieU
   )
 }
 
-function ProgressSection({ title, rows, t, onOpen }: {
+function ProgressSection({ title, rows, t, onOpen, header, limit = 8 }: {
   readonly title: string
   readonly rows: readonly (MagpieUsageGroup & { readonly label?: string })[]
   readonly t: (key: string, params?: Record<string, string | number>) => string
   readonly onOpen?: (row: MagpieUsageGroup) => void
+  readonly header?: ReactElement
+  readonly limit?: number
 }): ReactElement {
-  const display = [...rows].sort((left, right) => (right.cost ?? -1) - (left.cost ?? -1) || (right.calls ?? -1) - (left.calls ?? -1)).slice(0, 8)
+  const sorted = [...rows].sort((left, right) => (right.cost ?? -1) - (left.cost ?? -1) || (right.calls ?? -1) - (left.calls ?? -1))
+  const display = limit === undefined ? sorted : sorted.slice(0, limit)
   const hasCost = display.some((row) => row.cost !== null)
   const max = Math.max(1, ...display.map((row) => hasCost ? row.cost ?? 0 : sumNullable(row.inputTokens, row.outputTokens) ?? 0))
   return createElement('section', { className: 'codingns-magpie-panel codingns-magpie-progress-panel' },
-    createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('h2', undefined, title)),
+    createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('h2', undefined, title), header),
     display.length === 0
       ? createElement('div', { className: 'codingns-magpie-inline-empty' }, '—')
       : createElement('div', { className: 'codingns-magpie-progress-list' }, ...display.map((row) => {
@@ -725,7 +758,10 @@ function ProgressSection({ title, rows, t, onOpen }: {
           createElement('div', { className: 'codingns-magpie-progress-head' },
             createElement('span', { className: 'codingns-magpie-provider-inline' },
               createElement(MagpieProviderLogo, { identities: [row.agent, row.provider, row.model, row.id], size: 20, className: 'codingns-magpie-provider-logo codingns-magpie-provider-logo-compact', fallback: 'none' }),
-              createElement('span', { className: 'codingns-magpie-progress-name', title: label }, label)),
+              createElement('span', { className: 'codingns-magpie-progress-copy' },
+                createElement('span', { className: 'codingns-magpie-progress-name', title: label }, label),
+                (row.account ?? row.provider) !== null && createElement('small', { className: 'codingns-magpie-progress-context', title: row.account ?? row.provider ?? '' }, row.account ?? row.provider)),
+            ),
             createElement('strong', { className: 'codingns-magpie-progress-value' }, hasCost ? formatValue(row.cost) : formatCompact(sumNullable(row.inputTokens, row.outputTokens))),
           ),
           createElement('div', { className: 'codingns-magpie-progress-track' },
@@ -882,6 +918,81 @@ function sumNullable(left: number | null, right: number | null): number | null {
   return left === null && right === null ? null : (left ?? 0) + (right ?? 0)
 }
 
+/** Collapse raw model rows while retaining an identity only when it is unambiguous. */
+export function aggregateModelUsageRows(rows: readonly MagpieUsageGroup[]): readonly MagpieUsageGroup[] {
+  const grouped = new Map<string, MagpieUsageGroup>()
+  const nameKeys = new Map<string, string>()
+  for (const row of rows) {
+    const modelKey = modelUsageKey(row)
+    if (modelKey === '') continue
+    const nameKey = modelUsageNameKey(row)
+    // Some Magpie versions qualify the model ID differently for each account. When the
+    // account rows share a provider and display name, the display name is the stable model
+    // identity and must win over that account-specific ID.
+    const groupKey = nameKey === null ? modelKey : nameKeys.get(nameKey) ?? modelKey
+    if (nameKey !== null) nameKeys.set(nameKey, groupKey)
+    const current = grouped.get(groupKey)
+    if (current === undefined) {
+      grouped.set(groupKey, { ...row, id: `model:${groupKey}`, account: null })
+      continue
+    }
+    grouped.set(groupKey, {
+      ...current,
+      name: current.name ?? row.name,
+      provider: mergeIdentity(current.provider, row.provider),
+      model: current.model ?? row.model,
+      agent: mergeIdentity(current.agent, row.agent),
+      calls: sumNullable(current.calls, row.calls),
+      errors: sumNullable(current.errors, row.errors),
+      retried: sumNullable(current.retried, row.retried),
+      inputTokens: sumNullable(current.inputTokens, row.inputTokens),
+      outputTokens: sumNullable(current.outputTokens, row.outputTokens),
+      cacheReadTokens: sumNullable(current.cacheReadTokens, row.cacheReadTokens),
+      cacheWriteTokens: sumNullable(current.cacheWriteTokens, row.cacheWriteTokens),
+      reasoningTokens: sumNullable(current.reasoningTokens, row.reasoningTokens),
+      cost: sumNullable(current.cost, row.cost),
+      unpriced: sumNullable(current.unpriced, row.unpriced),
+      credits: sumNullable(current.credits, row.credits),
+      credited: sumNullable(current.credited, row.credited),
+      timed: sumNullable(current.timed, row.timed),
+      ttftMs: sumNullable(current.ttftMs, row.ttftMs),
+      decodeMs: sumNullable(current.decodeMs, row.decodeMs),
+      decodeTokens: sumNullable(current.decodeTokens, row.decodeTokens),
+      decodeCount: sumNullable(current.decodeCount, row.decodeCount),
+    })
+  }
+  return [...grouped.values()]
+}
+
+/** Return rows with unique React identities so duplicate Magpie IDs cannot leak across modes. */
+export function modelBreakdownRows(rows: readonly MagpieUsageGroup[], mode: ModelBreakdownMode): readonly MagpieUsageGroup[] {
+  if (mode === 'aggregate') return aggregateModelUsageRows(rows)
+  const seen = new Map<string, number>()
+  return rows.map((row, index) => {
+    const baseId = row.id.trim() || `row-${index}`
+    const occurrence = seen.get(baseId) ?? 0
+    seen.set(baseId, occurrence + 1)
+    return occurrence === 0 ? row : { ...row, id: `${baseId}#${occurrence}` }
+  })
+}
+
+function modelUsageKey(row: MagpieUsageGroup): string {
+  return (row.model ?? row.name ?? row.id).trim().toLocaleLowerCase()
+}
+
+function modelUsageNameKey(row: MagpieUsageGroup): string | null {
+  if (row.account === null) return null
+  const name = row.name?.trim().toLocaleLowerCase() ?? ''
+  const provider = row.provider?.trim().toLocaleLowerCase() ?? ''
+  return name === '' ? null : `${provider}\u0000${name}`
+}
+
+function mergeIdentity(left: string | null, right: string | null): string | null {
+  if (left === null) return right
+  if (right === null || left === right) return left
+  return null
+}
+
 function formatInteger(value: number | null): string {
   return value === null ? '—' : new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)
 }
@@ -985,7 +1096,8 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-progress-item.is-button{cursor:pointer;border-radius:8px;padding-left:6px;padding-right:6px;transition:background .14s}
 .codingns-magpie-progress-item.is-button:hover{background:var(--mp-hover)}
 .codingns-magpie-progress-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
-.codingns-magpie-progress-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:${uiFontSize(13)}}
+.codingns-magpie-progress-copy{display:flex;flex:1 1 auto;min-width:0;overflow:hidden;flex-direction:column;gap:1px}.codingns-magpie-progress-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:${uiFontSize(13)}}
+.codingns-magpie-progress-context{min-width:0;overflow:hidden;color:var(--mp-caption);font-size:${uiFontSize(11)};text-overflow:ellipsis;white-space:nowrap}
 .codingns-magpie-progress-value{flex:0 0 auto;font-size:${uiFontSize(13)};font-weight:600;font-variant-numeric:tabular-nums}
 .codingns-magpie-progress-track{height:4px;border-radius:99px;background:var(--mp-hover);overflow:hidden}
 .codingns-magpie-progress-track span{display:block;height:100%;min-width:2px;border-radius:inherit;background:linear-gradient(90deg,var(--mp-chart,var(--mp-accent)),color-mix(in srgb,var(--mp-chart,var(--mp-accent)),transparent 45%))}

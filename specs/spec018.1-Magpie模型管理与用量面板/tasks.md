@@ -402,3 +402,15 @@ Each task states what changes, what becomes visible, dependencies, documents to 
   - Explicit non-goals: No width detection in JS, no separate mobile data path, no change to desktop markup.
   - Done when: The card list and the table share one data source and one set of locale keys, both render correctly, and no layout leaves empty grid cells.
   - Verify: Screenshots captured through CDP device emulation at 390×844 and 768×1024; `pnpm run typecheck`, focused Magpie suites, `i18n:check`, and `git diff --check` pass.
+
+## Phase 13: Add model-level aggregate and account detail views
+
+- [x] 13.1 Let Overview switch model rows between aggregate and per-account modes
+  - Status: DONE
+  - What changes: Keep the default model breakdown aggregated by model, and add a compact switch for a raw per-account view. The detail view preserves every model row returned by Magpie and displays its account (or provider when Magpie omits the account); the aggregate view sums metrics and never attributes a total to one account.
+  - What becomes visible: Repeated models such as `deepseek-v4.1-flash` can be inspected as separate Account A/Account B rows instead of being visually indistinguishable.
+  - Dependencies: 11.2.
+  - Main files: `src/client/features/magpie-management-page.ts`; `src/client/locales/magpie.ts`; `tests/magpie-global-panel.spec.ts`.
+  - Explicit non-goals: No new RPC or raw request fetch; no guessed account-to-model relationship when Magpie does not return the account field.
+  - Done when: The overview exposes both modes, aggregate metrics are summed by model, per-account rows retain their account identity, and the detail mode is not truncated to the aggregate top-eight limit.
+  - Verify: `tests/magpie-global-panel.spec.ts` covers both render modes and aggregation; typecheck, the full test suite, localization validation, and whitespace validation pass.

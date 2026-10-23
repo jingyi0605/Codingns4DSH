@@ -6,11 +6,12 @@ import { DSH_VERSION } from '../src/shared/contracts/version.js'
 import { createDshCapabilityRegistry } from '../src/dsh-capabilities/routes.js'
 import { createGlobalPanelAdapter } from '../src/dsh-capabilities/client/global-panel-adapter.js'
 import type { CodingNsLocale } from '../src/client/locale.js'
-import { MagpieManagementPage } from '../src/client/features/magpie-management-page.js'
+import { aggregateModelUsageRows, MagpieManagementPage, modelBreakdownRows, ModelProgressSection } from '../src/client/features/magpie-management-page.js'
 import { magpieManagementFeature } from '../src/client/features/magpie-management.js'
 import { GroupModelPicker, MagpieGroupsPage, MagpieProvidersPage, reorderModels } from '../src/client/features/magpie-management-controls.js'
 import { installProviderIcons, PROVIDER_ICONS } from '../src/client/provider-icons.js'
 import type { MagpieManagementSnapshot } from '../src/shared/contracts/magpie-management.js'
+import type { MagpieUsageGroup } from '../src/shared/contracts/magpie-management.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 
 type SlotName = 'sidebar.panellist' | 'main'
@@ -197,6 +198,51 @@ test('Magpie usage tabs follow the native order and render native report chrome'
   assert.match(markup, /codingns-magpie-barchart/u, 'native bar chart is used instead of the old line chart')
   assert.match(markup, /codingns-magpie-progress-track/u, 'breakdowns use native progress rows')
   assert.match(markup, /codingns-magpie-group-model-picker-search/u, 'routing-group picker styles are included in the flat page')
+})
+
+test('Magpie model overview can aggregate rows or show each account row', () => {
+  const makeRow = (account: string, calls: number, cost: number): MagpieUsageGroup => ({
+    id: `provider/deepseek-v4.1-flash/${account}`,
+    name: 'DeepSeek V4.1 Flash', provider: 'workbuddy', model: 'deepseek-v4.1-flash', account, agent: 'claude',
+    calls, errors: 0, retried: 0, inputTokens: calls * 100, outputTokens: calls * 10,
+    cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, cost, unpriced: 0,
+    credits: null, credited: null, timed: calls, ttftMs: null, decodeMs: null, decodeTokens: null, decodeCount: null,
+  })
+  const rows = [makeRow('Account A', 8, 1.25), makeRow('Account B', 3, 0.75)]
+  const aggregate = aggregateModelUsageRows(rows)
+  assert.equal(aggregate.length, 1)
+  assert.equal(aggregate[0]?.calls, 11)
+  assert.equal(aggregate[0]?.cost, 2)
+  assert.equal(aggregate[0]?.account, null, 'aggregated rows do not attribute the total to one account')
+
+  const accountRowsWithQualifiedIds = rows.map((row, index) => ({ ...row, model: index === 0 ? 'workbuddy/deepseek-v4.1-flash' : 'deepseek-v4.1-flash' }))
+  assert.equal(aggregateModelUsageRows(accountRowsWithQualifiedIds).length, 1, 'account-qualified model IDs still aggregate by provider and model name')
+
+  const cycle = [
+    modelBreakdownRows(rows, 'aggregate'),
+    modelBreakdownRows(rows, 'account'),
+    modelBreakdownRows(rows, 'aggregate'),
+  ]
+  assert.equal(cycle[0]?.length, 1)
+  assert.equal(cycle[1]?.length, 2)
+  assert.equal(cycle[2]?.length, 1, 'returning to aggregate mode recomputes from the raw rows')
+  assert.equal(new Set(cycle[1]?.map((row) => row.id)).size, 2, 'per-account rows have unique render identities')
+
+  const translator = resolveCodingNsTranslator()
+  const t = (key: string, params?: Record<string, string | number>) => translator(key, params)
+  const perAccount = renderToStaticMarkup(createElement(ModelProgressSection, {
+    rows, mode: 'account', onModeChange: () => undefined, t,
+  }))
+  assert.match(perAccount, /Account A/u)
+  assert.match(perAccount, /Account B/u)
+  assert.match(perAccount, /按账户/u)
+
+  const grouped = renderToStaticMarkup(createElement(ModelProgressSection, {
+    rows, mode: 'aggregate', onModeChange: () => undefined, t,
+  }))
+  assert.doesNotMatch(grouped, /Account A/u)
+  assert.doesNotMatch(grouped, /Account B/u)
+  assert.match(grouped, /汇总/u)
 })
 
 test('Magpie management nests primary and secondary accounts under providers', () => {
