@@ -509,6 +509,9 @@ export function RequestsPage({ page, loading, error, selectedSession, offset, on
         : createElement('div', undefined,
           createElement(StatStrip, { stats }),
           createElement('section', { className: 'codingns-magpie-panel codingns-magpie-request-panel' },
+            createElement('div', { className: 'codingns-magpie-reqlist' },
+              ...items.map((request, index) => createElement(NativeRequestCard, { key: `${request.routeId ?? offset + index}:${request.time ?? ''}`, request, t })),
+            ),
             createElement('div', { className: 'codingns-magpie-table-scroll' },
               createElement('table', { className: 'codingns-magpie-table codingns-magpie-native-table' },
                 createElement('thead', undefined, createElement('tr', undefined,
@@ -602,6 +605,41 @@ function NativeRequestRow({ request, t }: { readonly request: MagpieUsageRequest
     createElement('td', undefined, request.durationMs === null ? '—' : `${formatValue(request.durationMs / 1000)} s`),
     createElement('td', undefined, speed),
     createElement('td', undefined, createElement('span', { className: `codingns-magpie-status ${request.status !== null && /^2/u.test(request.status) ? 'is-ok' : 'is-warn'}` }, request.status ?? '—')),
+  )
+}
+
+/** Compact ledger card used below 650px: same fields as the native table, stacked for narrow screens. */
+function NativeRequestCard({ request, t }: { readonly request: MagpieUsageRequest; readonly t: (key: string, params?: Record<string, string | number>) => string }): ReactElement {
+  const speed = request.durationMs !== null && request.outputTokens !== null && request.durationMs > 0
+    ? `${formatValue(request.outputTokens / (request.durationMs / 1000))} token/s`
+    : '—'
+  const facts = [
+    `${t('magpie.ncolInput')} ${formatCompact(request.inputTokens)}`,
+    `${t('magpie.ncolOutput')} ${formatCompact(request.outputTokens)}`,
+    `${t('magpie.ncolCost')} ${formatValue(request.cost)}`,
+    request.firstTextMs === null ? null : `${t('magpie.ncolFirstText')} ${formatValue(request.firstTextMs)} ms`,
+    request.durationMs === null ? null : `${t('magpie.ncolDuration')} ${formatValue(request.durationMs / 1000)} s`,
+    `${t('magpie.ncolSpeed')} ${speed}`,
+  ].filter((item): item is string => item !== null)
+  return createElement('article', { className: 'codingns-magpie-reqcard' },
+    createElement('div', { className: 'codingns-magpie-reqcard-top' },
+      createElement('span', { className: 'codingns-magpie-time-cell' }, formatTimestamp(request.time)),
+      createElement('span', { className: 'codingns-magpie-provider-inline' },
+        createElement(MagpieProviderLogo, { identities: [request.agent], size: 16, className: 'codingns-magpie-provider-logo codingns-magpie-provider-logo-compact', fallback: 'none' }),
+        createElement('span', { className: 'codingns-magpie-agent-tag' }, request.agent ?? '—'),
+      ),
+      createElement('span', { className: `codingns-magpie-status ${request.status !== null && /^2/u.test(request.status) ? 'is-ok' : 'is-warn'}` }, request.status ?? '—'),
+    ),
+    createElement('div', { className: 'codingns-magpie-reqcard-route' },
+      createElement('span', { className: 'codingns-magpie-route-model', title: request.requestedModel ?? '' }, request.requestedModel ?? '—'),
+      createElement('span', { className: 'codingns-magpie-reqcard-arrow', 'aria-hidden': true }, '→'),
+      createElement('span', { className: 'codingns-magpie-route-model' }, request.servedModel ?? '—'),
+    ),
+    createElement('div', { className: 'codingns-magpie-reqcard-sub' },
+      createElement('span', { className: 'codingns-magpie-provider-name' }, request.provider ?? '—'),
+      request.account !== null && createElement('span', { className: 'codingns-magpie-table-secondary' }, request.account),
+    ),
+    createElement('div', { className: 'codingns-magpie-reqcard-facts' }, ...facts.map((fact) => createElement('span', { key: fact }, fact))),
   )
 }
 
@@ -1008,4 +1046,26 @@ const MAGPIE_PAGE_CSS = `
 html[data-codingns-mobile-sidebar="on"] .codingns-magpie-page{padding-left:0;--mp-leading-inset:max(0px,calc(var(--dsh-frame-leading-clearance,0px) - 20px))}
 @media(max-width:900px){.codingns-magpie-topbar{--mp-topbar-pad-x:14px;--mp-topbar-pad-y:9px}.codingns-magpie-topbar-left{margin-left:calc(-1 * var(--mp-leading-inset))}}
 @media(max-width:650px){.codingns-magpie-topbar{--mp-topbar-pad-x:12px;--mp-topbar-pad-y:8px}.codingns-magpie-icon-button{width:36px;height:36px}.codingns-magpie-toolbar:not(.has-tabs){display:none}.codingns-magpie-view{padding:14px 12px 30px}.codingns-magpie-statstrip{grid-template-columns:repeat(2,minmax(0,1fr))}.codingns-magpie-statcell{padding:13px;border-left:0}.codingns-magpie-statcell:nth-child(2n){border-left:.5px solid var(--mp-line)}.codingns-magpie-statcell:nth-child(n+3){border-top:.5px solid var(--mp-line)}.codingns-magpie-statcell:last-child:nth-child(odd){grid-column:1/-1}.codingns-magpie-statcell-value{font-size:${uiFontSize(22)}}.codingns-magpie-barchart-plot{height:132px}.codingns-magpie-barchart-axis{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:0;overflow:hidden;font-size:${uiFontSize(9)}}.codingns-magpie-barchart-tick{overflow:hidden;text-overflow:clip}}
+.codingns-magpie-reqlist{display:none}
+.codingns-magpie-reqcard{display:flex;flex-direction:column;gap:5px;padding:11px 14px;border-top:.5px solid var(--mp-line)}
+.codingns-magpie-reqcard:first-child{border-top:0}
+.codingns-magpie-reqcard-top{display:flex;align-items:center;gap:8px;min-width:0}
+.codingns-magpie-reqcard-top .codingns-magpie-time-cell{flex:0 0 auto;font-size:${uiFontSize(12)}}
+.codingns-magpie-reqcard-top .codingns-magpie-provider-inline{flex:1 1 auto;min-width:0}
+.codingns-magpie-reqcard-route{display:flex;align-items:center;gap:6px;min-width:0;font-size:${uiFontSize(12)}}
+.codingns-magpie-reqcard-arrow{flex:0 0 auto;color:var(--mp-caption)}
+.codingns-magpie-reqcard-route .codingns-magpie-route-model{flex:0 1 auto;max-width:47%}
+.codingns-magpie-reqcard-sub{display:flex;align-items:center;gap:6px;min-width:0;font-size:${uiFontSize(11)};color:var(--mp-caption)}
+.codingns-magpie-reqcard-sub .codingns-magpie-provider-name{max-width:62%;font-weight:500;color:var(--mp-muted)}
+.codingns-magpie-reqcard-sub .codingns-magpie-table-secondary{margin-top:0}
+.codingns-magpie-reqcard-facts{display:flex;flex-wrap:wrap;gap:4px 10px;font-size:${uiFontSize(11)};color:var(--mp-muted);font-variant-numeric:tabular-nums}
+
+@media(max-width:900px){
+.codingns-magpie-table-scroll{display:none}
+.codingns-magpie-reqlist{display:block}
+.codingns-magpie-statstrip{display:flex;flex-wrap:wrap;gap:.5px;background:var(--mp-line)}
+.codingns-magpie-statcell,.codingns-magpie-statcell:nth-child(2n),.codingns-magpie-statcell:nth-child(n+3){flex:1 1 calc(33.333% - .5px);border:0;background:var(--mp-card)}
+.codingns-magpie-statcell:last-child:nth-child(odd){grid-column:auto}
+}
+
 `
