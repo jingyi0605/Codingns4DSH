@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import test from 'node:test'
 import { createCliAdaptersFeature } from '../src/host/cli-adapters/feature.js'
 import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js'
@@ -9,7 +10,8 @@ import { CodingNsRpcTable } from '../src/host/rpc-table.js'
 import { FeatureRegistry } from '../src/features/registry.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
 import { fromCliProviderId, toCliProviderId } from '../src/shared/cli-provider-route.js'
-import { installProviderIcons, providerIconUrl, providerVisual } from '../src/client/provider-icons.js'
+import { installProviderIcons, providerIconUrl, providerVisual, PROVIDER_ICONS } from '../src/client/provider-icons.js'
+import { PROVIDER_ICON_FILES } from '../src/shared/provider-icon-resources.js'
 
 const collidingProviders = ['gemini', 'opencode', 'qoder', 'zcode', 'workbuddy']
 
@@ -182,4 +184,26 @@ test('namespaced provider metadata retains visuals and Grok context observations
     for (const provider of ['grok', 'codingns-cli-grok']) assert.equal(grokContextProjection.apply(state, { type: 'request/context', data: { provider } }), state)
     assert.deepEqual(grokContextProjection.apply(state, { type: 'request/context', data: { provider: 'gemini' } }), {})
   } finally { installProviderIcons({}) }
+})
+
+test('Magpie provider identities resolve to cached plugin logos', () => {
+  const previousIcons = { ...PROVIDER_ICONS }
+  installProviderIcons(Object.fromEntries(Object.entries(PROVIDER_ICON_FILES).map(([provider, filename]) => [provider, `asset:${filename}`])))
+  try {
+    const identities = [
+      'dsh', 'claude', 'codex', 'commandcode', 'kimi', 'gemini', 'pi', 'opencode', 'grok',
+      'minimax-code', 'zcode', 'codebuddy', 'workbuddy', 'cursor', 'qoder', 'qoder-cn', 'agy',
+      'WorkBuddy AI', 'Grok (SuperGrok)',
+    ]
+    const missing = identities.filter(identity => providerIconUrl(identity) === undefined)
+    assert.deepEqual(missing, [], 'every supported Magpie agent and current branded alias has a cached logo')
+    assert.equal(providerIconUrl('workbuddy-ai'), 'asset:workbuddy.svg')
+    assert.equal(providerIconUrl('codingns-cli-claude-code'), 'asset:claude-code.png')
+    assert.equal(providerIconUrl('codingns-cli-cursor-cli'), 'asset:cursor-cli.svg')
+    for (const filename of Object.values(PROVIDER_ICON_FILES)) {
+      assert.equal(existsSync(new URL(`../assets/provider-icons/${filename}`, import.meta.url)), true, `${filename} exists`)
+    }
+  } finally {
+    installProviderIcons(previousIcons)
+  }
 })
