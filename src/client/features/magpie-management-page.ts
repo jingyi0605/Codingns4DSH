@@ -821,6 +821,7 @@ function Sparkline({ values }: { readonly values: readonly number[] }): ReactEle
   )
 }
 
+
 function EmptyState({ message, loading = false }: { readonly message: string; readonly loading?: boolean }): ReactElement {
   return createElement('div', { className: `codingns-magpie-empty${loading ? ' is-loading' : ''}`, role: loading ? 'status' : 'note' },
     createElement('span', { className: 'codingns-magpie-empty-mark', 'aria-hidden': true }, loading ? createElement('span', { className: 'codingns-magpie-spinner' }) : '∅'),
@@ -835,7 +836,6 @@ function InlineNotice({ message }: { readonly message: string }): ReactElement {
 
 
 /** 刷新图标沿用 DSH 的 1.6 描边简约样式；加载时整体旋转，静默重绘状态下保持静止。 */
-/** 刷新图标沿用 DSH 的 1.6 描边简约样式；加载时整体旋转，静默重绘状态下保持静止。 */
 function RefreshIcon({ busy = false }: { readonly busy?: boolean }): ReactElement {
   return createElement('svg', {
     className: `codingns-magpie-refresh-icon${busy ? ' is-spinning' : ''}`,
@@ -844,7 +844,7 @@ function RefreshIcon({ busy = false }: { readonly busy?: boolean }): ReactElemen
   },
     createElement('path', { d: 'M20 11a8 8 0 1 0-2.3 5.6' }), createElement('path', { d: 'M20 4.5V11h-6.5' }),
   )
-
+}
 
 
 function SearchIcon(): ReactElement {
@@ -1033,20 +1033,17 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-tab.is-active:after{content:'';position:absolute;left:10px;right:10px;bottom:0;height:2px;border-radius:2px;background:var(--mp-accent)}
 .codingns-magpie-tab-icon{display:grid;place-items:center;width:15px;font-size:${uiFontSize(13)};line-height:1;opacity:.85}
 .codingns-magpie-toolbar{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:14px;min-height:46px;padding:0 20px;border-bottom:.5px solid var(--mp-line);background:var(--mp-surface)}
-.codingns-magpie-toolbar-left,.codingns-magpie-toolbar-right{display:flex;align-items:center;gap:12px;min-width:0}
-.codingns-magpie-toolbar-right{margin-left:auto;justify-content:flex-end}
-.codingns-magpie-toolbar-label,.codingns-magpie-eyebrow{color:var(--mp-caption);font-size:${uiFontSize(12)};font-weight:600;letter-spacing:.08em}
-.codingns-magpie-toolbar-label{white-space:nowrap}
+.codingns-magpie-toolbar-left{display:flex;align-items:center;gap:12px;min-width:0}
 .codingns-magpie-periods{flex-direction:row;overflow:auto;display:flex;align-items:center;gap:2px;min-width:0;padding:2px;border-radius:999px;background:var(--mp-layer);scrollbar-width:none}
 .codingns-magpie-periods::-webkit-scrollbar{display:none}
 .codingns-magpie-period{flex:0 0 auto;min-height:26px;padding:0 12px;border:0;border-radius:999px;background:transparent;color:var(--mp-muted);font:inherit;font-size:${uiFontSize(13)};white-space:nowrap;cursor:pointer;transition:background .16s,color .16s}
 .codingns-magpie-period:hover{color:var(--mp-ink)}
 .codingns-magpie-period.is-active{background:var(--mp-surface);color:var(--mp-ink);font-weight:600;box-shadow:var(--dsw-elevation-soft,0 1px 2px rgba(0,0,0,.12))}
-.codingns-magpie-source{display:inline-flex;align-items:center;gap:7px;color:var(--mp-caption);font-size:${uiFontSize(12)};font-weight:600;letter-spacing:.06em;white-space:nowrap}
-.codingns-magpie-updated{color:var(--mp-caption);font-size:${uiFontSize(13)};white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .codingns-magpie-live-dot{flex:0 0 auto;width:7px;height:7px;border-radius:50%;background:var(--dsw-alias-state-success-primary,#3f9d6b);box-shadow:0 0 0 4px color-mix(in srgb,var(--dsw-alias-state-success-primary,#3f9d6b) 12%,transparent)}
 .codingns-magpie-main{flex:1 1 0;min-width:0;min-height:0;overflow:auto;overscroll-behavior:contain;background:var(--mp-surface)}
 .codingns-magpie-view{max-width:1320px;margin:0 auto;padding:18px clamp(16px,2.4vw,28px) 40px}
+.codingns-magpie-view-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:12px;margin:0 0 19px}
+.codingns-magpie-view-heading h1{margin:5px 0 0;font-size:${uiFontSize(27)};line-height:1.1;letter-spacing:-.045em}
 .codingns-magpie-panel{min-width:0;border:.5px solid var(--mp-line);border-radius:var(--mp-radius);background:var(--mp-card)}
 .codingns-magpie-panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:13px}
 .codingns-magpie-panel-head h2{margin:0;font-size:${uiFontSize(14)};font-weight:600}.codingns-magpie-panel-head p{margin:4px 0 0;color:var(--mp-muted);font-size:${uiFontSize(13)};line-height:1.5}
@@ -1070,7 +1067,6 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-usage-tab{flex:0 0 auto;min-height:26px;padding:0 13px;border:0;border-radius:999px;background:transparent;color:var(--mp-muted);font:inherit;font-size:${uiFontSize(13)};white-space:nowrap;cursor:pointer;transition:background .16s,color .16s}
 .codingns-magpie-usage-tab:hover{color:var(--mp-ink)}
 .codingns-magpie-usage-tab.is-active{background:var(--mp-surface);color:var(--mp-ink);font-weight:600;box-shadow:var(--dsw-elevation-soft,0 1px 2px rgba(0,0,0,.12))}
-.codingns-magpie-report-note{margin:0 0 13px;color:var(--mp-muted);font-size:${uiFontSize(13)};line-height:1.6}
 .codingns-magpie-statstrip{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border:.5px solid var(--mp-line);border-radius:var(--mp-radius);background:var(--mp-card);margin-bottom:14px;overflow:hidden}
 .codingns-magpie-statcell{display:flex;flex-direction:column;gap:5px;min-width:0;padding:15px 18px;border-left:.5px solid var(--mp-line)}
 .codingns-magpie-statcell:first-child{border-left:0}
@@ -1123,7 +1119,7 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-native-table td{max-width:none;font-size:${uiFontSize(13)};white-space:nowrap}
 @keyframes magpie-rise{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:translateY(0)}}@keyframes magpie-spin{to{transform:rotate(360deg)}}
 @media(max-width:900px){.codingns-magpie-topbar{--mp-topbar-pad-x:14px;--mp-topbar-pad-y:9px;grid-template-columns:minmax(0,1fr) auto;row-gap:8px;min-height:58px}.codingns-magpie-topbar-left{grid-column:1;grid-row:2;margin-left:calc(-1 * var(--mp-leading-inset))}.codingns-magpie-tabs{grid-column:1;grid-row:1;justify-self:start;flex-wrap:wrap;row-gap:2px;overflow:visible}.codingns-magpie-topbar-right{grid-column:2;grid-row:1}}
-@media(max-width:650px){.codingns-magpie-topbar{--mp-topbar-pad-x:12px;--mp-topbar-pad-y:8px;min-height:56px;gap:8px}.codingns-magpie-updated{display:none}.codingns-magpie-tab{min-height:32px;padding:0 9px;font-size:${uiFontSize(12)}}.codingns-magpie-tab-icon{display:none}.codingns-magpie-toolbar{min-height:44px;padding:0 12px;gap:8px}.codingns-magpie-toolbar-label,.codingns-magpie-source{display:none}.codingns-magpie-periods{flex-direction:row;overflow:auto;max-width:100%}.codingns-magpie-period{min-height:28px;padding:0 9px}.codingns-magpie-barchart-panel,.codingns-magpie-progress-panel,.codingns-magpie-toplist-panel,.codingns-magpie-history-panel,.codingns-magpie-quota-card,.codingns-magpie-management-editor{padding:13px}.codingns-magpie-toprow-metrics{gap:10px}.codingns-magpie-chip{min-height:32px}.codingns-magpie-quota-grid,.codingns-magpie-history-grid,.codingns-magpie-management-account-grid{grid-template-columns:1fr}.codingns-magpie-management-grid{grid-template-columns:minmax(0,1fr);gap:8px}.codingns-magpie-management-list{display:flex;max-height:none;gap:4px;overflow:auto;padding:4px}.codingns-magpie-management-row{flex:0 0 auto;width:auto;max-width:220px;min-height:42px;border:1px solid var(--mp-line);border-radius:8px}.codingns-magpie-management-row.is-active{box-shadow:inset 0 -2px var(--mp-accent)}.codingns-magpie-management-row-main{max-width:145px}.codingns-magpie-field-row{flex-wrap:wrap;gap:0}.codingns-magpie-chart-switch{align-self:flex-start}.codingns-magpie-page .codingns-magpie-table{min-width:900px}.codingns-magpie-updated{display:none}}
+@media(max-width:650px){.codingns-magpie-topbar{--mp-topbar-pad-x:12px;--mp-topbar-pad-y:8px;min-height:56px;gap:8px}.codingns-magpie-tab{min-height:32px;padding:0 9px;font-size:${uiFontSize(12)}}.codingns-magpie-tab-icon{display:none}.codingns-magpie-toolbar{min-height:44px;padding:0 12px;gap:8px}.codingns-magpie-periods{flex-direction:row;overflow:auto;max-width:100%}.codingns-magpie-period{min-height:28px;padding:0 9px}.codingns-magpie-barchart-panel,.codingns-magpie-progress-panel,.codingns-magpie-toplist-panel,.codingns-magpie-history-panel,.codingns-magpie-quota-card,.codingns-magpie-management-editor{padding:13px}.codingns-magpie-toprow-metrics{gap:10px}.codingns-magpie-chip{min-height:32px}.codingns-magpie-quota-grid,.codingns-magpie-history-grid,.codingns-magpie-management-account-grid{grid-template-columns:1fr}.codingns-magpie-management-grid{grid-template-columns:minmax(0,1fr);gap:8px}.codingns-magpie-management-list{display:flex;max-height:none;gap:4px;overflow:auto;padding:4px}.codingns-magpie-management-row{flex:0 0 auto;width:auto;max-width:220px;min-height:42px;border:1px solid var(--mp-line);border-radius:8px}.codingns-magpie-management-row.is-active{box-shadow:inset 0 -2px var(--mp-accent)}.codingns-magpie-management-row-main{max-width:145px}.codingns-magpie-field-row{flex-wrap:wrap;gap:0}.codingns-magpie-chart-switch{align-self:flex-start}.codingns-magpie-page .codingns-magpie-table{min-width:900px}}
 @media(prefers-reduced-motion:reduce){.codingns-magpie-page *{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
 .codingns-magpie-group-model-add{position:relative;display:block;margin-top:3px;padding-top:8px;border-top:1px solid var(--mp-line);color:var(--mp-muted)}
 .codingns-magpie-group-model-add-button{display:inline-flex;align-items:center;gap:8px;min-height:30px;padding:4px 10px;border:.5px solid var(--mp-line-strong);border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--mp-ink);font:inherit;font-size:${uiFontSize(12)};cursor:pointer}
@@ -1172,7 +1168,6 @@ html[data-codingns-mobile-sidebar="on"] .codingns-magpie-page{padding-left:0;--m
 .codingns-magpie-view{padding:12px 12px 26px}
 .codingns-magpie-tab{min-height:38px;padding:0 10px}
 .codingns-magpie-toolbar{min-height:40px}
-.codingns-magpie-report-note{font-size:${uiFontSize(12)};line-height:1.5;margin-bottom:10px}
 .codingns-magpie-statcell-label{font-size:${uiFontSize(11)}}
 .codingns-magpie-statcell-value{font-size:${uiFontSize(19)}}
 .codingns-magpie-statcell-detail{font-size:${uiFontSize(11)};white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
