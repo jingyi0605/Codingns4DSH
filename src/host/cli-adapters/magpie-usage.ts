@@ -8,6 +8,7 @@ import type {
 } from '../../shared/contracts/cli-adapter.js'
 import type {
   MagpieQuota,
+  MagpieQuotaCheckin,
   MagpieQuotaWindow,
   MagpieRouteUsage,
   MagpieSessionUsage,
@@ -423,10 +424,15 @@ export class MagpieUsageService {
       ? routeProviders
       : [providerFromModelId(modelId, agent)].filter((provider): provider is string => provider !== null)
     const upstreamProvider = upstreamProviders[0] ?? null
-    const matchingQuotas = allQuotas === null
+    const sessionQuotas = allQuotas === null
       ? []
       : filterSessionQuotas(allQuotas, upstreamProviders, routeHistory)
+    const matchingQuotas = markSessionAccounts(sessionQuotas, routeHistory, route)
     const quotas = allQuotas === null ? [] : await this.attachQuotaLogos(matchingQuotas, signal)
+    // 同厂商的其它账号单独下发：客户端分组展示，但绝不参与本会话余量。
+    const siblingQuotas = allQuotas === null
+      ? []
+      : await this.attachQuotaLogos(otherProviderAccounts(allQuotas, upstreamProviders, sessionQuotas), signal)
 
     return {
       agent,
@@ -442,6 +448,7 @@ export class MagpieUsageService {
       upstreamProviders,
       quotaStatus: allQuotas === null ? 'unavailable' : upstreamProviders.length === 0 ? 'provider-unavailable' : 'available',
       quotas,
+      ...(siblingQuotas.length === 0 ? {} : { providerAccounts: siblingQuotas }),
     }
   }
 
@@ -1053,6 +1060,13 @@ function routeTime(value: string | null | undefined): number {
   return Number.isFinite(time) ? time : 0
 }
 
+/**
+ * 选出本会话确实使用过的上游账号配额。
+ *
+ * 归属必须严格：请求历史里没有出现的账号不能算作本会话的配额。上游完全没有该厂商的
+ * 账号维度记录时无法判断，此时保留该厂商全部候选；一旦有记录但都不匹配，则返回空，
+ * 宁可显示"没有可用配额"也不能把别的账号的额度说成这个会话的。
+ */
 function filterSessionQuotas(
   quotas: readonly MagpieQuota[],
   providers: readonly string[],
@@ -1065,6 +1079,53 @@ function filterSessionQuotas(
       .map((record) => record.account!))
     if (accounts.size === 0) return candidates
     return candidates.filter((quota) => quota.user !== null && accounts.has(quota.user))
+  })
+}
+
+/**
+ * 与本会话同一厂商、但本会话没用过的其它账号。
+ *
+ * 单独返回而不是并进 `quotas`：客户端用它们做"同厂商账号分组"的补充展示，
+ * 但这些账号的额度绝不参与本会话余量判断。顺序沿用上游。
+ */
+function otherProviderAccounts(
+  quotas: readonly MagpieQuota[],
+  providers: readonly string[],
+  sessionQuotas: readonly MagpieQuota[],
+): readonly MagpieQuota[] {
+  const claimed = new Set(sessionQuotas.map((quota) => `${quota.provider}\u0000${quota.user ?? ''}`))
+  return providers.flatMap((provider) => quotas
+    .filter((quota) => quota.provider === provider)
+    .filter((quota) => quota.user !== null && !claimed.has(`${quota.provider}\u0000${quota.user}`)))
+}
+
+/**
+ * 标记本会话实际使用过的账号。
+ *
+ * 只有能追溯到会话请求记录的账号才标 `active`；route 的账号字段优先于请求历史，
+ * 因为它来自 Magpie 对这一次请求的精确归属。无法确认时保持未标记，
+ * 客户端据此显示"未知活动账号"，而不是随便挑一个账号当"正在使用"。
+ */
+function markSessionAccounts(
+  quotas: readonly MagpieQuota[],
+  history: readonly MagpieSessionRouteRecord[],
+  route: MagpieRouteUsage | null,
+): readonly MagpieQuota[] {
+  const used = new Set(history
+    .map((record) => record.account)
+    .filter((account): account is string => account !== null))
+  const routedAccount = route?.providerAccount ?? null
+  if (used.size === 0 && routedAccount === null) return quotas
+  // 每个厂商只承认一个活动账号：精确路由优先，其次是首个命中的历史账号。
+  const claimed = new Set<string>()
+  return quotas.map((quota) => {
+    if (quota.user === null) return quota
+    const key = `${quota.provider}\u0000${quota.user}`
+    if (claimed.has(key)) return quota
+    const candidate = quota.user === routedAccount || used.has(quota.user)
+    if (!candidate) return quota
+    claimed.add(key)
+    return { ...quota, active: true }
   })
 }
 
@@ -1102,6 +1163,8 @@ export function parseMagpieQuotas(value: unknown): readonly MagpieQuota[] | null
       balance: routeText(record.balance),
       readAt: routeText(record.readAt),
       windows,
+      ...sessionQuotaDaily(record),
+      ...readQuotaAccountMeta(record),
     })
   }
   return quotas
@@ -1175,12 +1238,14 @@ export function parseMagpieQuotaCards(value: unknown): readonly MagpieDashboardQ
     const dailyRecord = record.daily === undefined ? null : asRecord(record.daily)
     const dailyPoints = dailyRecord === null ? [] : dailyRecord.days
     if (dailyRecord !== null && (!Array.isArray(dailyPoints) || dailyPoints.length > 366)) return null
-    const daily = (Array.isArray(dailyPoints) ? dailyPoints : []).flatMap((item) => {
+    const days: { readonly day: string; readonly used: number | null }[] = (Array.isArray(dailyPoints) ? dailyPoints : []).flatMap((item) => {
       const point = asRecord(item)
       const day = routeText(point?.day)
-      return point === null || day === null ? [] : [{ day, used: safeDecimal(point.used) }]
+      if (point === null || day === null) return []
+      const used = safeDecimal(point.used)
+      return [{ day, used }]
     })
-    if (daily.length !== (Array.isArray(dailyPoints) ? dailyPoints.length : 0)) return null
+    if (days.length !== (Array.isArray(dailyPoints) ? dailyPoints.length : 0)) return null
     quotas.push({
       provider,
       name,
@@ -1192,7 +1257,8 @@ export function parseMagpieQuotaCards(value: unknown): readonly MagpieDashboardQ
       balance: routeText(record.balance),
       readAt: routeText(record.readAt),
       windows,
-      daily,
+      daily: { since: routeText(dailyRecord?.since), days },
+      ...readQuotaAccountMeta(record),
     })
   }
   return quotas
@@ -1401,6 +1467,105 @@ function readQuotaWindow(record: Record<string, unknown>, name: string): MagpieQ
     limit: safeDecimal(record.limit),
     unit: routeText(record.unit),
     holdsWhy: routeText(record.holdsWhy),
+    startsAt: routeText(record.startsAt),
+    runsOut: safeDecimal(record.runsOut),
+    runsOutAt: routeText(record.runsOutAt),
+  }
+}
+
+/**
+ * Read the daily check-in result of providers that have one (WorkBuddy, Trae, MiniMax).
+ *
+ * `outcome` stays an upstream string: the client only localizes the outcomes it knows, so a
+ * new vendor state never gets presented as a successful check-in.
+ */
+function readQuotaCheckin(value: unknown): MagpieQuotaCheckin | null {
+  const record = asRecord(value)
+  if (record === null) return null
+  const checkin: MagpieQuotaCheckin = {
+    day: routeText(record.day),
+    at: routeText(record.at),
+    outcome: routeText(record.outcome),
+    credit: safeDecimal(record.credit),
+    streak: safeCount(record.streak),
+  }
+  return Object.values(checkin).every((item) => item === null) ? null : checkin
+}
+
+function readQuotaDaily(value: unknown): MagpieQuota['daily'] {
+  const record = asRecord(value)
+  if (record === null) return undefined
+  const points = record.days
+  if (!Array.isArray(points) || points.length > 366) return undefined
+  const days = points.flatMap((item) => {
+    const point = asRecord(item)
+    const day = routeText(point?.day)
+    return point === null || day === null ? [] : [{ day, used: safeDecimal(point.used) }]
+  })
+  if (days.length !== points.length) return undefined
+  return { since: routeText(record.since), days }
+}
+
+/**
+ * Read a provider's remaining reset cards without exposing the vendor's raw record.
+ *
+ * `count` 缺失与 0 不同：上游在 0 张时会省略整个对象，因此这里只在对象存在时才返回，
+ * 客户端把缺失显示为"未知"而不是"没有可用重置卡"。
+ */
+function readQuotaResets(value: unknown): NonNullable<MagpieQuota['resets']> | null {
+  const record = asRecord(value)
+  if (record === null) return null
+  const eachPoints = record.each
+  const each = Array.isArray(eachPoints)
+    ? eachPoints.flatMap((item) => {
+        const point = asRecord(item)
+        if (point === null) return []
+        return [{ window: routeText(point.window), until: routeText(point.until) }]
+      }).slice(0, 64)
+    : []
+  return {
+    count: safeCount(record.count),
+    until: routeText(record.until),
+    each,
+    byWindow: record.byWindow === true,
+    fiveHour: safeCount(record.fiveHour),
+    weekly: safeCount(record.weekly),
+  }
+}
+
+/** 会话级配额卡只带上 `daily`；上游缺字段时整个属性不出现。 */
+function sessionQuotaDaily(record: Record<string, unknown>): { readonly daily?: NonNullable<MagpieQuota['daily']> } {
+  const daily = readQuotaDaily(record.daily)
+  return daily === undefined ? {} : { daily }
+}
+
+/**
+ * 两个解析器共用的账号级字段。
+ *
+ * 单独声明而不是直接复用 `Partial<MagpieQuota>`：仪表盘的 `daily` 是带 `since` 的对象，
+ * 会话级是同一结构，但用 `Partial` 会把两边的 `daily` 合并成联合类型，导致赋值处无法收敛。
+ */
+type QuotaAccountMeta = Pick<MagpieQuota, 'active' | 'checkin' | 'checkins' | 'error' | 'until' | 'renew' | 'resets' | 'credits'>
+
+/**
+ * Read the account-level fields shared by both quota parsers.
+ *
+ * `/api/usage/quotas` (session popover) and the dashboard read the same rows; keeping these
+ * fields in one place stops the two views drifting apart. Absent values stay `undefined` so
+ * older Magpie builds keep working.
+ */
+function readQuotaAccountMeta(record: Record<string, unknown>): QuotaAccountMeta {
+  const checkin = readQuotaCheckin(record.checkin)
+  const resets = readQuotaResets(record.resets)
+  return {
+    ...(typeof record.active === 'boolean' ? { active: record.active } : {}),
+    ...(checkin === null ? {} : { checkin }),
+    ...(record.checkins === true ? { checkins: true } : {}),
+    error: routeText(record.error),
+    until: routeText(record.until),
+    renew: routeText(record.renew),
+    ...(resets === null ? {} : { resets }),
+    credits: routeText(record.credits),
   }
 }
 

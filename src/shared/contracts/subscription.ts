@@ -138,9 +138,31 @@ export interface MagpieQuotaWindow {
   readonly limit: number | null
   readonly unit: string | null
   readonly holdsWhy: string | null
+  /** 窗口开始时间（`startsAt`）；`runsOut` 推算需要日进度时作为基线。 */
+  readonly startsAt: string | null
+  /** 上游报告的单位数余量；`unit` 说明单位（credits、tokens 等）。 */
+  readonly runsOut: number | null
+  /** 上游给出的"按当前速度耗尽"时间点；只做展示，不参与结算。 */
+  readonly runsOutAt: string | null
 }
 
-/** A provider/account quota summary with credentials and raw provider data removed. */
+/**
+ * Magpie 每日签到结果（WorkBuddy、Trae、MiniMax 等厂商）。
+ *
+ * `outcome` 保留上游枚举原文，客户端只对已知值给出本地化文案；
+ * 未知值一律按"未签到"处理，避免把失败说成成功。
+ */
+export interface MagpieQuotaCheckin {
+  readonly day: string | null
+  readonly at: string | null
+  /** `claimed`/`done` 表示今日已领取，其余为厂商私有状态。 */
+  readonly outcome: string | null
+  readonly credit: number | null
+  /** 连续签到天数；上游未提供时为 null。 */
+  readonly streak: number | null
+}
+
+/** 一个账号的额度快照；同 `provider` 的多条记录代表该厂商的多个账号。 */
 export interface MagpieQuota {
   readonly provider: string
   readonly name: string
@@ -155,6 +177,41 @@ export interface MagpieQuota {
   readonly balance: string | null
   readonly readAt: string | null
   readonly windows: readonly MagpieQuotaWindow[]
+  /** 账号在 Magpie 侧的当前账号；多个账号时用于标识"正在使用"。 */
+  readonly active?: boolean
+  /** 上游读取失败的安全原因摘要（如 `Unauthorized`）；成功时为 null。 */
+  readonly error?: string | null
+  /** 该厂商支持每日签到；为 true 时 `checkin` 才有意义。 */
+  readonly checkins?: boolean
+  readonly checkin?: MagpieQuotaCheckin | null
+  /** 按日统计的额度消耗（`used` 为当日已用单位数），用于画每日用量。 */
+  readonly daily?: {
+    readonly since: string | null
+    readonly days: readonly { readonly day: string; readonly used: number | null }[]
+  }
+  /** 套餐到期时间（`until`），以及是否为自动续费（`renew`）。 */
+  readonly until?: string | null
+  readonly renew?: string | null
+  /**
+   * 可用的重置卡次数。
+   *
+   * `byWindow` 为真时厂商按窗口分别计数（GLM Coding 团队/个人套餐），此时用
+   * `fiveHour` / `weekly` 而不是 `count`；`each` 给出每张卡各自的到期时间，
+   * `until` 是最早到期的那张。`count` 缺失不等于 0：上游省略该对象时无法确认数量。
+   */
+  readonly resets?: MagpieQuotaReset | null
+  /** 账号点数余额（Codex 的 credits）；与窗口额度相互独立。 */
+  readonly credits?: string | null
+}
+
+/** 一个账号可用的重置卡。 */
+export interface MagpieQuotaReset {
+  readonly count: number | null
+  readonly until: string | null
+  readonly each: readonly { readonly window: string | null; readonly until: string | null }[]
+  readonly byWindow: boolean
+  readonly fiveHour: number | null
+  readonly weekly: number | null
 }
 
 export type MagpieQuotaStatus = 'available' | 'unavailable' | 'provider-unavailable'
@@ -182,6 +239,13 @@ export interface MagpieUsageSnapshot {
   readonly quotaStatus: MagpieQuotaStatus
   /** Only quotas belonging to the identified upstream provider are exposed. */
   readonly quotas: readonly MagpieQuota[]
+  /**
+   * 与本会话同一上游厂商、但本会话没用过的其它账号。
+   *
+   * 单独下发而不是并进 `quotas`：它们只用于按厂商分组展示，不能参与本会话余量判断，
+   * 也不能被当成"这个会话正在使用的账号"。
+   */
+  readonly providerAccounts?: readonly MagpieQuota[]
 }
 
 /** 新版 Host 的用量响应；Client 仍兼容旧版直接返回订阅对象的 Host。 */

@@ -25,6 +25,7 @@ import { callCodingNsRpcResult } from '../rpc-call.js'
 import { uiFontSize } from '../font-scale.js'
 import { MagpieProviderLogo } from './magpie-provider-logo.js'
 import { MagpieGroupsPage, MagpieProvidersPage } from './magpie-management-controls.js'
+import { groupQuotaRowsByProvider } from './subscription-quota-groups.js'
 
 /** Top-level native tabs: Overview stands alone; Providers and Routing manage Magpie; Usage hosts its reports. */
 type PageTab = 'overview' | 'providers' | 'groups' | 'usage'
@@ -671,7 +672,7 @@ export function QuotasPage({ dashboard, loading, t }: { readonly dashboard: Magp
       ? createElement(EmptyState, { message: t(dashboard === null && loading ? 'magpie.loading' : 'magpie.quotaUnavailable'), loading: dashboard === null && loading })
       : quotas.length === 0
         ? createElement(EmptyState, { message: t('magpie.noQuotas') })
-        : createElement('div', { className: 'codingns-magpie-quota-grid' }, ...quotas.map((quota, index) => createElement(QuotaCard, { key: `${quota.provider}:${quota.user ?? index}`, quota, t }))),
+        : createElement('div', { className: 'codingns-magpie-quota-grid' }, ...groupQuotaRowsByProvider(quotas).map((group) => createElement(QuotaGroupCard, { key: group.provider, group, t }))),
     createElement('section', { className: 'codingns-magpie-panel codingns-magpie-history-panel' },
       createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('div', undefined,
         createElement('h2', undefined, t('magpie.quotaHistory')),
@@ -766,17 +767,66 @@ function ProgressSection({ title, rows, t, onOpen, header, limit = 8 }: {
   )
 }
 
-function QuotaCard({ quota, t }: { readonly quota: MagpieDashboardQuota; readonly t: (key: string, params?: Record<string, string | number>) => string }): ReactElement {
-  const dailyValues = quota.daily.map((point) => point.used).filter((value): value is number => value !== null)
+/**
+ * 一个厂商的订阅卡：卡头是厂商本身，卡内按账号分段列出额度。
+ *
+ * 同一厂商的多个账号（如 WorkBuddy 的 4 个）共用一张卡，避免每个账号各占一张卡导致
+ * 同类账号被拆散在网格各处；单账号厂商的读法与改造前一致。
+ */
+function QuotaGroupCard({ group, t }: {
+  readonly group: ReturnType<typeof groupQuotaRowsByProvider<MagpieDashboardQuota>>[number]
+  readonly t: (key: string, params?: Record<string, string | number>) => string
+}): ReactElement {
+  const first = group.accounts[0]!
+  // 多账号厂商默认只展开第一个账号：4 个账号全展开会把整页撑成一列长卡片。
+  const [expanded, setExpanded] = useState(false)
+  const multi = group.accounts.length > 1
+  const visible = multi && !expanded ? group.accounts.slice(0, 1) : group.accounts
+  const hidden = group.accounts.length - visible.length
   return createElement('article', { className: 'codingns-magpie-panel codingns-magpie-quota-card' },
     createElement('div', { className: 'codingns-magpie-quota-topline' },
-      createElement(MagpieProviderLogo, { identities: [quota.provider, quota.name], logoDataUrl: quota.logoDataUrl, size: 52, className: 'codingns-magpie-quota-icon codingns-magpie-provider-logo' }),
+      createElement(MagpieProviderLogo, { identities: [group.provider, group.name], logoDataUrl: group.logoDataUrl, size: 52, className: 'codingns-magpie-quota-icon codingns-magpie-provider-logo' }),
       createElement('div', undefined,
-        createElement('h2', undefined, quota.alias ?? quota.name),
-        createElement('p', undefined, quota.plan ?? quota.kind ?? quota.provider),
+        createElement('h2', undefined, group.name || group.provider),
+        createElement('p', undefined, first.plan ?? first.kind ?? group.provider),
+      ),
+      multi && createElement('button', {
+        type: 'button',
+        className: 'codingns-magpie-quota-count',
+        'aria-expanded': expanded,
+        onClick: () => setExpanded((value) => !value),
+        title: expanded ? t('magpie.quotaShowMainAccount') : t('magpie.quotaShowAllAccounts'),
+      },
+        expanded
+          ? t('magpie.quotaAccounts', { count: group.accounts.length })
+          : `${t('magpie.quotaAccounts', { count: group.accounts.length })} · ${t('magpie.quotaRemainingAccounts', { count: hidden })}`,
       ),
     ),
-    quota.user !== null && createElement('div', { className: 'codingns-magpie-quota-account' }, t('magpie.account', { account: quota.user })),
+    ...visible.map((quota, index) => createElement(QuotaAccountSection, {
+      key: `${group.provider}:${quota.user ?? index}`,
+      quota,
+      t,
+      // 单账号时不重复显示账号段头，保持与改造前一致的读法。
+      showHeading: multi,
+    })),
+  )
+}
+
+/** 卡内单个账号：账号行、窗口进度条与每日用量。 */
+function QuotaAccountSection({ quota, t, showHeading }: {
+  readonly quota: MagpieDashboardQuota
+  readonly t: (key: string, params?: Record<string, string | number>) => string
+  readonly showHeading: boolean
+}): ReactElement {
+  // `daily` 现在带 `since`，按日点位于 `days` 里。
+  const dailyValues = quota.daily.days.map((point) => point.used).filter((value): value is number => value !== null)
+  return createElement('div', { className: 'codingns-magpie-quota-account-block' },
+    showHeading && createElement('div', { className: 'codingns-magpie-quota-account-head' },
+      createElement('strong', undefined, quota.alias ?? quota.name),
+      quota.user !== null && createElement('span', undefined, t('magpie.account', { account: quota.user })),
+      quota.plan !== null && createElement('small', undefined, quota.plan),
+    ),
+    !showHeading && quota.user !== null && createElement('div', { className: 'codingns-magpie-quota-account' }, t('magpie.account', { account: quota.user })),
     quota.windows.length === 0
       ? createElement('div', { className: 'codingns-magpie-inline-empty' }, t('magpie.noLimit'))
       : quota.windows.map((window) => {
@@ -793,7 +843,7 @@ function QuotaCard({ quota, t }: { readonly quota: MagpieDashboardQuota; readonl
           ),
         )
       }),
-    quota.daily.length > 1 && createElement('div', { className: 'codingns-magpie-daily-chart' },
+    quota.daily.days.length > 1 && createElement('div', { className: 'codingns-magpie-daily-chart' },
       createElement(Sparkline, { values: dailyValues }),
       createElement('small', undefined, t('magpie.dailyUsage')),
     ),
@@ -1056,7 +1106,7 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-time-cell{white-space:nowrap;color:var(--mp-muted)}.codingns-magpie-provider-name,.codingns-magpie-route-model{display:block;max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:620}.codingns-magpie-table-secondary{display:block;max-width:220px;margin-top:3px;overflow:hidden;color:var(--mp-caption);font-size:${uiFontSize(12)};text-overflow:ellipsis;white-space:nowrap}.codingns-magpie-cost-cell{font-variant-numeric:tabular-nums}
 .codingns-magpie-status{display:inline-block;padding:2px 7px;border-radius:6px;background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#c08a3e) 12%,transparent);color:var(--dsw-alias-state-warn-label,var(--dsw-alias-state-warn-primary,#a06a2c));font-size:${uiFontSize(12)};font-variant-numeric:tabular-nums}.codingns-magpie-status.is-ok{background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#3f9d6b) 12%,transparent);color:var(--dsw-alias-state-success-primary,#3f9d6b)}
 .codingns-magpie-pagination{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-top:.5px solid var(--mp-line);color:var(--mp-muted);font-size:${uiFontSize(13)}}.codingns-magpie-pagination div{display:flex;gap:6px}.codingns-magpie-pagination button{min-height:28px;padding:0 10px;border:.5px solid var(--mp-line-strong);border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--mp-ink);font:inherit;font-size:${uiFontSize(13)};cursor:pointer}.codingns-magpie-pagination button:disabled{opacity:.4;cursor:not-allowed}
-.codingns-magpie-quota-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:13px}.codingns-magpie-quota-card{padding:17px}.codingns-magpie-quota-topline{display:flex;align-items:center;gap:10px;margin-bottom:13px}.codingns-magpie-quota-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:9px;background:var(--mp-layer);color:var(--mp-accent);font-weight:700}.codingns-magpie-quota-topline h2{margin:0;font-size:${uiFontSize(14)};font-weight:600}.codingns-magpie-quota-topline p{margin:3px 0 0;color:var(--mp-caption);font-size:${uiFontSize(13)}}.codingns-magpie-quota-account{margin:-5px 0 11px;color:var(--mp-muted);font-size:${uiFontSize(13)}}
+.codingns-magpie-quota-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:13px}.codingns-magpie-quota-card{padding:17px}.codingns-magpie-quota-topline{display:flex;align-items:center;gap:10px;margin-bottom:13px}.codingns-magpie-quota-icon{display:grid;place-items:center;width:34px;height:34px;border-radius:9px;background:var(--mp-layer);color:var(--mp-accent);font-weight:700}.codingns-magpie-quota-topline h2{margin:0;font-size:${uiFontSize(14)};font-weight:600}.codingns-magpie-quota-topline p{margin:3px 0 0;color:var(--mp-caption);font-size:${uiFontSize(13)}}.codingns-magpie-quota-account{margin:-5px 0 11px;color:var(--mp-muted);font-size:${uiFontSize(13)}}.codingns-magpie-quota-count{margin-left:auto;flex:none;min-height:26px;padding:0 9px;border:1px solid var(--mp-line);border-radius:999px;background:transparent;color:var(--mp-muted);font-size:${uiFontSize(12)};cursor:pointer;white-space:nowrap}.codingns-magpie-quota-count:hover{color:var(--mp-fg);border-color:var(--mp-accent)}.codingns-magpie-quota-count:focus-visible{outline:none;box-shadow:0 0 0 2px var(--mp-accent)}.codingns-magpie-quota-account-block + .codingns-magpie-quota-account-block{margin-top:12px;padding-top:11px;border-top:1px solid var(--mp-line)}.codingns-magpie-quota-account-head{display:flex;align-items:baseline;gap:8px;min-width:0;margin-bottom:9px;font-size:${uiFontSize(13)}}.codingns-magpie-quota-account-head strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.codingns-magpie-quota-account-head span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--mp-muted);font-size:${uiFontSize(12)}}.codingns-magpie-quota-account-head small{margin-left:auto;flex:none;color:var(--mp-caption);font-size:${uiFontSize(12)}}
 .codingns-magpie-quota-window{padding:11px 0;border-top:.5px solid var(--mp-line)}.codingns-magpie-quota-window-head,.codingns-magpie-quota-foot,.codingns-magpie-history-line-head{display:flex;align-items:center;justify-content:space-between;gap:9px}.codingns-magpie-quota-window-head{font-size:${uiFontSize(13)};font-weight:500}.codingns-magpie-quota-window-head span{color:var(--mp-muted);font-variant-numeric:tabular-nums}.quota-track{height:6px}.quota-track span{background:linear-gradient(90deg,var(--mp-accent),color-mix(in srgb,var(--mp-accent) 55%,transparent))}.codingns-magpie-quota-foot{color:var(--mp-caption);font-size:${uiFontSize(12)}}
 .codingns-magpie-daily-chart{display:grid;grid-template-columns:1fr auto;align-items:center;gap:9px;margin-top:4px;padding-top:10px;border-top:.5px solid var(--mp-line);color:var(--mp-muted);font-size:${uiFontSize(12)}}.codingns-magpie-sparkline{width:100%;height:30px;overflow:visible}.codingns-magpie-sparkline polyline{stroke:var(--mp-accent);stroke-width:2;vector-effect:non-scaling-stroke}
 .codingns-magpie-history-panel{padding:17px;margin-top:14px}.codingns-magpie-history-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.codingns-magpie-history-card{padding:12px;border:1px solid var(--mp-line);border-radius:9px;background:var(--mp-card)}.codingns-magpie-history-card>strong,.codingns-magpie-history-card>small{display:block}.codingns-magpie-history-card>strong{font-size:${uiFontSize(13)};font-weight:600}.codingns-magpie-history-card>small{margin-top:3px;color:var(--mp-caption);font-size:${uiFontSize(12)}}.codingns-magpie-history-line{margin-top:10px}.codingns-magpie-history-line-head{font-size:${uiFontSize(12)}}.codingns-magpie-history-line-head span:last-child{font-variant-numeric:tabular-nums;font-weight:650}

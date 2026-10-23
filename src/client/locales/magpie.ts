@@ -214,6 +214,10 @@ export const en: Record<string, string> = {
   'magpie.resets': 'Resets {time}',
   'magpie.account': 'Account {account}',
   'magpie.noLimit': 'No reported limit',
+  'magpie.quotaAccounts': '{count} accounts',
+  'magpie.quotaShowAllAccounts': 'Show all accounts',
+  'magpie.quotaShowMainAccount': 'Show main account only',
+  'magpie.quotaRemainingAccounts': '+{count} more',
   'magpie.sessionCountUnknown': 'Session count not reported',
 }
 
@@ -432,5 +436,9 @@ export const zh: Record<string, string> = {
   'magpie.resets': '重置时间 {time}',
   'magpie.account': '账户 {account}',
   'magpie.noLimit': '未报告额度上限',
+  'magpie.quotaAccounts': '{count} 个账号',
+  'magpie.quotaShowAllAccounts': '展开全部账号',
+  'magpie.quotaShowMainAccount': '只显示主账号',
+  'magpie.quotaRemainingAccounts': '另 {count} 个',
   'magpie.sessionCountUnknown': '未报告会话总数',
 }

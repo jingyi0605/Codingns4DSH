@@ -79,7 +79,25 @@ export interface MagpieDashboardQuota {
   readonly balance: string | null
   readonly readAt: string | null
   readonly windows: readonly MagpieDashboardQuotaWindow[]
-  readonly daily: readonly { readonly day: string; readonly used: number | null }[]
+  /** 按日消耗；`since` 是统计起点，上游不提供时为 null。 */
+  readonly daily: {
+    readonly since: string | null
+    readonly days: readonly { readonly day: string; readonly used: number | null }[]
+  }
+  /** 上游读取失败的安全原因摘要（如 `Unauthorized`）；成功时为 null。 */
+  readonly error?: string | null
+  /** 签到信息与每日消耗；仅部分厂商提供。 */
+  readonly checkins?: boolean
+  readonly checkin?: {
+    readonly day: string | null
+    readonly at: string | null
+    readonly outcome: string | null
+    readonly credit: number | null
+    readonly streak: number | null
+  } | null
+  /** 套餐到期时间与自动续费状态。 */
+  readonly until?: string | null
+  readonly renew?: string | null
 }
 
 export interface MagpieQuotaHistoryLine {
