@@ -182,8 +182,8 @@ export class MagpieManagementService {
       })
       const after = await this.readWebState(signal)
       const saved = findAccount(after.snapshot.accounts, update.agent, update.user)
-      if (after.snapshot.accountStatus !== 'available' || saved?.on !== update.on
       this.remember(after)
+      if (after.snapshot.accountStatus !== 'available' || saved?.on !== update.on
         || !otherAccountsUnchanged(before.snapshot.accounts, after.snapshot.accounts, update.agent, update.user)) {
         throw new Error('Magpie account change could not be verified after saving')
       }
@@ -199,19 +199,6 @@ export class MagpieManagementService {
 
   private async readWebState(signal?: AbortSignal): Promise<MagpieWebManagementState> {
     signal?.throwIfAborted()
-  private refreshSnapshot(): void {
-    if (this.snapshotRefresh !== undefined) return
-    const refresh = this.readWebState()
-    this.snapshotRefresh = refresh
-    void refresh.then((state) => this.remember(state), () => undefined).finally(() => {
-      if (this.snapshotRefresh === refresh) this.snapshotRefresh = undefined
-    })
-  }
-
-  private remember(state: MagpieWebManagementState): void {
-    this.snapshotCache = { state, loadedAt: this.now() }
-  }
-
     const [providerResult, groupResult, quotaResult, loginUsageResult] = await Promise.all([
       this.readApi('/api/providers', signal),
       this.readApi('/api/groups', signal),
@@ -245,6 +232,19 @@ export class MagpieManagementService {
       providerWritesSafe: parsedProviders?.writesSafe ?? false,
       rawGroups: parsedGroups?.raw ?? null,
     }
+  }
+
+  private refreshSnapshot(): void {
+    if (this.snapshotRefresh !== undefined) return
+    const refresh = this.readWebState()
+    this.snapshotRefresh = refresh
+    void refresh.then((state) => this.remember(state), () => undefined).finally(() => {
+      if (this.snapshotRefresh === refresh) this.snapshotRefresh = undefined
+    })
+  }
+
+  private remember(state: MagpieWebManagementState): void {
+    this.snapshotCache = { state, loadedAt: this.now() }
   }
 
   private async readApi(path: string, signal?: AbortSignal): Promise<WebRead> {
