@@ -4,13 +4,20 @@ import type { ReactElement, RefObject } from 'react'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { isSubscriptionUsageFresh } from '../shared/contracts/subscription.js'
-import type { CliSubscriptionGroup, CliSubscriptionGroupWindow, CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionSnapshot, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, MagpieQuota, MagpieUsageSnapshot, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
+import type { CliSubscriptionGroup, CliSubscriptionGroupWindow, CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionSnapshot, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, MagpieQuota, MagpieQuotaWindow, MagpieUsageSnapshot, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
 import { DEFAULT_SUBSCRIPTION_USAGE_SETTINGS } from '../shared/contracts/config.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCliRpc } from './cli-catalog.js'
 import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { providerIconUrl } from './provider-icons.js'
 import { MagpieProviderLogo } from './features/magpie-provider-logo.js'
+import {
+  formatQuotaCredits,
+  formatQuotaNumber,
+  readWindowCreditBalance,
+  resolveQuotaBalanceLabel,
+  resolveQuotaCreditBalance,
+} from './features/subscription-quota-groups.js'
 import { subscribeSessionAdapters } from './session-adapter-cache.js'
 import { loadCliSessionConfig } from './cli-session-config-cache.js'
 import { dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from './theme.js'
@@ -362,7 +369,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   if (!eligible || snapshot === null) return null
   if (snapshot.magpie !== null) {
     const magpie = snapshot.magpie
-    const magpieRemaining = resolveMagpieQuotaRemaining(magpie)
+    const readout = resolveMagpieTriggerReadout(magpie)
     const label = t('usage.magpieUsageLabel')
     return createElement('div', { ref: rootRef, style: subscriptionRootStyle },
       createElement('button', {
@@ -380,9 +387,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
           height: 20,
           style: magpieTriggerImageStyle,
         })),
-        magpieRemaining === null
-          ? createElement('span', { className: 'codingns4dsh-subscription-label', style: subscriptionLabelStyle }, t('usage.magpieShortLabel'))
-          : createRemainingRing(magpieRemaining),
+        createMagpieTriggerReadout(readout, t),
       ),
       open && createElement(MagpieUsagePopover, { usage: magpie, t, tab: magpieTab, onTabChange: setMagpieTab, placement: magpiePlacement, popoverRef: magpiePopoverRef }),
     )
@@ -627,12 +632,17 @@ function createMagpieQuotaCard(quota: MagpieQuota, t: CodingNsTranslator, index:
       ? createElement('div', { style: magpieQuotaMetaStyle }, t('usage.magpieQuotaNoWindows'))
       : quota.windows.map((window, windowIndex) => {
           const remaining = window.remainingPercent
+          // 积分窗口（WorkBuddy 的 `0 / 350`）按数量读更准确：百分比在这里没有意义。
+          const credits = formatQuotaWindowCredits(window)
           const amount = window.display ?? (window.amount !== null && window.limit !== null ? `${window.amount} / ${window.limit}${window.unit === null ? '' : ` ${window.unit}`}` : null)
           return createElement('div', { key: `${window.name}-${windowIndex}`, style: magpieQuotaWindowStyle },
             createElement('div', { style: windowHeadingStyle },
               createElement('span', undefined, window.name),
-              remaining === null ? amount : createElement('strong', undefined, `${formatPercent(remaining)}%`),
+              credits !== null
+                ? createElement('strong', undefined, credits)
+                : remaining === null ? amount : createElement('strong', undefined, `${formatPercent(remaining)}%`),
             ),
+            // 积分窗口用满格数量条展示已用比例，避免"0% 还能用"的误读。
             remaining !== null && createElement('div', { role: 'progressbar', 'aria-label': t('usage.magpieQuotaRemaining', { name: window.name, percent: formatPercent(remaining) }), 'aria-valuemin': 0, 'aria-valuemax': 100, 'aria-valuenow': remaining, style: barStyle },
               createElement('span', { style: { ...barFillStyle, width: `${remaining}%` } }),
             ),
@@ -643,6 +653,16 @@ function createMagpieQuotaCard(quota: MagpieQuota, t: CodingNsTranslator, index:
           )
         }),
   )
+}
+
+/**
+ * 单个窗口若是按积分计量，返回"剩余 / 上限"文本；普通百分比窗口返回 null。
+ *
+ * 卡片会为每个窗口单独调用一次，所以这里按窗口自治判断，不依赖账号整体状态。
+ */
+function formatQuotaWindowCredits(window: MagpieQuotaWindow): string | null {
+  const credits = readWindowCreditBalance(window)
+  return credits === null ? null : formatQuotaCredits(credits)
 }
 
 function MagpieRoutePanel({ usage, quotas, t }: { readonly usage: MagpieUsageSnapshot; readonly quotas: readonly MagpieQuota[]; readonly t: CodingNsTranslator }): ReactElement {
@@ -1359,6 +1379,49 @@ function resolveMagpieQuotaRemaining(usage: MagpieUsageSnapshot): number | null 
   }
   return null
 }
+/**
+ * 底部 Magpie 入口在折叠态下该说什么。
+ *
+ * 优先级：额度窗口的百分比环 → 金额余额（New-API 的 `$74.40`）→ 积分余额
+ * （WorkBuddy 的 `350`）→ Magpie 标签。积分没有百分比可用，只显示剩余数量，
+ * 避免出现"永远 0%"的空环。
+ */
+type MagpieTriggerReadout =
+  | { readonly kind: 'ring'; readonly percent: number }
+  | { readonly kind: 'money'; readonly text: string }
+  | { readonly kind: 'credits'; readonly text: string }
+  | { readonly kind: 'label' }
+function resolveMagpieTriggerReadout(usage: MagpieUsageSnapshot): MagpieTriggerReadout {
+  const remaining = resolveMagpieQuotaRemaining(usage)
+  if (remaining !== null) return { kind: 'ring', percent: remaining }
+  const quotas = usage.quotas ?? []
+  const balance = resolveQuotaBalanceLabel(quotas)
+  if (balance !== null) return { kind: 'money', text: balance }
+  const credits = resolveQuotaCreditsLabel(quotas)
+  if (credits !== null) return { kind: 'credits', text: credits }
+  return { kind: 'label' }
+}
+/** 积分余额的展示文本：只给数量，单位放在 title 里，不占用底部栏宽度。 */
+function resolveQuotaCreditsLabel(quotas: readonly MagpieQuota[]): string | null {
+  for (const quota of quotas) {
+    const credits = resolveQuotaCreditBalance(quota)
+    if (credits === null || !(credits.remaining > 0)) continue
+    return formatQuotaNumber(credits.remaining)
+  }
+  return null
+}
+function createMagpieTriggerReadout(readout: MagpieTriggerReadout, t: CodingNsTranslator): ReactElement {
+  switch (readout.kind) {
+    case 'ring':
+      return createRemainingRing(readout.percent)
+    case 'money':
+      return createElement('span', { className: 'codingns4dsh-subscription-value', style: magpieBalanceStyle, title: t('usage.accountBalance') }, readout.text)
+    case 'credits':
+      return createElement('span', { className: 'codingns4dsh-subscription-value', style: magpieBalanceStyle, title: t('usage.creditBalanceLabel') }, readout.text)
+    default:
+      return createElement('span', { className: 'codingns4dsh-subscription-label', style: subscriptionLabelStyle }, t('usage.magpieShortLabel'))
+  }
+}
 function selectDeepseekBalance(usage: DeepseekUsage): DeepseekUsage['balances'][number] | null {
   return usage.balances.find((balance) => balance.currency.toUpperCase() === 'USD') ?? usage.balances[0] ?? null
 }
@@ -1476,6 +1539,8 @@ function formatCreditBalance(value: string): string {
 const subscriptionRootStyle = { position: 'relative' as const, minWidth: 0, display: 'inline-flex', alignItems: 'center' }
 const subscriptionTriggerStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, height: 28, border: 0, borderRadius: 14, padding: '0 8px 0 4px', color: dshThemeColor.labelSecondary, background: 'transparent', cursor: 'pointer', fontSize: uiFontSize(13), lineHeight: '20px' }
 const subscriptionLabelStyle = { whiteSpace: 'nowrap' as const }
+// 余额金额与积分和百分比环并排/替换显示：数字用等宽字形，避免刷新时抖动。
+const magpieBalanceStyle = { display: 'inline-flex', alignItems: 'center', whiteSpace: 'nowrap' as const, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), fontWeight: 600, fontVariantNumeric: 'tabular-nums' as const }
 const magpieTriggerIconStyle = { display: 'inline-flex', width: 20, height: 20, alignItems: 'center', justifyContent: 'center', overflow: 'hidden', borderRadius: 6, background: dshThemeColor.surfaceSubtle }
 const magpieTriggerImageStyle = { display: 'block', width: '100%', height: '100%', objectFit: 'cover' as const }
 const magpieMutedTextStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: '17px', overflowWrap: 'anywhere' as const }

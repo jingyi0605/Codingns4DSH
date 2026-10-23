@@ -154,10 +154,85 @@ export function formatQuotaBalance(balance: QuotaBalance): string {
 }
 
 /**
+ * 上游按积分（而非货币）计量时的余额。
+ *
+ * WorkBuddy、WorkBuddy AI 这类厂商只提供 `Credits` 窗口，`0 / 350` 就是全部余额，
+ * 既没有金额 `balance` 也没有百分比可算（剩余量恒为 0%）。这里把这类"计数额度"
+ * 单独读出来，让底部栏显示 `350` 而不是一个永远空着的 `0%` 环。
+ */
+export interface QuotaCreditBalance {
+  /** 剩余可用的积分。 */
+  readonly remaining: number
+  /** 额度上限；上游只给一个数时与 `remaining` 相同。 */
+  readonly limit: number
+  /** 上游单位（`credits`、`points` 等）；只有窗口名时可退回窗口名。 */
+  readonly unit: string
+  /** 上游给出的展示原文（如 `0 / 350`），用于 tooltip 与弹层。 */
+  readonly display: string | null
+}
+
+/** 窗口名里表示"按积分计量"的词；这些窗口的 `remaining` 才是人工可读的余额。 */
+const QUOTA_CREDIT_UNIT_PATTERN = /credit|points|积分|点数/iu
+
+/** 单个窗口是否按积分计量，以及它的余量读数；普通百分比窗口返回 null。 */
+export function readWindowCreditBalance(window: MagpieQuotaWindow): QuotaCreditBalance | null {
+  const unit = window.unit?.trim() ?? ''
+  const named = QUOTA_CREDIT_UNIT_PATTERN.test(window.name)
+  const typed = unit !== '' && QUOTA_CREDIT_UNIT_PATTERN.test(unit)
+  if (!named && !typed) return null
+  const remaining = window.amount ?? window.runsOut
+  const limit = window.limit
+  if (remaining !== null && Number.isFinite(remaining)) {
+    return {
+      remaining,
+      limit: limit !== null && Number.isFinite(limit) ? limit : remaining,
+      unit: unit !== '' ? unit : window.name.trim(),
+      display: window.display,
+    }
+  }
+  // 窗口只给百分比时，用百分比乘上限还原剩余积分（WorkBuddy AI 的 `0 / 130`）。
+  const percent = quotaWindowRemaining(window)
+  if (percent === null || limit === null || !Number.isFinite(limit)) return null
+  return {
+    remaining: (limit * percent) / 100,
+    limit,
+    unit: unit !== '' ? unit : window.name.trim(),
+    display: window.display,
+  }
+}
+
+/**
+ * 读取账号的积分数余额。
+ *
+ * 只认带积分含义的窗口或单位，普通的百分比窗口（`5 hours`、`7 days`）不参与，
+ * 避免把"剩余 73%"说成"73 积分"。
+ */
+export function resolveQuotaCreditBalance(quota: MagpieQuota): QuotaCreditBalance | null {
+  for (const window of quota.windows) {
+    const credit = readWindowCreditBalance(window)
+    if (credit !== null) return credit
+  }
+  return null
+}
+
+/**
+ * 弹层里的积分文本：`剩余 / 上限 + 单位`。
+ *
+ * 只在窗口没有百分比时使用（百分比仍是更直接的读法）；上游给了 `0 / 350`
+ * 这类 display 原文时优先照抄，避免自己再算一遍四舍五入。
+ */
+export function formatQuotaCredits(credits: QuotaCreditBalance): string {
+  if (credits.display !== null && credits.display.trim() !== '') return credits.display.trim()
+  const unit = credits.unit === '' ? '' : ` ${credits.unit}`
+  return `${formatQuotaNumber(credits.remaining)} / ${formatQuotaNumber(credits.limit)}${unit}`
+}
+
+/**
  * 底部栏触发按钮上要显示的余额文本。
  *
- * 只展示金额余额：积分（如 Codex 的 `credits`）与状态词不是货币，直接不显示，
- * 由圆形额度环承担。多个账号时展示会话实际使用的账号，否则取第一个有金额的账号。
+ * 优先展示金额余额（如 New-API 的 `$74.40`）；没有金额但上游按积分计量时展示积分
+ * （如 WorkBuddy 的 `350`）。状态词之类的伪余额不显示，由圆形额度环承担。
+ * 多个账号时展示会话实际使用的账号，否则取第一个有余额的账号。
  */
 export function resolveQuotaBalanceLabel(quotas: readonly MagpieQuota[] | null | undefined): string | null {
   // 旧版 Host 或网关不可用时快照没有 `quotas` 字段，这里不能假设数组存在。
@@ -165,8 +240,11 @@ export function resolveQuotaBalanceLabel(quotas: readonly MagpieQuota[] | null |
   const ordered = [...rows.filter((quota) => quota.active === true), ...rows.filter((quota) => quota.active !== true)]
   for (const quota of ordered) {
     const balance = parseQuotaBalance(quota.balance)
-    if (balance === null || !balance.money || !(balance.amount > 0)) continue
-    return formatQuotaBalance(balance)
+    if (balance !== null && balance.money && balance.amount > 0) return formatQuotaBalance(balance)
+  }
+  for (const quota of ordered) {
+    const credits = resolveQuotaCreditBalance(quota)
+    if (credits !== null && credits.remaining > 0) return formatQuotaNumber(credits.remaining)
   }
   return null
 }
