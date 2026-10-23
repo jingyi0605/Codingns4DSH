@@ -15,20 +15,20 @@ export interface DshCapabilityMatrixRoute {
 
 /** 能力版本矩阵是运行时路由和版本检查的共同事实源。 */
 export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
-  route('session.external-performance', 'session-performance-projection-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.2', 'supported', ['dsh-capabilities/host/session-performance-adapter.ts', 'host/cli-adapters/feature.ts']),
-  route('session.external-performance', 'session-performance-presentation-021', 'client', '>=0.2.1-alpha.3 <=0.2.1-rc.2', 'supported', ['dsh-capabilities/client/session-performance-adapter.ts', 'client/features/cli-adapters.ts']),
+  route('session.external-performance', 'session-performance-projection-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.3', 'supported', ['dsh-capabilities/host/session-performance-adapter.ts', 'host/cli-adapters/feature.ts']),
+  route('session.external-performance', 'session-performance-presentation-021', 'client', '>=0.2.1-alpha.3 <=0.2.1-rc.3', 'supported', ['dsh-capabilities/client/session-performance-adapter.ts', 'client/features/cli-adapters.ts']),
   route('quick-app.proxy', 'quick-app-host-proxy-021', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/quick-app-proxy-adapter.ts', 'dsh-capabilities/host/quick-app-proxy-provider.ts', 'host/features/quick-apps.ts', 'host/index.ts']),
   route('workspace.directory-list', 'workspace-directory-list-021', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/workspace-directory-adapter.ts', 'host/features/quick-apps.ts', 'host/modules/quick-apps/browse.ts']),
   route('quick-app.origin', 'quick-app-origin-provider', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/quick-app-origin-adapter.ts', 'dsh-capabilities/host/quick-app-https-provider.ts', 'dsh-capabilities/host/quick-app-lan-ports.ts', 'dsh-capabilities/host/quick-app-transport.ts', 'host/features/quick-apps.ts', 'host/features/lan-access-dsh.ts']),
   route('sidebar.footer-action', 'sidebar-footer-action-021', 'client', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/client/quick-app-footer-adapter.ts', 'client/features/quick-apps.ts']),
-  route('session.prompt-assembly', 'session-prompt-assembly-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.2', 'supported', ['dsh-capabilities/host/session-prompt-adapter.ts', 'host/features/session-prompt-translation.ts', 'host/cli-adapters/feature.ts']),
-  route('session.external-model-selection', 'session-external-model-selection-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.2', 'supported', ['dsh-capabilities/host/session-model-selection-adapter.ts', 'host/cli-adapters/feature.ts']),
+  route('session.prompt-assembly', 'session-prompt-assembly-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.3', 'supported', ['dsh-capabilities/host/session-prompt-adapter.ts', 'host/features/session-prompt-translation.ts', 'host/cli-adapters/feature.ts']),
+  route('session.external-model-selection', 'session-external-model-selection-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.3', 'supported', ['dsh-capabilities/host/session-model-selection-adapter.ts', 'host/cli-adapters/feature.ts']),
   route('session.activation', 'session-activation-020', 'host', '>=0.2.0-rc.2 <=0.2.1-alpha.2', 'supported', ['dsh-capabilities/host/session-activation-adapter.ts', 'host/native-session-bridge.ts']),
-  route('session.activation', 'session-activation-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.2', 'supported', ['dsh-capabilities/host/session-activation-adapter.ts', 'host/native-session-bridge.ts']),
+  route('session.activation', 'session-activation-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.3', 'supported', ['dsh-capabilities/host/session-activation-adapter.ts', 'host/native-session-bridge.ts']),
   route('conversation.message-presentation', 'message-presentation-020', 'client', '>=0.2.0-rc.2 <=0.2.1-alpha.2', 'supported', ['dsh-capabilities/client/message-presentation-adapter.ts', 'client/session-translation-chat.ts']),
-  route('conversation.message-presentation', 'message-presentation-021', 'client', '>=0.2.1-alpha.3 <=0.2.1-rc.2', 'supported', ['dsh-capabilities/client/message-presentation-adapter.ts', 'client/session-translation-chat.ts']),
-  route('connection.peer', 'connection.peer-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.2', 'supported', ['dsh-capabilities/host/connection-peer-adapter.ts', 'host/rpc.ts', 'host/features/global-voice-rpc.ts', 'host/modules/peer-host/peer-host-native-dispatch.ts']),
-  route('connection.uplink', 'connection.uplink-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.2', 'supported', ['dsh-capabilities/host/native-dispatch-adapter.ts', 'host/modules/peer-host/peer-host-native-dispatch.ts']),
+  route('conversation.message-presentation', 'message-presentation-021', 'client', '>=0.2.1-alpha.3 <=0.2.1-rc.3', 'supported', ['dsh-capabilities/client/message-presentation-adapter.ts', 'client/session-translation-chat.ts']),
+  route('connection.peer', 'connection.peer-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.3', 'supported', ['dsh-capabilities/host/connection-peer-adapter.ts', 'host/rpc.ts', 'host/features/global-voice-rpc.ts', 'host/modules/peer-host/peer-host-native-dispatch.ts']),
+  route('connection.uplink', 'connection.uplink-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.3', 'supported', ['dsh-capabilities/host/native-dispatch-adapter.ts', 'host/modules/peer-host/peer-host-native-dispatch.ts']),
   route('session.title', 'session-title-020', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/session-title-adapter.ts', 'host/features/session-title-optimization.ts']),
   // alpha.2 起会话有可变的「当前目录」；旧版本没有该服务，终端回退到不可变的
   // `session.header.cwd`，因此能力缺失只影响「跟随当前目录」这一项增强。
@@ -74,8 +74,8 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   // 业务侧经 `startNativeSubagent()` 归一化调用，不写运行期版本判断。
   route('subagent.continuable', 'subagent-activation-021', 'host', '>=0.2.1-alpha.2', 'supported', ['host/cli-adapters/native-team-subagent.ts', 'host/cli-adapters/native-subagent-dispatch.ts']),
   route('agent-team.native', 'agent-team-native-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/cli-adapters/feature.ts', 'host/cli-adapters/native-team-proxy.ts']),
-  route('agent-team.external-member', 'agent-team-external-member-021', 'host', '>=0.2.1-alpha.2 <=0.2.1-rc.2', 'supported', ['host/cli-adapters/feature.ts', 'host/cli-bridge/team-dispatch.ts']),
-  route('agent-team.external-lead', 'agent-team-external-lead-021', 'host', '>=0.2.1-alpha.2 <=0.2.1-rc.2', 'supported', ['host/cli-adapters/feature.ts', 'host/cli-bridge/team-dispatch.ts']),
+  route('agent-team.external-member', 'agent-team-external-member-021', 'host', '>=0.2.1-alpha.2 <=0.2.1-rc.3', 'supported', ['host/cli-adapters/feature.ts', 'host/cli-bridge/team-dispatch.ts']),
+  route('agent-team.external-lead', 'agent-team-external-lead-021', 'host', '>=0.2.1-alpha.2 <=0.2.1-rc.3', 'supported', ['host/cli-adapters/feature.ts', 'host/cli-bridge/team-dispatch.ts']),
   route('ui.icon.plus', 'regular-plus-icon-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/terminal/xterm-view.ts']),
   route('ui.icon.chevron', 'regular-chevron-icon-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/terminal/ui.ts']),
   route('locale.runtime', 'locale-runtime-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/locale.ts']),
@@ -84,7 +84,7 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   // 插件界面的 `fontSize()` 会回落到基准值，行为与今天一致。
   route('theme.font-scale', 'theme-font-scale-021', 'client', '>=0.2.1-alpha.2', 'supported', ['client/font-scale.ts', 'client/index.ts']),
   route('conversation.tool-call', 'conversation-events-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/external-tool-stream.ts']),
-  route('conversation.draft-share', 'conversation-draft-share-021', 'client', '>=0.2.1-alpha.1 <=0.2.1-rc.2', 'supported', ['client/terminal/ui.ts', 'client/terminal/sharing.ts']),
+  route('conversation.draft-share', 'conversation-draft-share-021', 'client', '>=0.2.1-alpha.1 <=0.2.1-rc.3', 'supported', ['client/terminal/ui.ts', 'client/terminal/sharing.ts']),
   route('conversation.interaction-translation', 'interaction-presentation-021', 'client', DSH_COMPATIBILITY, 'supported', ['client/session-translation-interactions.ts']),
   route('sidebar.right', 'sidebar-right-dock-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/terminal/ui.ts']),
   route('typert.remote', 'remote-context-stream-020-client', 'client', DSH_COMPATIBILITY, 'supported', ['client/terminal/model.ts']),
