@@ -2807,6 +2807,29 @@ test('DSH 原生 Provider 只有 finish(stop) 时输出明确错误而不是空�
   await features.disable('cliAdapters')
 })
 
+test('DSH 原生 Provider 的 error finish 必须原样透传而不是被空响应文案替换', async () => {
+  const table = new CodingNsRpcTable()
+  let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  const events = {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+      listener = next
+      return () => { listener = undefined }
+    },
+  }
+  const features = new FeatureRegistry({ rpc: table, events })
+  features.register(createCliAdaptersFeature({ registry: new CodingNsCliAdapterRegistry([]) }))
+  await features.start('cliAdapters')
+  const upstreamFailure = { message: 'status_code=400, The `content[].thinking` in the thinking mode must be passed back to the API. (request_id: 948d0e10)', code: 'PROVIDER_ERROR' }
+  const chunks = []
+  for await (const chunk of listener!({ sessionId: 'native-error-finish', provider: 'deepseek-official' }, async function* () {
+    yield { type: 'finish', reason: { kind: 'error', failure: upstreamFailure } }
+  })) chunks.push(chunk)
+  // error finish 携带 Provider 的真实失败（状态码、上游错误消息），必须逐字透传。
+  assert.equal(chunks.some((chunk) => chunk.type === 'text-delta' && String(chunk.text).includes('CODINGNS_PROVIDER_EMPTY_RESPONSE')), false)
+  assert.deepEqual(chunks, [{ type: 'finish', reason: { kind: 'error', failure: upstreamFailure } }])
+  await features.disable('cliAdapters')
+})
+
 test('分段适配器的 step 边界必须在 DSH finish 前注入下一个 step', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
