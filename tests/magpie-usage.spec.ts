@@ -294,7 +294,12 @@ test('Magpie /v1/magpie/quotas 只保留安全的提供商配额字段', () => {
   assert.deepEqual(quotas, [{
     provider: 'workbuddy', name: 'WorkBuddy', kind: 'subscription', user: 'account@example.com', plan: 'Free', alias: 'Primary',
     balance: '$12.50', readAt: '2026-10-21T12:00:00Z',
-    windows: [{ name: 'Credits', usedPercent: 2.5, remainingPercent: 97.5, resetsAt: null, display: '46.94 / 2300', amount: 46.94, limit: 2300, unit: 'credits', holdsWhy: 'low' }],
+    windows: [{ name: 'Credits', usedPercent: 2.5, remainingPercent: 97.5, resetsAt: null, display: '46.94 / 2300', amount: 46.94, limit: 2300, unit: 'credits', holdsWhy: 'low', startsAt: null, runsOut: null, runsOutAt: null }],
+    // 账号级可选项在缺省时归一化为 null，供客户端稳定判断"未提供"。
+    error: null,
+    until: null,
+    renew: null,
+    credits: null,
   }])
   assert.doesNotMatch(JSON.stringify(quotas), /must not pass through/u)
   assert.equal(parseMagpieQuotas({ data: [{ provider: 'workbuddy', name: 'WorkBuddy', windows: 'invalid' }] }), null)
@@ -619,7 +624,11 @@ test('Magpie compact usage reads only Web API usage and exact session ledger dat
   assert.equal(result?.route?.routeId, 7)
   assert.equal(result?.upstreamProvider, 'example-provider')
   assert.deepEqual(result?.upstreamProviders, ['example-provider'])
-  assert.deepEqual(result?.quotas, [{ provider: 'example-provider', name: 'Example Provider', kind: null, user: 'primary', plan: null, alias: null, balance: null, readAt: null, windows: [] }])
+  // 路由精确指向 primary，因此该账号被标记为本会话正在使用的账号。
+  assert.deepEqual(result?.quotas, [{
+    provider: 'example-provider', name: 'Example Provider', kind: null, user: 'primary', plan: null, alias: null, balance: null, readAt: null,
+    windows: [], active: true, error: null, until: null, renew: null, credits: null,
+  }])
   assert.doesNotMatch(JSON.stringify(result), /Bearer|Authorization|prompt|response body/u)
 })
 
