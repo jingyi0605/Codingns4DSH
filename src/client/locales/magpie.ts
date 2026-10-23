@@ -215,7 +215,7 @@ export const en: Record<string, string> = {
 export const zh: Record<string, string> = {
   'feature.magpieManagement.label': 'Magpie 管理与用量',
   'feature.magpieManagement.description': '启用后，会在全局侧栏的「插件」下方添加独立的 Magpie 管理页面。',
-  'magpie.sidebarLabel': 'Magpie 管理',
+  'magpie.sidebarLabel': 'Magpie',
   'magpie.usage': '用量',
   'magpie.routing': '路由',
   'magpie.overviewNote': '仅统计网关调用；会话历史请在「请求」中查看。本地拒绝的请求不计入汇总。',
