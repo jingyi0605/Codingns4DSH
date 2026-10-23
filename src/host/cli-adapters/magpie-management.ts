@@ -44,6 +44,7 @@ const GROUP_WRITTEN_FIELDS = [
 ]
 const LOGIN_CONTAINER_FIELDS = new Set(['accounts', 'logins', 'data', 'users', 'usage', 'providers', 'items'])
 
+const MANAGEMENT_CACHE_TTL_MS = 15_000
 export interface MagpieManagementServiceOptions {
   readonly webApi?: Pick<MagpieWebService, 'requestJson'>
   readonly now?: () => number
@@ -64,13 +65,23 @@ export class MagpieManagementService {
   private readonly now: () => number
   private mutationTail: Promise<void> = Promise.resolve()
 
+  private snapshotCache: { readonly state: MagpieWebManagementState; readonly loadedAt: number } | undefined
+  private snapshotRefresh: Promise<MagpieWebManagementState> | undefined
   constructor(options: MagpieManagementServiceOptions = {}) {
     this.webApi = options.webApi
     this.now = options.now ?? Date.now
   }
 
   async readSnapshot(signal?: AbortSignal): Promise<MagpieManagementSnapshot> {
-    return (await this.readWebState(signal)).snapshot
+    const cached = this.snapshotCache
+    if (cached !== undefined) {
+      if (this.now() - cached.loadedAt < MANAGEMENT_CACHE_TTL_MS) return cached.state.snapshot
+      this.refreshSnapshot()
+      return cached.state.snapshot
+    }
+    const state = await this.readWebState(signal)
+    this.remember(state)
+    return state.snapshot
   }
 
   async updateProvider(input: unknown, signal?: AbortSignal): Promise<MagpieManagementMutationResult> {
@@ -109,6 +120,7 @@ export class MagpieManagementService {
       const after = await this.readWebState(signal)
       const saved = after.snapshot.providers.find(item => item.id === update.id)
       const savedRaw = after.rawProviders?.find(item => item.id === update.id)
+      this.remember(after)
       if (saved === undefined || savedRaw === undefined || !providerUpdateMatches(update, saved)
         || !providerRecordMatchesUpdate(currentRecord, update, saved)
         || providerConfigFingerprint(savedRaw) !== protectedBefore
@@ -141,6 +153,7 @@ export class MagpieManagementService {
       const after = await this.readWebState(signal)
       const saved = after.snapshot.groups.find(item => item.id === update.id)
       const savedRaw = after.rawGroups?.find(item => normalizeGroupId(item.id) === update.id)
+      this.remember(after)
       if (saved === undefined || savedRaw === undefined || !groupUpdateMatches(update, saved)
         || groupConfigFingerprint(savedRaw) !== protectedBefore
         || !otherGroupsUnchanged(before.rawGroups ?? [], after.rawGroups ?? [], update.id)) {
@@ -170,6 +183,7 @@ export class MagpieManagementService {
       const after = await this.readWebState(signal)
       const saved = findAccount(after.snapshot.accounts, update.agent, update.user)
       if (after.snapshot.accountStatus !== 'available' || saved?.on !== update.on
+      this.remember(after)
         || !otherAccountsUnchanged(before.snapshot.accounts, after.snapshot.accounts, update.agent, update.user)) {
         throw new Error('Magpie account change could not be verified after saving')
       }
@@ -185,6 +199,19 @@ export class MagpieManagementService {
 
   private async readWebState(signal?: AbortSignal): Promise<MagpieWebManagementState> {
     signal?.throwIfAborted()
+  private refreshSnapshot(): void {
+    if (this.snapshotRefresh !== undefined) return
+    const refresh = this.readWebState()
+    this.snapshotRefresh = refresh
+    void refresh.then((state) => this.remember(state), () => undefined).finally(() => {
+      if (this.snapshotRefresh === refresh) this.snapshotRefresh = undefined
+    })
+  }
+
+  private remember(state: MagpieWebManagementState): void {
+    this.snapshotCache = { state, loadedAt: this.now() }
+  }
+
     const [providerResult, groupResult, quotaResult, loginUsageResult] = await Promise.all([
       this.readApi('/api/providers', signal),
       this.readApi('/api/groups', signal),

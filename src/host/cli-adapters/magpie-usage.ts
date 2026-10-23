@@ -18,6 +18,8 @@ import type {
 import type {
   MagpieDashboardPeriod,
   MagpieDashboardAvailabilityIssue,
+  MagpieDashboardStreamChunk,
+  MagpieDashboardStreamPart,
   MagpieDashboardQuota,
   MagpieQuotaHistory,
   MagpieUsageDashboard,
@@ -38,6 +40,7 @@ const MAX_MAGPIE_MODEL_METADATA_CACHE_ENTRIES = 4
 const MAGPIE_MINIMUM_CLI_VERSION = [0, 1, 1295] as const
 const MAGPIE_CLI_TIMEOUT_MS = 10_000
 const MAGPIE_HTTP_TIMEOUT_MS = 3_000
+const MAGPIE_DASHBOARD_CACHE_TTL_MS = 15_000
 const MAX_MAGPIE_CLI_OUTPUT_BYTES = 512 * 1024
 const MAX_MAGPIE_RESPONSE_BYTES = 2 * 1024 * 1024
 const MAX_MAGPIE_ICON_FETCHES = 64
@@ -141,6 +144,13 @@ export interface MagpieUsageServiceOptions {
   readonly webApi?: Pick<MagpieWebService, 'requestJson'> & Partial<Pick<MagpieWebService, 'requestAssetDataUrl'>>
   /** Shared catalog CLI work is cancelled when its owning Host feature stops, not by one RPC caller. */
   readonly lifetimeSignal?: AbortSignal
+  /** Records per-part dashboard timings without exposing them to the Client. */
+  readonly onDashboardTiming?: (timing: MagpieDashboardTiming) => void
+}
+
+export interface MagpieDashboardTiming {
+  readonly part: MagpieDashboardStreamPart | 'quota-logos'
+  readonly elapsedMs: number
 }
 
 export interface MagpieUsageRequestOptions {
@@ -160,6 +170,7 @@ export class MagpieUsageService {
   private readonly timeoutMs: number
   private readonly lifetimeSignal: AbortSignal | undefined
   private readonly webApi: MagpieUsageServiceOptions['webApi']
+  private readonly onDashboardTiming: ((timing: MagpieDashboardTiming) => void) | undefined
   /** Agent CLI verification remains isolated; model metadata below is Gateway-wide and shared. */
   private readonly catalogs = new Map<MagpieAgent, CatalogCacheEntry>()
   private readonly catalogLoads = new Map<MagpieAgent, Promise<MagpieModelCatalog | null>>()
@@ -168,6 +179,9 @@ export class MagpieUsageService {
   private readonly modelMetadataLoads = new Map<string, Promise<ReadonlyMap<string, MagpieModelMetadata> | null>>()
   private versionCheck: { readonly supported: boolean; readonly executableAvailable: boolean; readonly checkedAt: number } | undefined
   private versionLoad: Promise<boolean> | undefined
+  private readonly dashboardCache = new Map<MagpieDashboardPeriod, { readonly dashboard: MagpieUsageDashboard; readonly loadedAt: number }>()
+  private readonly dashboardRefreshes = new Map<MagpieDashboardPeriod, Promise<MagpieUsageDashboard>>()
+  private readonly quotaLogoCache = new Map<string, string | null>()
 
   constructor(options: MagpieUsageServiceOptions = {}) {
     this.readModels = options.readModels ?? readMagpieModels
@@ -181,6 +195,7 @@ export class MagpieUsageService {
     this.timeoutMs = options.timeoutMs ?? MAGPIE_HTTP_TIMEOUT_MS
     this.lifetimeSignal = options.lifetimeSignal
     this.webApi = options.webApi
+    this.onDashboardTiming = options.onDashboardTiming
   }
 
   async read(
@@ -298,33 +313,105 @@ export class MagpieUsageService {
   /** Read bounded, graph-ready usage and quota data through authenticated Magpie Web. */
   async readDashboard(period: MagpieDashboardPeriod, signal?: AbortSignal): Promise<MagpieUsageDashboard> {
     signal?.throwIfAborted()
-    const webPeriod = magpieWebPeriod(period)
-    const [usage, quotas, history] = await Promise.all([
-      this.readWebJson(`/api/usage?period=${webPeriod}`, signal),
-      this.readWebJson('/api/usage/quotas', signal),
-      this.readWebJson('/api/usage/quotas/history?days=30', signal),
+    const cached = this.dashboardCache.get(period)
+    if (cached !== undefined) {
+      if (this.now() - cached.loadedAt >= MAGPIE_DASHBOARD_CACHE_TTL_MS) {
+        void this.refreshDashboard(period).catch(() => undefined)
+      }
+      return cached.dashboard
+    }
+    return this.refreshDashboard(period, signal)
+  }
+
+  /** Stream cumulative dashboard snapshots as each independent Web API part is ready. */
+  async *readDashboardStream(period: MagpieDashboardPeriod, signal?: AbortSignal, force = false): AsyncIterable<MagpieDashboardStreamChunk> {
+    signal?.throwIfAborted()
+    const cached = this.dashboardCache.get(period)
+    if (!force && cached !== undefined) {
+      const stale = this.now() - cached.loadedAt >= MAGPIE_DASHBOARD_CACHE_TTL_MS
+      yield { part: 'cache', dashboard: cached.dashboard, stale }
+      if (!stale) return
+    }
+    let latest: MagpieUsageDashboard | undefined
+    for await (const chunk of this.readDashboardNetwork(period, signal)) {
+      latest = chunk.dashboard
+      yield chunk
+    }
+    if (latest !== undefined) this.dashboardCache.set(period, { dashboard: latest, loadedAt: this.now() })
+  }
+
+  private async refreshDashboard(period: MagpieDashboardPeriod, signal?: AbortSignal): Promise<MagpieUsageDashboard> {
+    const pending = this.dashboardRefreshes.get(period)
+    if (pending !== undefined) return awaitWithSignal(pending, signal)
+    const request = (async (): Promise<MagpieUsageDashboard> => {
+      let latest: MagpieUsageDashboard | undefined
+      for await (const chunk of this.readDashboardNetwork(period, signal)) latest = chunk.dashboard
+      if (latest === undefined) throw new Error('Magpie dashboard returned no snapshot')
+      this.dashboardCache.set(period, { dashboard: latest, loadedAt: this.now() })
+      return latest
+    })().finally(() => {
+      if (this.dashboardRefreshes.get(period) === request) this.dashboardRefreshes.delete(period)
+    })
+    this.dashboardRefreshes.set(period, request)
+    return awaitWithSignal(request, signal)
+  }
+
+  private async *readDashboardNetwork(period: MagpieDashboardPeriod, signal?: AbortSignal): AsyncIterable<MagpieDashboardStreamChunk> {
+    const capturedAt = new Date(this.now()).toISOString()
+    let dashboard = emptyMagpieDashboard(period, capturedAt)
+    let quotas: readonly MagpieDashboardQuota[] | null = null
+    let logoLoad: Promise<readonly MagpieDashboardQuota[]> | undefined
+    const results = new Map<MagpieDashboardStreamPart, Promise<{ readonly part: MagpieDashboardStreamPart; readonly value: unknown; readonly ok: boolean }>>([
+      ['usage', this.timedDashboardRead('usage', () => this.readWebJson(`/api/usage?period=${magpieWebPeriod(period)}`, signal))],
+      ['quotas', this.timedDashboardRead('quotas', () => this.readWebJson('/api/usage/quotas', signal))],
+      ['history', this.timedDashboardRead('history', () => this.readWebJson('/api/usage/quotas/history?days=30', signal))],
     ])
-    const parsedUsage = usage.ok ? parseMagpieDashboardUsage(usage.value) : null
-    const parsedQuotas = quotas.ok ? parseMagpieQuotaCards(quotas.value) : null
-    const quotasWithLogos = parsedQuotas === null ? null : await this.attachQuotaLogos(parsedQuotas, signal)
-    const parsedHistory = history.ok ? parseMagpieQuotaHistory(history.value) : null
-    return {
-      period,
-      capturedAt: new Date(this.now()).toISOString(),
-      availabilityIssue: !usage.ok && !quotas.ok && !history.ok ? 'web-api-unavailable' : null,
-      usageStatus: parsedUsage === null ? 'unavailable' : 'available',
-      aggregate: parsedUsage?.aggregate ?? null,
-      series: parsedUsage?.series ?? [],
-      agents: parsedUsage?.agents ?? [],
-      providers: parsedUsage?.providers ?? [],
-      models: parsedUsage?.models ?? [],
-      accounts: parsedUsage?.accounts ?? [],
-      sessions: parsedUsage?.sessions ?? [],
-      sessionCount: parsedUsage?.sessionCount ?? null,
-      quotaStatus: quotasWithLogos === null ? 'unavailable' : 'available',
-      quotas: quotasWithLogos ?? [],
-      quotaHistoryStatus: parsedHistory === null ? 'unavailable' : 'available',
-      quotaHistory: parsedHistory ?? [],
+    const completed = new Map<MagpieDashboardStreamPart, boolean>()
+    while (results.size > 0) {
+      const result = await Promise.race(results.values())
+      results.delete(result.part)
+      const response = asRecord(result.value)
+      const partOk = result.ok && response?.ok === true
+      const partValue = partOk ? response.value : undefined
+      completed.set(result.part, partOk)
+      if (result.part === 'usage') {
+        const parsed = partOk ? parseMagpieDashboardUsage(partValue) : null
+        dashboard = {
+          ...dashboard,
+          usageStatus: parsed === null ? 'unavailable' : 'available',
+          aggregate: parsed?.aggregate ?? null,
+          series: parsed?.series ?? [],
+          agents: parsed?.agents ?? [],
+          providers: parsed?.providers ?? [],
+          models: parsed?.models ?? [],
+          accounts: parsed?.accounts ?? [],
+          sessions: parsed?.sessions ?? [],
+          sessionCount: parsed?.sessionCount ?? null,
+        }
+      } else if (result.part === 'quotas') {
+        quotas = partOk ? parseMagpieQuotaCards(partValue) : null
+        dashboard = { ...dashboard, quotaStatus: quotas === null ? 'unavailable' : 'available', quotas: quotas ?? [] }
+        if (quotas !== null) logoLoad = this.timedDashboardRead('quota-logos', () => this.attachQuotaLogos(quotas!, signal)).then((result) => result.value)
+      } else {
+        const parsed = partOk ? parseMagpieQuotaHistory(partValue) : null
+        dashboard = { ...dashboard, quotaHistoryStatus: parsed === null ? 'unavailable' : 'available', quotaHistory: parsed ?? [] }
+      }
+      yield { part: result.part, dashboard, stale: false }
+    }
+    dashboard = { ...dashboard, availabilityIssue: [...completed.values()].every((ok) => !ok) ? 'web-api-unavailable' : null }
+    yield { part: 'complete', dashboard, stale: false }
+    if (logoLoad !== undefined) {
+      dashboard = { ...dashboard, quotas: await logoLoad }
+      yield { part: 'logos', dashboard, stale: false }
+    }
+  }
+
+  private async timedDashboardRead<T>(part: MagpieDashboardStreamPart | 'quota-logos', read: () => Promise<T>): Promise<{ readonly part: MagpieDashboardStreamPart; readonly value: T; readonly ok: boolean }> {
+    const started = this.now()
+    try {
+      return { part: part === 'quota-logos' ? 'logos' : part, value: await read(), ok: true }
+    } finally {
+      this.onDashboardTiming?.({ part, elapsedMs: Math.max(0, this.now() - started) })
     }
   }
 
@@ -461,7 +548,10 @@ export class MagpieUsageService {
     if (icons.length === 0) return quotas
     const logos = new Map<string, string | null>()
     await Promise.all(icons.map(async (icon) => {
-      logos.set(icon, await this.readMagpieLogoDataUrl(icon, signal))
+      const cached = this.quotaLogoCache.get(icon)
+      const logo = cached === undefined ? await this.readMagpieLogoDataUrl(icon, signal) : cached
+      if (cached === undefined) this.quotaLogoCache.set(icon, logo)
+      logos.set(icon, logo)
     }))
     return quotas.map((quota) => {
       const logoDataUrl = quota.icon === undefined ? null : logos.get(quota.icon) ?? null
@@ -1467,6 +1557,27 @@ function magpieWebPeriod(period: MagpieDashboardPeriod): 'today' | '7d' | '30d' 
  */
 function quotaUsedPercent(record: Record<string, unknown>): number | null {
   return safePercent(record.used)
+function emptyMagpieDashboard(period: MagpieDashboardPeriod, capturedAt: string): MagpieUsageDashboard {
+  return {
+    period,
+    capturedAt,
+    availabilityIssue: null,
+    usageStatus: 'unavailable',
+    aggregate: null,
+    series: [],
+    agents: [],
+    providers: [],
+    models: [],
+    accounts: [],
+    sessions: [],
+    sessionCount: null,
+    quotaStatus: 'unavailable',
+    quotas: [],
+    quotaHistoryStatus: 'unavailable',
+    quotaHistory: [],
+  }
+}
+
 }
 
 function quotaRemainingPercent(record: Record<string, unknown>): number | null {

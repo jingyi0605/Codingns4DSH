@@ -275,7 +275,7 @@ const CODINGNS_RPC_ENDPOINTS = [
   'cli/catalog', 'cli/catalog/refresh', 'cli/models', 'cli/translation/models', 'cli/skills', 'cli/adapter/set', 'cli/session/get', 'cli/session/set', 'cli/session/list', 'cli/session/adapter-map', 'cli/session/archive', 'cli/session/steer', 'cli/session/follow-up', 'cli/session/interrupt', 'cli/subscription', 'cli/subscription/reset', 'cli/team/status', 'cli/team/members', 'cli/team/tasks', 'cli/team/task', 'cli/team/spawn', 'cli/team/message', 'cli/team/task/create', 'cli/team/task/update', 'cli/team/wait', 'cli/team/interrupt',
   'cli/translation/pending', 'cli/translation/resolve', 'cli/translation/retry-output',
   'cli/management/plan', 'cli/management/start', 'cli/management/status', 'cli/management/cancel',
-  'magpie/usage/dashboard', 'magpie/usage/requests',
+  'magpie/usage/dashboard', 'magpie/usage/dashboard/stream', 'magpie/usage/requests',
   'magpie/management/snapshot', 'magpie/management/provider/update', 'magpie/management/group/update', 'magpie/management/account/update', 'magpie/management/detection',
 ] as const
 

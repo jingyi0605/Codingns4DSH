@@ -26,7 +26,7 @@ import { ProviderSubscriptionService } from './provider-subscription.js'
 import { attachMagpieSessionNames, MagpieUsageService, magpieAgentForAdapter, type MagpieSessionNameBinding } from './magpie-usage.js'
 import { MagpieManagementService } from './magpie-management.js'
 import { MagpieWebService } from './magpie-web.js'
-import type { MagpieDashboardPeriod } from '../../shared/contracts/magpie-management.js'
+import type { MagpieDashboardPeriod, MagpieDashboardStreamChunk, MagpieUsageDashboard } from '../../shared/contracts/magpie-management.js'
 import { MagpieInstallDetectionService, type MagpieDetectionServiceOptions } from './magpie-detection.js'
 import type { MagpieDetectionRequest } from '../../shared/contracts/magpie-management.js'
 import { createMagpieSessionRouting } from './magpie-session-routing.js'
@@ -443,6 +443,12 @@ export function createCliAdaptersFeature(options: {
           case 'usage/dashboard': {
             const dashboard = await magpieUsage.readDashboard(readMagpieDashboardPeriod(payload), signal)
             return attachMagpieSessionNames(dashboard, await magpieSessionNameBindings(sessionStore, nativeSessions, signal))
+          }
+          case 'usage/dashboard/stream': {
+            const input = asRecord(payload)
+            const period = readMagpieDashboardPeriod(payload)
+            const force = input?.force === true
+            return streamMagpieDashboard(magpieUsage, period, signal, force, sessionStore, nativeSessions)
           }
           case 'usage/requests':
             return magpieUsage.readRequestPage(readMagpieRequestOptions(payload), signal)
@@ -2046,6 +2052,26 @@ function readMagpieDashboardPeriod(payload: unknown): MagpieDashboardPeriod {
   const value = asRecord(payload)?.period
   if (value === 'today' || value === 'week' || value === 'month' || value === 'all') return value
   throw new TypeError('Magpie usage period must be today, week, month, or all')
+}
+
+async function* streamMagpieDashboard(
+  service: MagpieUsageService,
+  period: MagpieDashboardPeriod,
+  signal: AbortSignal,
+  force: boolean,
+  sessionStore: CodingNsCliSessionStore,
+  nativeSessions: CodingNsNativeSessionBridge | undefined,
+): AsyncIterable<MagpieDashboardStreamChunk> {
+  const names = magpieSessionNameBindings(sessionStore, nativeSessions, signal).catch(() => [] as readonly MagpieSessionNameBinding[])
+  let latest: MagpieUsageDashboard | undefined
+  for await (const chunk of service.readDashboardStream(period, signal, force)) {
+    latest = chunk.dashboard
+    yield chunk
+  }
+  if (latest !== undefined) {
+    const named = attachMagpieSessionNames(latest, await names)
+    if (named !== latest) yield { part: 'sessions', dashboard: named, stale: false }
+  }
 }
 
 /** 探测载荷只接受可选入口路径；其余字段一律忽略，避免把参数带进命令行。 */

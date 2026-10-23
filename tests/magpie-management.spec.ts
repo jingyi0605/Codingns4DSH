@@ -133,6 +133,66 @@ test('Magpie quota icons are fetched through the Host Web API and attached as da
   const assets: string[] = []
   const service = new MagpieUsageService({
     webApi: {
+test('Magpie dashboard streams each API part and measures the slowest part independently', async () => {
+  const timings: Array<{ part: string; elapsedMs: number }> = []
+  const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
+  const service = new MagpieUsageService({
+    onDashboardTiming: timing => timings.push(timing),
+    webApi: {
+      async requestJson(path) {
+        await delay(path.includes('/history') ? 25 : path.includes('/quotas') ? 12 : 3)
+        if (path.includes('/usage?')) return { calls: 4, input: 10, output: 7, series: [] }
+        if (path === '/api/usage/quotas') return { data: [{ provider: 'workbuddy', name: 'WorkBuddy', icon: 'workbuddy-color', windows: [] }] }
+        if (path.includes('/history')) return []
+        throw new Error(`unexpected route ${path}`)
+      },
+      async requestAssetDataUrl() {
+        await delay(80)
+        return 'data:image/svg+xml;base64,PHN2Zy8+'
+      },
+    },
+  })
+  const chunks = []
+  for await (const chunk of service.readDashboardStream('today')) chunks.push(chunk)
+
+  assert.equal(chunks[0]?.part, 'usage', 'the fast overview data arrives without waiting for quota history or logos')
+  assert.equal(chunks[0]?.dashboard.usageStatus, 'available')
+  assert.equal(chunks[0]?.dashboard.quotaStatus, 'unavailable', 'the cumulative snapshot marks data not received yet as unavailable')
+  assert.ok(chunks.find(chunk => chunk.part === 'quotas')?.dashboard.quotas[0]?.logoDataUrl === undefined, 'quota cards arrive before optional logo enrichment')
+  assert.ok(chunks.findIndex(chunk => chunk.part === 'complete') < chunks.findIndex(chunk => chunk.part === 'logos'), 'the loading cycle ends before slow optional logos finish')
+  assert.equal(chunks.at(-1)?.part, 'logos')
+  assert.equal(chunks.find(chunk => chunk.part === 'logos')?.dashboard.quotas[0]?.logoDataUrl, 'data:image/svg+xml;base64,PHN2Zy8+')
+  assert.deepEqual(timings.map(timing => timing.part).sort(), ['history', 'quota-logos', 'quotas', 'usage'])
+  assert.equal([...timings].sort((left, right) => right.elapsedMs - left.elapsedMs)[0]?.part, 'quota-logos', 'the controlled fixture identifies logo hydration as the longest stage')
+})
+
+test('Magpie dashboard serves a fresh cache immediately and refreshes an expired cache in the background', async () => {
+  let now = 1_000
+  let reads = 0
+  const service = new MagpieUsageService({
+    now: () => now,
+    webApi: { async requestJson(path) {
+      reads += 1
+      if (path.includes('/usage?')) return { calls: reads, series: [] }
+      if (path === '/api/usage/quotas') return []
+      if (path.includes('/history')) return []
+      throw new Error(`unexpected route ${path}`)
+    } },
+  })
+  const initial = await service.readDashboard('today')
+  now += 1_000
+  const fresh = await service.readDashboard('today')
+  assert.equal(fresh, initial)
+  assert.equal(reads, 3, 'a fresh cache avoids all API requests')
+
+  now += 16_000
+  const stale = await service.readDashboard('today')
+  assert.equal(stale, initial, 'expired data is returned before its refresh completes')
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.equal(reads, 6, 'the stale cache refresh starts in the background')
+  assert.notEqual(await service.readDashboard('today'), initial, 'the refreshed snapshot replaces the stale cache')
+})
+
       async requestJson(path) {
         if (path.includes('/usage?')) return { calls: 1, series: [] }
         if (path === '/api/usage/quotas') return { data: [{ provider: 'workbuddy', name: 'WorkBuddy', icon: 'workbuddy-color', windows: [] }] }

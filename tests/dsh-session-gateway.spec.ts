@@ -371,6 +371,71 @@ test('Host RPC Gateway feature 只分发已登记的 RPC 命名空间', async ()
   assert.deepEqual(JSON.parse(new TextDecoder().decode(sent[0]?.body)), { action: 'run', payload: { ok: true } })
 })
 
+test('Host RPC Gateway forwards async RPC results as incremental chunks', async () => {
+  const table = new CodingNsRpcTable()
+  table.register('test', () => (async function* () {
+    yield { part: 'usage' }
+    yield { part: 'quotas' }
+  })())
+  const feature = createDshRpcGatewayFeature(table)
+  const sent: DshEnvelope[] = []
+  const envelope: DshEnvelope = {
+    version: 1, messageId: 'stream-message', streamId: 'stream-1', channel: 'rpc', type: 'stream.open',
+    sequence: 0, generation: '1', hostScope: { hostId: 'h1', kind: 'local' },
+    meta: { operation: 'rpc.stream', encoding: 'json' },
+    body: new TextEncoder().encode(JSON.stringify({ method: 'test/dashboard', payload: {} })),
+  }
+  const context = {
+    envelope,
+    session: undefined as never,
+    send(type: string, meta: Record<string, unknown> = {}, body?: Uint8Array) {
+      sent.push({ ...envelope, messageId: `${type}-${sent.length}`, type, meta, ...(body === undefined ? {} : { body }) })
+    },
+    close() {},
+  }
+  await feature.handleStream?.(context)
+  assert.deepEqual(sent.map(frame => frame.type), ['rpc.chunk', 'rpc.chunk'])
+  assert.deepEqual(sent.map(frame => JSON.parse(new TextDecoder().decode(frame.body))), [{ part: 'usage' }, { part: 'quotas' }])
+})
+
+test('Host RPC Gateway aborts a streaming handler when the DSH stream is cancelled', async () => {
+  const table = new CodingNsRpcTable()
+  let requestSignal: AbortSignal | undefined
+  let enteredNext: (() => void) | undefined
+  const nextStarted = new Promise<void>(resolve => { enteredNext = resolve })
+  table.register('test', (_action, _payload, context) => {
+    requestSignal = (context as { readonly signal?: AbortSignal }).signal
+    return (async function* () {
+      yield { index: 0 }
+      enteredNext?.()
+      await new Promise<void>(resolve => requestSignal?.addEventListener('abort', () => resolve(), { once: true }))
+      yield { index: 1 }
+    })()
+  })
+  const feature = createDshRpcGatewayFeature(table)
+  const sent: DshEnvelope[] = []
+  const envelope: DshEnvelope = {
+    version: 1, messageId: 'cancel-message', streamId: 'stream-cancel', channel: 'rpc', type: 'stream.open',
+    sequence: 0, generation: '1', hostScope: { hostId: 'h1', kind: 'local' },
+    meta: { operation: 'rpc.stream', encoding: 'json' },
+    body: new TextEncoder().encode(JSON.stringify({ method: 'test/dashboard', payload: {} })),
+  }
+  const context = {
+    envelope,
+    session: undefined as never,
+    send(type: string, meta: Record<string, unknown> = {}, body?: Uint8Array) {
+      sent.push({ ...envelope, messageId: `${type}-${sent.length}`, type, meta, ...(body === undefined ? {} : { body }) })
+    },
+    close() {},
+  }
+  const pending = feature.handleStream?.(context)
+  await nextStarted
+  feature.handleMessage?.(context, { ...envelope, type: 'stream.cancel' })
+  await pending
+  assert.equal(requestSignal?.aborted, true)
+  assert.deepEqual(sent.filter(frame => frame.type === 'rpc.chunk').map(frame => JSON.parse(new TextDecoder().decode(frame.body))), [{ index: 0 }])
+})
+
 test('DSH Session 发送失败会收敛物理线路，并向对端说明原因', async () => {
   // 只改本地状态的失败会让对端在死线路上等一个永远不来的响应：中继页面的原生
   // 设置 describe 就是这么永久停在 loading 的（页面空白且没有报错）。

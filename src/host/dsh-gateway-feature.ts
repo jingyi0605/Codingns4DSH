@@ -3,10 +3,14 @@ import type { DshGatewayFeature, DshStreamContext } from '../transport/dsh-gatew
 
 /** 将 Host 已登记的 RPC 命名空间接到 DSH Gateway。 */
 export function createDshRpcGatewayFeature(rpc: CodingNsRpcTable): DshGatewayFeature {
+  const streamControllers = new Map<string, AbortController>()
   return {
     channel: 'rpc',
-    operation: 'rpc.request',
+    canHandle: (envelope) => envelope.meta.operation === 'rpc.request' || envelope.meta.operation === 'rpc.stream',
     handleStream: async (context) => {
+      const streaming = context.envelope.meta.operation === 'rpc.stream'
+      const controller = streaming ? new AbortController() : undefined
+      if (controller !== undefined) streamControllers.set(context.envelope.streamId, controller)
       try {
         const request = readJson(context)
         if (!isRecord(request) || typeof request.method !== 'string' || request.method.trim() === '') {
@@ -14,15 +18,28 @@ export function createDshRpcGatewayFeature(rpc: CodingNsRpcTable): DshGatewayFea
         }
         const target = rpc.resolve(request.method)
         if (target === null) throw new DshGatewayRequestError('FEATURE_DISABLED', 'DSH RPC 未启用')
-        const value = await target.handler(target.action, request.payload)
-        context.send('rpc.response', { encoding: 'json' }, encodeJson(value))
+        const value = await target.handler(target.action, request.payload, controller === undefined ? undefined : { signal: controller.signal })
+        if (streaming && isAsyncIterable(value)) {
+          for await (const item of value) {
+            if (controller?.signal.aborted) break
+            context.send('rpc.chunk', { encoding: 'json' }, encodeJson(item))
+          }
+        } else {
+          context.send('rpc.response', { encoding: 'json' }, encodeJson(value))
+        }
       } catch (error) {
         // 业务异常可能包含命令行、路径或凭据片段，跨隧道只返回稳定的短描述。
         const detail = error instanceof DshGatewayRequestError ? error.message : 'DSH RPC 执行失败'
         const errorCode = error instanceof DshGatewayRequestError ? error.code : 'DSH_RPC_FAILED'
         context.send('stream.error', { errorCode, detail, retryable: false })
       } finally {
+        streamControllers.delete(context.envelope.streamId)
         context.close()
+      }
+    },
+    handleMessage: (context, envelope) => {
+      if (envelope.type === 'stream.cancel' || envelope.type === 'stream.close') {
+        streamControllers.get(context.envelope.streamId)?.abort()
       }
     },
   }
@@ -40,6 +57,10 @@ function encodeJson(value: unknown): Uint8Array {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
+  return typeof value === 'object' && value !== null && Symbol.asyncIterator in value
 }
 
 class DshGatewayRequestError extends Error {

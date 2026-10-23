@@ -135,6 +135,15 @@ export interface MagpieUsageDashboard {
   readonly quotaHistory: readonly MagpieQuotaHistory[]
 }
 
+/** A progressively rendered dashboard snapshot. The snapshot is cumulative. */
+export type MagpieDashboardStreamPart = 'cache' | 'usage' | 'quotas' | 'history' | 'logos' | 'complete' | 'sessions'
+
+export interface MagpieDashboardStreamChunk {
+  readonly part: MagpieDashboardStreamPart
+  readonly dashboard: MagpieUsageDashboard
+  readonly stale: boolean
+}
+
 export interface MagpieUsageRequest {
   readonly routeId: number | null
   readonly time: string | null
