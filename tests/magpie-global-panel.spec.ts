@@ -8,7 +8,7 @@ import { createGlobalPanelAdapter } from '../src/dsh-capabilities/client/global-
 import type { CodingNsLocale } from '../src/client/locale.js'
 import { aggregateModelUsageRows, MagpieManagementPage, modelBreakdownRows, ModelProgressSection } from '../src/client/features/magpie-management-page.js'
 import { magpieManagementFeature } from '../src/client/features/magpie-management.js'
-import { GroupModelPicker, MagpieGroupsPage, MagpieProvidersPage, magpiePolicyLabel, reorderModels } from '../src/client/features/magpie-management-controls.js'
+import { formatContextTokens, GroupModelPicker, MagpieGroupsPage, MagpieProvidersPage, magpiePolicyLabel, parseContextTokens, reorderModels } from '../src/client/features/magpie-management-controls.js'
 import { MagpieProviderLogo } from '../src/client/features/magpie-provider-logo.js'
 import { installProviderIcons, PROVIDER_ICONS } from '../src/client/provider-icons.js'
 import { en, zh } from '../src/client/locales/magpie.js'
@@ -280,6 +280,7 @@ test('Magpie management nests primary and secondary accounts under providers', (
       id: 'fast', name: 'Fast pool', routing: 'order', stays: 'session',
       members: [{ id: 'openai-subscription/model', provider: 'openai-subscription', name: 'Demo Model', model: 'model', on: true, ready: true, byPattern: false }],
       usedBy: ['Codex'], patterns: [], pick: null, unlists: null, fast: [],
+      context: 0, levels: [], sharedLevels: ['low', 'medium', 'high'], effort: '', classifier: null,
     }],
   }
   const props = {
@@ -417,6 +418,7 @@ test('routing-group editor shows and edits the settings Magpie saves beyond name
       ],
       usedBy: [], patterns: [],
       pick: 'demo/model-b', unlists: true, fast: ['demo/model-a'],
+      context: 200_000, levels: ['low', 'high'], sharedLevels: ['low', 'medium', 'high'], effort: 'auto', classifier: 'demo/model-b',
     }],
   }
   const markup = renderToStaticMarkup(createElement(MagpieGroupsPage, {
@@ -443,6 +445,7 @@ test('routing-group editor shows and edits the settings Magpie saves beyond name
       id: 'plain', name: 'Plain pool', routing: null, stays: null,
       members: [{ id: 'demo/model-a', provider: 'demo', name: 'Model A', model: 'model-a', on: true, ready: true, byPattern: false }],
       usedBy: [], patterns: [], pick: null, unlists: null, fast: [],
+      context: 0, levels: [], sharedLevels: [], effort: '', classifier: null,
     }],
   }
   const plainMarkup = renderToStaticMarkup(createElement(MagpieGroupsPage, { snapshot: plain, t, onUpdate: async () => undefined }))
@@ -450,6 +453,74 @@ test('routing-group editor shows and edits the settings Magpie saves beyond name
   assert.match(plainMarkup, /<option value="auto" selected="">自动<\/option>/u, 'an empty stickiness reads as Auto')
   assert.doesNotMatch(plainMarkup, /固定发送的模型/u, 'a non-manual group has no model to pick')
   assert.match(plainMarkup, /Agent 列表中的模型按原样列出/u, 'without a fast-capable member the editor says so')
+})
+
+test('routing-group editor edits the context window, reasoning levels, and effort Magpie saves', () => {
+  const t = (key: string, params?: Record<string, string | number>): string => (zh[key] ?? key).replace(/\{(\w+)\}/gu, (_match, name: string) => String(params?.[name] ?? ''))
+  const snapshot: MagpieManagementSnapshot = {
+    capturedAt: '2026-10-23T00:00:00Z', availabilityIssue: null, providerStatus: 'available',
+    providers: [{
+      id: 'demo', name: 'Demo', accountAgent: null, preset: null, protocol: 'chat', host: null, website: null,
+      state: 'on', account: null, keyMasked: null, endpoints: [],
+      models: [{ id: 'demo/classifier', name: 'Classifier', exposed: true }], modelsEditable: true,
+      modelCount: 1, exposedModelCount: 1, fallback: [], routing: null, affinity: null, maxConcurrency: null,
+    }],
+    accountStatus: 'available', accounts: [], accountApiStatus: 'available', groupStatus: 'available',
+    groups: [{
+      id: 'sized', name: 'Sized group', routing: 'smart', stays: 'auto',
+      members: [{ id: 'demo/model-a', provider: 'demo', name: 'Model A', model: 'model-a', on: true, ready: true, byPattern: false }],
+      usedBy: [], patterns: [], pick: null, unlists: null, fast: [],
+      context: 200_000, levels: ['low', 'high'], sharedLevels: ['low', 'medium', 'high'],
+      effort: 'auto', classifier: 'demo/classifier',
+    }],
+  }
+  const markup = renderToStaticMarkup(createElement(MagpieGroupsPage, { snapshot, t, onUpdate: async () => undefined }))
+  assert.match(markup, /上下文上限/u, 'the context window is offered')
+  assert.match(markup, /<button[^>]*is-active[^>]*>自定义<\/button>/u, 'a stored positive window selects the custom mode')
+  assert.match(markup, /value="200k"/u, 'the window reads back the way Magpie writes it')
+  assert.match(markup, /推理等级/u, 'the reasoning levels are offered')
+  assert.match(markup, /<button[^>]*is-active[^>]*>在此指定<\/button>/u, 'a named level list selects the named mode')
+  assert.match(markup, /class="codingns-magpie-level is-on"[^>]*>low</u, 'a chosen level is marked')
+  assert.match(markup, /class="codingns-magpie-level is-on"[^>]*>high</u)
+  assert.match(markup, /class="codingns-magpie-level"[^>]*>medium</u, 'a level the group does not offer is not marked')
+  assert.match(markup, /推理策略/u, 'the effort policy is offered')
+  assert.match(markup, /<button[^>]*is-active[^>]*>按轮挑选<\/button>/u, 'a per-turn effort selects that mode')
+  assert.match(markup, /<option value="demo\/classifier" selected="">demo\/classifier<\/option>/u, 'the saved classifier is selected')
+  assert.match(markup, /不带推理的小型快速模型最合适/u, 'the classifier hint explains what it is for')
+
+  // The Agent's own effort hides the classifier and offers the levels its members share.
+  const plain: MagpieManagementSnapshot = {
+    ...snapshot,
+    groups: [{
+      ...snapshot.groups[0]!,
+      context: 0, levels: [], effort: '', classifier: null,
+    }],
+  }
+  const plainMarkup = renderToStaticMarkup(createElement(MagpieGroupsPage, { snapshot: plain, t, onUpdate: async () => undefined }))
+  assert.match(plainMarkup, /<button[^>]*is-active[^>]*>最大成员<\/button>/u, 'no window selects the largest member')
+  assert.match(plainMarkup, /<button[^>]*is-active[^>]*>沿用各模型共有<\/button>/u, 'no level list selects the shared ones')
+  assert.match(plainMarkup, /<button[^>]*is-active[^>]*>按 Agent 请求<\/button>/u, 'an empty effort selects the Agent\'s own')
+  assert.doesNotMatch(plainMarkup, /分类器模型/u, 'the classifier only appears when a turn\'s level is picked')
+  assert.doesNotMatch(plainMarkup, /codingns-magpie-levels/u, 'no level chips while the members\' shared levels apply')
+})
+
+test('context window text is read and written the way Magpie writes it', () => {
+  assert.equal(parseContextTokens('200k'), 200_000)
+  assert.equal(parseContextTokens('200K'), 200_000)
+  assert.equal(parseContextTokens('1m'), 1_000_000)
+  assert.equal(parseContextTokens(' 128 k '), 128_000)
+  assert.equal(parseContextTokens('4096'), 4096)
+  assert.equal(parseContextTokens('1.5m'), 1_500_000)
+  assert.equal(parseContextTokens('200_000'), 200_000)
+  assert.equal(parseContextTokens(''), null)
+  assert.equal(parseContextTokens('big'), null)
+  assert.equal(parseContextTokens('0'), null, 'a window of no tokens is not a window')
+  assert.equal(parseContextTokens('-1'), null)
+  assert.equal(formatContextTokens(200_000), '200k')
+  assert.equal(formatContextTokens(1_000_000), '1m')
+  assert.equal(formatContextTokens(1_500_000), '1.5m')
+  assert.equal(formatContextTokens(4_096), '4k')
+  assert.equal(formatContextTokens(512), '512')
 })
 
 test('routing-group model order helper moves selected entries without changing membership', () => {

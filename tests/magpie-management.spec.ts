@@ -95,7 +95,8 @@ test('Magpie quota cards and history preserve nullable windows and exact observe
 
   assert.equal(cards?.[0]?.windows[0]?.remainingPercent, 55)
   assert.equal(cards?.[0]?.icon, 'example-provider-color')
-  assert.deepEqual(cards?.[0]?.daily, [{ day: '2026-10-22', used: 12 }])
+  // `daily` carries the window it covers: `since` is the day Magpie starts counting from.
+  assert.deepEqual(cards?.[0]?.daily, { since: null, days: [{ day: '2026-10-22', used: 12 }] })
   assert.equal(history?.[0]?.lines[0]?.points[0]?.left, 55)
   assert.equal(parseMagpieQuotaCards({ data: [{ provider: 'bad', name: 'Bad', windows: 'invalid' }] }), null)
   assert.equal(parseMagpieQuotaHistory({ data: [{ provider: 'bad', lines: [{ name: 'too-many', points: 'invalid' }] }] }), null)
@@ -440,6 +441,11 @@ test('Magpie Web API parsers normalize providers, accounts, and routing groups w
   assert.equal(groups.groups[0]?.id, 'fast-pool')
   assert.deepEqual(groups.groups[0]?.usedBy, ['codex'])
   assert.deepEqual(groups.groups[1]?.patterns, ['demo/*'])
+  // Absent group settings read as Magpie's own defaults, not as unreadable data.
+  assert.equal(groups.groups[0]?.context, 0, 'no context means the largest member\'s window')
+  assert.deepEqual(groups.groups[0]?.levels, [], 'no levels means the ones the members share')
+  assert.equal(groups.groups[0]?.effort, '', 'no effort means the Agent asks')
+  assert.equal(groups.groups[0]?.classifier, null)
 
   const accounts = parseMagpieWebAccounts([{
     provider: 'codex', user: 'account@example.test', plan: 'Plus',
@@ -615,6 +621,86 @@ test('Magpie routing-group Web API writes preserve patterns and isolate other gr
 
   fixture.changeOtherGroupOnSave = true
   await assert.rejects(service.updateGroup({ id: 'fast-pool', routing: 'order' }), /could not be verified/u)
+})
+
+test('Magpie routing-group context, levels, and effort are read, written, and verified', () => {
+  const groups = parseMagpieWebGroups({ groups: [
+    {
+      id: 'group/sized', name: 'Sized', members: ['demo/model-a'], match: [], routing: 'smart',
+      context: 200_000, levels: ['low', 'high'], shared: ['low', 'medium', 'high'], effort: 'auto', classifier: 'demo/model-a',
+    },
+    {
+      id: 'group/small', name: 'Small window', members: ['demo/model-b'], match: [], context: -1,
+      levels: [], shared: [], effort: '',
+    },
+  ] })
+  assert.ok(groups)
+  assert.equal(groups.groups[0]?.context, 200_000)
+  assert.deepEqual(groups.groups[0]?.levels, ['low', 'high'])
+  assert.deepEqual(groups.groups[0]?.sharedLevels, ['low', 'medium', 'high'])
+  assert.equal(groups.groups[0]?.effort, 'auto')
+  assert.equal(groups.groups[0]?.classifier, 'demo/model-a')
+  assert.equal(groups.groups[1]?.context, -1, 'a negative window is the smallest member\'s')
+  assert.equal(groups.groups[1]?.effort, '')
+  assert.equal(groups.groups[1]?.classifier, null)
+
+  // A shape this Host cannot write back makes the whole read fail rather than half of it.
+  assert.equal(parseMagpieWebGroups({ groups: [{ id: 'group/x', name: 'X', members: [], context: 'big' }] }), null)
+  assert.equal(parseMagpieWebGroups({ groups: [{ id: 'group/x', name: 'X', members: [], context: -5 }] }), null)
+  assert.equal(parseMagpieWebGroups({ groups: [{ id: 'group/x', name: 'X', members: [], levels: ['extreme'] }] }), null)
+  assert.equal(parseMagpieWebGroups({ groups: [{ id: 'group/x', name: 'X', members: [], effort: 'sometimes' }] }), null)
+})
+
+test('Magpie routing-group update input accepts only the context, levels, and effort Magpie defines', () => {
+  assert.deepEqual(readGroupUpdate({ id: 'g', context: 200_000 }), { id: 'g', context: 200_000 })
+  assert.deepEqual(readGroupUpdate({ id: 'g', context: 0 }), { id: 'g', context: 0 })
+  assert.deepEqual(readGroupUpdate({ id: 'g', context: -1 }), { id: 'g', context: -1 })
+  assert.throws(() => readGroupUpdate({ id: 'g', context: '200k' }), /Invalid group context window/u)
+  assert.throws(() => readGroupUpdate({ id: 'g', context: 1.5 }), /Invalid group context window/u)
+  assert.throws(() => readGroupUpdate({ id: 'g', context: -2 }), /Invalid group context window/u)
+  assert.deepEqual(readGroupUpdate({ id: 'g', levels: ['low', 'high', 'low'] }), { id: 'g', levels: ['low', 'high'] })
+  assert.deepEqual(readGroupUpdate({ id: 'g', levels: [] }), { id: 'g', levels: [] }, 'an empty list is "shared"')
+  assert.throws(() => readGroupUpdate({ id: 'g', levels: ['extreme'] }), /Invalid group reasoning levels/u)
+  assert.deepEqual(readGroupUpdate({ id: 'g', effort: 'auto', classifier: 'demo/model-a' }), { id: 'g', effort: 'auto', classifier: 'demo/model-a' })
+  assert.deepEqual(readGroupUpdate({ id: 'g', effort: '', classifier: '' }), { id: 'g', effort: '', classifier: '' })
+  assert.throws(() => readGroupUpdate({ id: 'g', effort: 'sometimes' }), /effort policy/u)
+  assert.throws(() => readGroupUpdate({ id: 'g', classifier: 'not a model' }), /Invalid group classifier/u)
+})
+
+test('Magpie routing-group writes carry the context window, levels, and effort through read-back', async () => {
+  const fixture = createManagementWebApiFixture()
+  fixture.state.groups[0] = {
+    id: 'group/fast-pool', name: 'Fast pool', members: ['demo/model-a', 'demo/model-b'], match: [],
+    routing: 'smart', affinity: 'auto', context: 200_000, levels: ['low', 'high'],
+    shared: ['low', 'medium', 'high'], effort: 'auto', classifier: 'demo/model-a',
+  }
+  const service = new MagpieManagementService({ webApi: fixture.api })
+
+  const before = await service.readSnapshot()
+  assert.equal(before.groups[0]?.context, 200_000)
+  assert.deepEqual(before.groups[0]?.levels, ['low', 'high'])
+  assert.equal(before.groups[0]?.effort, 'auto')
+  assert.equal(before.groups[0]?.classifier, 'demo/model-a')
+
+  const result = await service.updateGroup({ id: 'fast-pool', context: -1, levels: ['low'], effort: '', classifier: '' })
+  assert.equal(result.snapshot.groups[0]?.context, -1)
+  assert.deepEqual(result.snapshot.groups[0]?.levels, ['low'])
+  assert.equal(result.snapshot.groups[0]?.effort, '')
+  assert.equal(result.snapshot.groups[0]?.classifier, null, 'Magpie clears the classifier when the Agent asks')
+
+  const save = fixture.calls.filter(item => item.path === '/api/groups/save').at(-1)
+  assert.equal(save?.body?.context, -1)
+  assert.deepEqual(save?.body?.levels, ['low'])
+  assert.equal(save?.body?.effort, '')
+  assert.equal(save?.body?.classifier, '', 'an emptied classifier is sent as Magpie writes it')
+  // `shared` is Magpie's own working-out of the members' levels and is never written back.
+  assert.equal(save?.body?.shared, undefined)
+
+  // Picking each turn's level needs the model that rates it: without one nothing is written.
+  fixture.state.groups[0]!.classifier = null
+  const savesBefore = fixture.calls.filter(item => item.path === '/api/groups/save').length
+  await assert.rejects(service.updateGroup({ id: 'fast-pool', effort: 'auto' }), /needs the model that rates it/u)
+  assert.equal(fixture.calls.filter(item => item.path === '/api/groups/save').length, savesBefore)
 })
 
 test('Magpie routing-group writes carry pick, listing, and fast mode through read-back', async () => {

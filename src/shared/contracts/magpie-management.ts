@@ -277,6 +277,21 @@ export interface MagpieRoutingGroupManagementRecord {
   readonly unlists: boolean | null
   /** Members sent in their vendor's fast mode (OpenAI `service_tier: 'priority'`). */
   readonly fast: readonly string[]
+  /**
+   * The context window Agents are told the group takes (Magpie's `Group.Context`).
+   *
+   * `0` is the largest member's window, `-1` the smallest one's (so Agents compact before any
+   * member would turn the conversation away), and a positive number is that many tokens.
+   */
+  readonly context: number
+  /** The reasoning levels this group offers; empty means "the levels every member shares". */
+  readonly levels: readonly string[]
+  /** What those shared levels are, as Magpie works them out for the current members. */
+  readonly sharedLevels: readonly string[]
+  /** `'auto'` lets a classifier pick the level per turn; empty leaves it to the Agent. */
+  readonly effort: string
+  /** The model asked to rate a turn, needed whenever `effort` is `'auto'`. */
+  readonly classifier: string | null
 }
 
 export interface MagpieManagementSnapshot {
@@ -312,6 +327,14 @@ export interface MagpieRoutingGroupManagementUpdate {
   readonly unlists?: boolean
   /** Members sent in their vendor's fast mode; filtered to the group's models on save. */
   readonly fast?: readonly string[]
+  /** `0` for the largest member's window, `-1` for the smallest, or that many tokens. */
+  readonly context?: number
+  /** The levels to offer; an empty list means the levels every member shares. */
+  readonly levels?: readonly string[]
+  /** `'auto'` picks the level per turn, which needs `classifier`. */
+  readonly effort?: string
+  /** The model that rates a turn; required while `effort` is `'auto'`. */
+  readonly classifier?: string
 }
 
 export interface MagpieAccountManagementUpdate {

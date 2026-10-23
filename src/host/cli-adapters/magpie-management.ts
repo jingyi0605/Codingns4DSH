@@ -24,6 +24,10 @@ const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/+@-]{0,299}$/u
 const ENDPOINT_FIELDS = ['chat', 'responses', 'anthropic', 'gemini'] as const satisfies readonly MagpieProviderEndpointField[]
 const ENDPOINT_FIELD_SET = new Set<MagpieProviderEndpointField>(ENDPOINT_FIELDS)
 const ROUTING_POLICIES = new Set(['smart', 'order', 'rotate', 'usage', 'pace', 'weight', 'manual'])
+/** `provider.MemberEfforts`: the reasoning levels a group may offer its Agents. */
+const MEMBER_LEVELS: readonly string[] = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+/** How a group picks each turn's level: the Agent's own request, or a classifier's pick. */
+const GROUP_EFFORTS = new Set(['', 'auto'])
 const STICKINESS_POLICIES = new Set(['auto', 'session', 'turn', 'off', 'strict'])
 const ACCOUNT_AGENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u
 
@@ -126,6 +130,9 @@ export class MagpieManagementService {
 
       if ((update.routing ?? currentRecord.routing) === 'manual' && (update.pick ?? currentRecord.pick) === null) {
         throw new TypeError('A manual routing group needs the model it sends to')
+      }
+      if ((update.effort ?? currentRecord.effort) === 'auto' && (update.classifier ?? currentRecord.classifier ?? '') === '') {
+        throw new TypeError('A group that picks each turn\'s reasoning needs the model that rates it')
       }
       const protectedBefore = groupConfigFingerprint(current)
       await this.requestApi('/api/groups/save', {
@@ -332,7 +339,7 @@ export function readProviderUpdate(value: unknown): MagpieProviderManagementUpda
 export function readGroupUpdate(value: unknown): MagpieRoutingGroupManagementUpdate {
   const record = asRecord(value)
   if (record === null || typeof record.id !== 'string' || !GROUP_ID.test(record.id)) throw new TypeError('Invalid Magpie routing-group update')
-  assertAllowedKeys(record, ['id', 'name', 'models', 'routing', 'stays', 'pick', 'unlists', 'fast'])
+  assertAllowedKeys(record, ['id', 'name', 'models', 'routing', 'stays', 'pick', 'unlists', 'fast', 'context', 'levels', 'effort', 'classifier'])
   const name = optionalUpdateText(record.name, 120, 'group name')
   const models = record.models === undefined ? undefined : readModelList(record.models, null, true)
   const routing = optionalEnum(record.routing, ROUTING_POLICIES, 'routing policy')
@@ -340,10 +347,16 @@ export function readGroupUpdate(value: unknown): MagpieRoutingGroupManagementUpd
   const pick = optionalMemberId(record.pick, 'manual routing pick')
   const unlists = optionalUpdateBoolean(record.unlists, 'group listing')
   const fast = record.fast === undefined ? undefined : readMemberList(record.fast)
+  const context = record.context === undefined ? undefined : readGroupContext(record.context)
+  if (record.context !== undefined && context === null) throw new TypeError('Invalid group context window')
+  const levels = record.levels === undefined ? undefined : readGroupLevels(record.levels)
+  if (record.levels !== undefined && levels === null) throw new TypeError('Invalid group reasoning levels')
+  const effort = optionalEnum(record.effort, GROUP_EFFORTS, 'group effort policy')
+  const classifier = record.classifier === undefined ? undefined : optionalClassifier(record.classifier)
   if (record.pick !== undefined && routing !== undefined && routing !== 'manual') {
     throw new TypeError('Only a manual routing group sends to a picked model')
   }
-  if ([name, models, routing, stays, pick, unlists, fast].every(item => item === undefined)) {
+  if ([name, models, routing, stays, pick, unlists, fast, context, levels, effort, classifier].every(item => item === undefined)) {
     throw new TypeError('Routing-group update has no changes')
   }
   return {
@@ -355,6 +368,10 @@ export function readGroupUpdate(value: unknown): MagpieRoutingGroupManagementUpd
     ...(pick === undefined ? {} : { pick }),
     ...(unlists === undefined ? {} : { unlists }),
     ...(fast === undefined ? {} : { fast }),
+    ...(context === undefined || context === null ? {} : { context }),
+    ...(levels === undefined || levels === null ? {} : { levels }),
+    ...(effort === undefined ? {} : { effort }),
+    ...(classifier === undefined ? {} : { classifier }),
   }
 }
 
@@ -499,6 +516,21 @@ function readWebGroup(record: Record<string, unknown>): MagpieRoutingGroupManage
   const fast = record.fast === undefined ? [] : readStringList(record.fast, 2_000)
   if (fast === null) return null
   if (fast.some(value => normalizeMemberId(value) === null)) return null
+  // The window Agents are told the group takes, and the levels it offers. Magpie's own editor
+  // reads an absent context as 0 (the largest member's) and an absent levels list as "shared".
+  const context = record.context === undefined ? 0 : readGroupContext(record.context)
+  if (context === null) return null
+  const levels = readGroupLevels(record.levels)
+  if (levels === null) return null
+  const sharedLevels = readGroupLevels(record.shared) ?? []
+  // An empty effort is Magpie's "as the Agent asks", not a missing value: `safeText` would
+  // treat it as absent, so the raw string is checked against the two values it may hold.
+  const rawEffort = record.effort === undefined || record.effort === null ? '' : record.effort
+  const effort = typeof rawEffort === 'string' && GROUP_EFFORTS.has(rawEffort.trim()) ? rawEffort.trim() : null
+  if (effort === null) return null
+  const rawClassifier = optionalSafeText(record.classifier, 512)
+  const classifier = rawClassifier === null ? null : normalizeMemberId(rawClassifier)
+  if (rawClassifier !== null && classifier === null) return null
   return {
     id,
     name,
@@ -510,7 +542,30 @@ function readWebGroup(record: Record<string, unknown>): MagpieRoutingGroupManage
     pick,
     unlists: optionalBoolean(record.unlists),
     fast,
+    context,
+    levels,
+    sharedLevels,
+    effort,
+    classifier,
   }
+}
+
+/**
+ * Read a group's context window: `0` the largest member's, `-1` the smallest, else that many
+ * tokens. Anything else is a shape this Host cannot write back, so the group stays uneditable.
+ */
+function readGroupContext(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < -1) return null
+  return value
+}
+
+/** Read a reasoning-level list; a list holding a level Magpie does not name cannot round-trip. */
+function readGroupLevels(value: unknown): readonly string[] | null {
+  if (value === undefined || value === null) return []
+  const levels = readStringList(value, MEMBER_LEVELS.length)
+  if (levels === null) return null
+  if (levels.some(level => !MEMBER_LEVELS.includes(level))) return null
+  return [...new Set(levels)]
 }
 
 /** Accept a member id Magpie itself would: a model, a group, or a model at a reasoning level. */
@@ -681,7 +736,16 @@ function groupSavePayload(
   payload.off = (readStringList(raw.off, 2_000) ?? []).filter(member => (payload.members as readonly string[]).includes(member))
   payload.weights = Object.fromEntries(Object.entries(asRecord(raw.weights) ?? {})
     .filter(([member, weight]) => (payload.members as readonly string[]).includes(member) && optionalInteger(weight) !== null))
-  for (const key of ['sink', 'firstToken', 'patience', 'context', 'family', 'levels', 'effort', 'classifier', 'rules']) {
+  // The window Agents are told the group takes, and the levels and per-turn effort it offers.
+  payload.context = update.context ?? current.context
+  payload.levels = update.levels === undefined ? current.levels : [...update.levels]
+  payload.effort = update.effort ?? current.effort
+  // Magpie clears the classifier whenever the effort is left to the Agent, and needs one as
+  // soon as a turn's level is picked.
+  payload.classifier = payload.effort === 'auto'
+    ? update.classifier ?? current.classifier ?? ''
+    : update.classifier ?? ''
+  for (const key of ['sink', 'firstToken', 'patience', 'family', 'rules']) {
     if (raw[key] !== undefined) payload[key] = safeJsonClone(raw[key])
   }
   return payload
@@ -802,6 +866,12 @@ function groupUpdateMatches(update: MagpieRoutingGroupManagementUpdate, saved: M
   if (update.pick !== undefined && update.pick !== saved.pick) return false
   if (update.unlists !== undefined && update.unlists !== saved.unlists) return false
   if (update.fast !== undefined && !sameStringSet(update.fast, saved.fast)) return false
+  if (update.context !== undefined && update.context !== saved.context) return false
+  if (update.levels !== undefined && !sameStringSet(update.levels, saved.levels)) return false
+  if (update.effort !== undefined && update.effort !== saved.effort) return false
+  // Magpie clears the classifier itself when no turn's level is picked, so an emptied one is
+  // compared against the group's own cleared value rather than against what was sent.
+  if (update.classifier !== undefined && update.classifier !== (saved.classifier ?? '')) return false
   return true
 }
 
@@ -942,6 +1012,17 @@ function readModelList(value: unknown, providerId: string | null, allowPatterns:
   }
   if (allowPatterns && models.length === 0) throw new TypeError('Routing groups need at least one model or pattern')
   return models
+}
+
+/**
+ * A group's classifier model. Magpie clears it with an empty string whenever no rule asks for an
+ * intent and the effort is left to the Agent, so an empty value must be writable too.
+ */
+function optionalClassifier(value: unknown): string {
+  if (value === '') return ''
+  const member = optionalMemberId(value, 'group classifier')
+  if (member === undefined) throw new TypeError('Invalid group classifier')
+  return member
 }
 
 /** A group member id as Magpie names it: a model, a group, or a model at a reasoning level. */

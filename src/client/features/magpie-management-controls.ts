@@ -409,7 +409,20 @@ interface GroupDraft {
   readonly pick: string
   readonly unlists: boolean
   readonly fast: readonly string[]
+  /** `0` for the largest member's window, `-1` for the smallest, or that many tokens. */
+  readonly context: number
+  /** The levels to offer; empty means the levels every member shares. */
+  readonly levels: readonly string[]
+  /** `'auto'` picks each turn's level with a classifier; empty leaves it to the Agent. */
+  readonly effort: string
+  readonly classifier: string
 }
+
+/** Magpie's `provider.MemberEfforts`, in the order its editor lists them. */
+const MEMBER_LEVELS = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] as const
+const GROUP_EFFORT_AUTO = 'auto'
+const CONTEXT_LARGEST = 0
+const CONTEXT_SMALLEST = -1
 
 export interface GroupModelCandidate {
   readonly id: string
@@ -451,27 +464,32 @@ export function MagpieGroupsPage({ snapshot, t, onUpdate }: {
       ),
       selected === null
         ? createElement(PanelEmpty, { message: t('magpie.management.noGroups') })
-        : createElement(GroupEditor, { group: selected, candidates: groupModelCandidates(snapshot, selected), t, onUpdate }),
+        : createElement(GroupEditor, { group: selected, candidates: groupModelCandidates(snapshot, selected), snapshot, t, onUpdate }),
     ),
   )
 }
 
-function GroupEditor({ group, candidates, t, onUpdate }: {
+function GroupEditor({ group, candidates, snapshot, t, onUpdate }: {
   readonly group: MagpieRoutingGroupManagementRecord
   readonly candidates: readonly GroupModelCandidate[]
+  readonly snapshot: MagpieManagementSnapshot | null
   readonly t: Translate
   readonly onUpdate: (update: MagpieRoutingGroupManagementUpdate) => Promise<void>
 }): ReactElement {
   const [draft, setDraft] = useState<GroupDraft>(() => groupDraft(group))
+  // The context input keeps what was typed ("200k"), because 200000 would read back as "200K"
+  // under the caret on every keystroke.
+  const [contextText, setContextText] = useState(() => group.context > 0 ? formatContextTokens(group.context) : '')
   const [review, setReview] = useState<MagpieRoutingGroupManagementUpdate | null>(null)
   const [saving, setSaving] = useState(false)
   const [notice, setNotice] = useState('')
   const key = JSON.stringify(group)
   useEffect(() => {
     setDraft(groupDraft(group))
+    setContextText(group.context > 0 ? formatContextTokens(group.context) : '')
     setReview(null)
   }, [group.id, key])
-  const setText = (field: 'name' | 'routing' | 'stays' | 'pick', value: string): void => setDraft(current => ({ ...current, [field]: value }))
+  const setText = (field: 'name' | 'routing' | 'stays' | 'pick' | 'effort' | 'classifier', value: string): void => setDraft(current => ({ ...current, [field]: value }))
   // `fast` is kept in step with the members: a model taken out of the group takes its fast
   // mode with it, so a later save cannot fast-mode a model the group no longer names.
   const setModels = (models: readonly string[]): void => setDraft(current => ({ ...current, models, fast: current.fast.filter(model => models.includes(model)) }))
@@ -481,8 +499,11 @@ function GroupEditor({ group, candidates, t, onUpdate }: {
   // A manual group with nothing to send to is not saveable here: this Host refuses that write,
   // and Magpie would otherwise keep whichever member came first.
   const missingPick = manual && draft.pick === ''
+  // Picking each turn's level is a classifier's job: without one Magpie refuses the save, so
+  // the review button waits until the model that rates a turn is chosen.
+  const missingClassifier = draft.effort === GROUP_EFFORT_AUTO && draft.classifier === ''
   const update = (): MagpieRoutingGroupManagementUpdate | null => {
-    if (missingPick) return null
+    if (missingPick || missingClassifier) return null
     const result: MagpieRoutingGroupManagementUpdate = {
       id: group.id,
       ...(draft.name.trim() === baseline.name ? {} : { name: draft.name.trim() }),
@@ -492,6 +513,10 @@ function GroupEditor({ group, candidates, t, onUpdate }: {
       ...(!manual || draft.pick === baseline.pick ? {} : { pick: draft.pick }),
       ...(draft.unlists === baseline.unlists ? {} : { unlists: draft.unlists }),
       ...(sameStringSet(fast, baseline.fast) ? {} : { fast }),
+      ...(draft.context === baseline.context ? {} : { context: draft.context }),
+      ...(sameStringSet(draft.levels, baseline.levels) ? {} : { levels: [...draft.levels] }),
+      ...(draft.effort === baseline.effort ? {} : { effort: draft.effort }),
+      ...(draft.classifier === baseline.classifier ? {} : { classifier: draft.classifier }),
     }
     return Object.keys(result).length === 1 ? null : result
   }
@@ -518,6 +543,16 @@ function GroupEditor({ group, candidates, t, onUpdate }: {
     const candidate = candidates.find(model => model.id === id)
     return candidate?.canFast === true ? [candidate] : []
   })
+  const contextMode = draft.context === CONTEXT_SMALLEST ? 'smallest' : draft.context > 0 ? 'custom' : 'largest'
+  // Typed text that is not a token count stays on screen with the error, rather than being
+  // rewritten to the last value that parsed.
+  const contextError = contextMode === 'custom' && parseContextTokens(contextText) === null
+  // A group that picks each turn's level needs a model to rate the turn: the members first,
+  // then every model the snapshot knows, so a small classifier outside the group can be picked.
+  const classifierOptions = uniqueBy([
+    ...draft.models.map(id => ({ value: id, label: id })),
+    ...(snapshot?.providers ?? []).flatMap(provider => provider.models.map(model => ({ value: model.id, label: model.id }))),
+  ], option => option.value)
 
   return createElement('section', { className: 'codingns-magpie-panel codingns-magpie-management-editor' },
     createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('div', undefined,
@@ -578,6 +613,108 @@ function GroupEditor({ group, candidates, t, onUpdate }: {
       }),
       createElement('span', undefined, t('magpie.management.unlists')),
     ),
+    createElement('div', { className: 'codingns-magpie-field' },
+      createElement('span', undefined, t('magpie.management.context')),
+      createElement('small', undefined, t('magpie.management.contextHint')),
+      createElement(Segmented, {
+        label: t('magpie.management.context'),
+        value: contextMode,
+        options: [
+          { value: 'largest', label: t('magpie.management.contextLargest') },
+          { value: 'smallest', label: t('magpie.management.contextSmallest') },
+          { value: 'custom', label: t('magpie.management.contextCustom') },
+        ],
+        onChange: mode => {
+          const tokens = mode === 'custom' && draft.context <= 0 ? 200_000 : null
+          if (tokens !== null) {
+            setContextText(formatContextTokens(tokens))
+            setDraft(current => ({ ...current, context: tokens }))
+            return
+          }
+          if (mode === 'custom') setContextText(formatContextTokens(draft.context))
+          setDraft(current => ({
+            ...current,
+            context: mode === 'smallest' ? CONTEXT_SMALLEST : mode === 'largest' ? CONTEXT_LARGEST : current.context,
+          }))
+        },
+      }),
+      contextMode === 'custom' && createElement('input', {
+        className: 'codingns-magpie-context-input',
+        value: contextText,
+        maxLength: 12,
+        inputMode: 'text',
+        placeholder: '200k',
+        'aria-label': t('magpie.management.contextCustom'),
+        'aria-invalid': contextError,
+        onChange: (event: { currentTarget: { value: string } }) => {
+          const tokens = parseContextTokens(event.currentTarget.value)
+          setContextText(event.currentTarget.value)
+          if (tokens !== null) setDraft(current => ({ ...current, context: tokens }))
+        },
+      }),
+      contextError && createElement('small', { className: 'codingns-magpie-field-error', role: 'alert' }, t('magpie.management.contextInvalid')),
+    ),
+    createElement('div', { className: 'codingns-magpie-field' },
+      createElement('span', undefined, t('magpie.management.levels')),
+      createElement('small', undefined, t(draft.levels.length === 0
+        ? 'magpie.management.levelsSharedHint'
+        : 'magpie.management.levelsNamedHint', group.sharedLevels.length === 0 ? {} : { levels: group.sharedLevels.join(', ') })),
+      createElement(Segmented, {
+        label: t('magpie.management.levels'),
+        value: draft.levels.length === 0 ? 'shared' : 'named',
+        options: [
+          { value: 'shared', label: t('magpie.management.levelsShared') },
+          { value: 'named', label: t('magpie.management.levelsNamed') },
+        ],
+        onChange: mode => setDraft(current => ({
+          ...current,
+          levels: mode === 'shared' ? [] : current.levels.length > 0 ? current.levels : defaultLevels(group.sharedLevels),
+        })),
+      }),
+      draft.levels.length > 0 && createElement('div', { className: 'codingns-magpie-levels', role: 'group', 'aria-label': t('magpie.management.levels') },
+        ...MEMBER_LEVELS.map(level => createElement('button', {
+          key: level,
+          type: 'button',
+          className: `codingns-magpie-level${draft.levels.includes(level) ? ' is-on' : ''}`,
+          'aria-pressed': draft.levels.includes(level),
+          onClick: () => setDraft(current => ({
+            ...current,
+            // Magpie keeps the levels in its own order, so a chip toggles in place.
+            levels: current.levels.includes(level)
+              ? current.levels.filter(item => item !== level)
+              : MEMBER_LEVELS.filter(item => item === level || current.levels.includes(item)),
+          })),
+        }, level)),
+      ),
+    ),
+    createElement('div', { className: 'codingns-magpie-field' },
+      createElement('span', undefined, t('magpie.management.effort')),
+      createElement('small', undefined, t(draft.effort === GROUP_EFFORT_AUTO ? 'magpie.management.effortAutoHint' : 'magpie.management.effortAgentHint')),
+      createElement(Segmented, {
+        label: t('magpie.management.effort'),
+        value: draft.effort === GROUP_EFFORT_AUTO ? GROUP_EFFORT_AUTO : 'agent',
+        options: [
+          { value: 'agent', label: t('magpie.management.effortAgent') },
+          { value: GROUP_EFFORT_AUTO, label: t('magpie.management.effortAuto') },
+        ],
+        onChange: mode => setDraft(current => ({
+          ...current,
+          effort: mode === GROUP_EFFORT_AUTO ? GROUP_EFFORT_AUTO : '',
+          // Magpie needs a classifier the moment a turn's level is picked, and clears it again
+          // when the effort goes back to the Agent's own.
+          classifier: mode === GROUP_EFFORT_AUTO ? current.classifier : '',
+        })),
+      }),
+      draft.effort === GROUP_EFFORT_AUTO && (classifierOptions.length === 0
+        ? createElement('small', { className: 'codingns-magpie-field-error', role: 'alert' }, t('magpie.management.effortNeedsClassifier'))
+        : createElement(SelectField, {
+          label: t('magpie.management.classifier'),
+          hint: t('magpie.management.classifierHint'),
+          value: draft.classifier,
+          options: [{ value: '', label: t('magpie.management.classifierEmpty') }, ...classifierOptions],
+          onChange: value => setText('classifier', value),
+        })),
+    ),
     createElement('p', { className: 'codingns-magpie-management-hint' }, t('magpie.management.unlistsHint')),
     fastCapable.length === 0 && draft.models.length > 0 && createElement('p', { className: 'codingns-magpie-management-hint' }, t('magpie.management.noFastModels')),
     review !== null && createElement('div', { className: 'codingns-magpie-confirm' },
@@ -609,6 +746,10 @@ function groupDraft(group: MagpieRoutingGroupManagementRecord): GroupDraft {
     pick: group.pick ?? '',
     unlists: group.unlists === true,
     fast: group.fast,
+    context: group.context,
+    levels: group.levels,
+    effort: group.effort === null || group.effort === undefined ? '' : group.effort,
+    classifier: group.classifier ?? '',
   }
 }
 
@@ -634,6 +775,61 @@ function sameStringOrder(left: readonly string[], right: readonly string[]): boo
 
 function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every(value => right.includes(value))
+}
+
+/**
+ * Read a context window the way Magpie's own editor does: a token count, optionally written
+ * with a `k` or `m` suffix ("200k", "1m"). Returns null for anything else, which keeps the
+ * previous value and shows the error instead of silently saving a wrong window.
+ */
+export function parseContextTokens(value: string): number | null {
+  const match = value.trim().toLocaleLowerCase().replace(/_/gu, '').match(/^(\d+(?:\.\d+)?)\s*([km]?)$/u)
+  if (match === null) return null
+  const suffix = match[2] ?? ''
+  const scale = suffix === 'k' ? 1_000 : suffix === 'm' ? 1_000_000 : 1
+  const tokens = Math.round(Number(match[1]) * scale)
+  return Number.isSafeInteger(tokens) && tokens > 0 ? tokens : null
+}
+
+/** The inverse, so a stored window reads back as Magpie writes it. */
+export function formatContextTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${Number((tokens / 1_000_000).toFixed(1))}m`
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`
+  return String(tokens)
+}
+
+/** The levels Magpie starts a "named" list with: those the members share, or its usual three. */
+function defaultLevels(shared: readonly string[]): readonly string[] {
+  const seed = shared.length > 0 ? shared : ['low', 'medium', 'high']
+  return MEMBER_LEVELS.filter(level => seed.includes(level))
+}
+
+function uniqueBy<T>(items: readonly T[], keyOf: (item: T) => string): readonly T[] {
+  const seen = new Set<string>()
+  return items.filter(item => {
+    const key = keyOf(item)
+    if (seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+}
+
+/** A small set of exclusive choices, drawn as buttons rather than a select. */
+function Segmented({ label, value, options, onChange }: {
+  readonly label: string
+  readonly value: string
+  readonly options: readonly SelectOption[]
+  readonly onChange: (value: string) => void
+}): ReactElement {
+  return createElement('div', { className: 'codingns-magpie-segmented', role: 'group', 'aria-label': label },
+    ...options.map(option => createElement('button', {
+      key: option.value,
+      type: 'button',
+      className: option.value === value ? 'is-active' : '',
+      'aria-pressed': option.value === value,
+      onClick: () => onChange(option.value),
+    }, option.label)),
+  )
 }
 
 /** One checkbox per option, for the few per-model switches a save carries. */
@@ -896,5 +1092,24 @@ function summarizeGroupUpdate(update: MagpieRoutingGroupManagementUpdate, t: Tra
   if (update.pick !== undefined) changes.push(t('magpie.management.reviewPick', { value: update.pick }))
   if (update.unlists !== undefined) changes.push(t('magpie.management.reviewUnlists', { value: t(update.unlists ? 'magpie.management.on' : 'magpie.management.off') }))
   if (update.fast !== undefined) changes.push(t('magpie.management.reviewFast', { count: update.fast.length }))
+  if (update.context !== undefined) {
+    changes.push(t('magpie.management.reviewContext', {
+      value: update.context === CONTEXT_SMALLEST
+        ? t('magpie.management.contextSmallest')
+        : update.context > 0 ? formatContextTokens(update.context) : t('magpie.management.contextLargest'),
+    }))
+  }
+  if (update.levels !== undefined) {
+    changes.push(t('magpie.management.reviewLevels', {
+      value: update.levels.length === 0 ? t('magpie.management.levelsShared') : update.levels.join(', '),
+    }))
+  }
+  if (update.effort !== undefined) {
+    changes.push(t('magpie.management.reviewEffort', {
+      value: update.effort === GROUP_EFFORT_AUTO
+        ? t('magpie.management.reviewEffortAuto', { model: update.classifier ?? '' })
+        : t('magpie.management.effortAgent'),
+    }))
+  }
   return changes.join(' · ')
 }
