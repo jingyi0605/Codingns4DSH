@@ -164,7 +164,8 @@ test('Magpie dashboard renders as a flat page region rather than a modal overlay
   assert.match(markup, /codingns-magpie-periods\{flex-direction:row;overflow:auto/u, 'period controls remain usable on narrow screens')
   assert.match(markup, /html\[data-codingns-mobile-sidebar=&quot;on&quot;\] \.codingns-magpie-page\{padding-left:0/u, 'a hidden mobile sidebar keeps the page full width instead of indenting it by the frame leading clearance')
   assert.match(markup, /\.codingns-magpie-topbar\{[^}]*var\(--mp-leading-inset\)/u, 'only the header row clears the floating logo button')
-  assert.match(markup, /\.codingns-magpie-toolbar:not\(\.has-tabs\)\{display:none\}/u, 'the empty toolbar row is dropped on phones')
+  assert.doesNotMatch(markup, /class="codingns-magpie-toolbar(?! has-tabs")/u, 'the empty management toolbar row is no longer rendered at all')
+  assert.doesNotMatch(markup, /MAGPIE \/ GATEWAY|MAGPIE WEB API|codingns-magpie-updated/u, 'the gateway caption and update stamp are gone from the toolbar')
   assert.match(markup, /\.codingns-magpie-statstrip\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}/u, 'phone statistic cells collapse to two columns')
   assert.match(markup, /codingns-magpie-tabs/u, 'sections are reachable from a top tab bar')
   assert.match(markup, /codingns-magpie-tab is-active" aria-current="page">/, 'the current section is marked on the tab bar')
@@ -191,12 +192,13 @@ test('Magpie usage tabs follow the native order and render native report chrome'
     initialPageTab: 'usage',
   }))
 
-  const usageTabs = markup.slice(markup.lastIndexOf('codingns-magpie-usage-tabs'), markup.lastIndexOf('codingns-magpie-toolbar-right'))
+  const usageTabs = markup.slice(markup.lastIndexOf('codingns-magpie-usage-tabs'), markup.indexOf('</div>', markup.lastIndexOf('codingns-magpie-usage-tabs')))
   const order = ['订阅', '会话', '请求'].map((label) => usageTabs.indexOf(`>${label}<`))
   assert.ok(order.every((index) => index >= 0), 'Usage exposes Subscriptions, Sessions, and Requests')
   assert.deepEqual([...order].sort((left, right) => left - right), order, 'Usage tabs keep the native Magpie order')
   assert.match(markup, /codingns-magpie-statstrip/u, 'native report statistic strip is used')
   assert.match(markup, /class="codingns-magpie-toolbar has-tabs"/u, 'the usage toolbar keeps its sub-tabs on phones')
+  assert.doesNotMatch(markup, /codingns-magpie-report-note|仅统计网关调用/u, 'usage report notes are removed from every report view')
   assert.match(markup, /codingns-magpie-barchart/u, 'native bar chart is used instead of the old line chart')
   assert.match(markup, /codingns-magpie-progress-track/u, 'breakdowns use native progress rows')
   assert.match(markup, /codingns-magpie-group-model-picker-search/u, 'routing-group picker styles are included in the flat page')
@@ -308,7 +310,8 @@ test('Magpie management nests primary and secondary accounts under providers', (
   assert.match(providers, /backup-user/u)
   assert.ok(providers.indexOf('codex-user') < providers.indexOf('backup-user'), 'the signed-in primary appears before secondary accounts')
   assert.doesNotMatch(providers, /未匹配到提供商的账户/u, 'accounts link through accountAgent even when it differs from provider.id')
-  assert.match(providers, /Host 已自动启动并认证 Magpie Web/u)
+  assert.doesNotMatch(providers, /codingns-magpie-management-note|codingns-magpie-view-heading/u, 'management pages no longer repeat decorative headings or advisory notes')
+  assert.doesNotMatch(groups, /codingns-magpie-management-note|codingns-magpie-view-heading/u)
   assert.match(providers, /加入故障转移轮换/u)
   assert.doesNotMatch(providers, /test-secret|api_key=/u)
   assert.match(groups, /Fast pool/u)
@@ -333,7 +336,7 @@ test('Magpie management nests primary and secondary accounts under providers', (
     providers: snapshot.providers.map(provider => ({ ...provider, modelsEditable: false })),
   }
   const partialMarkup = renderToStaticMarkup(createElement(MagpieProvidersPage, { ...props, snapshot: partialSnapshot }))
-  assert.match(partialMarkup, /部分 Magpie 提供商记录无法完整解析/u)
+  assert.doesNotMatch(partialMarkup, /codingns-magpie-management-note/u, 'a partial provider read no longer prints an advisory note block')
   assert.match(partialMarkup, /<input type="checkbox" disabled=""/u, 'incomplete model rows remain read-only instead of being overwritten')
 
   const picker = renderToStaticMarkup(createElement(GroupModelPicker, {
