@@ -7,6 +7,7 @@ import { createDshCapabilityRegistry } from '../src/dsh-capabilities/routes.js'
 import { createGlobalPanelAdapter } from '../src/dsh-capabilities/client/global-panel-adapter.js'
 import type { CodingNsLocale } from '../src/client/locale.js'
 import { MagpieManagementPage } from '../src/client/features/magpie-management-page.js'
+import { magpieManagementFeature } from '../src/client/features/magpie-management.js'
 import { GroupModelPicker, MagpieGroupsPage, MagpieProvidersPage, reorderModels } from '../src/client/features/magpie-management-controls.js'
 import { installProviderIcons, PROVIDER_ICONS } from '../src/client/provider-icons.js'
 import type { MagpieManagementSnapshot } from '../src/shared/contracts/magpie-management.js'
@@ -89,6 +90,39 @@ test('Magpie registers a native sidebar row only after both DSH panel seats exis
 
   dispose()
   assert.deepEqual(slots.entries, [], 'the native row and page are removed when the opt-in feature is disabled')
+})
+
+test('Magpie sidebar row reads Magpie and renders the background-free mark in the current color', () => {
+  const slots = new TestSlots()
+  const translator = resolveCodingNsTranslator()
+  const locale = {
+    bind: () => translator,
+    getSnapshot: () => ({ revision: 0 }),
+    subscribe: () => () => undefined,
+    register: () => () => undefined,
+  }
+  const resources: (() => void)[] = []
+  magpieManagementFeature.start({
+    services: {
+      rpc: { call: async () => ({ ok: true as const, value: null }) },
+      locale,
+      uiContext: { slots, layout: { selectPanel: () => undefined } },
+    },
+    resources: { add: (dispose: () => void) => { resources.push(dispose) } },
+  } as never)
+  slots.declare('main')
+  slots.declare('sidebar.panellist')
+
+  const sidebar = slots.entries.find((entry) => entry.options.name === 'sidebar.panellist')
+  assert.ok(sidebar !== undefined, 'the sidebar row is registered once both DSH panel seats exist')
+  assert.equal((sidebar.options.label as () => string)(), 'Magpie', 'the row reads Magpie instead of Magpie Management')
+
+  const markup = renderToStaticMarkup(createElement(sidebar.component as never, { size: 16, active: false }))
+  assert.match(markup, /<svg[^>]*viewBox="0 0 100 100"/u, 'the row draws the vector magpie mark')
+  assert.match(markup, /fill="currentColor"/u, 'the mark inherits the sidebar text colour like the native icons')
+  assert.match(markup, /<path fill-rule="evenodd" d="M2\.36/u, 'the mark is the background-free magpie silhouette')
+  assert.doesNotMatch(markup, /<img|mask-image/u, 'the row depends on no external icon asset or CSS mask')
+  for (const dispose of resources) dispose()
 })
 
 test('global panel capability is gated by the supported DSH range and the required services', () => {

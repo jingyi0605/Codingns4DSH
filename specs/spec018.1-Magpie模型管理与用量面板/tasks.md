@@ -91,6 +91,17 @@ Each task states what changes, what becomes visible, dependencies, documents to 
   - Verify: Capability fixtures, paired registration/cleanup assertions (including ID/order/label/icon), flat-page render and chrome-inset assertions, typecheck, the final 107-test focused source run, capability report/check, and `git diff --check` passed. No live DSH UI verification was performed because the repository prohibits Desktop operations without item-specific authorization.
   - Requirements/design: R1; `design.md` §§1-2, 4, 7.
 
+- [x] 4.2 Use the plain Magpie label and the native Magpie icon in the sidebar row
+  - Status: DONE
+  - What changes: Rename the row from “Magpie Management / Magpie 管理” to plain **Magpie** in both dictionaries, and replace the self-drawn “M” SVG with a background-free monochrome magpie silhouette traced from the native app icon and inlined as `<svg viewBox="0 0 100 100" fill="currentColor">` (`src/client/features/magpie-mark.ts`), so the row inherits the sidebar text colour in both themes and needs no image request, icon route, or CSS mask.
+  - What becomes visible: The sidebar reads “Magpie” and shows the magpie bird as a monochrome mark that matches the neighbouring native icons in light and dark themes, with no light app-icon tile behind it.
+  - Dependencies: 4.1.
+  - Main files: `src/client/features/magpie-management.ts`; `src/client/locales/magpie.ts`; `tests/magpie-global-panel.spec.ts`.
+  - Explicit non-goals: No change to the existing provider logos or the full-colour app icon, no change to the row id/order, page content, or RPC.
+  - Done when: The registered row label resolves to `Magpie` and its icon renders the monochrome vector mark in `currentColor` rather than a letter mark or a tiled app icon.
+  - Verify: `tests/magpie-global-panel.spec.ts` starts the real feature against fake panel seats and asserts the label plus the inline `currentColor` vector mark with no `<img>` or `mask-image`; focused suites 74/74; i18n check passes.
+  - Requirements/design: R1; `docs/开发记录/20261022-Magpie原生侧栏面板入口记录.md` § “Sidebar label and icon”.
+
 ## Phase 3: Verify and record
 
 - [x] 3.1 Run checks and record the implementation

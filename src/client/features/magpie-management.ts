@@ -2,9 +2,9 @@ import { createElement } from 'react'
 import type { ReactElement } from 'react'
 import type { CodingNsClientFeatureModule, CodingNsClientServices } from './types.js'
 import { codingNsTranslator } from '../locale.js'
-import { providerIconUrl } from '../provider-icons.js'
 import { createGlobalPanelAdapter, type GlobalPanelIconProps } from '../../dsh-capabilities/client/global-panel-adapter.js'
 import { MagpieManagementPage } from './magpie-management-page.js'
+import { MAGPIE_MARK_PATH } from './magpie-mark.js'
 
 const MAGPIE_PANEL_ID = 'codingns4dsh-magpie-management'
 
@@ -53,25 +53,16 @@ function MagpieManagementPanel({ services, onClose }: {
 }
 
 /**
- * 侧栏入口图标：复用项目内已有的 Magpie 原生图标（`assets/provider-icons/magpie.png`，
- * 由 `provider-icon-assets.ts` 在客户端启动时安装到 `providerIconUrl`），
- * 与页面、模型标记里的 Magpie 标识共用同一份资源，不再自绘字母图形。
+ * 侧栏入口图标：内联的喜鹊剪影路径，`fill="currentColor"` 跟随侧栏文字色，
+ * 浅色/深色主题下都与上下 DSH 原生图标同色，也不带原图标那块浅色磁贴背景。
+ * 纯矢量、不依赖任何图标路由，宿主无需重启就能显示。
  */
 function MagpiePanelIcon({ size }: GlobalPanelIconProps): ReactElement {
-  const iconUrl = providerIconUrl('magpie')
-  if (iconUrl !== undefined) {
-    return createElement('img', {
-      src: iconUrl,
-      alt: '',
-      'aria-hidden': true,
-      width: size,
-      height: size,
-      style: { display: 'block', width: size, height: size, objectFit: 'contain' },
-    })
-  }
-  // 图标资源尚未安装（测试或裁剪过的宿主）时用中性占位，不自绘字母冒充品牌。
-  return createElement('span', {
+  return createElement('svg', {
+    width: size,
+    height: size,
+    viewBox: '0 0 100 100',
+    fill: 'currentColor',
     'aria-hidden': true,
-    style: { display: 'block', width: size, height: size, borderRadius: Math.round(size / 4), background: 'currentColor', opacity: 0.22 },
-  })
+  }, createElement('path', { fillRule: 'evenodd', d: MAGPIE_MARK_PATH }))
 }
