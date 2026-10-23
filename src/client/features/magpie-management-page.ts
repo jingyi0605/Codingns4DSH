@@ -348,7 +348,6 @@ export function OverviewPage({ dashboard, loading, error, chartMetric, onChartMe
     { label: t('magpie.statCalls'), value: formatInteger(metrics.calls), detail: `${formatInteger(metrics.errors)} ${t('magpie.metricErrors')} · ${formatInteger(metrics.retried)} ${t('magpie.metricRetries')}` },
   ]
   return createElement('div', { className: 'codingns-magpie-view' },
-    createElement('div', { className: 'codingns-magpie-report-note' }, t('magpie.overviewNote')),
     error && createElement(InlineNotice, { message: t('magpie.usageUnavailable') }),
     createElement(StatStrip, { stats }),
     createElement('section', { className: 'codingns-magpie-panel codingns-magpie-barchart-panel' },
@@ -447,7 +446,6 @@ export function SessionsPage({ dashboard, sessions, search, onSearch, onOpenSess
       ),
       metrics != null && createElement('span', { className: 'codingns-magpie-filter-summary' }, t('magpie.sessionCountUnknown') === '' ? '' : t('magpie.sessionsCount', { count: dashboard?.sessionCount ?? visible.length })),
     ),
-    createElement('div', { className: 'codingns-magpie-report-note' }, t('magpie.sessionsNote')),
     createElement(StatStrip, { stats }),
     dashboard !== null && dashboard.series.length > 1 && createElement('section', { className: 'codingns-magpie-panel codingns-magpie-barchart-panel' },
       createElement('div', { className: 'codingns-magpie-panel-head' },
@@ -531,7 +529,6 @@ export function RequestsPage({ page, loading, error, selectedSession, offset, on
         selectedSession.dshSessionName ?? t('magpie.requestFor', { agent: selectedSession.agent, id: selectedSession.id })),
       createElement('button', { type: 'button', className: 'codingns-magpie-text-button', onClick: onClearSession }, t('magpie.clearSession')),
     ),
-    createElement('div', { className: 'codingns-magpie-report-note' }, t('magpie.requestsNote')),
     error && createElement(InlineNotice, { message: t('magpie.usageUnavailable') }),
     loading && page === null
       ? createElement(EmptyState, { message: t('magpie.loading'), loading: true })
@@ -679,7 +676,6 @@ export function QuotasPage({ dashboard, loading, t }: { readonly dashboard: Magp
   const quotas = dashboard?.quotas ?? []
   const quotaHistory = dashboard?.quotaHistory ?? []
   return createElement('div', { className: 'codingns-magpie-view' },
-    createElement('div', { className: 'codingns-magpie-report-note' }, t('magpie.quotasNote')),
     quotaUnavailable
       ? createElement(EmptyState, { message: t(dashboard === null && loading ? 'magpie.loading' : 'magpie.quotaUnavailable'), loading: dashboard === null && loading })
       : quotas.length === 0
