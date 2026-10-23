@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process'
 const [installation, version, selection = 'all', lifecycle] = process.argv.slice(2)
 const turnTimeoutMs = Number(process.env.CODINGNS_TEAM_ACCEPTANCE_TIMEOUT_MS ?? 150_000)
 if (!Number.isSafeInteger(turnTimeoutMs) || turnTimeoutMs < 10_000 || turnTimeoutMs > 600_000) throw new Error('Acceptance timeout must be 10–600 seconds')
-if (!installation || !['0.2.1-alpha.2', '0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2'].includes(version)) throw new Error('Usage: node scripts/verify-agent-team-runtime.mjs /tmp/codingns-spec0074-runtime-*/<version> <version> [scenario]')
+if (!installation || !['0.2.1-alpha.2', '0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3'].includes(version)) throw new Error('Usage: node scripts/verify-agent-team-runtime.mjs /tmp/codingns-spec0074-runtime-*/<version> <version> [scenario]')
 const runtime = realpathSync(installation)
 if (!runtime.startsWith('/private/tmp/codingns-spec0074-runtime-') && !runtime.startsWith('/tmp/codingns-spec0074-runtime-')) throw new Error('A dedicated temporary acceptance installation is required')
 assert.equal(JSON.parse(await readFile(join(runtime, 'node_modules/@deepseek-ai/dsh/package.json'), 'utf8')).version, version)
