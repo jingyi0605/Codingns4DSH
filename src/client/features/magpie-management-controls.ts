@@ -65,18 +65,11 @@ export function MagpieProvidersPage({ snapshot, t, onUpdate, onAccountUpdate, wr
   const unlinkedAccounts = snapshot?.accountStatus === 'available'
     ? snapshot.accounts.filter(account => !providers.some(provider => accountBelongsToProvider(account, provider)))
     : []
-  const accountApiNote = snapshot?.accountApiStatus === 'available'
-    ? 'magpie.management.accountApiReady'
-    : 'magpie.management.accountApiUnavailable'
   useEffect(() => {
     if (selected !== null && selected.id !== selectedId) setSelectedId(selected.id)
   }, [selected, selectedId])
 
   return createElement('div', { className: 'codingns-magpie-view' },
-    createElement(PanelHeading, { eyebrow: '01 / PROVIDERS', title: t('magpie.management.providers') }),
-    createElement('div', { className: 'codingns-magpie-management-note' }, t('magpie.management.providerAccountHierarchy')),
-    createElement('div', { className: 'codingns-magpie-management-note' }, t(accountApiNote)),
-    snapshot?.providerStatus === 'partial' && createElement('div', { className: 'codingns-magpie-management-note' }, t('magpie.management.providersPartial')),
     snapshot?.providerStatus === 'unavailable'
       ? createElement(PanelEmpty, { message: t('magpie.management.providersUnavailable') })
       : providers.length === 0
@@ -212,7 +205,6 @@ function ProviderEditor({ provider, snapshot, t, onUpdate, onAccountUpdate, writ
       createElement('span', undefined, t('magpie.management.providerName')),
       createElement('input', { value: name, maxLength: 80, onChange: (event: { currentTarget: { value: string } }) => setName(event.currentTarget.value) }),
     ),
-    provider.endpoints.filter(item => !item.editable).length > 0 && createElement('div', { className: 'codingns-magpie-management-note' }, t('magpie.management.credentialEndpointReadOnly')),
     editableEndpoints.length > 0 && createElement('div', { className: 'codingns-magpie-field-row' },
       createElement('label', { className: 'codingns-magpie-field' },
         createElement('span', undefined, t('magpie.management.endpointType')),
@@ -281,7 +273,7 @@ function ProviderAccounts({ provider, snapshot, t, onUpdate, writing }: {
   readonly writing: boolean
 }): ReactElement {
   if (snapshot?.accountStatus !== 'available') {
-    return createElement('div', { className: 'codingns-magpie-management-note' }, t('magpie.management.accountsUnavailable'))
+    return createElement(PanelEmpty, { message: t('magpie.management.accountsUnavailable') })
   }
   const accounts = snapshot.accounts.filter(account => accountBelongsToProvider(account, provider))
   return createElement('section', undefined,
@@ -431,7 +423,6 @@ export function MagpieGroupsPage({ snapshot, t, onUpdate }: {
   if (snapshot?.groupStatus !== 'available') return createElement(PanelEmpty, { message: t('magpie.management.groupsUnavailable') })
   if (groups.length === 0) return createElement(PanelEmpty, { message: t('magpie.management.noGroups') })
   return createElement('div', { className: 'codingns-magpie-view' },
-    createElement(PanelHeading, { eyebrow: '02 / ROUTING', title: t('magpie.management.groups') }),
     createElement('div', { className: 'codingns-magpie-management-grid' },
       createElement('nav', { className: 'codingns-magpie-panel codingns-magpie-management-list', 'aria-label': t('magpie.management.groups') },
         ...groups.map(group => createElement('button', {
@@ -506,7 +497,6 @@ function GroupEditor({ group, candidates, t, onUpdate }: {
       createElement('span', undefined, t('magpie.management.membersCount', { count: group.members.length })),
       group.usedBy.length > 0 && createElement('span', undefined, t('magpie.management.usedBy', { agents: group.usedBy.join(', ') })),
     ),
-    createElement('div', { className: 'codingns-magpie-management-note' }, t('magpie.management.groupReadbackNote')),
     group.members.length > 0 && createElement('div', { className: 'codingns-magpie-management-members' },
       ...group.members.map(member => createElement('span', { key: member.id, className: `codingns-magpie-member-chip${member.ready === false ? ' is-muted' : ''}`, title: member.name ?? member.id }, member.id)),
     ),
