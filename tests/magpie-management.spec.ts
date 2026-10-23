@@ -816,6 +816,64 @@ test('Magpie routing-group writes refuse a group whose patterns cannot be read b
   assert.equal(fixture.calls.filter(item => item.path === '/api/groups/save').length, 0)
 })
 
+test('Magpie management inlines the icon each provider row names, as the subscription page does', async () => {
+  const assets: string[] = []
+  const service = new MagpieManagementService({
+    webApi: {
+      // `/api/providers` is the only source of icons; assets are fetched through the Web session.
+      async requestJson(path: string) {
+        if (path === '/api/providers') return {
+          providers: [
+            { id: 'claude-upstream', name: 'Claude upstream', icon: 'claude-color', chosen: [], models: [] },
+            { id: 'own-upstream', name: 'Own upstream', icon: 'file:0123456789abcdef.png', chosen: [], models: [] },
+            { id: 'plain-upstream', name: 'Plain upstream', chosen: [], models: [] },
+          ],
+        }
+        if (path === '/api/groups') return { groups: [] }
+        if (path === '/api/usage/quotas') return []
+        if (path === '/api/login/usage') return {}
+        throw new Error(`unexpected route ${path}`)
+      },
+      async requestAssetDataUrl(path: string) {
+        assets.push(path)
+        if (path === '/icons/claude-color.svg') return 'data:image/svg+xml;base64,PHN2Zy8+'
+        if (path === '/api/icons/0123456789abcdef.png') return 'data:image/png;base64,AAAA'
+        return null
+      },
+    },
+  })
+
+  const snapshot = await service.readSnapshot()
+  assert.deepEqual(assets, ['/icons/claude-color.svg', '/api/icons/0123456789abcdef.png'])
+  assert.equal(snapshot.providers[0]?.icon, 'claude-color')
+  assert.equal(snapshot.providers[0]?.logoDataUrl, 'data:image/svg+xml;base64,PHN2Zy8+')
+  assert.equal(snapshot.providers[1]?.logoDataUrl, 'data:image/png;base64,AAAA')
+  assert.equal(snapshot.providers[2]?.icon, undefined, 'a provider without an icon is not given one')
+  assert.equal(snapshot.providers[2]?.logoDataUrl, undefined)
+  assert.equal(snapshot.providerStatus, 'available', 'a missing or unreadable icon never downgrades the provider read')
+})
+
+test('Magpie management keeps providers readable when the logo fetch fails', async () => {
+  const service = new MagpieManagementService({
+    webApi: {
+      async requestJson(path: string) {
+        if (path === '/api/providers') return {
+          providers: [{ id: 'demo', name: 'Demo', icon: 'demo-color', chosen: [], models: [] }],
+        }
+        if (path === '/api/groups') return { groups: [] }
+        if (path === '/api/usage/quotas') return []
+        if (path === '/api/login/usage') return {}
+        throw new Error(`unexpected route ${path}`)
+      },
+      async requestAssetDataUrl() { throw new Error('asset route unavailable') },
+    },
+  })
+  const snapshot = await service.readSnapshot()
+  assert.equal(snapshot.providers[0]?.name, 'Demo')
+  assert.equal(snapshot.providers[0]?.logoDataUrl, undefined)
+  assert.equal(snapshot.providerStatus, 'available')
+})
+
 test('Magpie management Web API outages are reported as unavailable without a CLI/key setup branch', async () => {
   const service = new MagpieManagementService({ webApi: { async requestJson() { throw new Error('offline') } } })
   const snapshot = await service.readSnapshot()

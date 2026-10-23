@@ -213,6 +213,10 @@ export interface MagpieProviderManagementRecord {
   readonly name: string
   /** Agent identity from Magpie's nested provider.account object, not the provider ID. */
   readonly accountAgent: string | null
+  /** Magpie's built-in icon name or a `file:` asset identifier. */
+  readonly icon?: string
+  /** Host-fetched Magpie icon, inlined so the Client never needs Magpie's cookie. */
+  readonly logoDataUrl?: string
   readonly preset: string | null
   readonly protocol: string | null
   readonly host: string | null

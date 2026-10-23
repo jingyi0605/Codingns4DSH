@@ -396,6 +396,36 @@ test('Magpie provider logo prefers the authenticated Web API asset over inferred
   assert.match(markup, /src="data:image\/svg\+xml;base64,PHN2Zy8\+"/u)
 })
 
+test('provider rows render the Host-fetched Magpie logo in the list and the editor heading', () => {
+  const t = (key: string, params?: Record<string, string | number>): string => (zh[key] ?? key).replace(/\{(\w+)\}/gu, (_match, name: string) => String(params?.[name] ?? ''))
+  const snapshot: MagpieManagementSnapshot = {
+    capturedAt: '2026-10-23T00:00:00Z', availabilityIssue: null, providerStatus: 'available',
+    providers: [{
+      id: 'claude-upstream', name: 'Claude upstream', icon: 'claude-color', logoDataUrl: 'data:image/svg+xml;base64,PHN2Zy8+',
+      accountAgent: null, preset: null, protocol: 'chat', host: null, website: null,
+      state: 'on', account: null, keyMasked: null, endpoints: [],
+      models: [{ id: 'claude-upstream/model', name: 'Model', exposed: true }], modelsEditable: true,
+      modelCount: 1, exposedModelCount: 1, fallback: [], routing: null, affinity: null, maxConcurrency: null,
+    }, {
+      id: 'plain-upstream', name: 'Plain upstream', accountAgent: null, preset: null, protocol: null, host: null, website: null,
+      state: 'off', account: null, keyMasked: null, endpoints: [], models: [], modelsEditable: true,
+      modelCount: 0, exposedModelCount: 0, fallback: [], routing: null, affinity: null, maxConcurrency: null,
+    }],
+    accountStatus: 'available', accounts: [], accountApiStatus: 'available', groupStatus: 'available', groups: [],
+  }
+  const markup = renderToStaticMarkup(createElement(MagpieProvidersPage, {
+    snapshot,
+    t,
+    onUpdate: async () => undefined,
+    onAccountUpdate: async () => undefined,
+    writing: false,
+  }))
+  const logoImages = markup.match(/<img[^>]*src="data:image\/svg\+xml;base64,PHN2Zy8\+"[^>]*>/gu) ?? []
+  assert.equal(logoImages.length, 2, 'the provider list row and the selected editor heading both show the Magpie logo')
+  assert.match(markup, /<img class="codingns-magpie-provider-logo codingns-magpie-provider-logo-compact"[^>]*src="data:image\/svg\+xml;base64,PHN2Zy8\+"/u, 'the list row keeps its compact logo style')
+  assert.match(markup, /<img class="codingns-magpie-provider-logo"[^>]*src="data:image\/svg\+xml;base64,PHN2Zy8\+"/u, 'the editor heading keeps its full-size logo style')
+})
+
 test('routing-group editor shows and edits the settings Magpie saves beyond name, models, and policies', () => {
   const t = (key: string, params?: Record<string, string | number>): string => (zh[key] ?? key).replace(/\{(\w+)\}/gu, (_match, name: string) => String(params?.[name] ?? ''))
   const base = {
