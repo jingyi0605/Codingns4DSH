@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { MagpieUsageService, parseMagpieDashboardUsage, parseMagpieQuotaCards, parseMagpieQuotaHistory } from '../src/host/cli-adapters/magpie-usage.js'
+import { attachMagpieSessionNames, MagpieUsageService, parseMagpieDashboardUsage, parseMagpieQuotaCards, parseMagpieQuotaHistory } from '../src/host/cli-adapters/magpie-usage.js'
 import { createCliAdaptersFeature } from '../src/host/cli-adapters/feature.js'
 import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js'
 import { FeatureRegistry } from '../src/features/registry.js'
@@ -52,6 +52,33 @@ test('Magpie dashboard parsers preserve verified usage fields and omit unknown/r
   assert.ok(noSeries, 'an omitted optional series is a partial snapshot, not a failed usage read')
   assert.deepEqual(noSeries.series, [])
   assert.equal(parseMagpieDashboardUsage({ prompt: 'unrecognized only' }), null)
+})
+
+test('Magpie dashboard session rows show an exact DSH title without fuzzy matches', () => {
+  const dashboard = parseMagpieDashboardUsage({
+    calls: 2,
+    sessions: [
+      { id: 'provider-session', agent: 'claude', calls: 1 },
+      { id: 'provider-session-suffix', agent: 'claude', calls: 1 },
+      { id: 'dsh-session', agent: 'claude', calls: 1 },
+      { id: 'native-dsh-session', agent: 'dsh', calls: 1 },
+    ],
+  })
+  assert.ok(dashboard)
+  const enriched = attachMagpieSessionNames({
+    period: 'today', capturedAt: '2026-10-23T00:00:00Z', availabilityIssue: null,
+    usageStatus: 'available', aggregate: dashboard.aggregate, series: dashboard.series,
+    agents: dashboard.agents, providers: dashboard.providers, models: dashboard.models,
+    accounts: dashboard.accounts, sessions: dashboard.sessions, sessionCount: dashboard.sessionCount,
+    quotaStatus: 'unavailable', quotas: [], quotaHistoryStatus: 'unavailable', quotaHistory: [],
+  }, [
+    { dshSessionId: 'dsh-session', providerSessionId: 'provider-session', adapterId: 'claude-code', name: 'Fix routing' },
+    { dshSessionId: 'native-dsh-session', adapterId: 'dsh', name: 'Native title' },
+  ])
+  assert.equal(enriched.sessions.find((row) => row.id === 'provider-session')?.dshSessionName, 'Fix routing')
+  assert.equal(enriched.sessions.find((row) => row.id === 'native-dsh-session')?.dshSessionName, 'Native title')
+  assert.equal(enriched.sessions.find((row) => row.id === 'provider-session-suffix')?.dshSessionName, undefined)
+  assert.equal(enriched.sessions.find((row) => row.id === 'dsh-session')?.dshSessionName, undefined)
 })
 
 test('Magpie quota cards and history preserve nullable windows and exact observed names', () => {

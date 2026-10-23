@@ -585,6 +585,7 @@ function MagpieUsagePanel({ usage, aggregateRows, sessionRows, t }: {
       createElement('strong', { style: magpieSectionTitleStyle }, t('usage.magpieSessionTitle')),
       usage.sessionId !== null && createElement('div', { style: magpieSessionIdentityStyle },
         createElement('span', undefined, t('usage.magpieAgent', { agent: usage.agent })),
+        usage.sessionName !== undefined && createElement('strong', { style: magpieSessionNameStyle, title: usage.sessionName }, usage.sessionName),
         createElement('code', { style: magpieSessionIdStyle }, usage.sessionId),
       ),
       usage.session === null
@@ -1490,6 +1491,7 @@ const magpieStatStyle = { display: 'grid', alignContent: 'space-between', gap: 1
 const magpieStatLabelStyle = { minWidth: 0, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), lineHeight: '13px', overflowWrap: 'anywhere' as const }
 const magpieRowValueStyle = { color: dshThemeColor.labelPrimary, fontSize: uiFontSize(14), fontWeight: 650, lineHeight: '18px', textAlign: 'right' as const, overflowWrap: 'anywhere' as const }
 const magpieSessionIdentityStyle = { display: 'flex', flexWrap: 'wrap' as const, alignItems: 'baseline', gap: '2px 10px', minWidth: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: '16px' }
+const magpieSessionNameStyle = { maxWidth: '100%', overflow: 'hidden', color: dshThemeColor.labelPrimary, fontSize: uiFontSize(12), fontWeight: 650, textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const }
 const magpieSessionIdStyle = { flex: '1 1 120px', minWidth: 0, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), lineHeight: '14px', whiteSpace: 'normal' as const, overflowWrap: 'anywhere' as const }
 const magpieAttemptsStyle = { display: 'grid', gap: 5, paddingTop: 6 }
 const magpieAttemptRowStyle = { display: 'flex', justifyContent: 'space-between', gap: 14, fontSize: uiFontSize(12) }

@@ -72,6 +72,14 @@ const MAGPIE_USAGE_AGENT_ALIASES: Readonly<Record<string, readonly string[]>> = 
   commandcode: ['commandcode', 'codingns4dsh'],
 }
 
+/** A safe, non-sensitive title associated with a DSH session identity. */
+export interface MagpieSessionNameBinding {
+  readonly dshSessionId: string
+  readonly providerSessionId?: string
+  readonly adapterId: CodingNsCliAdapterId
+  readonly name: string
+}
+
 /** Magpie's agent IDs are verified from the matching catalog output. */
 export type MagpieAgent = string
 
@@ -827,6 +835,63 @@ export function magpieAgentForAdapter(adapterId: CodingNsCliAdapterId): MagpieAg
   return agent !== undefined && isMagpieAgentId(agent) ? agent : null
 }
 
+/** Return the exact Magpie Agent identities accepted for one adapter. */
+export function magpieUsageAgentAliases(adapterId: CodingNsCliAdapterId): readonly string[] {
+  const agent = magpieAgentForAdapter(adapterId)
+  return agent === null ? [] : MAGPIE_USAGE_AGENT_ALIASES[agent] ?? [agent]
+}
+
+/**
+ * Enrich dashboard session rows only after an exact `(Agent, session ID)` match.
+ * Provider session IDs and DSH IDs are both candidates because Command Code and
+ * native DSH use different identities across Magpie versions.
+ */
+export function attachMagpieSessionNames(
+  dashboard: MagpieUsageDashboard,
+  bindings: readonly MagpieSessionNameBinding[],
+): MagpieUsageDashboard {
+  if (!Array.isArray(dashboard.sessions) || bindings.length === 0) return dashboard
+  const names = new Map<string, string>()
+  const ambiguous = new Set<string>()
+  for (const binding of bindings) {
+    const name = cleanSessionName(binding.name)
+    const dshSessionId = cleanText(binding.dshSessionId)
+    if (name === null || dshSessionId === null) continue
+    // Match the identity strategy used by compact usage: native DSH uses its
+    // DSH ID, Command Code may use either injected DSH or ACP ID, and other
+    // adapters use only their Provider session ID.
+    const providerSessionId = cleanText(binding.providerSessionId)
+    const ids = new Set((binding.adapterId === 'dsh'
+      ? [dshSessionId]
+      : binding.adapterId === 'command-code'
+        ? [dshSessionId, providerSessionId]
+        : [providerSessionId]).filter((value): value is string => value !== null))
+    for (const agent of magpieUsageAgentAliases(binding.adapterId)) {
+      for (const id of ids) {
+        const key = `${agent}\u0000${id}`
+        if (ambiguous.has(key)) continue
+        const previous = names.get(key)
+        if (previous !== undefined && previous !== name) {
+          names.delete(key)
+          ambiguous.add(key)
+        } else {
+          names.set(key, name)
+        }
+      }
+    }
+  }
+  if (names.size === 0) return dashboard
+  let changed = false
+  const sessions = dashboard.sessions.map((session) => {
+    if (session.dshSessionName !== undefined) return session
+    const name = names.get(`${session.agent}\u0000${session.id}`)
+    if (name === undefined) return session
+    changed = true
+    return { ...session, dshSessionName: name }
+  })
+  return changed ? { ...dashboard, sessions } : dashboard
+}
+
 function isMagpieAgentId(value: string): boolean {
   return value.length <= 64 && /^[a-z0-9][a-z0-9-]*$/u.test(value)
 }
@@ -1359,6 +1424,12 @@ function cleanText(value: unknown): string | null {
   if (typeof value !== 'string') return null
   const text = value.trim()
   return text === '' || text.length > 512 || /[\u0000-\u001f\u007f]/u.test(text) ? null : text
+}
+
+function cleanSessionName(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const text = value.trim().replace(/[\u0000-\u001f\u007f]/gu, '').slice(0, 240)
+  return text === '' ? null : text
 }
 
 /** Pi and Command Code store Magpie selections with a local `magpie/` provider prefix. */

@@ -166,6 +166,8 @@ export interface MagpieUsageSnapshot {
   readonly usageStatus: 'available' | 'unavailable'
   readonly aggregate: MagpieUsageTotals | null
   readonly sessionId: string | null
+  /** DSH's human-readable title when the matched session is known. */
+  readonly sessionName?: string
   readonly session: MagpieSessionUsage | null
   readonly routeStatus: MagpieUsageRouteStatus
   readonly route: MagpieRouteUsage | null

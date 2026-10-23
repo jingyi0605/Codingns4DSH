@@ -47,6 +47,8 @@ export interface MagpieUsageSeriesPoint extends MagpieUsageMetrics {
 export interface MagpieUsageSession extends MagpieUsageMetrics {
   readonly id: string
   readonly agent: string
+  /** DSH's human-readable title when this Magpie session was matched exactly. */
+  readonly dshSessionName?: string
 }
 
 export interface MagpieDashboardQuotaWindow {

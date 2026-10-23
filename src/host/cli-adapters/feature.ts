@@ -23,13 +23,14 @@ import { CodingNsCliSessionStore } from './session-store.js'
 import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
 import { CommandCodeSubscriptionService } from './command-code-subscription.js'
 import { ProviderSubscriptionService } from './provider-subscription.js'
-import { MagpieUsageService, magpieAgentForAdapter } from './magpie-usage.js'
+import { attachMagpieSessionNames, MagpieUsageService, magpieAgentForAdapter, type MagpieSessionNameBinding } from './magpie-usage.js'
 import { MagpieManagementService } from './magpie-management.js'
 import { MagpieWebService } from './magpie-web.js'
 import type { MagpieDashboardPeriod } from '../../shared/contracts/magpie-management.js'
 import { createMagpieSessionRouting } from './magpie-session-routing.js'
 import { normalizeSubagentBridgeSettings, normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsHostServices } from '../features/types.js'
+import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import { setAdapterRegistry } from './registry-holder.js'
 import { createDshVirtualProviderRegistration } from './dsh-virtual-providers.js'
@@ -374,7 +375,10 @@ export function createCliAdaptersFeature(options: {
               && session !== undefined && session.adapterId === subscription.adapterId) {
               const magpie = await magpieUsage.read(session, requestSignal, subscription.includeRoute, subscription.sessionId)
               requestSignal.throwIfAborted()
-              if (magpie !== null) return { providerUsage: null, magpie }
+              if (magpie !== null) {
+                const sessionName = subscription.sessionId === undefined ? undefined : readDshSessionDisplayName(subscription.sessionId, sessionStore, nativeSessions)
+                return { providerUsage: null, magpie: sessionName === undefined ? magpie : { ...magpie, sessionName } }
+              }
             }
             requestSignal.throwIfAborted()
             const providerUsage = await subscriptions.read(subscription.adapterId, subscription.providerId, subscription.modelId)
@@ -408,8 +412,10 @@ export function createCliAdaptersFeature(options: {
         const rpcSignal = asRecord(rpcContext)?.signal
         const signal = isAbortSignal(rpcSignal) ? rpcSignal : lifetime.signal
         switch (action) {
-          case 'usage/dashboard':
-            return magpieUsage.readDashboard(readMagpieDashboardPeriod(payload), signal)
+          case 'usage/dashboard': {
+            const dashboard = await magpieUsage.readDashboard(readMagpieDashboardPeriod(payload), signal)
+            return attachMagpieSessionNames(dashboard, await magpieSessionNameBindings(sessionStore, nativeSessions, signal))
+          }
           case 'usage/requests':
             return magpieUsage.readRequestPage(readMagpieRequestOptions(payload), signal)
           case 'management/snapshot':
@@ -2027,6 +2033,78 @@ function readOptionalMagpieIdentity(value: unknown, maxLength: number): string |
     throw new TypeError('Magpie session identity is invalid')
   }
   return text
+}
+
+async function magpieSessionNameBindings(
+  sessionStore: CodingNsCliSessionStore,
+  nativeSessions: CodingNsNativeSessionBridge | undefined,
+  signal?: AbortSignal,
+): Promise<readonly MagpieSessionNameBinding[]> {
+  const records = sessionStore.list({ includeArchived: true })
+  const bindings: MagpieSessionNameBinding[] = []
+  const knownSessionIds = new Set<string>()
+  let nativeValues: readonly unknown[] = nativeSessions?.list() ?? []
+  if (nativeSessions?.listRemote !== undefined) {
+    try { nativeValues = await nativeSessions.listRemote(signal) } catch { signal?.throwIfAborted() }
+  }
+  const nativeNames = new Map<string, string>()
+  for (const value of nativeValues) {
+    const sessionId = nativeSessionId(value)
+    const name = readNativeSessionDisplayName(value)
+    if (sessionId !== undefined && name !== undefined) nativeNames.set(sessionId, name)
+  }
+  for (const record of records) {
+    knownSessionIds.add(record.dshSessionId)
+    const name = nativeNames.get(record.dshSessionId) ?? readDshSessionDisplayName(record.dshSessionId, sessionStore, nativeSessions)
+    if (name === undefined) continue
+    bindings.push({
+      dshSessionId: record.dshSessionId,
+      adapterId: record.adapterId,
+      ...(record.providerSessionId === undefined ? {} : { providerSessionId: record.providerSessionId }),
+      name,
+    })
+  }
+  // Native DSH sessions do not always have a CodingNS session-index record. They
+  // still use the DSH session ID as Magpie's identity, so include their title
+  // only when no external adapter binding claims the same DSH session.
+  for (const value of nativeValues) {
+    const sessionId = nativeSessionId(value)
+    if (sessionId === undefined || knownSessionIds.has(sessionId)) continue
+    const name = readNativeSessionDisplayName(value)
+    if (name === undefined) continue
+    bindings.push({ dshSessionId: sessionId, adapterId: 'dsh', name })
+  }
+  return bindings
+}
+
+function readDshSessionDisplayName(
+  sessionId: string,
+  sessionStore: CodingNsCliSessionStore,
+  nativeSessions: CodingNsNativeSessionBridge | undefined,
+): string | undefined {
+  return readNativeSessionDisplayName(nativeSessions?.get(sessionId)) ?? cleanDisplayName(sessionStore.get(sessionId)?.title)
+}
+
+function readNativeSessionDisplayName(value: unknown): string | undefined {
+  const root = asRecord(value)
+  if (root === null) return undefined
+  const projection = asRecord(root.projections) ?? asRecord(asRecord(root.record)?.projections)
+  const values = asRecord(projection?.values)
+  const record = asRecord(root.record)
+  const rows = asRecord(record?.rows)
+  const rowProjection = asRecord(rows?.projections)
+  const rowValues = asRecord(rowProjection?.values)
+  for (const candidate of [values?.title, rowValues?.title, root.title, root.name, root.displayName, record?.title, record?.name]) {
+    const title = cleanDisplayName(candidate)
+    if (title !== undefined) return title
+  }
+  return undefined
+}
+
+function cleanDisplayName(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const name = value.trim().replace(/[\u0000-\u001f\u007f]/gu, '').slice(0, 240)
+  return name === '' ? undefined : name
 }
 
 function asRecord(value: unknown): Record<string, any> | null { return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, any> : null }
