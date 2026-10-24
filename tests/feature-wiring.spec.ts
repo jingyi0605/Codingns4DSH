@@ -571,7 +571,17 @@ test('Magpie 管理与用量模块默认关闭，紧随外部 Agent 设置并允
     describe: () => [{ ns: 'codingns', revision: 1, value: settingsOf({}) }],
     get: () => settingsOf({}),
     mutate: async (_namespace: string, ops: unknown) => { received = ops },
-  } as never)
+  } as never, {
+    detectMagpie: async () => ({
+      installed: true,
+      platform: 'linux',
+      source: 'path',
+      command: '/usr/local/bin/magpie',
+      version: '0.1.1330',
+      reason: null,
+      checkedAt: 'test',
+    }),
+  })
   await handler('set', {
     ops: [{ op: 'set', path: ['modules', 'magpieManagement'], value: true }],
   })

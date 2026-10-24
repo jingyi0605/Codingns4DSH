@@ -2094,8 +2094,12 @@ test('Host 不会把未确认的 Magpie 模型当成 Magpie 用量', async (t) =
     async start() {}, async stop() {}, async dispose() {},
     async requestJson() { throw new Error('Unexpected Web API request') },
   }
+  const subscriptions = {
+    async read() { return { provider: 'deepseek', windows: [] } },
+    async reset() { return { ok: true } },
+  }
   const features = new FeatureRegistry({ rpc: table, settings })
-  features.register(createCliAdaptersFeature({ registry, magpieUsage: magpieUsage as never, magpieWeb: magpieWeb as never }))
+  features.register(createCliAdaptersFeature({ registry, subscriptions: subscriptions as never, magpieUsage: magpieUsage as never, magpieWeb: magpieWeb as never }))
   await features.start('cliAdapters')
   t.after(() => features.disable('cliAdapters'))
   registry.setSession('unconfirmed-session', { adapterId: 'dsh', providerId: 'magpie', modelId: 'magpie/not-listed-model' })

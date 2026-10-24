@@ -433,6 +433,15 @@ test('Magpie Web starts and stops automatically with the management setting and 
   } } as never)
   registry.register(createCliAdaptersFeature({
     registry: new CodingNsCliAdapterRegistry([]),
+    magpieDetection: { detect: async () => ({
+      installed: true,
+      platform: 'linux',
+      source: 'path',
+      command: '/usr/local/bin/magpie',
+      version: '0.1.1330',
+      reason: null,
+      checkedAt: 'test',
+    }) } as never,
     magpieWeb: web as unknown as MagpieWebService,
     magpieUsage: { async readDashboard() { throw new Error('unused') } } as never,
     magpieManagement: { async readSnapshot() { throw new Error('unused') } } as never,
@@ -459,7 +468,17 @@ test('Magpie module enablement is writable only through the existing settings al
     describe: () => [{ ns: 'codingns', revision: 1, value }],
     get: () => value,
     mutate: async (_namespace: string, operations: unknown) => { received = operations },
-  } as never)
+  } as never, {
+    detectMagpie: async () => ({
+      installed: true,
+      platform: 'linux',
+      source: 'path',
+      command: '/usr/local/bin/magpie',
+      version: '0.1.1330',
+      reason: null,
+      checkedAt: 'test',
+    }),
+  })
 
   await settings('set', {
     ops: [{ op: 'set', path: ['modules', 'magpieManagement'], value: true }],

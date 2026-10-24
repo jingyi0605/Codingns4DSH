@@ -79,6 +79,8 @@ import { withTeamSupport } from '../cli-bridge/team-adapters.js'
 
 export function createCliAdaptersFeature(options: {
   registry?: CodingNsCliAdapterRegistry
+  /** Tests may provide a deterministic subscription reader without touching host credentials. */
+  subscriptions?: Pick<ProviderSubscriptionService, 'read' | 'reset'>
   updateCheck?: CliUpdateCheckOptions
   magpieUsage?: MagpieUsageService
   magpieManagement?: MagpieManagementService
@@ -112,7 +114,7 @@ export function createCliAdaptersFeature(options: {
         const timeoutMs = normalizeSubscriptionUsageSettings(settings?.subscriptionUsage).timeoutSecs * 1000
         return new ProviderSubscriptionService({ commandCode: new CommandCodeSubscriptionService({ timeoutMs }), timeoutMs })
       }
-      let subscriptions = buildSubscriptions(context.services.settings?.get())
+      let subscriptions: Pick<ProviderSubscriptionService, 'read' | 'reset'> = options.subscriptions ?? buildSubscriptions(context.services.settings?.get())
       let magpieDetection = options.magpieDetection ?? new MagpieInstallDetectionService(options.magpieDetectionOptions)
       // 最近一次可用的 Magpie 入口；探测会随用户指定的路径变化而重建，Web 服务总是读最新值。
       let magpieCommand: string | null = null
@@ -441,12 +443,11 @@ export function createCliAdaptersFeature(options: {
         if (action === 'management/detection') {
           const request = readMagpieDetectionRequest(payload)
           const force = readMagpieDetectionForce(payload)
-          // 手动指定的入口只对本次会话有效；重新指定后换成新的探测服务，旧结果不再复用。
-          if (request.commandPath !== undefined) {
-            magpieDetection = new MagpieInstallDetectionService({ ...options.magpieDetectionOptions, customCommand: request.commandPath })
-          }
-          // 指定的入口随请求带入，保证“指定路径”和“结果”来自同一次探测。
-          const detection = await magpieDetection.detect(request, { force: force || request.commandPath !== undefined })
+          // A custom path is request-scoped; it must not poison later automatic detection.
+          const detectionService = request.commandPath === undefined
+            ? magpieDetection
+            : new MagpieInstallDetectionService({ ...options.magpieDetectionOptions, customCommand: request.commandPath })
+          const detection = await detectionService.detect(request, { force: force || request.commandPath !== undefined })
           magpieCommand = MagpieInstallDetectionService.isUsable(detection) ? detection.command : null
           magpieVersion = MagpieInstallDetectionService.isUsable(detection) ? detection.version : null
           return detection
