@@ -477,16 +477,29 @@ export class MagpieUsageService {
     // Magpie's `q` is a free-text candidate search, not an exact session filter.
     // Fetch candidates from the beginning and apply the exact filter before paging;
     // otherwise unrelated rows can consume the requested page and hide valid rows.
+    //
+    // Scanning stops one match past the requested page: enough to fill it and to prove
+    // whether another page exists. `total` therefore stays `null` while the identity's
+    // candidate window is not exhausted; the page that reads the window's end reports
+    // the exact count. Aggregated DSH sessions scan every contributing identity so one
+    // provider conversation cannot hide another.
     const candidateLimit = 100
     const requestedEnd = options.offset + options.limit
     const rawRowsByKey = new Map<string, unknown>()
     let fullyScanned = true
     const perIdentityScanLimit = Math.floor(MAX_MAGPIE_SESSION_SCAN_ROWS / requestedSessionIds.length)
+    const acceptedAgents = MAGPIE_USAGE_AGENT_ALIASES[sessionAgent!] ?? [sessionAgent!]
+    const acceptedSessionIds = new Set(requestedSessionIds)
+    const matchesIn = (): number => [...rawRowsByKey.values()].reduce<number>((count, row) => {
+      const record = asRecord(row)
+      if (record === null) return count
+      if (!acceptedSessionIds.has(cleanText(record.session) ?? '') && !acceptedSessionIds.has(cleanText(record.native_session) ?? '')) return count
+      return acceptedAgents.includes(cleanText(record.agent) ?? '') ? count + 1 : count
+    }, 0)
     for (const querySessionId of requestedSessionIds) {
       let candidateOffset = 0
-      let candidateTotal: number | null = null
-      let exhausted = false
-      while (!exhausted && candidateOffset < perIdentityScanLimit) {
+      let reachedEnd = false
+      while (!reachedEnd && candidateOffset < perIdentityScanLimit) {
         const pageLimit = Math.min(candidateLimit, perIdentityScanLimit - candidateOffset)
         const page = await readCandidatePage(candidateOffset, pageLimit, querySessionId)
         if (page === null) return null
@@ -494,18 +507,16 @@ export class MagpieUsageService {
           const key = magpieRequestRowKey(row)
           if (!rawRowsByKey.has(key)) rawRowsByKey.set(key, row)
         }
-        candidateTotal = page.total
-        const nextOffset = candidateOffset + page.rows.length
-        exhausted = page.rows.length === 0
+        const pageLength = page.rows.length
+        const nextOffset = candidateOffset + pageLength
+        reachedEnd = pageLength === 0
           || nextOffset <= candidateOffset
-          || (page.total === null ? page.rows.length < pageLimit : nextOffset >= page.total)
+          || (page.total === null ? pageLength < pageLimit : nextOffset >= page.total)
         candidateOffset = nextOffset
-        // A single identity keeps the existing paged scan behavior. Aggregated DSH sessions
-        // must scan every contributing identity so one provider conversation cannot hide another.
-        if (requestedSessionIds.length === 1
-          && parseMagpieRequestRows([...rawRowsByKey.values()], sessionId, sessionAgent).length >= requestedEnd) break
+        // Enough rows for this page plus one more: no need to read the rest of the window.
+        if (!reachedEnd && matchesIn() > requestedEnd) break
       }
-      if (!exhausted && (candidateTotal === null || candidateOffset < candidateTotal)) fullyScanned = false
+      if (!reachedEnd) fullyScanned = false
     }
     const rawRows = [...rawRowsByKey.values()]
     const providerRecords = rawRows.some((row) => routeText(asRecord(row)?.agent) === 'codex')

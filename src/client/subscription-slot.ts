@@ -840,33 +840,55 @@ export function MagpieRouteRequests({ rpc, sessionId, sessionName, agent, t }: {
 }): ReactElement {
   const enabled = canReadMagpieSessionRequests(sessionId, agent)
   const [open, setOpen] = useState(false)
+  // 弹层固定筛选一个会话：这里持有从头累计的所有已加载请求，而不是只留当前一页。
   const [page, setPage] = useState<MagpieUsageRequestPage | null>(null)
   const [offset, setOffset] = useState(0)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(false)
   const [reloadKey, setReloadKey] = useState(0)
   const controllerRef = useRef<AbortController | null>(null)
+  const sequenceRef = useRef(0)
 
   useEffect(() => {
     if (!open || !enabled) return
     const controller = new AbortController()
     controllerRef.current = controller
+    // 只有一次请求在飞：更晚的请求序号作废更早的回包。
+    const sequence = sequenceRef.current + 1
+    sequenceRef.current = sequence
     setLoading(true)
     setError(false)
     void readMagpieSessionRequestPage(rpc, sessionId, agent, offset, controller.signal).then((next) => {
-      if (controller.signal.aborted) return
+      if (controller.signal.aborted || sequence !== sequenceRef.current) return
       if (next === null) { setError(true); return }
-      setPage(next)
+      setPage((current) => current === null || offset === 0
+        ? next
+        : { ...next, items: [...current.items, ...next.items] })
     }).catch(() => {
-      if (!controller.signal.aborted) setError(true)
+      if (!controller.signal.aborted && sequence === sequenceRef.current) setError(true)
     }).finally(() => {
-      if (!controller.signal.aborted) setLoading(false)
+      if (!controller.signal.aborted && sequence === sequenceRef.current) setLoading(false)
     })
     return () => {
       controller.abort()
       if (controllerRef.current === controller) controllerRef.current = null
     }
   }, [open, enabled, offset, reloadKey, rpc, sessionId, agent])
+
+  // 滚到列表底部就自动追加下一页：149 条请求也能一口气看完，不必数着点“加载更多”。
+  // 用捕获阶段监听滚动，真实滚动容器（弹层主体、表格横向容器）都在子树里。
+  useEffect(() => {
+    if (!open || typeof document === 'undefined' || !enabled) return
+    const onScroll = (event: Event): void => {
+      const target = event.target
+      if (!(target instanceof Element) || !target.closest('.codingns4dsh-magpie-requests-body')) return
+      if (target.scrollHeight - target.scrollTop - target.clientHeight > 160) return
+      if (loading || error || page === null || !page.hasMore) return
+      setOffset(page.items.length)
+    }
+    document.addEventListener('scroll', onScroll, true)
+    return () => document.removeEventListener('scroll', onScroll, true)
+  }, [open, enabled, loading, error, page])
 
   // 模态框覆盖整个视口，Esc 是移动端之外唯一的键盘关闭方式。
   useEffect(() => {
@@ -917,7 +939,11 @@ export function MagpieRouteRequests({ rpc, sessionId, sessionName, agent, t }: {
       error,
       t,
       onClose: close,
-      onOffsetChange: setOffset,
+      onOffsetChange: (value: number) => {
+        // 追加下一页；重试则从头重读，避免把同一页拼两遍。
+        if (value === 0) setPage(null)
+        setOffset(value)
+      },
       onRetry: () => { setLoading(true); setError(false); setReloadKey((value) => value + 1) },
     }),
   )
@@ -1015,6 +1041,8 @@ function MagpieSessionRequestsDialog({ sessionId, sessionName, agent, page, offs
             onOffsetChange,
             onClearSession: null,
             t,
+            // 弹层筛选的是单一会话，列表从头累计，直到整条会话的请求都加载完。
+            append: true,
           }),
         ),
       ),

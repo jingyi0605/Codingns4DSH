@@ -1834,6 +1834,7 @@ function magpieRequestFixture(overrides: Record<string, unknown> = {}): Record<s
 
 test('路由卡片标题栏的查看请求按钮复用管理页请求视图并固定当前会话', async (t) => {
   const calls: { readonly endpoint: string; readonly payload: Record<string, unknown> }[] = []
+  const requestsDialogRef = { current: null as never }
   const firstPage = {
     period: 'today', offset: 0, limit: 50, total: 120, hasMore: true,
     sessionId: 'agent-session-1', sessionAgent: 'claude',
@@ -1862,6 +1863,7 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
     sessionName: null,
     agent: 'claude',
     t: resolveCodingNsTranslator(),
+    requestsDialogRef,
   })
   t.after(() => view.dispose())
 
@@ -1884,6 +1886,7 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   assert.match(JSON.stringify(dialogTree), /Magpie 请求/u)
   const overlay = findTestElement(dialogTree, (element) => element.type === 'div' && element.props?.className === 'codingns4dsh-magpie-requests-overlay')
   assert.equal((overlay?.props?.style as { readonly zIndex?: number } | undefined)?.zIndex, 2147483000, 'the request modal must stay above the right sidebar')
+  assert.equal((overlay as { readonly ref?: unknown } | null)?.ref, requestsDialogRef, 'the portaled overlay must be registered as inside the usage popover for outside-pointer dismissal')
   const pageContent = renderRequestsPageContent(dialog)
   assert.match(pageContent, /请求模型/u, 'the reused management view should render its table headers')
   assert.match(pageContent, /实际模型/u)
@@ -1897,23 +1900,24 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   assert.match(pageContent, /gpt-6\.1-sol/u)
   assert.match(pageContent, /primary/u, 'the reused request view should render the account label')
   assert.match(pageContent, /500/u, 'failed requests should show their status')
-  assert.match(pageContent, /1–2 \/ 120/u, 'the reused view should render its own pagination summary')
-  assert.match(pageContent, /下一页/u)
+  assert.match(pageContent, /2 \/ 120/u, 'the appended list should show how many requests are loaded out of the session total')
+  assert.match(pageContent, /加载更多/u)
 
-  const nextButton = findTestElement(renderRequestsPageTree(dialog), (element) => element.type === 'button' && element.props?.children === '下一页')
-  assert.ok(nextButton, 'the reused view should page through requests')
-  ;(nextButton.props?.onClick as () => void)()
+  const loadMore = findTestElement(renderRequestsPageTree(dialog), (element) => element.type === 'button' && element.props?.children === '加载更多')
+  assert.ok(loadMore, 'the appended list should load the rest of the session on demand')
+  ;(loadMore.props?.onClick as () => void)()
   for (let attempt = 0; attempt < 8; attempt++) {
     await setImmediate()
     output = view.render()
   }
   assert.equal(calls.length, 2)
-  assert.deepEqual(calls[1]!.payload, { period: 'today', offset: 50, limit: 50, sessionId: 'agent-session-1', sessionAgent: 'claude' })
+  assert.deepEqual(calls[1]!.payload, { period: 'today', offset: 2, limit: 50, sessionId: 'agent-session-1', sessionAgent: 'claude' }, 'loading more continues after the rows already shown')
   const nextDialog = findRequestDialogElement(output)
   assert.ok(nextDialog)
   const nextContent = renderRequestsPageContent(nextDialog)
-  assert.match(nextContent, /claude-5-opus/u, 'the next page should replace the rows with the requested page')
-  assert.match(nextContent, /51–51 \/ 120/u)
+  assert.match(nextContent, /auto-gpt-6-1-sol/u, 'loading more keeps the rows already shown')
+  assert.match(nextContent, /claude-5-opus/u, 'loading more appends the next page instead of replacing the list')
+  assert.match(nextContent, /3 \/ 120/u)
 
   const closeButton = findTestElement(renderRequestDialog(nextDialog), (element) => element.type === 'button' && element.props?.className === 'codingns4dsh-magpie-requests-close')
   assert.ok(closeButton)
@@ -1951,6 +1955,54 @@ test('Codex request rows reconcile a stale provider id with the configured provi
   assert.equal(page?.items[0]?.provider, 'grox-codex')
   assert.equal(page?.items[0]?.account, 'codex', 'a session row without providerAccount uses the configured provider account label')
   assert.deepEqual(paths, ['/api/usage/requests?period=today&limit=100&offset=0&q=codex-session', '/api/providers'])
+})
+
+test('会话请求分页扫到整本账本末尾时给出精确总数，不再把最后一页标成还有更多', async () => {
+  // `q` 是 Magpie 的自由文本候选过滤，`session` 里含有 ID 的其他会话行也会被带出来。
+  // 149 条真实请求按时间从新到旧与这些行交错，旧的实现只按请求页大小截断候选，导致末尾丢失。
+  const sessionId = 'dsh-session-1'
+  const ledger: Record<string, unknown>[] = []
+  for (let index = 0; index < 149; index++) {
+    ledger.push({
+      route_id: 1000 + index, t: `2026-10-24T10:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}Z`,
+      agent: 'dsh', session: sessionId, provider: 'grox-ds', req: 'group/auto-deepseek', model: 'deepseek-v4.1-flash', served: 'deepseek-v4.1-flash', status: 200,
+    })
+    if (index % 3 === 0) {
+      ledger.push({
+        route_id: 5000 + index, t: `2026-10-24T09:00:${String(index % 60).padStart(2, '0')}Z`,
+        agent: 'claude', session: 'claude-other-session-1', provider: 'grox-claude', req: 'claude/model', model: 'model', served: 'model', status: 200,
+      })
+    }
+  }
+  ledger.sort((left, right) => String(right.t).localeCompare(String(left.t)))
+  const paths: string[] = []
+  const service = new MagpieUsageService({
+    webApi: {
+      async requestJson(path) {
+        paths.push(path)
+        const url = new URL(path, 'http://127.0.0.1:3430')
+        const offset = Number(url.searchParams.get('offset'))
+        const limit = Number(url.searchParams.get('limit'))
+        return { total: ledger.length, rows: ledger.slice(offset, offset + limit) }
+      },
+    },
+  })
+
+  const first = await service.readRequestPage({ period: 'today', offset: 0, limit: 50, sessionId, sessionAgent: 'dsh' })
+  assert.equal(first?.items.length, 50)
+  assert.equal(first?.total, null, 'a page that stops at its probe does not know the identity total yet')
+  assert.equal(first?.hasMore, true)
+  assert.match(paths[0] ?? '', /limit=100&offset=0&q=dsh-session-1$/u, 'candidates are read in bounded pages')
+
+  const second = await service.readRequestPage({ period: 'today', offset: 50, limit: 50, sessionId, sessionAgent: 'dsh' })
+  assert.equal(second?.items.length, 50)
+  assert.equal(second?.hasMore, true)
+
+  const last = await service.readRequestPage({ period: 'today', offset: 100, limit: 50, sessionId, sessionAgent: 'dsh' })
+  assert.equal(last?.items.length, 49, 'the last page keeps every remaining request of the session')
+  assert.equal(last?.total, 149, 'the whole candidate window was read, so the exact total is known')
+  assert.equal(last?.hasMore, false, 'the last page must not offer a next page')
+  assert.equal(paths.length, 5, 'each page reads only the candidate prefix it needs, not the whole ledger')
 })
 
 test('查看请求模态框在读取失败时给出重试，没有可绑定会话时不显示入口', async (t) => {
@@ -1996,7 +2048,7 @@ test('查看请求模态框在读取失败时给出重试，没有可绑定会�
   dialog = findRequestDialogElement(output)
   assert.ok(dialog)
   content = renderRequestsPageContent(dialog)
-  assert.match(content, /1–1 \/ 1/u)
+  assert.match(content, /1 \/ 1/u)
   assert.match(content, /auto-gpt-6-1-sol/u)
 
   const unboundView = createHookRenderer(MagpieRouteRequests, {

@@ -1,4 +1,4 @@
-import { createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { Fragment, createElement, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type {
   MagpieDashboardPeriod,
@@ -846,7 +846,7 @@ function sumSessions(sessions: readonly MagpieUsageSession[]): {
   return any ? total : { ...total }
 }
 
-export function RequestsPage({ page, loading, error, selectedSession, offset, onOffsetChange, onClearSession, t }: {
+export function RequestsPage({ page, loading, error, selectedSession, offset, onOffsetChange, onClearSession, t, append = false }: {
   readonly page: MagpieUsageRequestPage | null
   readonly loading: boolean
   readonly error: boolean
@@ -856,6 +856,11 @@ export function RequestsPage({ page, loading, error, selectedSession, offset, on
   /** 传 null 表示会话由外层固定筛选，不提供“清除筛选”动作。 */
   readonly onClearSession: (() => void) | null
   readonly t: (key: string, params?: Record<string, string | number>) => string
+  /**
+   * 列表模式：`page.items` 是从第 0 条开始累计的全部已加载请求，统计条按整份列表汇总，
+   * 底部换成“加载更多”，适合固定筛选一个会话后一口气看完。默认仍是单页分页。
+   */
+  readonly append?: boolean
 }): ReactElement {
   const items = page?.items ?? []
   const aggregate = sumRequests(items)
@@ -871,6 +876,8 @@ export function RequestsPage({ page, loading, error, selectedSession, offset, on
     { label: t('magpie.statSpeed'), value: aggregate.decodeTokens === null ? '—' : `${formatValue(aggregate.decodeTokens)} token/s`, detail: aggregate.decodeCount === null ? undefined : `${formatInteger(aggregate.decodeCount)} ${t('magpie.metricDecodeCount')}` },
     { label: t('magpie.statLatency'), value: aggregate.ttftMs === null ? '—' : `${formatValue(aggregate.ttftMs)} ms`, detail: t('magpie.statLatencyNote') },
   ]
+  /** 追加列表按位置生成稳定 key，翻页列表按本页偏移生成，切换页面时行不会错位。 */
+  const rowKey = (index: number): number => (append ? index : offset + index)
   return createElement('div', { className: 'codingns-magpie-view' },
     selectedSession !== null && createElement('div', { className: 'codingns-magpie-selection' },
       createElement('span', { className: 'codingns-magpie-provider-inline' },
@@ -889,7 +896,7 @@ export function RequestsPage({ page, loading, error, selectedSession, offset, on
             ? createElement(EmptyState, { message: t('magpie.noRequests') })
             : createElement('section', { className: 'codingns-magpie-panel codingns-magpie-request-panel' },
               createElement('div', { className: 'codingns-magpie-reqlist' },
-                ...items.map((request, index) => createElement(NativeRequestCard, { key: `${request.routeId ?? offset + index}:${request.time ?? ''}`, request, t })),
+                ...items.map((request, index) => createElement(NativeRequestCard, { key: `${request.routeId ?? rowKey(index)}:${request.time ?? ''}`, request, t })),
               ),
               createElement('div', { className: 'codingns-magpie-table-scroll' },
                 createElement('table', { className: 'codingns-magpie-table codingns-magpie-native-table' },
@@ -907,14 +914,22 @@ export function RequestsPage({ page, loading, error, selectedSession, offset, on
                     createElement('th', undefined, t('magpie.ncolSpeed')),
                     createElement('th', undefined, t('magpie.ncolStatus')),
                   )),
-                  createElement('tbody', undefined, ...items.map((request, index) => createElement(NativeRequestRow, { key: `${request.routeId ?? offset + index}:${request.time ?? ''}`, request, t }))),
+                  createElement('tbody', undefined, ...items.map((request, index) => createElement(NativeRequestRow, { key: `${request.routeId ?? rowKey(index)}:${request.time ?? ''}`, request, t }))),
                 ),
               ),
               createElement('div', { className: 'codingns-magpie-pagination' },
-                createElement('span', undefined, page.total === null ? t('magpie.pageOf', { page: Math.floor(offset / PAGE_SIZE) + 1 }) : `${offset + 1}–${Math.min(offset + items.length, page.total)} / ${formatInteger(page.total)}`),
+                createElement('span', undefined, append
+                  ? page.total === null
+                    ? t('magpie.loadedCount', { count: formatInteger(items.length) })
+                    : `${formatInteger(items.length)} / ${formatInteger(page.total)}`
+                  : page.total === null ? t('magpie.pageOf', { page: Math.floor(offset / PAGE_SIZE) + 1 }) : `${offset + 1}–${Math.min(offset + items.length, page.total)} / ${formatInteger(page.total)}`),
                 createElement('div', undefined,
-                  createElement('button', { type: 'button', disabled: offset === 0 || loading, onClick: () => onOffsetChange(Math.max(0, offset - PAGE_SIZE)) }, t('magpie.previous')),
-                  createElement('button', { type: 'button', disabled: !page.hasMore || loading, onClick: () => onOffsetChange(offset + PAGE_SIZE) }, t('magpie.next')),
+                  append
+                    ? createElement('button', { type: 'button', className: 'codingns-magpie-load-more', disabled: !page.hasMore || loading, onClick: () => onOffsetChange(items.length) }, loading ? t('magpie.loading') : t('magpie.loadMore'))
+                    : createElement(Fragment, undefined,
+                      createElement('button', { type: 'button', disabled: offset === 0 || loading, onClick: () => onOffsetChange(Math.max(0, offset - PAGE_SIZE)) }, t('magpie.previous')),
+                      createElement('button', { type: 'button', disabled: !page.hasMore || loading, onClick: () => onOffsetChange(offset + PAGE_SIZE) }, t('magpie.next')),
+                    ),
                 ),
               ),
             ),
