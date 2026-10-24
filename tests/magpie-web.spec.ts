@@ -180,6 +180,212 @@ test('Magpie Web fetches only bounded image assets through the authenticated ses
   await service.dispose()
 })
 
+test('Magpie Web follows the page port Magpie announces again after an in-place update restart', async () => {
+  const child = new EventEmitter() as ChildProcess & { stdout: PassThrough; pid: undefined; exitCode: number | null; signalCode: NodeJS.Signals | null }
+  child.stdout = new PassThrough()
+  child.pid = undefined
+  child.exitCode = null
+  child.signalCode = null
+  child.kill = (() => { child.exitCode = 0; queueMicrotask(() => child.emit('exit', 0, null)); return true }) as ChildProcess['kill']
+  const key = '0123456789abcdef'
+  let pagePort = 54331
+  const calls: Array<{ port: string; path: string; cookie: string | null }> = []
+  const service = new MagpieWebService({
+    webKey: key,
+    resolveCommand: async () => '/mock/bin/magpie',
+    spawn: (() => {
+      queueMicrotask(() => child.stdout.write(`● magpie web on http://127.0.0.1:${pagePort}/?k=${key}\n`))
+      return child
+    }) as typeof import('node:child_process').spawn,
+    fetch: (async (input, init) => {
+      const url = new URL(String(input))
+      calls.push({ port: url.port, path: url.pathname, cookie: new Headers(init?.headers).get('cookie') })
+      if (url.port !== String(pagePort)) throw connectionFailure(url.port)
+      if (url.pathname === '/') {
+        return new Response(null, {
+          status: 303,
+          headers: { location: '/', 'set-cookie': `magpie_web_${pagePort}=${key}; Path=/; HttpOnly` },
+        })
+      }
+      if (url.pathname === '/api/providers') return Response.json({ providers: [] })
+      if (url.pathname === '/api/settings') return Response.json({ theme: 'dark' })
+      throw new Error(`unexpected path ${url.pathname}`)
+    }) as typeof fetch,
+  })
+
+  assert.deepEqual(await service.requestJson('/api/settings'), { theme: 'dark' })
+  assert.equal(calls.at(-1)?.port, '54331')
+  // Magpie applied an update: the same child restarted itself on a new ephemeral port and
+  // announced the new link on the stdout pipe the Host still reads.
+  pagePort = 54332
+  child.stdout.write(`● magpie web on http://127.0.0.1:${pagePort}/?k=${key}\n`)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(await service.requestJson('/api/settings'), { theme: 'dark' })
+  assert.deepEqual(calls.slice(-2), [
+    { port: '54332', path: '/', cookie: null },
+    { port: '54332', path: '/api/settings', cookie: `magpie_web_54332=${key}` },
+  ], 'the moved page is authenticated again because its cookie is named after the port')
+  await service.dispose()
+})
+
+test('Magpie Web retries once against the port the restarted child announces after the request failed', async () => {
+  const child = new EventEmitter() as ChildProcess & { stdout: PassThrough; pid: undefined; exitCode: number | null; signalCode: NodeJS.Signals | null }
+  child.stdout = new PassThrough()
+  child.pid = undefined
+  child.exitCode = null
+  child.signalCode = null
+  child.kill = (() => { child.exitCode = 0; queueMicrotask(() => child.emit('exit', 0, null)); return true }) as ChildProcess['kill']
+  const key = '0123456789abcdef'
+  let pagePort = 54341
+  const calls: Array<{ port: string; path: string; cookie: string | null }> = []
+  const service = new MagpieWebService({
+    webKey: key,
+    resolveCommand: async () => '/mock/bin/magpie',
+    spawn: (() => {
+      queueMicrotask(() => child.stdout.write(`● magpie web on http://127.0.0.1:${pagePort}/?k=${key}\n`))
+      return child
+    }) as typeof import('node:child_process').spawn,
+    fetch: (async (input, init) => {
+      const url = new URL(String(input))
+      calls.push({ port: url.port, path: url.pathname, cookie: new Headers(init?.headers).get('cookie') })
+      if (url.port !== String(pagePort)) {
+        // the page moved a moment ago; its announcement reaches the Host just after this failure
+        const moved = String(pagePort)
+        setTimeout(() => child.stdout.write(`● magpie web on http://127.0.0.1:${moved}/?k=${key}\n`), 20)
+        throw connectionFailure(url.port)
+      }
+      if (url.pathname === '/') {
+        return new Response(null, {
+          status: 303,
+          headers: { location: '/', 'set-cookie': `magpie_web_${pagePort}=${key}; Path=/; HttpOnly` },
+        })
+      }
+      if (url.pathname === '/api/providers') return Response.json({ providers: [] })
+      if (url.pathname === '/api/settings') return Response.json({ theme: 'dark' })
+      throw new Error(`unexpected path ${url.pathname}`)
+    }) as typeof fetch,
+  })
+
+  assert.deepEqual(await service.requestJson('/api/settings'), { theme: 'dark' })
+  // the page restarts in place before the Host has read the new announcement
+  pagePort = 54342
+  assert.deepEqual(await service.requestJson('/api/settings'), { theme: 'dark' })
+  assert.deepEqual(calls.slice(-3), [
+    { port: '54341', path: '/api/settings', cookie: `magpie_web_54341=${key}` },
+    { port: '54342', path: '/', cookie: null },
+    { port: '54342', path: '/api/settings', cookie: `magpie_web_54342=${key}` },
+  ])
+  await service.dispose()
+})
+
+test('Magpie Web reports an HTTP failure without retrying it', async () => {
+  const child = new EventEmitter() as ChildProcess & { stdout: PassThrough; pid: undefined; exitCode: number | null; signalCode: NodeJS.Signals | null }
+  child.stdout = new PassThrough()
+  child.pid = undefined
+  child.exitCode = null
+  child.signalCode = null
+  child.kill = (() => { child.exitCode = 0; queueMicrotask(() => child.emit('exit', 0, null)); return true }) as ChildProcess['kill']
+  let settingsReads = 0
+  const service = new MagpieWebService({
+    webKey: '0123456789abcdef',
+    resolveCommand: async () => '/mock/bin/magpie',
+    spawn: (() => {
+      queueMicrotask(() => child.stdout.write('magpie web on http://127.0.0.1:54351/\n'))
+      return child
+    }) as typeof import('node:child_process').spawn,
+    fetch: (async (input) => {
+      const url = new URL(String(input))
+      if (url.pathname === '/') return new Response(null, {
+        status: 303,
+        headers: { location: '/', 'set-cookie': 'magpie_web_54351=0123456789abcdef; Path=/' },
+      })
+      if (url.pathname === '/api/providers') return Response.json({ providers: [] })
+      settingsReads += 1
+      return new Response(null, { status: 500 })
+    }) as typeof fetch,
+  })
+
+  await assert.rejects(service.requestJson('/api/settings'), /Magpie Web API returned HTTP 500/u)
+  assert.equal(settingsReads, 1)
+  await service.dispose()
+})
+
+test('Magpie Web resends a mutation only when the connection was refused', async () => {
+  const child = new EventEmitter() as ChildProcess & { stdout: PassThrough; pid: undefined; exitCode: number | null; signalCode: NodeJS.Signals | null }
+  child.stdout = new PassThrough()
+  child.pid = undefined
+  child.exitCode = null
+  child.signalCode = null
+  child.kill = (() => { child.exitCode = 0; queueMicrotask(() => child.emit('exit', 0, null)); return true }) as ChildProcess['kill']
+  const key = '0123456789abcdef'
+  let pagePort = 54361
+  let failureCode = 'ECONNREFUSED'
+  let announceOnFailure = false
+  const calls: Array<{ port: string; path: string; method: string }> = []
+  const service = new MagpieWebService({
+    webKey: key,
+    resolveCommand: async () => '/mock/bin/magpie',
+    spawn: (() => {
+      queueMicrotask(() => child.stdout.write(`● magpie web on http://127.0.0.1:${pagePort}/?k=${key}\n`))
+      return child
+    }) as typeof import('node:child_process').spawn,
+    fetch: (async (input, init) => {
+      const url = new URL(String(input))
+      calls.push({ port: url.port, path: url.pathname, method: init?.method ?? 'GET' })
+      if (url.port !== String(pagePort)) {
+        if (announceOnFailure) {
+          announceOnFailure = false
+          const moved = String(pagePort)
+          setTimeout(() => child.stdout.write(`● magpie web on http://127.0.0.1:${moved}/?k=${key}\n`), 20)
+        }
+        throw connectionFailure(url.port, failureCode)
+      }
+      if (url.pathname === '/') {
+        return new Response(null, {
+          status: 303,
+          headers: { location: '/', 'set-cookie': `magpie_web_${pagePort}=${key}; Path=/; HttpOnly` },
+        })
+      }
+      if (url.pathname === '/api/providers') return Response.json({ providers: [] })
+      if (url.pathname === '/api/provider/save') return Response.json({ saved: true })
+      throw new Error(`unexpected path ${url.pathname}`)
+    }) as typeof fetch,
+  })
+
+  await service.start()
+  // a refused connection never reached the page: the mutation is sent again on the new port
+  pagePort = 54362
+  announceOnFailure = true
+  assert.deepEqual(
+    await service.requestJson('/api/provider/save', { method: 'POST', body: { id: 'synthetic' } }),
+    { saved: true },
+  )
+  assert.deepEqual(calls.slice(-3).map(call => [call.port, call.path, call.method]), [
+    ['54361', '/api/provider/save', 'POST'],
+    ['54362', '/', 'GET'],
+    ['54362', '/api/provider/save', 'POST'],
+  ])
+  // a reset may have happened after Magpie applied it: report it instead of repeating it
+  pagePort = 54363
+  announceOnFailure = false
+  failureCode = 'ECONNRESET'
+  await assert.rejects(
+    service.requestJson('/api/provider/save', { method: 'POST', body: { id: 'synthetic' } }),
+    /fetch failed/u,
+  )
+  assert.equal(calls.at(-1)?.port, '54362')
+  assert.equal(calls.filter(call => call.port === '54363').length, 0)
+  await service.dispose()
+})
+
+function connectionFailure(port: string, code = 'ECONNREFUSED'): TypeError {
+  const error = new TypeError('fetch failed')
+  Object.defineProperty(error, 'cause', {
+    value: Object.assign(new Error(`connect ${code} 127.0.0.1:${port}`), { code }),
+  })
+  return error
+}
+
 test('installed Magpie Web API end-to-end in a temporary isolated profile', { skip: process.env.CODINGNS_MAGPIE_WEB_INTEGRATION !== '1' }, async () => {
   const root = await mkdtemp(join(tmpdir(), 'codingns-magpie-web-integration-'))
   const home = join(root, 'home')
