@@ -363,7 +363,11 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
       period,
       offset: requestOffset,
       limit: PAGE_SIZE,
-      ...(selectedSession === null ? {} : { sessionId: selectedSession.id, sessionAgent: selectedSession.agent }),
+      ...(selectedSession === null ? {} : {
+        sessionId: selectedSession.id,
+        ...(selectedSession.sessionIds === undefined ? {} : { sessionIds: selectedSession.sessionIds }),
+        sessionAgent: selectedSession.agent,
+      }),
     }, controller.signal).then((next) => {
       if (controller.signal.aborted || sequence !== requestSequence.current) return
       setRequestPage(next)

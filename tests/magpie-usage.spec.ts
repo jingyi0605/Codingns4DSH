@@ -1877,8 +1877,11 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   assert.deepEqual(calls[0]!.payload, { period: 'today', offset: 0, limit: 50, sessionId: 'agent-session-1', sessionAgent: 'claude' })
   const dialog = findRequestDialogElement(output)
   assert.ok(dialog, 'clicking the entry should open the request dialog')
-  assert.match(JSON.stringify(renderRequestDialog(dialog)), /"role":"dialog"/u)
-  assert.match(JSON.stringify(renderRequestDialog(dialog)), /Magpie 请求/u)
+  const dialogTree = renderRequestDialog(dialog)
+  assert.match(JSON.stringify(dialogTree), /"role":"dialog"/u)
+  assert.match(JSON.stringify(dialogTree), /Magpie 请求/u)
+  const overlay = findTestElement(dialogTree, (element) => element.type === 'div' && element.props?.className === 'codingns4dsh-magpie-requests-overlay')
+  assert.equal((overlay?.props?.style as { readonly zIndex?: number } | undefined)?.zIndex, 2147483000, 'the request modal must stay above the right sidebar')
   const pageContent = renderRequestsPageContent(dialog)
   assert.match(pageContent, /请求模型/u, 'the reused management view should render its table headers')
   assert.match(pageContent, /实际模型/u)
@@ -1887,6 +1890,7 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   assert.match(pageContent, /首字耗时/u)
   assert.match(pageContent, /auto-gpt-6-1-sol/u)
   assert.match(pageContent, /gpt-6\.1-sol/u)
+  assert.match(pageContent, /primary/u, 'the reused request view should render the account label')
   assert.match(pageContent, /500/u, 'failed requests should show their status')
   assert.match(pageContent, /1–2 \/ 120/u, 'the reused view should render its own pagination summary')
   assert.match(pageContent, /下一页/u)
@@ -1911,6 +1915,37 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   ;(closeButton.props?.onClick as () => void)()
   output = view.render()
   assert.equal(findRequestDialogElement(output), null, 'closing the dialog should remove it')
+})
+
+test('Codex request rows reconcile a stale provider id with the configured provider Agent', async () => {
+  const paths: string[] = []
+  const service = new MagpieUsageService({
+    webApi: {
+      async requestJson(path) {
+        paths.push(path)
+        if (path.startsWith('/api/usage/requests')) return {
+          total: 1,
+          rows: [{
+            route_id: 22, t: '2026-10-24T01:20:05Z', agent: 'codex', session: 'codex-session',
+            provider: 'grox-claude', req: 'group/auto-gpt-6-1-sol',
+            model: 'gpt-6.1-sol', served: 'gpt-6.1-sol', status: 200,
+          }],
+        }
+        if (path === '/api/providers') return { providers: [
+          { id: 'grox-claude', name: 'Grox Claude', account: { Agent: 'claude' }, models: [{ id: 'gpt-6.1-sol' }] },
+          { id: 'grox-codex', name: 'Grox Codex', account: { Agent: 'codex' }, models: [{ id: 'gpt-6.1-sol' }] },
+        ] }
+        throw new Error(`unexpected Magpie route: ${path}`)
+      },
+    },
+  })
+
+  const page = await service.readRequestPage({
+    period: 'today', offset: 0, limit: 50, sessionId: 'codex-session', sessionAgent: 'codex',
+  })
+  assert.equal(page?.items[0]?.provider, 'grox-codex')
+  assert.equal(page?.items[0]?.account, 'codex', 'a session row without providerAccount uses the configured provider account label')
+  assert.deepEqual(paths, ['/api/usage/requests?period=today&limit=100&offset=0&q=codex-session', '/api/providers'])
 })
 
 test('查看请求模态框在读取失败时给出重试，没有可绑定会话时不显示入口', async (t) => {

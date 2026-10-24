@@ -49,6 +49,8 @@ export interface MagpieUsageSession extends MagpieUsageMetrics {
   readonly agent: string
   /** DSH's human-readable title when this Magpie session was matched exactly. */
   readonly dshSessionName?: string
+  /** Exact Magpie ledger identities represented by this aggregated DSH session. */
+  readonly sessionIds?: readonly string[]
 }
 
 export interface MagpieDashboardQuotaWindow {

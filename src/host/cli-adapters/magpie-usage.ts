@@ -29,8 +29,10 @@ import type {
   MagpieUsageRequestPage,
   MagpieUsageSeriesPoint,
   MagpieUsageSession,
+  MagpieProviderManagementRecord,
 } from '../../shared/contracts/magpie-management.js'
 import { commandEnvironment, resolveCommandPath, runAsyncCommand, WINDOWS, withCommandSignal } from './process-utils.js'
+import { parseMagpieWebProviders } from './magpie-management.js'
 import type { MagpieWebService } from './magpie-web.js'
 
 const MAGPIE_CATALOG_TTL_MS = 60_000
@@ -41,11 +43,13 @@ const MAGPIE_MINIMUM_CLI_VERSION = [0, 1, 1295] as const
 const MAGPIE_CLI_TIMEOUT_MS = 10_000
 const MAGPIE_HTTP_TIMEOUT_MS = 3_000
 const MAGPIE_DASHBOARD_CACHE_TTL_MS = 15_000
+const MAGPIE_PROVIDER_CATALOG_TTL_MS = 15_000
 const MAX_MAGPIE_CLI_OUTPUT_BYTES = 512 * 1024
 const MAX_MAGPIE_RESPONSE_BYTES = 2 * 1024 * 1024
 const MAX_MAGPIE_ICON_FETCHES = 64
 const MAX_MAGPIE_MODELS = 10_000
 const MAX_MAGPIE_SESSION_SCAN_ROWS = 10_000
+const MAX_MAGPIE_SESSION_IDENTITIES = 16
 const MAX_MODEL_TOKEN_LIMIT = 1_000_000_000
 const MAGPIE_MODEL_ID_PATTERN = '[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._:/-]*)+'
 
@@ -83,7 +87,7 @@ export interface MagpieSessionNameBinding {
   readonly dshSessionId: string
   readonly providerSessionId?: string
   readonly adapterId: CodingNsCliAdapterId
-  readonly name: string
+  readonly name?: string
 }
 
 /** Magpie's agent IDs are verified from the matching catalog output. */
@@ -159,6 +163,7 @@ export interface MagpieUsageRequestOptions {
   readonly offset: number
   readonly limit: number
   readonly sessionId?: string
+  readonly sessionIds?: readonly string[]
   readonly sessionAgent?: string
 }
 
@@ -183,6 +188,7 @@ export class MagpieUsageService {
   private readonly dashboardCache = new Map<MagpieDashboardPeriod, { readonly dashboard: MagpieUsageDashboard; readonly loadedAt: number }>()
   private readonly dashboardRefreshes = new Map<MagpieDashboardPeriod, Promise<MagpieUsageDashboard>>()
   private readonly quotaLogoCache = new Map<string, string | null>()
+  private providerCatalog: { readonly records: readonly MagpieProviderManagementRecord[]; readonly loadedAt: number } | undefined
 
   constructor(options: MagpieUsageServiceOptions = {}) {
     this.readModels = options.readModels ?? readMagpieModels
@@ -423,14 +429,24 @@ export class MagpieUsageService {
       || !Number.isSafeInteger(options.offset) || options.offset < 0 || options.offset > 1_000_000
       || !Number.isSafeInteger(options.limit) || options.limit < 1 || options.limit > 100) return null
     const sessionId = options.sessionId === undefined ? null : cleanText(options.sessionId)
+    const sessionIds = options.sessionIds === undefined
+      ? []
+      : options.sessionIds.map(cleanText)
     const sessionAgent = options.sessionAgent === undefined ? null : cleanText(options.sessionAgent)
     if ((options.sessionId !== undefined && sessionId === null)
+      || sessionIds.some((value): value is null => value === null)
+      || sessionIds.length > MAX_MAGPIE_SESSION_IDENTITIES
       || (options.sessionAgent !== undefined && (sessionAgent === null || !isMagpieAgentId(sessionAgent)))
-      || ((sessionId === null) !== (sessionAgent === null))) return null
+      || ((sessionId === null) !== (sessionAgent === null))
+      || (sessionIds.length > 0 && sessionId === null)) return null
+    const requestedSessionIds = sessionId === null
+      ? []
+      : [...new Set([sessionId, ...sessionIds.filter((value): value is string => value !== null)])]
+    if (requestedSessionIds.length > MAX_MAGPIE_SESSION_IDENTITIES) return null
 
-    const readCandidatePage = async (offset: number, limit: number): Promise<{ readonly rows: readonly unknown[]; readonly total: number | null } | null> => {
+    const readCandidatePage = async (offset: number, limit: number, querySessionId: string | null): Promise<{ readonly rows: readonly unknown[]; readonly total: number | null } | null> => {
       const query = new URLSearchParams({ period: magpieWebPeriod(options.period), limit: String(limit), offset: String(offset) })
-      if (sessionId !== null) query.set('q', sessionId)
+      if (querySessionId !== null) query.set('q', querySessionId)
       const response = await this.readWebJson(`/api/usage/requests?${query.toString()}`, signal)
       if (!response.ok) return null
       const root = asRecord(response.value)
@@ -440,9 +456,12 @@ export class MagpieUsageService {
     }
 
     if (sessionId === null) {
-      const page = await readCandidatePage(options.offset, options.limit)
+      const page = await readCandidatePage(options.offset, options.limit, null)
       if (page === null) return null
-      const items = parseMagpieRequestRows(page.rows, null, null)
+      const providerRecords = page.rows.some((row) => routeText(asRecord(row)?.agent) === 'codex')
+        ? await this.readProviderCatalog(signal)
+        : []
+      const items = parseMagpieRequestRows(page.rows, null, null, providerRecords)
       return {
         period: options.period,
         offset: options.offset,
@@ -460,24 +479,39 @@ export class MagpieUsageService {
     // otherwise unrelated rows can consume the requested page and hide valid rows.
     const candidateLimit = 100
     const requestedEnd = options.offset + options.limit
-    const rawRows: unknown[] = []
-    let candidateTotal: number | null = null
-    let candidateOffset = 0
-    let exhausted = false
-    while (!exhausted && rawRows.length < MAX_MAGPIE_SESSION_SCAN_ROWS) {
-      const page = await readCandidatePage(candidateOffset, candidateLimit)
-      if (page === null) return null
-      rawRows.push(...page.rows)
-      candidateTotal = page.total
-      const nextOffset = candidateOffset + page.rows.length
-      exhausted = page.rows.length === 0
-        || nextOffset <= candidateOffset
-        || (page.total === null ? page.rows.length < candidateLimit : nextOffset >= page.total)
-      candidateOffset = nextOffset
-      if (parseMagpieRequestRows(rawRows, sessionId, sessionAgent).length >= requestedEnd) break
+    const rawRowsByKey = new Map<string, unknown>()
+    let fullyScanned = true
+    const perIdentityScanLimit = Math.floor(MAX_MAGPIE_SESSION_SCAN_ROWS / requestedSessionIds.length)
+    for (const querySessionId of requestedSessionIds) {
+      let candidateOffset = 0
+      let candidateTotal: number | null = null
+      let exhausted = false
+      while (!exhausted && candidateOffset < perIdentityScanLimit) {
+        const pageLimit = Math.min(candidateLimit, perIdentityScanLimit - candidateOffset)
+        const page = await readCandidatePage(candidateOffset, pageLimit, querySessionId)
+        if (page === null) return null
+        for (const row of page.rows) {
+          const key = magpieRequestRowKey(row)
+          if (!rawRowsByKey.has(key)) rawRowsByKey.set(key, row)
+        }
+        candidateTotal = page.total
+        const nextOffset = candidateOffset + page.rows.length
+        exhausted = page.rows.length === 0
+          || nextOffset <= candidateOffset
+          || (page.total === null ? page.rows.length < candidateLimit : nextOffset >= page.total)
+        candidateOffset = nextOffset
+        // A single identity keeps the existing paged scan behavior. Aggregated DSH sessions
+        // must scan every contributing identity so one provider conversation cannot hide another.
+        if (requestedSessionIds.length === 1
+          && parseMagpieRequestRows([...rawRowsByKey.values()], sessionId, sessionAgent).length >= requestedEnd) break
+      }
+      if (!exhausted && (candidateTotal === null || candidateOffset < candidateTotal)) fullyScanned = false
     }
-    const matching = parseMagpieRequestRows(rawRows, sessionId, sessionAgent)
-    const fullyScanned = exhausted || (candidateTotal !== null && candidateOffset >= candidateTotal)
+    const rawRows = [...rawRowsByKey.values()]
+    const providerRecords = rawRows.some((row) => routeText(asRecord(row)?.agent) === 'codex')
+      ? await this.readProviderCatalog(signal)
+      : []
+    const matching = parseMagpieRequestRows(rawRows, sessionId, sessionAgent, providerRecords, requestedSessionIds)
     const total = fullyScanned ? matching.length : null
     return {
       period: options.period,
@@ -521,8 +555,12 @@ export class MagpieUsageService {
       : { ok: false as const }
     const routeRows = routeHistoryResult.ok ? asRecord(routeHistoryResult.value)?.rows : null
     const routeHistoryValid = Array.isArray(routeRows) && routeRows.length <= 500
+    const providerRecords = agent === 'codex' && routeHistoryValid
+      && routeRows.some((row) => routeText(asRecord(row)?.agent) === 'codex')
+      ? await this.readProviderCatalog(signal)
+      : []
     const routeHistory = routeHistoryResult.ok && routeHistoryValid && resolvedSessionId !== null
-      ? readSessionRouteHistory(routeHistoryResult.value, agent, resolvedSessionId)
+      ? readSessionRouteHistory(routeHistoryResult.value, agent, resolvedSessionId, providerRecords)
       : []
     const route = routeHistory[0]?.route ?? null
     const routeStatus = route !== null
@@ -737,6 +775,17 @@ export class MagpieUsageService {
       signal?.throwIfAborted()
       return { ok: false }
     }
+  }
+
+  /** Provider management data is the canonical source when a usage row mislabels its upstream. */
+  private async readProviderCatalog(signal?: AbortSignal): Promise<readonly MagpieProviderManagementRecord[]> {
+    const cached = this.providerCatalog
+    if (cached !== undefined && this.now() - cached.loadedAt < MAGPIE_PROVIDER_CATALOG_TTL_MS) return cached.records
+    const response = await this.readWebJson('/api/providers', signal)
+    const parsed = response.ok ? parseMagpieWebProviders(response.value) : null
+    const records = parsed?.records ?? []
+    if (parsed !== null) this.providerCatalog = { records, loadedAt: this.now() }
+    return records
   }
 }
 
@@ -1014,46 +1063,129 @@ export function attachMagpieSessionNames(
   dashboard: MagpieUsageDashboard,
   bindings: readonly MagpieSessionNameBinding[],
 ): MagpieUsageDashboard {
-  if (!Array.isArray(dashboard.sessions) || bindings.length === 0) return dashboard
-  const names = new Map<string, string>()
+  if (!Array.isArray(dashboard.sessions)) return dashboard
+  const owners = new Map<string, MagpieSessionOwner>()
   const ambiguous = new Set<string>()
+  const ownerByGroup = new Map<string, MagpieSessionOwner>()
   for (const binding of bindings) {
-    const name = cleanSessionName(binding.name)
     const dshSessionId = cleanText(binding.dshSessionId)
-    if (name === null || dshSessionId === null) continue
-    // Match the identity strategy used by compact usage: native DSH uses its
-    // DSH ID, Command Code may use either injected DSH or ACP ID, and other
-    // adapters use only their Provider session ID.
+    const name = cleanSessionName(binding.name)
+    if (dshSessionId === null) continue
+    // Magpie versions may record either the provider conversation ID or the
+    // DSH ID; both exact identities represent the same DSH session.
     const providerSessionId = cleanText(binding.providerSessionId)
-    const ids = new Set((binding.adapterId === 'dsh'
-      ? [dshSessionId]
-      : binding.adapterId === 'command-code'
-        ? [dshSessionId, providerSessionId]
-        : [providerSessionId]).filter((value): value is string => value !== null))
+    const ids = new Set([dshSessionId, providerSessionId].filter((value): value is string => value !== null))
+    const groupKey = `dsh\u0000${dshSessionId}`
+    const owner: MagpieSessionOwner = ownerByGroup.get(groupKey) ?? {
+      groupKey,
+      dshSessionId,
+      agent: magpieAgentForAdapter(binding.adapterId) ?? binding.adapterId,
+      name,
+      ids: [...new Set(ids)],
+    }
+    if (ownerByGroup.has(groupKey)) {
+      ownerByGroup.set(groupKey, {
+        ...owner,
+        name: owner.name === null || name === null || owner.name === name ? owner.name ?? name : null,
+        ids: [...new Set([...owner.ids, ...ids])],
+      })
+    } else {
+      ownerByGroup.set(groupKey, owner)
+    }
+    const currentOwner = ownerByGroup.get(groupKey)!
     for (const agent of magpieUsageAgentAliases(binding.adapterId)) {
       for (const id of ids) {
         const key = `${agent}\u0000${id}`
         if (ambiguous.has(key)) continue
-        const previous = names.get(key)
-        if (previous !== undefined && previous !== name) {
-          names.delete(key)
+        const previous = owners.get(key)
+        if (previous !== undefined && previous.groupKey !== groupKey) {
+          owners.delete(key)
           ambiguous.add(key)
         } else {
-          names.set(key, name)
+          owners.set(key, currentOwner)
         }
       }
     }
   }
-  if (names.size === 0) return dashboard
-  let changed = false
-  const sessions = dashboard.sessions.map((session) => {
-    if (session.dshSessionName !== undefined) return session
-    const name = names.get(`${session.agent}\u0000${session.id}`)
-    if (name === undefined) return session
-    changed = true
-    return { ...session, dshSessionName: name }
+  for (const [key, owner] of owners) {
+    const currentOwner = ownerByGroup.get(owner.groupKey)
+    if (currentOwner !== undefined) owners.set(key, currentOwner)
+  }
+  const grouped = new Map<string, { session: MagpieUsageSession; ids: Set<string> }>()
+  for (const row of dashboard.sessions) {
+    const aliasKey = `${row.agent}\u0000${row.id}`
+    const owner = ambiguous.has(aliasKey) ? undefined : owners.get(aliasKey)
+    const groupKey = owner?.groupKey ?? `raw\u0000${row.agent}\u0000${row.id}`
+    const current = grouped.get(groupKey)
+    if (current === undefined) {
+      const ids = new Set(owner?.ids ?? [row.id])
+      ids.add(row.id)
+      const session: MagpieUsageSession = owner === undefined
+        ? row
+        : {
+            ...row,
+            id: owner.dshSessionId,
+            agent: owner.agent,
+            ...(owner.name === null ? {} : { dshSessionName: owner.name }),
+            sessionIds: [...ids],
+          }
+      grouped.set(groupKey, { session, ids })
+      continue
+    }
+    for (const id of owner?.ids ?? [row.id]) current.ids.add(id)
+    current.ids.add(row.id)
+    current.session = mergeMagpieUsageSessions(current.session, row, owner)
+  }
+  const sessions = [...grouped.values()].map(({ session, ids }) => {
+    if (ids.size <= 1 && session.sessionIds === undefined) return session
+    return { ...session, sessionIds: [...ids] }
   })
-  return changed ? { ...dashboard, sessions } : dashboard
+  if (sessions.length === dashboard.sessions.length && sessions.every((session, index) => session === dashboard.sessions[index])) return dashboard
+  return { ...dashboard, sessions }
+}
+
+interface MagpieSessionOwner {
+  readonly groupKey: string
+  readonly dshSessionId: string
+  readonly agent: string
+  readonly name: string | null
+  readonly ids: readonly string[]
+}
+
+function mergeMagpieUsageSessions(
+  current: MagpieUsageSession,
+  row: MagpieUsageSession,
+  owner: MagpieSessionOwner | undefined,
+): MagpieUsageSession {
+  return {
+    ...current,
+    id: owner?.dshSessionId ?? current.id,
+    agent: owner?.agent ?? current.agent,
+    calls: sumMagpieUsageMetric(current.calls, row.calls),
+    errors: sumMagpieUsageMetric(current.errors, row.errors),
+    retried: sumMagpieUsageMetric(current.retried, row.retried),
+    inputTokens: sumMagpieUsageMetric(current.inputTokens, row.inputTokens),
+    outputTokens: sumMagpieUsageMetric(current.outputTokens, row.outputTokens),
+    cacheReadTokens: sumMagpieUsageMetric(current.cacheReadTokens, row.cacheReadTokens),
+    cacheWriteTokens: sumMagpieUsageMetric(current.cacheWriteTokens, row.cacheWriteTokens),
+    reasoningTokens: sumMagpieUsageMetric(current.reasoningTokens, row.reasoningTokens),
+    cost: sumMagpieUsageMetric(current.cost, row.cost),
+    unpriced: sumMagpieUsageMetric(current.unpriced, row.unpriced),
+    credits: sumMagpieUsageMetric(current.credits, row.credits),
+    credited: sumMagpieUsageMetric(current.credited, row.credited),
+    timed: sumMagpieUsageMetric(current.timed, row.timed),
+    ttftMs: sumMagpieUsageMetric(current.ttftMs, row.ttftMs),
+    decodeMs: sumMagpieUsageMetric(current.decodeMs, row.decodeMs),
+    decodeTokens: sumMagpieUsageMetric(current.decodeTokens, row.decodeTokens),
+    decodeCount: sumMagpieUsageMetric(current.decodeCount, row.decodeCount),
+    ...(current.dshSessionName === undefined && owner?.name !== null && owner?.name !== undefined
+      ? { dshSessionName: owner.name }
+      : {}),
+  }
+}
+
+function sumMagpieUsageMetric(left: number | null, right: number | null): number | null {
+  return left === null && right === null ? null : (left ?? 0) + (right ?? 0)
 }
 
 function isMagpieAgentId(value: string): boolean {
@@ -1138,7 +1270,12 @@ function readSession(value: unknown, agent: MagpieAgent, sessionId: string): Mag
 }
 
 /** Read the durable request ledger when Magpie's short in-memory trace has expired. */
-function readSessionRouteHistory(value: unknown, agent: MagpieAgent, sessionId: string): readonly MagpieSessionRouteRecord[] {
+function readSessionRouteHistory(
+  value: unknown,
+  agent: MagpieAgent,
+  sessionId: string,
+  providerRecords: readonly MagpieProviderManagementRecord[] = [],
+): readonly MagpieSessionRouteRecord[] {
   const rows = asRecord(value)?.rows
   if (!Array.isArray(rows) || rows.length > 500) return []
   const usageAgents = MAGPIE_USAGE_AGENT_ALIASES[agent] ?? [agent]
@@ -1147,9 +1284,10 @@ function readSessionRouteHistory(value: unknown, agent: MagpieAgent, sessionId: 
     const rowAgent = cleanText(record?.agent)
     const session = cleanText(record?.session)
     const nativeSession = cleanText(record?.native_session)
-    const provider = routeText(record?.provider)
     if (record === null || rowAgent === null || !usageAgents.includes(rowAgent)
-      || (session !== sessionId && nativeSession !== sessionId) || provider === null) return []
+      || (session !== sessionId && nativeSession !== sessionId)) return []
+    const provider = normalizeMagpieRequestProvider(record, providerRecords)
+    if (provider === null) return []
 
     const requested = routeText(record.req)
     const model = routeText(record.model)
@@ -1536,8 +1674,11 @@ function parseMagpieRequestRows(
   rows: readonly unknown[],
   sessionId: string | null,
   sessionAgent: string | null,
+  providerRecords: readonly MagpieProviderManagementRecord[] = [],
+  sessionIds: readonly string[] = sessionId === null ? [] : [sessionId],
 ): readonly MagpieUsageRequest[] {
   const acceptedAgents = sessionAgent === null ? null : MAGPIE_USAGE_AGENT_ALIASES[sessionAgent] ?? [sessionAgent]
+  const acceptedSessionIds = new Set(sessionIds)
   return rows.flatMap((row) => {
     const record = asRecord(row)
     if (record === null) return []
@@ -1545,16 +1686,22 @@ function parseMagpieRequestRows(
     const nativeSession = cleanText(record.native_session)
     const agent = cleanText(record.agent)
     if (sessionId !== null
-      && (candidateSession !== sessionId && nativeSession !== sessionId
+      && (!acceptedSessionIds.has(candidateSession ?? '') && !acceptedSessionIds.has(nativeSession ?? '')
         || agent === null || acceptedAgents === null || !acceptedAgents.includes(agent))) return []
-    const item = parseMagpieRequest(record)
+    const item = parseMagpieRequest(record, providerRecords)
     return item === null ? [] : [sessionId === null ? item : { ...item, sessionId }]
   })
 }
 
-function parseMagpieRequest(record: Record<string, unknown>): MagpieUsageRequest | null {
+function magpieRequestRowKey(value: unknown): string {
+  const record = asRecord(value)
+  const routeId = safeRouteId(record?.route_id)
+  return routeId === null ? JSON.stringify(record) : `route:${routeId}`
+}
+
+function parseMagpieRequest(record: Record<string, unknown>, providerRecords: readonly MagpieProviderManagementRecord[] = []): MagpieUsageRequest | null {
   const agent = routeText(record.agent)
-  const provider = routeText(record.provider)
+  const provider = normalizeMagpieRequestProvider(record, providerRecords)
   const requestedModel = routeText(record.req)
   const servedModel = routeText(record.served)
   const group = requestedModel?.startsWith('group/') === true ? requestedModel.slice('group/'.length) : null
@@ -1563,7 +1710,7 @@ function parseMagpieRequest(record: Record<string, unknown>): MagpieUsageRequest
     time: routeText(record.t),
     agent,
     provider,
-    account: routeText(record.providerAccount),
+    account: normalizeMagpieRequestAccount(record, provider, providerRecords),
     requestedModel,
     servedModel,
     group,
@@ -1583,6 +1730,46 @@ function parseMagpieRequest(record: Record<string, unknown>): MagpieUsageRequest
     flowMs: safeDecimal(record.flow_ms),
     sessionId: cleanText(record.session) ?? cleanText(record.native_session),
   }
+}
+
+/** Session-filtered rows can omit the account label; use only the matching provider's safe catalog label. */
+function normalizeMagpieRequestAccount(
+  record: Record<string, unknown>,
+  provider: string | null,
+  providerRecords: readonly MagpieProviderManagementRecord[],
+): string | null {
+  const account = routeText(record.providerAccount)
+  if (account !== null || provider === null) return account
+  const matches = providerRecords.filter((item) => item.id === provider)
+  return matches.length === 1 ? matches[0]!.account : null
+}
+
+/**
+ * Magpie's usage ledger can retain a stale provider id after an Agent provider
+ * is renamed. Reconcile only Codex rows against the read-only provider catalog;
+ * arbitrary provider ids must remain untouched when the evidence is ambiguous.
+ */
+function normalizeMagpieRequestProvider(
+  record: Record<string, unknown>,
+  providerRecords: readonly MagpieProviderManagementRecord[],
+): string | null {
+  const provider = routeText(record.provider)
+  if (provider === null || routeText(record.agent)?.toLocaleLowerCase() !== 'codex') return provider
+  const codexProviders = providerRecords.filter((item) => item.accountAgent?.toLocaleLowerCase() === 'codex')
+  if (codexProviders.length === 0) return provider
+  const modelValues = [record.model, record.served, record.req]
+    .map(routeText)
+    .filter((value): value is string => value !== null)
+  const matches = codexProviders.filter((candidate) => candidate.models.some((model) =>
+    modelValues.some((value) => magpieModelMatchesProvider(value, model.id, candidate.id))))
+  if (matches.length === 1) return matches[0]!.id
+  return codexProviders.length === 1 ? codexProviders[0]!.id : provider
+}
+
+function magpieModelMatchesProvider(value: string, modelId: string, providerId: string): boolean {
+  if (value === modelId) return true
+  const prefix = `${providerId}/`
+  return modelId.startsWith(prefix) && value === modelId.slice(prefix.length)
 }
 
 function firstRouteText(record: Record<string, unknown>, keys: readonly string[]): string | null {

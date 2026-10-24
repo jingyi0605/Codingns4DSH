@@ -2221,6 +2221,7 @@ function readMagpieRequestOptions(payload: unknown): {
   readonly offset: number
   readonly limit: number
   readonly sessionId?: string
+  readonly sessionIds?: readonly string[]
   readonly sessionAgent?: string
 } {
   const record = asRecord(payload)
@@ -2235,9 +2236,15 @@ function readMagpieRequestOptions(payload: unknown): {
     throw new TypeError('Magpie request limit must be between 1 and 100')
   }
   const sessionId = readOptionalMagpieIdentity(record.sessionId, 512)
+  const sessionIds = record.sessionIds === undefined
+    ? undefined
+    : readOptionalMagpieIdentityList(record.sessionIds, 16, 512)
   const sessionAgent = readOptionalMagpieIdentity(record.sessionAgent, 64)
   if ((sessionId === undefined) !== (sessionAgent === undefined)) {
     throw new TypeError('Magpie session details require both sessionId and sessionAgent')
+  }
+  if (sessionIds !== undefined && sessionId === undefined) {
+    throw new TypeError('Magpie session IDs require a primary session ID')
   }
   if (sessionAgent !== undefined && !/^[a-z0-9][a-z0-9-]*$/u.test(sessionAgent)) {
     throw new TypeError('Magpie session Agent is invalid')
@@ -2247,6 +2254,7 @@ function readMagpieRequestOptions(payload: unknown): {
     offset,
     limit,
     ...(sessionId === undefined ? {} : { sessionId }),
+    ...(sessionIds === undefined ? {} : { sessionIds }),
     ...(sessionAgent === undefined ? {} : { sessionAgent }),
   }
 }
@@ -2259,6 +2267,13 @@ function readOptionalMagpieIdentity(value: unknown, maxLength: number): string |
     throw new TypeError('Magpie session identity is invalid')
   }
   return text
+}
+
+function readOptionalMagpieIdentityList(value: unknown, maxItems: number, maxLength: number): readonly string[] {
+  if (!Array.isArray(value) || value.length > maxItems) throw new TypeError('Magpie session IDs are invalid')
+  const values = value.map((item) => readOptionalMagpieIdentity(item, maxLength))
+  if (values.some((item): item is undefined => item === undefined)) throw new TypeError('Magpie session IDs are invalid')
+  return [...new Set(values as string[])]
 }
 
 async function magpieSessionNameBindings(
@@ -2282,12 +2297,11 @@ async function magpieSessionNameBindings(
   for (const record of records) {
     knownSessionIds.add(record.dshSessionId)
     const name = nativeNames.get(record.dshSessionId) ?? readDshSessionDisplayName(record.dshSessionId, sessionStore, nativeSessions)
-    if (name === undefined) continue
     bindings.push({
       dshSessionId: record.dshSessionId,
       adapterId: record.adapterId,
       ...(record.providerSessionId === undefined ? {} : { providerSessionId: record.providerSessionId }),
-      name,
+      ...(name === undefined ? {} : { name }),
     })
   }
   // Native DSH sessions do not always have a CodingNS session-index record. They
@@ -2297,8 +2311,7 @@ async function magpieSessionNameBindings(
     const sessionId = nativeSessionId(value)
     if (sessionId === undefined || knownSessionIds.has(sessionId)) continue
     const name = readNativeSessionDisplayName(value)
-    if (name === undefined) continue
-    bindings.push({ dshSessionId: sessionId, adapterId: 'dsh', name })
+    bindings.push({ dshSessionId: sessionId, adapterId: 'dsh', ...(name === undefined ? {} : { name }) })
   }
   return bindings
 }

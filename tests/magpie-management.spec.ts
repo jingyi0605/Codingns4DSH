@@ -54,13 +54,14 @@ test('Magpie dashboard parsers preserve verified usage fields and omit unknown/r
   assert.equal(parseMagpieDashboardUsage({ prompt: 'unrecognized only' }), null)
 })
 
-test('Magpie dashboard session rows show an exact DSH title without fuzzy matches', () => {
+test('Magpie dashboard session rows aggregate exact provider and DSH identities', () => {
   const dashboard = parseMagpieDashboardUsage({
     calls: 2,
     sessions: [
-      { id: 'provider-session', agent: 'claude', calls: 1 },
+      { id: 'provider-session', agent: 'claude', calls: 2, input: 10, output: 4, cost: 0.25 },
       { id: 'provider-session-suffix', agent: 'claude', calls: 1 },
-      { id: 'dsh-session', agent: 'claude', calls: 1 },
+      { id: 'dsh-session', agent: 'claude', calls: 3, input: 20, output: 6, cost: 0.75 },
+      { id: 'other-provider-session', agent: 'claude', calls: 4, cost: 2 },
       { id: 'native-dsh-session', agent: 'dsh', calls: 1 },
     ],
   })
@@ -73,12 +74,21 @@ test('Magpie dashboard session rows show an exact DSH title without fuzzy matche
     quotaStatus: 'unavailable', quotas: [], quotaHistoryStatus: 'unavailable', quotaHistory: [],
   }, [
     { dshSessionId: 'dsh-session', providerSessionId: 'provider-session', adapterId: 'claude-code', name: 'Fix routing' },
+    { dshSessionId: 'other-dsh-session', providerSessionId: 'other-provider-session', adapterId: 'claude-code', name: 'Other work' },
     { dshSessionId: 'native-dsh-session', adapterId: 'dsh', name: 'Native title' },
   ])
-  assert.equal(enriched.sessions.find((row) => row.id === 'provider-session')?.dshSessionName, 'Fix routing')
+  const aggregated = enriched.sessions.find((row) => row.id === 'dsh-session')
+  assert.ok(aggregated)
+  assert.equal(aggregated.dshSessionName, 'Fix routing')
+  assert.equal(aggregated.calls, 5)
+  assert.equal(aggregated.inputTokens, 30)
+  assert.equal(aggregated.outputTokens, 10)
+  assert.equal(aggregated.cost, 1)
+  assert.deepEqual(new Set(aggregated.sessionIds), new Set(['dsh-session', 'provider-session']))
+  assert.equal(enriched.sessions.some((row) => row.id === 'provider-session'), false, 'provider ID rows are folded into the DSH session')
   assert.equal(enriched.sessions.find((row) => row.id === 'native-dsh-session')?.dshSessionName, 'Native title')
   assert.equal(enriched.sessions.find((row) => row.id === 'provider-session-suffix')?.dshSessionName, undefined)
-  assert.equal(enriched.sessions.find((row) => row.id === 'dsh-session')?.dshSessionName, undefined)
+  assert.equal(enriched.sessions.find((row) => row.id === 'other-dsh-session')?.cost, 2, 'another DSH binding keeps its own totals')
 })
 
 test('Magpie quota cards and history preserve nullable windows and exact observed names', () => {
@@ -388,6 +398,44 @@ test('Magpie session request pages filter before pagination when q returns unrel
   assert.equal(page.total, 2, 'a fully scanned candidate result reports the exact session total')
   assert.equal(page.hasMore, false)
   assert.deepEqual(requested.map((path) => new URL(path, 'http://127.0.0.1:3430').searchParams.get('offset')), ['0', '100'])
+})
+
+test('Magpie request pages aggregate bounded session aliases and deduplicate ledger rows', async () => {
+  const requested: string[] = []
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      requested.push(path)
+      const url = new URL(path, 'http://127.0.0.1:3430')
+      const identity = url.searchParams.get('q')
+      if (identity === 'dsh-session') return {
+        total: 2,
+        rows: [
+          { route_id: 1, agent: 'claude', session: 'dsh-session', provider: 'example-provider', req: 'example-provider/one', cost: 0.01 },
+          { route_id: 3, agent: 'claude', session: 'other-session', provider: 'example-provider', req: 'example-provider/other', cost: 8 },
+        ],
+      }
+      if (identity === 'provider-session') return {
+        total: 2,
+        rows: [
+          { route_id: 2, agent: 'claude', session: 'provider-session', provider: 'example-provider', req: 'example-provider/two', cost: 0.02 },
+          { route_id: 1, agent: 'claude', native_session: 'provider-session', provider: 'example-provider', req: 'example-provider/duplicate', cost: 0.01 },
+        ],
+      }
+      throw new Error(`unexpected query identity: ${identity}`)
+    } },
+  })
+
+  const page = await service.readRequestPage({
+    period: 'today', offset: 1, limit: 1, sessionId: 'dsh-session', sessionIds: ['dsh-session', 'provider-session'], sessionAgent: 'claude',
+  })
+  assert.ok(page)
+  assert.equal(page.total, 2)
+  assert.equal(page.hasMore, false)
+  assert.deepEqual(page.items.map((item) => item.routeId), [2], 'pagination is applied after merging and deduplicating aliases')
+  assert.deepEqual(requested.map((path) => new URL(path, 'http://127.0.0.1:3430').searchParams.get('q')), ['dsh-session', 'provider-session'])
+  assert.equal(await service.readRequestPage({
+    period: 'today', offset: 0, limit: 10, sessionId: 'dsh-session', sessionIds: Array.from({ length: 17 }, (_, index) => `id-${index}`), sessionAgent: 'claude',
+  }), null, 'direct service callers cannot fan out beyond the bounded alias list')
 })
 
 test('Magpie request pages use the resolved ledger session identity for Command Code', async () => {
