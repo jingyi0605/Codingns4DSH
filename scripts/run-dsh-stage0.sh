@@ -20,7 +20,7 @@ runtime_env=(
   "DSH_HOME=$dsh_home"
   "CODINGNS4DSH_STATE_DIR=$state_dir"
   "CODINGNS4DSH_PROFILE_NAME=stage0"
-  "CODINGNS4DSH_LOGIN_COOKIE_NAME=dsh_codingns_stage0020"
+  "CODINGNS4DSH_LOGIN_COOKIE_NAME=dsh_codingns_stage0_021"
   "CODINGNS4DSH_STAGE0_REPO_ROOT=$repo_root"
   "CODINGNS4DSH_STAGE0_LAUNCHER=$dsh_bin"
 )
