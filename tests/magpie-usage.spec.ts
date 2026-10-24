@@ -4,7 +4,8 @@ import { setImmediate } from 'node:timers/promises'
 import test from 'node:test'
 import { MagpieUsageService, magpieAgentForAdapter, parseMagpieCliVersion, parseMagpieModelMetadata, parseMagpieModelOutput, parseMagpieQuotas } from '../src/host/cli-adapters/magpie-usage.js'
 import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js'
-import { SUBSCRIPTION_RESPONSIVE_CSS, calculateMagpiePopoverPlacement, registerSubscriptionSlot } from '../src/client/subscription-slot.js'
+import { MagpieRouteRequests, SUBSCRIPTION_RESPONSIVE_CSS, calculateMagpiePopoverPlacement, registerSubscriptionSlot } from '../src/client/subscription-slot.js'
+import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 
 const fixture = (name: string) => readFile(new URL(`./fixtures/${name}`, import.meta.url), 'utf8')
@@ -1440,6 +1441,13 @@ test('关闭 Magpie 用量弹层会取消当前路由读取', async (t) => {
   assert.match(routeContent, /请求的模型/u)
   assert.match(routeContent, /当前目标/u)
   assert.match(routeContent, /实际响应模型/u)
+  const requestsEntry = findTestElement(routePopover.type(routePopover.props as never), (element) => typeof element.type === 'function'
+    && element.props !== undefined
+    && 'rpc' in element.props
+    && 'agent' in element.props
+    && 'sessionId' in element.props)
+  assert.ok(requestsEntry, 'the route heading should render the session request entry')
+  assert.equal(requestsEntry.props?.sessionId, 'agent-session-1')
   assert.match(routeContent, /gridTemplateColumns/u, 'route stages should use a vertically stacked, wrapping layout')
   assert.match(routeContent, /"height":28/u, 'vertical connectors should scale with the route stages')
   assert.doesNotMatch(routeContent, /codingns4dsh-magpie-tab-quota/u, 'quota and routing should share one tab')
@@ -1634,4 +1642,212 @@ test('Magpie 模型已确认但网关不可用时不回退显示 Command Code �
     && typeof (child as { readonly type?: unknown }).type === 'function') as { readonly type: (props: never) => unknown; readonly props: unknown } | undefined
   assert.ok(popover, 'Magpie popover should render its content component')
   assert.match(JSON.stringify(popover.type(popover.props as never)), /暂时无法读取 Magpie 用量/u)
+})
+
+interface TestElement {
+  readonly type?: unknown
+  readonly props?: {
+    readonly children?: unknown
+    readonly className?: unknown
+    readonly role?: unknown
+    readonly onClick?: unknown
+    readonly disabled?: unknown
+    readonly [key: string]: unknown
+  }
+}
+
+/** 无 DOM 的组件树查找：只按元素属性匹配，不执行任何组件。 */
+function findTestElement(node: unknown, predicate: (element: TestElement) => boolean): TestElement | null {
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = findTestElement(child, predicate)
+      if (hit !== null) return hit
+    }
+    return null
+  }
+  if (node === null || typeof node !== 'object') return null
+  const element = node as TestElement
+  if (predicate(element)) return element
+  return findTestElement(element.props?.children, predicate)
+}
+
+/** 模态框是独立组件元素，查找后由测试直接展开它的内容树。 */
+function findRequestDialogElement(node: unknown): TestElement | null {
+  return findTestElement(node, (element) => typeof element.type === 'function'
+    && element.props !== undefined
+    && 'page' in element.props
+    && 'onOffsetChange' in element.props
+    && 'onClose' in element.props)
+}
+
+function renderRequestDialog(dialog: TestElement): unknown {
+  return (dialog.type as (props: never) => unknown)(dialog.props as never)
+}
+
+/** 弹层里的请求明细直接复用管理页的 RequestsPage；测试再展开这一层读取内容。 */
+function findRequestsPageElement(node: unknown): TestElement | null {
+  return findTestElement(node, (element) => typeof element.type === 'function'
+    && element.props !== undefined
+    && 'page' in element.props
+    && 'selectedSession' in element.props
+    && 'onOffsetChange' in element.props)
+}
+
+function renderRequestsPageTree(dialog: TestElement): unknown {
+  const pageElement = findRequestsPageElement(renderRequestDialog(dialog))
+  assert.ok(pageElement, 'the dialog should embed the management request page')
+  return (pageElement.type as (props: never) => unknown)(pageElement.props as never)
+}
+
+function renderRequestsPageContent(dialog: TestElement): string {
+  return JSON.stringify(renderRequestsPageTree(dialog))
+}
+
+function magpieRequestFixture(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    routeId: 1, time: '2026-10-24T01:20:05Z', agent: 'claude', provider: 'magpie', account: 'primary',
+    requestedModel: 'group/auto-gpt-6-1-sol', servedModel: 'codex/gpt-6.1-sol', group: 'auto-gpt-6-1-sol', effort: 'xhigh',
+    inputTokens: 1200, outputTokens: 340, cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: null,
+    cost: 0.004, priced: true, status: '200', durationMs: 2500, ttftMs: 600, firstTextMs: 620,
+    firstReasoningMs: null, flowMs: null, sessionId: 'agent-session-1',
+    ...overrides,
+  }
+}
+
+test('路由卡片标题栏的查看请求按钮复用管理页请求视图并固定当前会话', async (t) => {
+  const calls: { readonly endpoint: string; readonly payload: Record<string, unknown> }[] = []
+  const firstPage = {
+    period: 'today', offset: 0, limit: 50, total: 120, hasMore: true,
+    sessionId: 'agent-session-1', sessionAgent: 'claude',
+    items: [
+      magpieRequestFixture(),
+      magpieRequestFixture({ routeId: 2, status: '500', servedModel: null, cost: null }),
+    ],
+  }
+  const secondPage = {
+    period: 'today', offset: 50, limit: 50, total: 120, hasMore: true,
+    sessionId: 'agent-session-1', sessionAgent: 'claude',
+    items: [magpieRequestFixture({ routeId: 51, requestedModel: 'group/auto-claude-5-opus', servedModel: 'claude/claude-5-opus' })],
+  }
+  const rpc = {
+    call: async (_channel: string, endpoint: string, payload: unknown) => {
+      const input = payload as { readonly offset: number }
+      calls.push({ endpoint, payload: input as unknown as Record<string, unknown> })
+      return { ok: true as const, value: input.offset === 0 ? firstPage : secondPage }
+    },
+  }
+  const view = createHookRenderer(MagpieRouteRequests, {
+    rpc: rpc as never,
+    sessionId: 'agent-session-1',
+    sessionName: null,
+    agent: 'claude',
+    t: resolveCodingNsTranslator(),
+  })
+  t.after(() => view.dispose())
+
+  let output: unknown = view.render()
+  const requestsButton = findTestElement(output, (element) => element.type === 'button' && element.props?.className === 'codingns4dsh-magpie-route-requests')
+  assert.ok(requestsButton, 'the route heading should offer a request entry next to the status badge')
+  ;(requestsButton.props?.onClick as () => void)()
+  for (let attempt = 0; attempt < 8; attempt++) {
+    await setImmediate()
+    output = view.render()
+  }
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0]!.endpoint, 'magpie/usage/requests')
+  assert.deepEqual(calls[0]!.payload, { period: 'today', offset: 0, limit: 50, sessionId: 'agent-session-1', sessionAgent: 'claude' })
+  const dialog = findRequestDialogElement(output)
+  assert.ok(dialog, 'clicking the entry should open the request dialog')
+  assert.match(JSON.stringify(renderRequestDialog(dialog)), /"role":"dialog"/u)
+  assert.match(JSON.stringify(renderRequestDialog(dialog)), /Magpie 请求/u)
+  const pageContent = renderRequestsPageContent(dialog)
+  assert.match(pageContent, /请求模型/u, 'the reused management view should render its table headers')
+  assert.match(pageContent, /实际模型/u)
+  assert.match(pageContent, /报告费用/u)
+  assert.match(pageContent, /输出速度/u)
+  assert.match(pageContent, /首字耗时/u)
+  assert.match(pageContent, /auto-gpt-6-1-sol/u)
+  assert.match(pageContent, /gpt-6\.1-sol/u)
+  assert.match(pageContent, /500/u, 'failed requests should show their status')
+  assert.match(pageContent, /1–2 \/ 120/u, 'the reused view should render its own pagination summary')
+  assert.match(pageContent, /下一页/u)
+
+  const nextButton = findTestElement(renderRequestsPageTree(dialog), (element) => element.type === 'button' && element.props?.children === '下一页')
+  assert.ok(nextButton, 'the reused view should page through requests')
+  ;(nextButton.props?.onClick as () => void)()
+  for (let attempt = 0; attempt < 8; attempt++) {
+    await setImmediate()
+    output = view.render()
+  }
+  assert.equal(calls.length, 2)
+  assert.deepEqual(calls[1]!.payload, { period: 'today', offset: 50, limit: 50, sessionId: 'agent-session-1', sessionAgent: 'claude' })
+  const nextDialog = findRequestDialogElement(output)
+  assert.ok(nextDialog)
+  const nextContent = renderRequestsPageContent(nextDialog)
+  assert.match(nextContent, /claude-5-opus/u, 'the next page should replace the rows with the requested page')
+  assert.match(nextContent, /51–51 \/ 120/u)
+
+  const closeButton = findTestElement(renderRequestDialog(nextDialog), (element) => element.type === 'button' && element.props?.className === 'codingns4dsh-magpie-requests-close')
+  assert.ok(closeButton)
+  ;(closeButton.props?.onClick as () => void)()
+  output = view.render()
+  assert.equal(findRequestDialogElement(output), null, 'closing the dialog should remove it')
+})
+
+test('查看请求模态框在读取失败时给出重试，没有可绑定会话时不显示入口', async (t) => {
+  let calls = 0
+  const rpc = {
+    call: async () => {
+      calls += 1
+      return calls === 1
+        ? { ok: false as const, error: { code: 'CODINGNS_MAGPIE_DISABLED', message: 'disabled' } }
+        : { ok: true as const, value: { period: 'today', offset: 0, limit: 50, total: 1, hasMore: false, sessionId: 'agent-session-1', sessionAgent: 'claude', items: [magpieRequestFixture()] } }
+    },
+  }
+  const view = createHookRenderer(MagpieRouteRequests, {
+    rpc: rpc as never,
+    sessionId: 'agent-session-1',
+    sessionName: null,
+    agent: 'claude',
+    t: resolveCodingNsTranslator(),
+  })
+  t.after(() => view.dispose())
+
+  let output: unknown = view.render()
+  const requestsButton = findTestElement(output, (element) => element.type === 'button' && element.props?.className === 'codingns4dsh-magpie-route-requests')
+  assert.ok(requestsButton)
+  ;(requestsButton.props?.onClick as () => void)()
+  for (let attempt = 0; attempt < 8; attempt++) {
+    await setImmediate()
+    output = view.render()
+  }
+  let dialog = findRequestDialogElement(output)
+  assert.ok(dialog)
+  let content = renderRequestsPageContent(dialog)
+  assert.match(content, /无法读取用量数据/u, 'the reused view should render its own unavailable notice')
+  const retryButton = findTestElement(renderRequestDialog(dialog), (element) => element.type === 'button' && element.props?.className === 'codingns4dsh-magpie-requests-retry')
+  assert.ok(retryButton, 'a failed read should offer retry')
+  assert.equal(retryButton.props?.children, '刷新')
+  ;(retryButton.props?.onClick as () => void)()
+  for (let attempt = 0; attempt < 8; attempt++) {
+    await setImmediate()
+    output = view.render()
+  }
+  assert.equal(calls, 2)
+  dialog = findRequestDialogElement(output)
+  assert.ok(dialog)
+  content = renderRequestsPageContent(dialog)
+  assert.match(content, /1–1 \/ 1/u)
+  assert.match(content, /auto-gpt-6-1-sol/u)
+
+  const unboundView = createHookRenderer(MagpieRouteRequests, {
+    rpc: rpc as never,
+    sessionId: null,
+    sessionName: null,
+    agent: 'claude',
+    t: resolveCodingNsTranslator(),
+  })
+  t.after(() => unboundView.dispose())
+  assert.equal(findTestElement(unboundView.render(), (element) => element.type === 'button' && element.props?.className === 'codingns4dsh-magpie-route-requests'), null, 'a session without a Magpie binding cannot scope requests')
 })
