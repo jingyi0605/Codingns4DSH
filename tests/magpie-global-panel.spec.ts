@@ -170,6 +170,8 @@ test('Magpie dashboard renders as a flat page region rather than a modal overlay
   assert.match(markup, /codingns-magpie-tabs/u, 'sections are reachable from a top tab bar')
   assert.match(markup, /codingns-magpie-tab is-active" aria-current="page">/, 'the current section is marked on the tab bar')
   assert.doesNotMatch(markup, /codingns-magpie-rail|codingns-magpie-nav-item/u, 'the page no longer draws its own left sidebar next to the DSH sidebar')
+  assert.match(markup, /class="codingns-magpie-version-button"[^>]*aria-haspopup="dialog"/u, 'the Magpie version is the update-details trigger in the top bar')
+  assert.doesNotMatch(markup, /class="codingns-magpie-update-panel"/u, 'update details are not rendered as a standalone Overview card')
   assert.match(markup, />总览</u, 'Overview is a top-level native tab')
   assert.match(markup, />提供商</u)
   assert.match(markup, />路由组</u, 'the routing-group tab is named 路由组, as Magpie names the groups it edits')
