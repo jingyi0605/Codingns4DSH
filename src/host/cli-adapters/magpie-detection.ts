@@ -17,7 +17,16 @@ const MAX_VERSION_OUTPUT_BYTES = 256
 const MAX_DETECTION_CACHE_MS = 30_000
 /** 本机 PATH 里的可执行入口；Windows 上 npm 生成的无扩展名 POSIX shim 不执行。 */
 const EXECUTABLE_ENTRY = /\.(?:exe|com|cmd|bat)$/iu
-const WINDOWS_LAUNCHER_NAMES = ['magpie.exe', 'magpie.cmd', 'magpie.bat'] as const
+/** 官方 GitHub 构建与安装脚本可能保留发布文件名，也可能改名为 magpie.exe。 */
+const WINDOWS_LAUNCHER_NAMES = [
+  'magpie.exe',
+  'magpie.cmd',
+  'magpie.bat',
+  'magpie-windows-amd64.exe',
+  'magpie-windows-arm64.exe',
+  'magpie-cli-windows-amd64.exe',
+  'magpie-cli-windows-arm64.exe',
+] as const
 /** macOS/Linux 包管理器与手动安装的常见目录；只在 PATH 未命中时补充探测。 */
 const POSIX_COMMON_BIN_DIRS = ['/opt/homebrew/bin', '/usr/local/bin', '/opt/local/bin'] as const
 
@@ -53,9 +62,9 @@ export interface MagpieDetectionServiceOptions {
  * 两条平台路径刻意分开：
  * - macOS/Linux：登录 Shell 的完整 PATH（覆盖 Homebrew、nvm、fnm、volta 等用户目录），
  *   再用常见 bin 目录兜底；入口必须是可执行文件。
- * - Windows：`where.exe` 命中的 `.exe/.cmd/.bat` 优先（npm 全局包只有 `.cmd`），
- *   再补 USERPROFILE / APPDATA / LOCALAPPDATA 下的 npm、pnpm、Bun、Volta 全局目录，
- *   以及可能不在 PATH 上的独立安装目录。无扩展名 shim 不执行。
+ * - Windows：`where.exe` 命中的 `.exe/.cmd/.bat` 优先（同时覆盖注册表 PATH），
+ *   再扫描 PATH 目录与 USERPROFILE / APPDATA / LOCALAPPDATA 下的 standalone、npm、
+ *   pnpm、Bun、Volta 全局目录。无扩展名 shim 不执行。
  */
 export class MagpieInstallDetectionService {
   private readonly platform: NodeJS.Platform
@@ -167,7 +176,12 @@ export class MagpieInstallDetectionService {
     const home = this.environment.USERPROFILE
     const appData = this.environment.APPDATA
     const localAppData = this.environment.LOCALAPPDATA
+    const pathDirectories = this.pathEntries().split(';')
     const directories = [
+      // The official installer puts the standalone command in this directory and adds it
+      // to the per-user registry PATH; keep it explicit when the current PATH is stale.
+      ...(home === undefined ? [] : [root(`${home}\\.local\\bin`)]),
+      ...pathDirectories,
       ...(appData === undefined ? [] : [root(`${appData}\\npm`), root(`${appData}\\pnpm`)]),
       ...(localAppData === undefined ? [] : [
         root(`${localAppData}\\pnpm`),

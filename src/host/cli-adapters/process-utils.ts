@@ -85,6 +85,9 @@ export async function runAsyncCommand(
 
 /** 已解析的登录 Shell PATH（未解析时回退当前进程 PATH），供无进程的候选目录探测使用。 */
 export function resolvedCommandPathEntries(): string {
+  // Windows desktop processes need the registry-enriched PATH that where.exe uses.
+  // The caller reads this after command resolution has prepared the snapshot.
+  if (WINDOWS) return commandEnvironment('magpie').PATH ?? ''
   return loginShellPath ?? process.env.PATH ?? ''
 }
 
