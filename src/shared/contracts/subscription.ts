@@ -227,6 +227,8 @@ export interface MagpieUsageSnapshot {
   readonly usageStatus: 'available' | 'unavailable'
   readonly aggregate: MagpieUsageTotals | null
   readonly sessionId: string | null
+  /** Identity used by the request ledger; may differ from the displayed/provider session ID. */
+  readonly requestSessionId?: string
   /** DSH's human-readable title when the matched session is known. */
   readonly sessionName?: string
   readonly session: MagpieSessionUsage | null

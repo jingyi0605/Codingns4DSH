@@ -45,6 +45,7 @@ const MAX_MAGPIE_CLI_OUTPUT_BYTES = 512 * 1024
 const MAX_MAGPIE_RESPONSE_BYTES = 2 * 1024 * 1024
 const MAX_MAGPIE_ICON_FETCHES = 64
 const MAX_MAGPIE_MODELS = 10_000
+const MAX_MAGPIE_SESSION_SCAN_ROWS = 10_000
 const MAX_MODEL_TOKEN_LIMIT = 1_000_000_000
 const MAGPIE_MODEL_ID_PATTERN = '[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._:/-]*)+'
 
@@ -427,35 +428,66 @@ export class MagpieUsageService {
       || (options.sessionAgent !== undefined && (sessionAgent === null || !isMagpieAgentId(sessionAgent)))
       || ((sessionId === null) !== (sessionAgent === null))) return null
 
-    const query = new URLSearchParams({ period: magpieWebPeriod(options.period), limit: String(options.limit), offset: String(options.offset) })
-    if (sessionId !== null) query.set('q', sessionId)
-    const response = await this.readWebJson(`/api/usage/requests?${query.toString()}`, signal)
-    if (!response.ok) return null
-    const root = asRecord(response.value)
-    const rawRows = root?.rows
-    if (!Array.isArray(rawRows) || rawRows.length > 500) return null
-    const candidates = rawRows.flatMap((row) => {
-      const record = asRecord(row)
-      if (record === null) return []
-      const candidateSession = cleanText(record.session)
-      const nativeSession = cleanText(record.native_session)
-      const agent = cleanText(record.agent)
-      const acceptedAgents = sessionAgent === null ? [] : MAGPIE_USAGE_AGENT_ALIASES[sessionAgent] ?? [sessionAgent]
-      if (sessionId !== null
-        && (candidateSession !== sessionId && nativeSession !== sessionId || agent === null || !acceptedAgents.includes(agent))) return []
-      const item = parseMagpieRequest(record)
-      return item === null ? [] : [sessionId === null ? item : { ...item, sessionId }]
-    })
-    const total = sessionId === null ? safeCount(root?.total) : null
+    const readCandidatePage = async (offset: number, limit: number): Promise<{ readonly rows: readonly unknown[]; readonly total: number | null } | null> => {
+      const query = new URLSearchParams({ period: magpieWebPeriod(options.period), limit: String(limit), offset: String(offset) })
+      if (sessionId !== null) query.set('q', sessionId)
+      const response = await this.readWebJson(`/api/usage/requests?${query.toString()}`, signal)
+      if (!response.ok) return null
+      const root = asRecord(response.value)
+      const rows = root?.rows
+      if (!Array.isArray(rows) || rows.length > 500) return null
+      return { rows, total: safeCount(root?.total) }
+    }
+
+    if (sessionId === null) {
+      const page = await readCandidatePage(options.offset, options.limit)
+      if (page === null) return null
+      const items = parseMagpieRequestRows(page.rows, null, null)
+      return {
+        period: options.period,
+        offset: options.offset,
+        limit: options.limit,
+        total: page.total,
+        hasMore: page.total === null ? page.rows.length >= options.limit : options.offset + page.rows.length < page.total,
+        sessionId,
+        sessionAgent,
+        items: items.slice(0, options.limit),
+      }
+    }
+
+    // Magpie's `q` is a free-text candidate search, not an exact session filter.
+    // Fetch candidates from the beginning and apply the exact filter before paging;
+    // otherwise unrelated rows can consume the requested page and hide valid rows.
+    const candidateLimit = 100
+    const requestedEnd = options.offset + options.limit
+    const rawRows: unknown[] = []
+    let candidateTotal: number | null = null
+    let candidateOffset = 0
+    let exhausted = false
+    while (!exhausted && rawRows.length < MAX_MAGPIE_SESSION_SCAN_ROWS) {
+      const page = await readCandidatePage(candidateOffset, candidateLimit)
+      if (page === null) return null
+      rawRows.push(...page.rows)
+      candidateTotal = page.total
+      const nextOffset = candidateOffset + page.rows.length
+      exhausted = page.rows.length === 0
+        || nextOffset <= candidateOffset
+        || (page.total === null ? page.rows.length < candidateLimit : nextOffset >= page.total)
+      candidateOffset = nextOffset
+      if (parseMagpieRequestRows(rawRows, sessionId, sessionAgent).length >= requestedEnd) break
+    }
+    const matching = parseMagpieRequestRows(rawRows, sessionId, sessionAgent)
+    const fullyScanned = exhausted || (candidateTotal !== null && candidateOffset >= candidateTotal)
+    const total = fullyScanned ? matching.length : null
     return {
       period: options.period,
       offset: options.offset,
       limit: options.limit,
       total,
-      hasMore: total === null ? rawRows.length >= options.limit : options.offset + rawRows.length < total,
+      hasMore: !fullyScanned || matching.length > requestedEnd,
       sessionId,
       sessionAgent,
-      items: candidates.slice(0, options.limit),
+      items: matching.slice(options.offset, requestedEnd),
     }
   }
 
@@ -528,6 +560,7 @@ export class MagpieUsageService {
       usageStatus: aggregate === null ? 'unavailable' : 'available',
       aggregate,
       sessionId,
+      ...(resolvedSessionId === null ? {} : { requestSessionId: resolvedSessionId }),
       session: sessionUsage,
       routeStatus,
       route,
@@ -1496,6 +1529,26 @@ function readMagpieUsageSessions(value: unknown): readonly MagpieUsageSession[] 
     const id = cleanText(record?.id)
     const agent = cleanText(record?.agent)
     return record === null || id === null || agent === null ? [] : [{ id, agent, ...readMagpieUsageMetrics(record) }]
+  })
+}
+
+function parseMagpieRequestRows(
+  rows: readonly unknown[],
+  sessionId: string | null,
+  sessionAgent: string | null,
+): readonly MagpieUsageRequest[] {
+  const acceptedAgents = sessionAgent === null ? null : MAGPIE_USAGE_AGENT_ALIASES[sessionAgent] ?? [sessionAgent]
+  return rows.flatMap((row) => {
+    const record = asRecord(row)
+    if (record === null) return []
+    const candidateSession = cleanText(record.session)
+    const nativeSession = cleanText(record.native_session)
+    const agent = cleanText(record.agent)
+    if (sessionId !== null
+      && (candidateSession !== sessionId && nativeSession !== sessionId
+        || agent === null || acceptedAgents === null || !acceptedAgents.includes(agent))) return []
+    const item = parseMagpieRequest(record)
+    return item === null ? [] : [sessionId === null ? item : { ...item, sessionId }]
   })
 }
 

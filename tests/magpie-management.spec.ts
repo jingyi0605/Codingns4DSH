@@ -342,7 +342,7 @@ test('Magpie request pages exact-match session/native_session and return only no
   assert.ok(page)
   assert.match(requestedUrl, /period=7d/u)
   assert.match(requestedUrl, /q=exact-session/u)
-  assert.equal(page.total, null, 'Web API search totals are not exact session totals')
+  assert.equal(page.total, 1, 'the Host reports the exact total after fully scanning candidate rows')
   assert.equal(page.items.length, 1)
   assert.equal(page.items[0]?.sessionId, 'exact-session', 'the exact identity used to accept the row is returned')
   assert.equal(page.items[0]?.provider, 'example-provider')
@@ -354,6 +354,66 @@ test('Magpie request pages exact-match session/native_session and return only no
 
   const invalidPage = await service.readRequestPage({ period: 'week', offset: 1_000_001, limit: 10 })
   assert.equal(invalidPage, null, 'invalid offsets are rejected before a Web API request')
+})
+
+test('Magpie session request pages filter before pagination when q returns unrelated candidates', async () => {
+  const requested: string[] = []
+  const targetRows = (start: number, count: number): readonly Record<string, unknown>[] => Array.from({ length: count }, (_, index) => ({
+    route_id: start + index,
+    t: `2026-10-24T00:${String(start + index).padStart(2, '0')}:00Z`,
+    agent: 'claude',
+    session: index === count - 1 ? 'target-session' : `other-${start + index}`,
+    provider: 'example-provider',
+    req: 'example-provider/model-one',
+    served: 'example-provider/model-one',
+    status: 200,
+  }))
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      requested.push(path)
+      const url = new URL(path, 'http://127.0.0.1:3430')
+      const offset = Number(url.searchParams.get('offset'))
+      return {
+        total: 150,
+        rows: offset === 0 ? targetRows(0, 100) : targetRows(100, 50),
+      }
+    } },
+  })
+
+  const page = await service.readRequestPage({
+    period: 'today', offset: 1, limit: 1, sessionId: 'target-session', sessionAgent: 'claude',
+  })
+  assert.ok(page)
+  assert.deepEqual(page.items.map((item) => item.routeId), [149], 'exact matching happens before the page is sliced')
+  assert.equal(page.total, 2, 'a fully scanned candidate result reports the exact session total')
+  assert.equal(page.hasMore, false)
+  assert.deepEqual(requested.map((path) => new URL(path, 'http://127.0.0.1:3430').searchParams.get('offset')), ['0', '100'])
+})
+
+test('Magpie request pages use the resolved ledger session identity for Command Code', async () => {
+  const providerSessionId = 'command-acp-session'
+  const nativeSessionId = 'native-dsh-session'
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      if (path.startsWith('/api/usage?')) return {
+        calls: 1, input: 1, output: 1,
+        sessions: [{ agent: 'commandcode', id: nativeSessionId, calls: 1, input: 1, output: 1, cost: 0 }],
+      }
+      if (path === '/api/usage/quotas') return { data: [] }
+      if (path.startsWith('/api/usage/requests')) return {
+        total: 1,
+        rows: [{ route_id: 1, agent: 'commandcode', session: nativeSessionId, provider: 'example-provider', req: 'example-provider/model-one', served: 'example-provider/model-one', status: 200 }],
+      }
+      return {}
+    } },
+  })
+
+  const snapshot = await service.read({
+    adapterId: 'command-code', modelId: 'magpie/example-provider/model-one', providerSessionId,
+  }, undefined, true, nativeSessionId)
+  assert.ok(snapshot)
+  assert.equal(snapshot.sessionId, providerSessionId, 'the displayed identity remains the provider session')
+  assert.equal(snapshot.requestSessionId, nativeSessionId, 'the request identity follows the Magpie ledger')
 })
 
 test('Magpie Host RPCs stay gated until the module setting is enabled', async (t) => {

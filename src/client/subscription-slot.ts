@@ -719,6 +719,7 @@ function MagpieRoutePanel({ rpc, usage, quotas, t, expandedGroups, onToggleGroup
   const route = usage.route
   const groups = groupQuotasByProvider(quotas)
   const sessionAccount = route?.providerAccount ?? null
+  const requestSessionId = usage.requestSessionId ?? usage.session?.id ?? usage.sessionId
   const quotaMessage = magpieQuotaUnavailableMessage(usage, quotas, t)
   const routeStatus = usage.routeStatus === 'no-route'
     ? t('usage.magpieRouteNoRequests')
@@ -777,7 +778,7 @@ function MagpieRoutePanel({ rpc, usage, quotas, t, expandedGroups, onToggleGroup
           // “查看请求”入口与状态徽标同高、同排：入口在左，状态在右。
           createElement(MagpieRouteRequests, {
             rpc,
-            sessionId: usage.sessionId,
+            sessionId: requestSessionId,
             sessionName: usage.sessionName ?? null,
             agent: usage.agent,
             t,
