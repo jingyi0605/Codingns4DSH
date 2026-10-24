@@ -12,8 +12,11 @@ import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale, 
 import { providerIconUrl } from './provider-icons.js'
 import { MagpieProviderLogo } from './features/magpie-provider-logo.js'
 import {
+  createQuotaAccountBlock,
+  createQuotaGroupHeader,
   formatQuotaCredits,
   formatQuotaNumber,
+  groupQuotasByProvider,
   readWindowCreditBalance,
   resolveQuotaBalanceLabel,
   resolveQuotaCreditBalance,
@@ -143,6 +146,14 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [magpieTab, setMagpieTab] = useState<'usage' | 'route'>('usage')
+  // 多账号厂商默认只展开会话实际使用的账号；展开状态挂在根组件上，
+  // 弹层内容本身不持有 Hook，便于无浏览器的组件测试直接展开内容树。
+  const [expandedQuotaGroups, setExpandedQuotaGroups] = useState<readonly string[]>([])
+  const toggleQuotaGroup = (provider: string): void => {
+    setExpandedQuotaGroups((current) => current.includes(provider)
+      ? current.filter((item) => item !== provider)
+      : [...current, provider])
+  }
   const [magpiePlacement, setMagpiePlacement] = useState({ left: 0, width: 400 })
   const [clock, setClock] = useState(() => Date.now())
   const rootRef = useRef<HTMLDivElement>(null)
@@ -395,7 +406,16 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         })),
         createMagpieTriggerReadout(readout, t),
       ),
-      open && createElement(MagpieUsagePopover, { usage: magpie, t, tab: magpieTab, onTabChange: setMagpieTab, placement: magpiePlacement, popoverRef: magpiePopoverRef }),
+      open && createElement(MagpieUsagePopover, {
+        usage: magpie,
+        t,
+        tab: magpieTab,
+        onTabChange: setMagpieTab,
+        expandedGroups: expandedQuotaGroups,
+        onToggleGroup: toggleQuotaGroup,
+        placement: magpiePlacement,
+        popoverRef: magpiePopoverRef,
+      }),
     )
   }
   const usage = snapshot.providerUsage
@@ -505,11 +525,13 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   )
 }
 
-function MagpieUsagePopover({ usage, t, tab = 'usage', onTabChange = () => {}, placement = { left: 0, width: 400 }, popoverRef }: {
+function MagpieUsagePopover({ usage, t, tab = 'usage', onTabChange = () => {}, expandedGroups = [], onToggleGroup = () => {}, placement = { left: 0, width: 400 }, popoverRef }: {
   readonly usage: MagpieUsageSnapshot
   readonly t: CodingNsTranslator
   readonly tab?: 'usage' | 'route'
   readonly onTabChange?: (tab: 'usage' | 'route') => void
+  readonly expandedGroups?: readonly string[]
+  readonly onToggleGroup?: (provider: string) => void
   readonly placement?: { readonly left: number; readonly width: number }
   readonly popoverRef?: RefObject<HTMLDivElement>
 }): ReactElement {
@@ -575,7 +597,7 @@ function MagpieUsagePopover({ usage, t, tab = 'usage', onTabChange = () => {}, p
       style: magpieTabPanelStyle,
     },
       tab === 'usage' ? MagpieUsagePanel({ usage, aggregateRows, sessionRows, t })
-        : MagpieRoutePanel({ usage, quotas, t }),
+        : MagpieRoutePanel({ usage, quotas, t, expandedGroups, onToggleGroup }),
     ),
   )
 }
@@ -671,8 +693,16 @@ function formatQuotaWindowCredits(window: MagpieQuotaWindow): string | null {
   return credits === null ? null : formatQuotaCredits(credits)
 }
 
-function MagpieRoutePanel({ usage, quotas, t }: { readonly usage: MagpieUsageSnapshot; readonly quotas: readonly MagpieQuota[]; readonly t: CodingNsTranslator }): ReactElement {
+function MagpieRoutePanel({ usage, quotas, t, expandedGroups, onToggleGroup }: {
+  readonly usage: MagpieUsageSnapshot
+  readonly quotas: readonly MagpieQuota[]
+  readonly t: CodingNsTranslator
+  readonly expandedGroups: readonly string[]
+  readonly onToggleGroup: (provider: string) => void
+}): ReactElement {
   const route = usage.route
+  const groups = groupQuotasByProvider(quotas)
+  const sessionAccount = route?.providerAccount ?? null
   const quotaMessage = magpieQuotaUnavailableMessage(usage, quotas, t)
   const routeStatus = usage.routeStatus === 'no-route'
     ? t('usage.magpieRouteNoRequests')
@@ -700,7 +730,29 @@ function MagpieRoutePanel({ usage, quotas, t }: { readonly usage: MagpieUsageSna
       ),
       quotaMessage !== null
         ? createElement('div', { style: magpieEmptyStateStyle }, quotaMessage)
-        : quotas.map((quota, index) => createMagpieQuotaCard(quota, t, index)),
+        : groups.map((group) => {
+          const expanded = expandedGroups.includes(group.provider)
+          const multiple = group.accounts.length > 1
+          return createElement('div', { key: group.provider, style: magpieQuotaCardStyle },
+            createQuotaGroupHeader({
+              group,
+              t,
+              expanded,
+              onToggle: multiple ? () => onToggleGroup(group.provider) : null,
+            }),
+            group.accounts.map((quota, index) => createElement('div', { key: `${group.provider}-${quota.user ?? 'account'}-${index}` },
+              createQuotaAccountBlock(quota, {
+                t,
+                nowMs: Date.now(),
+                // 单账号厂商由组头承担名称，账号块不再重复。
+                showAccountName: multiple,
+                // 组未展开时只留会话账号的明细，其余账号折叠成余量行。
+                compact: multiple && !expanded && quota.active !== true && (sessionAccount === null || quota.user !== sessionAccount),
+                fallbackName: group.name === '' ? group.provider : group.name,
+              }),
+            )),
+          )
+        }),
     ),
     createElement('section', { style: magpieSectionStyle },
       createElement('div', { style: magpieRouteHeadingStyle },
