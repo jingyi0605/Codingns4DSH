@@ -26,6 +26,8 @@ interface RemoteSettingsResponse {
   readonly revision: number
 }
 
+const REMOTE_LOAD_RETRY_DELAYS_MS = [0, 250, 1000] as const
+
 /**
  * DSH 未提供设置镜像（memory 模式、命名空间未下发或版本缺少 ConfigForm）时的占位快照。
  *
@@ -81,16 +83,7 @@ export class CodingNsSettingsBridge implements CodingNsSettingsStore<CodingNsSet
     if (this.remoteLoaded) return
     if (this.remoteLoad !== undefined) return this.remoteLoad
     debugInfo('codingns4dsh: client settings load begin')
-    this.remoteLoad = this.call<RemoteSettingsResponse>('settings/get', {}).then((response) => {
-      this.remoteLoaded = true
-      this.publish({
-        status: 'ready',
-        value: response.value,
-        revision: response.revision,
-        writable: true,
-      })
-      debugInfo('codingns4dsh: client settings load success', { revision: response.revision })
-    }).finally(() => {
+    this.remoteLoad = this.loadRemoteWithRetry().finally(() => {
       this.remoteLoad = undefined
     })
     return this.remoteLoad
@@ -145,6 +138,32 @@ export class CodingNsSettingsBridge implements CodingNsSettingsStore<CodingNsSet
 
   private async call<T>(endpoint: string, payload: unknown): Promise<T> {
     return callCodingNsRpc<T>(this.rpc, endpoint, payload)
+  }
+
+  private async loadRemoteWithRetry(): Promise<void> {
+    let lastError: unknown
+    for (const [attempt, delay] of REMOTE_LOAD_RETRY_DELAYS_MS.entries()) {
+      if (delay > 0) await new Promise<void>((resolve) => globalThis.setTimeout(resolve, delay))
+      try {
+        const response = await this.call<RemoteSettingsResponse>('settings/get', {})
+        this.remoteLoaded = true
+        this.publish({
+          status: 'ready',
+          value: response.value,
+          revision: response.revision,
+          writable: true,
+        })
+        debugInfo('codingns4dsh: client settings load success', { revision: response.revision, attempt: attempt + 1 })
+        return
+      } catch (error) {
+        lastError = error
+        debugWarn('codingns4dsh: client settings load attempt failed', {
+          attempt: attempt + 1,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    throw lastError instanceof Error ? lastError : new Error(String(lastError))
   }
 
   private localSnapshot(): LocalScopeSnapshot {

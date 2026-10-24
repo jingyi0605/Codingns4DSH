@@ -83,6 +83,23 @@ test('没有本地设置镜像时完全使用 Host RPC', async () => {
   assert.equal(bridge.getSnapshot().value?.modules.reverseProxy, true)
 })
 
+test('远程设置读取在启动竞态中失败后会重试并恢复可写状态', async () => {
+  let attempts = 0
+  const bridge = createCodingNsSettingsBridge(undefined, {
+    call: async () => {
+      attempts += 1
+      if (attempts < 3) throw new Error('settings route is not ready')
+      return { ok: true as const, value: { value: settings, revision: 8 } }
+    },
+  })
+
+  await bridge.load()
+
+  assert.equal(attempts, 3)
+  assert.equal(bridge.getSnapshot().status, 'ready')
+  assert.equal(bridge.getSnapshot().writable, true)
+})
+
 test('Host 模式但命名空间不可用时由远程设置 RPC 接管', async () => {
   let snapshot = {
     status: 'loading' as 'loading' | 'unavailable',
