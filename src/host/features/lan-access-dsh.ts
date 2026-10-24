@@ -33,23 +33,41 @@ export function createLanAccessDshFeature(options: { runtime?: LanAccessDshRunti
         push,
         resolveLocale: () => resolveHostPushLocale(context.services.settingsProvider),
       })))
+      const sendPwaNotification = (session: unknown, event: unknown): void => {
+        const pwa = settings?.get().lanAccessDsh.pwa
+        if (pwa?.enabled !== true || pwa.notifications !== 'push') return
+        const payload = createPwaSessionNotification({ session, event, locale: resolveHostPushLocale(context.services.settingsProvider) })
+        if (payload === null) return
+        void push.sendToAll(payload).catch((error: unknown) => {
+          // 单个推送服务故障不能影响 DSH 会话事件处理。
+          console.warn('codingns4dsh: PWA 会话通知发送失败', error)
+        })
+      }
       // 推送订阅由浏览器显式开启；开启后把原生会话完成/等待输入事件转成通知。
       // 事件监听属于局域网功能生命周期，停用模块时随资源一起释放。
       const nativeSessions = context.services.nativeSessions
       if (nativeSessions?.supportsEvents === true) {
         const disposeNotifications = nativeSessions.subscribe({
           onEvent: (session, event) => {
-            const pwa = settings?.get().lanAccessDsh.pwa
-            if (pwa?.enabled !== true || pwa.notifications !== 'push') return
-            const payload = createPwaSessionNotification({ session, event, locale: resolveHostPushLocale(context.services.settingsProvider) })
-            if (payload === null) return
-            void push.sendToAll(payload).catch((error: unknown) => {
-              // 单个推送服务故障不能影响 DSH 会话事件处理。
-              console.warn('codingns4dsh: PWA 会话通知发送失败', error)
-            })
+            sendPwaNotification(session, event)
           },
         })
         context.resources.add(disposeNotifications)
+      }
+      const waitingEventNames = [
+        'approval/request',
+        'approval/asked',
+        'user-questions/request',
+        'user_questions/request',
+        'user-question/request',
+      ] as const
+      for (const eventName of waitingEventNames) {
+        const dispose = context.services.events?.on(eventName, (...args: unknown[]) => {
+          const sessionId = readEventSessionId(args)
+          if (sessionId === null) return
+          sendPwaNotification({ id: sessionId }, { type: eventName })
+        })
+        if (typeof dispose === 'function') context.resources.add(dispose as () => void)
       }
       if (settings !== undefined) {
         const autoStart = async (value: CodingNsSettings): Promise<void> => {
@@ -66,6 +84,39 @@ export function createLanAccessDshFeature(options: { runtime?: LanAccessDshRunti
       context.resources.add(() => proxy.close())
     },
   }
+}
+
+function readEventSessionId(values: readonly unknown[]): string | null {
+  const queue = [...values]
+  const seen = new Set<object>()
+  while (queue.length > 0) {
+    const candidate = queue.shift()
+    const record = asRecord(candidate)
+    if (record === null || seen.has(record)) continue
+    seen.add(record)
+
+    const session = asRecord(record.session) ?? asRecord(asRecord(record.agent)?.session)
+    const direct = readSessionId(session) ?? readSessionId(record)
+    if (direct !== null && (session !== null || record.header !== undefined || record.sessionId !== undefined || record.session_id !== undefined)) return direct
+
+    for (const key of ['data', 'request', 'interaction', 'payload', 'result', 'session', 'agent']) {
+      if (record[key] !== undefined) queue.push(record[key])
+    }
+  }
+  return null
+}
+
+function readSessionId(value: unknown): string | null {
+  const record = asRecord(value)
+  const header = asRecord(record?.header)
+  const id = record?.id ?? record?.sessionId ?? record?.session_id ?? header?.id
+  return typeof id === 'string' && id.trim() !== '' ? id.trim() : null
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
 }
 
 function toStartInput(value: LanAccessDshSettings): { listenHost: string; listenPort: number; dshPort?: number } {

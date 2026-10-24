@@ -14,6 +14,14 @@ test('会话轮次结束事件生成带会话地址的推送', () => {
   )
 })
 
+test('原生 Session header 中的会话 ID 也生成推送', () => {
+  const payload = createPwaSessionNotification({
+    session: { header: { id: 'header-session' } },
+    event: { type: 'turn/end' },
+  })
+  assert.equal(payload?.url, '/?sessionId=header-session')
+})
+
 test('等待输入和无关事件分别投影与忽略', () => {
   const waiting = createPwaSessionNotification({
     session: { sessionId: 'abc' },

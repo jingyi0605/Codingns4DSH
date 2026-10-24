@@ -44,7 +44,8 @@ export function createPwaSessionNotification(input: PwaSessionNotificationInput)
 
 function readSessionId(value: unknown): string | null {
   const record = asRecord(value)
-  const id = record?.id ?? record?.sessionId ?? record?.session_id
+  const header = asRecord(record?.header)
+  const id = record?.id ?? record?.sessionId ?? record?.session_id ?? header?.id
   return typeof id === 'string' && id.trim() !== '' ? id.trim() : null
 }
 
