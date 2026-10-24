@@ -1,7 +1,20 @@
 import { createElement, type ReactElement } from 'react'
+import { providerIconUrl } from './provider-icons.js'
+import { PROVIDER_ICON_PATH } from '../shared/provider-icon-resources.js'
 
 export const MAGPIE_MODEL_TAG_ATTRIBUTE = 'data-codingns-magpie-model-tag'
-export const MAGPIE_MODEL_LOGO_URL = 'https://github.com/yetone/magpie/raw/main/site/public/img/icon-256.png'
+
+/**
+ * Magpie 模型来源标签使用的喜鹊图标。
+ *
+ * 图标必须走本机 Host 的固定资源路由：此前指向 GitHub 上的 `icon-256.png`，
+ * 而在离线、Host 无外网出口，或页面策略只允许 `img-src 'self'` 时该外链会被
+ * 浏览器拦截，标签容器虽然渲染出来却不显示任何图像。本地路由随插件一起安装，
+ * 无网络依赖，也不会被同源策略挡住。
+ */
+export function magpieModelLogoUrl(): string {
+  return providerIconUrl('magpie') ?? `${PROVIDER_ICON_PATH}magpie.png`
+}
 
 const tagStyle = {
   display: 'inline-flex',
@@ -32,7 +45,7 @@ export function MagpieModelTag(): ReactElement {
     'aria-label': 'Provided by Magpie',
     title: 'Provided by Magpie',
     style: tagStyle,
-  }, createElement('img', { src: MAGPIE_MODEL_LOGO_URL, alt: 'Provided by Magpie', style: tagLogoStyle }))
+  }, createElement('img', { src: magpieModelLogoUrl(), alt: 'Provided by Magpie', style: tagLogoStyle }))
 }
 
 /** Native DSH owns its menu DOM, so its option rows receive the same badge imperatively. */
@@ -46,7 +59,7 @@ export function createMagpieModelTagNode(document: Document, modelId?: string): 
   Object.assign(tag.style, tagStyle)
 
   const logo = document.createElement('img')
-  logo.setAttribute('src', MAGPIE_MODEL_LOGO_URL)
+  logo.setAttribute('src', magpieModelLogoUrl())
   logo.setAttribute('alt', 'Provided by Magpie')
   Object.assign(logo.style, tagLogoStyle)
   tag.append(logo)
