@@ -129,10 +129,6 @@ test('Magpie dashboard endpoint failures stay independent and expose history ava
   ])
 })
 
-test('Magpie quota icons are fetched through the Host Web API and attached as data URLs', async () => {
-  const assets: string[] = []
-  const service = new MagpieUsageService({
-    webApi: {
 test('Magpie dashboard streams each API part and measures the slowest part independently', async () => {
   const timings: Array<{ part: string; elapsedMs: number }> = []
   const delay = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms))
@@ -193,6 +189,10 @@ test('Magpie dashboard serves a fresh cache immediately and refreshes an expired
   assert.notEqual(await service.readDashboard('today'), initial, 'the refreshed snapshot replaces the stale cache')
 })
 
+test('Magpie quota icons are fetched through the Host Web API and attached as data URLs', async () => {
+  const assets: string[] = []
+  const service = new MagpieUsageService({
+    webApi: {
       async requestJson(path) {
         if (path.includes('/usage?')) return { calls: 1, series: [] }
         if (path === '/api/usage/quotas') return { data: [{ provider: 'workbuddy', name: 'WorkBuddy', icon: 'workbuddy-color', windows: [] }] }
