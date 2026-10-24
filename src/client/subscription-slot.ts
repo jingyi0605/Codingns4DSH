@@ -1,16 +1,18 @@
 import { startSerialPolling } from './serial-polling.js'
-import { createElement, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createElement, Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { ReactElement, RefObject } from 'react'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { isSubscriptionUsageFresh } from '../shared/contracts/subscription.js'
 import type { CliSubscriptionGroup, CliSubscriptionGroupWindow, CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionSnapshot, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekUsage, MagpieQuota, MagpieQuotaWindow, MagpieUsageSnapshot, ProviderBalanceUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../shared/contracts/subscription.js'
+import type { MagpieUsageRequestPage } from '../shared/contracts/magpie-management.js'
 import { DEFAULT_SUBSCRIPTION_USAGE_SETTINGS } from '../shared/contracts/config.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCliRpc } from './cli-catalog.js'
 import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { providerIconUrl } from './provider-icons.js'
 import { MagpieProviderLogo } from './features/magpie-provider-logo.js'
+import { MAGPIE_REQUESTS_PAGE_SIZE, RequestsPage, installMagpiePageStyles } from './features/magpie-management-page.js'
 import {
   createQuotaAccountBlock,
   createQuotaGroupHeader,
@@ -24,7 +26,8 @@ import {
 import { subscribeSessionAdapters } from './session-adapter-cache.js'
 import { loadCliSessionConfig } from './cli-session-config-cache.js'
 import { dshPopupSurfaceStyle, dshSettingsButtonStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from './theme.js'
-import { useDismissOnOutsidePointer } from './popup-dismiss.js'
+import { backdropPointerDownHandler, useDismissOnOutsidePointer } from './popup-dismiss.js'
+import { callCodingNsRpcResult } from './rpc-call.js'
 import type { SessionSnapshot } from './cli-slots.js'
 import { uiFontSize } from './font-scale.js'
 
@@ -94,6 +97,8 @@ function loadUsage(rpc: CodingNsRpcClient, key: string, payload: unknown): Promi
 const RESET_BUTTON_CSS = '.codingns4dsh-subscription-reset{display:inline-flex;align-items:center;justify-content:center;flex:none;width:26px;height:26px;padding:0;border:1px solid var(--dsw-alias-border-l2,#d9d9d9);border-radius:50%;background:transparent;color:var(--dsw-alias-label-secondary,GrayText);cursor:pointer;transition:background .15s ease,color .15s ease}.codingns4dsh-subscription-reset:hover:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08));color:var(--dsw-alias-label-primary,CanvasText)}.codingns4dsh-subscription-reset:active:not(:disabled){background:var(--dsw-alias-interactive-bg-active,rgba(127,127,127,.14))}.codingns4dsh-subscription-reset:focus-visible{outline:none;box-shadow:0 0 0 var(--dsw-focus-ring-width,2px) var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#1677ff))}.codingns4dsh-subscription-reset:disabled{opacity:.4;cursor:not-allowed}@media (prefers-reduced-motion: reduce){.codingns4dsh-subscription-reset{transition:none}}'
 const MAGPIE_ROUTE_CSS = '@keyframes codingns4dsh-magpie-route-pulse{0%{transform:translateY(-120%);opacity:0}20%{opacity:1}80%{opacity:1}100%{transform:translateY(320%);opacity:0}}@keyframes codingns4dsh-magpie-route-breathe{0%,100%{box-shadow:0 0 0 0 rgba(22,119,255,0)}50%{box-shadow:0 0 0 4px rgba(22,119,255,.16)}}@keyframes codingns4dsh-magpie-route-step{from{opacity:0;transform:translateY(4px) scale(.98)}to{opacity:1;transform:translateY(0) scale(1)}}.codingns4dsh-magpie-route-pulse{animation:codingns4dsh-magpie-route-pulse 1.8s ease-in-out infinite}.codingns4dsh-magpie-route-node-active{animation:codingns4dsh-magpie-route-breathe 2s ease-in-out infinite}.codingns4dsh-magpie-route-step{animation:codingns4dsh-magpie-route-step .38s cubic-bezier(.2,.75,.25,1) both;transition:background .16s ease}.codingns4dsh-magpie-route-step:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.07))}.codingns4dsh-magpie-route-step:hover .codingns4dsh-magpie-route-node{box-shadow:0 0 0 1px var(--dsw-alias-state-business-primary,#1677ff),0 0 0 4px rgba(22,119,255,.1)}.codingns4dsh-magpie-route-node{transition:box-shadow .16s ease}.codingns4dsh-magpie-tab:focus-visible{outline:none;box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#1677ff)) inset}@media (prefers-reduced-motion:reduce){.codingns4dsh-magpie-route-pulse,.codingns4dsh-magpie-route-node-active,.codingns4dsh-magpie-route-step,.codingns4dsh-magpie-route-node{animation:none;transition:none}}'
 
+const MAGPIE_REQUESTS_CSS = '.codingns4dsh-magpie-route-requests:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08));color:var(--dsw-alias-label-primary,CanvasText)}.codingns4dsh-magpie-route-requests:focus-visible,.codingns4dsh-magpie-requests-close:focus-visible,.codingns4dsh-magpie-requests-retry:focus-visible{outline:none;box-shadow:0 0 0 2px var(--dsw-focus-ring-color,var(--dsw-alias-state-business-primary,#1677ff))}.codingns4dsh-magpie-requests-close:hover,.codingns4dsh-magpie-requests-retry:hover{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08));color:var(--dsw-alias-label-primary,CanvasText)}.codingns4dsh-magpie-requests-dialog:focus,.codingns4dsh-magpie-requests-dialog:focus-visible{outline:none}.codingns4dsh-magpie-requests-body{flex:1 1 auto;min-height:0;overflow:auto;overscroll-behavior:contain}.codingns4dsh-magpie-requests-view{display:block!important;width:100%;height:auto!important;min-height:0;padding-left:0!important;background:transparent}.codingns4dsh-magpie-requests-view .codingns-magpie-view{max-width:none;padding:0}@media (max-width:768px){.codingns4dsh-magpie-requests-overlay{align-items:flex-end!important;padding:12px!important}.codingns4dsh-magpie-requests-dialog{width:100%!important;max-height:78vh!important;max-height:78dvh!important}}@media (prefers-reduced-motion:reduce){.codingns4dsh-magpie-route-requests{transition:none}}'
+
 export function calculateMagpiePopoverPlacement(rootLeft: number, viewportWidth: number, sidebarLeft: number | null): { readonly left: number; readonly width: number } {
   const margin = 12
   const boundary = Math.min(viewportWidth - margin, sidebarLeft === null ? viewportWidth - margin : sidebarLeft - margin)
@@ -114,7 +119,7 @@ function installSubscriptionStyles(): void {
   const style = document.createElement('style')
   style.dataset.plugin = 'codingns4dsh'
   style.dataset.pluginCss = SUBSCRIPTION_STYLE_ID
-  style.textContent = SUBSCRIPTION_RESPONSIVE_CSS + RESET_BUTTON_CSS + MAGPIE_ROUTE_CSS
+  style.textContent = SUBSCRIPTION_RESPONSIVE_CSS + RESET_BUTTON_CSS + MAGPIE_ROUTE_CSS + MAGPIE_REQUESTS_CSS
   document.head.appendChild(style)
 }
 
@@ -407,6 +412,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         createMagpieTriggerReadout(readout, t),
       ),
       open && createElement(MagpieUsagePopover, {
+        rpc: props.rpc,
         usage: magpie,
         t,
         tab: magpieTab,
@@ -525,7 +531,8 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   )
 }
 
-function MagpieUsagePopover({ usage, t, tab = 'usage', onTabChange = () => {}, expandedGroups = [], onToggleGroup = () => {}, placement = { left: 0, width: 400 }, popoverRef }: {
+function MagpieUsagePopover({ rpc, usage, t, tab = 'usage', onTabChange = () => {}, expandedGroups = [], onToggleGroup = () => {}, placement = { left: 0, width: 400 }, popoverRef }: {
+  readonly rpc: CodingNsRpcClient
   readonly usage: MagpieUsageSnapshot
   readonly t: CodingNsTranslator
   readonly tab?: 'usage' | 'route'
@@ -597,7 +604,7 @@ function MagpieUsagePopover({ usage, t, tab = 'usage', onTabChange = () => {}, e
       style: magpieTabPanelStyle,
     },
       tab === 'usage' ? MagpieUsagePanel({ usage, aggregateRows, sessionRows, t })
-        : MagpieRoutePanel({ usage, quotas, t, expandedGroups, onToggleGroup }),
+        : MagpieRoutePanel({ rpc, usage, quotas, t, expandedGroups, onToggleGroup }),
     ),
   )
 }
@@ -693,7 +700,8 @@ function formatQuotaWindowCredits(window: MagpieQuotaWindow): string | null {
   return credits === null ? null : formatQuotaCredits(credits)
 }
 
-function MagpieRoutePanel({ usage, quotas, t, expandedGroups, onToggleGroup }: {
+function MagpieRoutePanel({ rpc, usage, quotas, t, expandedGroups, onToggleGroup }: {
+  readonly rpc: CodingNsRpcClient
   readonly usage: MagpieUsageSnapshot
   readonly quotas: readonly MagpieQuota[]
   readonly t: CodingNsTranslator
@@ -757,9 +765,19 @@ function MagpieRoutePanel({ usage, quotas, t, expandedGroups, onToggleGroup }: {
     createElement('section', { style: magpieSectionStyle },
       createElement('div', { style: magpieRouteHeadingStyle },
         createElement('strong', { style: magpieSectionTitleStyle }, t('usage.magpieRouteTitle')),
-        route !== null && createElement('span', { className: active ? 'codingns4dsh-magpie-route-node-active' : undefined, style: magpieRouteStatusStyle },
-          createElement('span', { style: magpieRouteStatusDotStyle }),
-          createElement('strong', undefined, route.done === true ? t('usage.magpieRouteComplete') : route.done === false ? t('usage.magpieRouteRunning').replace(/\s*·\s*$/u, '') : route.status ?? '--'),
+        route !== null && createElement('div', { style: magpieRouteHeadingActionsStyle },
+          // “查看请求”入口与状态徽标同高、同排：入口在左，状态在右。
+          createElement(MagpieRouteRequests, {
+            rpc,
+            sessionId: usage.sessionId,
+            sessionName: usage.sessionName ?? null,
+            agent: usage.agent,
+            t,
+          }),
+          createElement('span', { className: active ? 'codingns4dsh-magpie-route-node-active' : undefined, style: magpieRouteStatusStyle },
+            createElement('span', { style: magpieRouteStatusDotStyle }),
+            createElement('strong', undefined, route.done === true ? t('usage.magpieRouteComplete') : route.done === false ? t('usage.magpieRouteRunning').replace(/\s*·\s*$/u, '') : route.status ?? '--'),
+          ),
         ),
       ),
       route === null
@@ -791,6 +809,204 @@ function MagpieRoutePanel({ usage, quotas, t, expandedGroups, onToggleGroup }: {
               attempt.failed && createElement('span', { style: magpieFailedStyle }, t('usage.magpieFallback')),
             ))),
           ),
+    ),
+  )
+}
+
+/**
+ * 路由标题栏的“查看请求”入口：按钮、模态框与读取状态放在同一个子组件里。
+ *
+ * 弹层内容本身不持有 Hook（无浏览器测试会直接展开内容树），因此这里只由
+ * `MagpieRoutePanel` 渲染元素，真正的状态留在本组件内部。模态框内的请求明细
+ * 直接复用管理页的 `RequestsPage`，只把会话筛选固定为当前会话。
+ */
+export function MagpieRouteRequests({ rpc, sessionId, sessionName, agent, t }: {
+  readonly rpc: CodingNsRpcClient
+  readonly sessionId: string | null
+  readonly sessionName: string | null
+  readonly agent: string
+  readonly t: CodingNsTranslator
+}): ReactElement {
+  const enabled = canReadMagpieSessionRequests(sessionId, agent)
+  const [open, setOpen] = useState(false)
+  const [page, setPage] = useState<MagpieUsageRequestPage | null>(null)
+  const [offset, setOffset] = useState(0)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState(false)
+  const [reloadKey, setReloadKey] = useState(0)
+  const controllerRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    if (!open || !enabled) return
+    const controller = new AbortController()
+    controllerRef.current = controller
+    setLoading(true)
+    setError(false)
+    void readMagpieSessionRequestPage(rpc, sessionId, agent, offset, controller.signal).then((next) => {
+      if (controller.signal.aborted) return
+      if (next === null) { setError(true); return }
+      setPage(next)
+    }).catch(() => {
+      if (!controller.signal.aborted) setError(true)
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoading(false)
+    })
+    return () => {
+      controller.abort()
+      if (controllerRef.current === controller) controllerRef.current = null
+    }
+  }, [open, enabled, offset, reloadKey, rpc, sessionId, agent])
+
+  // 模态框覆盖整个视口，Esc 是移动端之外唯一的键盘关闭方式。
+  useEffect(() => {
+    if (!open || typeof document === 'undefined') return
+    // 捕获阶段拦截 Esc：只关闭模态框，不再让底部弹层的关闭监听把整个弹层一起收起。
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key !== 'Escape') return
+      event.stopPropagation()
+      setOpen(false)
+    }
+    document.addEventListener('keydown', onKeyDown, true)
+    return () => document.removeEventListener('keydown', onKeyDown, true)
+  }, [open])
+
+  const close = (): void => {
+    controllerRef.current?.abort()
+    controllerRef.current = null
+    setOpen(false)
+  }
+
+  const openRequests = (): void => {
+    controllerRef.current?.abort()
+    setPage(null)
+    setOffset(0)
+    setError(false)
+    setLoading(true)
+    // 请求明细复用管理页组件，需要先装上管理页自己的样式表。
+    installMagpiePageStyles()
+    setOpen(true)
+  }
+
+  return createElement(Fragment, undefined,
+    enabled && createElement('button', {
+      type: 'button',
+      className: 'codingns4dsh-magpie-route-requests',
+      onClick: openRequests,
+      'aria-haspopup': 'dialog',
+      title: t('usage.magpieViewRequests'),
+      style: magpieRouteRequestsButtonStyle,
+    }, t('usage.magpieViewRequests')),
+    enabled && open && createElement(MagpieSessionRequestsDialog, {
+      sessionId,
+      sessionName,
+      agent,
+      page,
+      offset,
+      loading,
+      error,
+      t,
+      onClose: close,
+      onOffsetChange: setOffset,
+      onRetry: () => { setLoading(true); setError(false); setReloadKey((value) => value + 1) },
+    }),
+  )
+}
+
+/** Host 只接受小写 Agent ID；会话与 Agent 必须成对出现，缺一不可。 */
+function canReadMagpieSessionRequests(sessionId: string | null, agent: string): sessionId is string {
+  return sessionId !== null && sessionId.trim() !== '' && sessionId.length <= 512 && /^[a-z0-9][a-z0-9-]*$/u.test(agent)
+}
+
+/** 只读取今天的会话请求，与路由卡片和“当前 Agent 会话”用量保持同一时间口径。 */
+async function readMagpieSessionRequestPage(
+  rpc: CodingNsRpcClient,
+  sessionId: string,
+  agent: string,
+  offset: number,
+  signal: AbortSignal,
+): Promise<MagpieUsageRequestPage | null> {
+  const result = await callCodingNsRpcResult(rpc, 'magpie/usage/requests', {
+    period: 'today',
+    offset,
+    limit: MAGPIE_REQUESTS_PAGE_SIZE,
+    sessionId,
+    sessionAgent: agent,
+  }, signal)
+  if (!result.ok) throw new Error(result.error.message)
+  const value: unknown = result.value
+  return isRecord(value) && Array.isArray(value.items)
+    ? value as unknown as MagpieUsageRequestPage
+    : null
+}
+
+/**
+ * 请求模态框：外壳（遮罩、标题、关闭）由弹层提供，明细直接复用管理页的请求用量视图。
+ *
+ * 管理页视图自带统计条、桌面表格 / 移动卡片、分页和空状态，这里只负责把会话固定住，
+ * 不再维护一套重复的请求卡片渲染。
+ */
+function MagpieSessionRequestsDialog({ sessionId, sessionName, agent, page, offset, loading, error, t, onClose, onOffsetChange, onRetry }: {
+  readonly sessionId: string
+  readonly sessionName: string | null
+  readonly agent: string
+  readonly page: MagpieUsageRequestPage | null
+  readonly offset: number
+  readonly loading: boolean
+  readonly error: boolean
+  readonly t: CodingNsTranslator
+  readonly onClose: () => void
+  readonly onOffsetChange: (value: number) => void
+  readonly onRetry: () => void
+}): ReactElement {
+  return createElement('div', {
+    className: 'codingns4dsh-magpie-requests-overlay',
+    role: 'presentation',
+    style: magpieRequestsOverlayStyle,
+    // 只有按在遮罩自身时才关闭；从内容内部按下再拖到遮罩上不会误关。
+    onPointerDown: backdropPointerDownHandler(onClose),
+  },
+    createElement('div', {
+      role: 'dialog',
+      'aria-modal': true,
+      'aria-label': t('usage.magpieRequestsTitle'),
+      className: 'codingns4dsh-magpie-requests-dialog',
+      tabIndex: -1,
+      autoFocus: true,
+      style: magpieRequestsDialogStyle,
+    },
+      createElement('div', { style: magpieRequestsHeadingStyle },
+        createElement('strong', { style: magpieRequestsTitleStyle }, t('usage.magpieRequestsTitle')),
+        createElement('div', { style: magpieRequestsHeadingActionsStyle },
+          error && createElement('button', {
+            type: 'button',
+            className: 'codingns4dsh-magpie-requests-retry',
+            onClick: onRetry,
+            style: magpieRequestsRetryStyle,
+          }, t('magpie.refresh')),
+          createElement('button', {
+            type: 'button',
+            className: 'codingns4dsh-magpie-requests-close',
+            onClick: onClose,
+            'aria-label': t('usage.magpieRequestsClose'),
+            style: magpieRequestsCloseStyle,
+          }, '×'),
+        ),
+      ),
+      createElement('div', { className: 'codingns4dsh-magpie-requests-body', style: magpieRequestsBodyStyle },
+        // `.codingns-magpie-page` 提供管理页的 `--mp-*` 主题变量；外层样式再把它压进弹层尺寸。
+        createElement('div', { className: 'codingns-magpie-page codingns4dsh-magpie-requests-view' },
+          createElement(RequestsPage, {
+            page,
+            loading,
+            error,
+            selectedSession: { id: sessionId, agent, ...(sessionName === null ? {} : { dshSessionName: sessionName }) },
+            offset,
+            onOffsetChange,
+            onClearSession: null,
+            t,
+          }),
+        ),
+      ),
     ),
   )
 }
@@ -1639,7 +1855,7 @@ const magpieQuotaWindowStyle = { display: 'grid', gap: 4, paddingTop: 3 }
 const magpieQuotaFooterStyle = { display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap' as const, gap: '3px 10px', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11), lineHeight: '15px' }
 const magpieRouteHeadingStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 }
 const magpieRouteHeroStyle = { display: 'grid', gap: 11, padding: '12px 13px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 12, background: `linear-gradient(145deg, ${dshThemeColor.surfaceSubtle}, transparent)` }
-const magpieRouteStatusStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', padding: '3px 8px', borderRadius: 999, background: dshThemeColor.surfaceSubtle, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), whiteSpace: 'nowrap' as const }
+const magpieRouteStatusStyle = { display: 'inline-flex', alignItems: 'center', gap: 6, width: 'fit-content', boxSizing: 'border-box' as const, padding: '3px 8px', borderRadius: 999, background: dshThemeColor.surfaceSubtle, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), lineHeight: '15px', whiteSpace: 'nowrap' as const }
 const magpieRouteStatusDotStyle = { width: 8, height: 8, borderRadius: '50%', background: dshThemeColor.accent }
 const magpieRouteTrackStyle = { display: 'grid', gap: 0, minWidth: 0, padding: '3px 0' }
 const magpieRouteTrackItemStyle = { display: 'grid', gridTemplateColumns: '18px minmax(0, 1fr)', alignItems: 'start', gap: 12, minWidth: 0, padding: '5px 8px', margin: '0 -8px', borderRadius: 8 }
@@ -1655,6 +1871,17 @@ const magpieRouteMetaStyle = { display: 'grid', gridTemplateColumns: 'repeat(2, 
 const magpieRouteMetaItemStyle = { display: 'grid', alignContent: 'start', gap: 3, minWidth: 0, padding: '6px 8px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, background: dshThemeColor.menuBackground }
 const magpieRouteMetaLabelStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), lineHeight: '13px' }
 const magpieRouteMetaValueStyle = { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), fontWeight: 550, lineHeight: '15px', overflowWrap: 'anywhere' as const }
+// 请求入口与请求模态框：入口与状态徽标同高并排在标题栏，模态框覆盖视口并在内部滚动。
+const magpieRouteHeadingActionsStyle = { display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }
+const magpieRouteRequestsButtonStyle = { flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 4, boxSizing: 'border-box' as const, padding: '2px 8px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 999, background: dshThemeColor.menuBackground, color: dshThemeColor.labelSecondary, fontFamily: 'inherit', fontSize: uiFontSize(11), lineHeight: '15px', cursor: 'pointer', whiteSpace: 'nowrap' as const, transition: 'background .15s ease,color .15s ease' }
+const magpieRequestsOverlayStyle = { position: 'fixed' as const, inset: 0, zIndex: 1500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, boxSizing: 'border-box' as const, background: dshThemeColor.overlay }
+const magpieRequestsDialogStyle = { ...dshPopupSurfaceStyle, display: 'flex', flexDirection: 'column' as const, gap: 10, width: 'min(96vw, 1320px)', maxHeight: 'min(88vh, 820px)', boxSizing: 'border-box' as const, padding: 14, borderRadius: 14 }
+const magpieRequestsHeadingStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBottom: 10, borderBottom: `1px solid ${dshThemeColor.border}` }
+const magpieRequestsHeadingActionsStyle = { display: 'inline-flex', alignItems: 'center', gap: 8, flex: 'none' }
+const magpieRequestsTitleStyle = { fontSize: uiFontSize(15), lineHeight: '20px' }
+const magpieRequestsCloseStyle = { flex: 'none', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, padding: 0, border: 0, borderRadius: '50%', background: 'transparent', color: dshThemeColor.labelSecondary, fontSize: uiFontSize(18), lineHeight: 1, cursor: 'pointer' }
+const magpieRequestsBodyStyle = { flex: '1 1 auto', minHeight: 0, overflowY: 'auto' as const, overscrollBehavior: 'contain' as const }
+const magpieRequestsRetryStyle = { padding: '5px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 999, background: dshThemeColor.menuBackground, color: dshThemeColor.labelSecondary, fontFamily: 'inherit', fontSize: uiFontSize(11), lineHeight: '15px', cursor: 'pointer' }
 const sub2apiIdentityStyle = { display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' as const, fontVariantNumeric: 'tabular-nums' }
 const sub2apiLogoStyle = { display: 'block', borderRadius: 4, objectFit: 'contain' as const }
 const deepseekBalanceIdentityStyle = { display: 'inline-flex', alignItems: 'center', gap: 5, whiteSpace: 'nowrap' as const, fontVariantNumeric: 'tabular-nums' as const }
