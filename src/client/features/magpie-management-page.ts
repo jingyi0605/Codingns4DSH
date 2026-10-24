@@ -318,15 +318,19 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
     return () => window.removeEventListener('keydown', closeOnEscape)
   }, [updateOpen])
 
+  // A write re-reads the snapshot rather than trusting the one it answered with: a provider renamed
+  // moves among the routing groups, which only a fresh read shows as Magpie has them now.
   const updateProvider = useCallback(async (update: MagpieProviderManagementUpdate): Promise<void> => {
     setManagementWriting(true)
     try {
       const result = await callMagpieRpc<{ readonly snapshot: MagpieManagementSnapshot }>(rpc, 'management/provider/update', update)
       setManagement(result.snapshot)
+      // A re-read that fails leaves the verified snapshot in place: the save itself succeeded.
+      await loadManagement(new AbortController().signal).catch(() => undefined)
     } finally {
       setManagementWriting(false)
     }
-  }, [rpc])
+  }, [loadManagement, rpc])
 
   const updateGroup = useCallback(async (update: MagpieRoutingGroupManagementUpdate): Promise<void> => {
     setManagementWriting(true)

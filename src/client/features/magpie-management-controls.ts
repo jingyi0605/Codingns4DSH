@@ -9,6 +9,7 @@ import type {
   MagpieRoutingGroupManagementRecord,
   MagpieRoutingGroupManagementUpdate,
 } from '../../shared/contracts/magpie-management.js'
+import { magpieProviderId } from '../../shared/magpie-provider-id.js'
 import { MagpieProviderLogo } from './magpie-provider-logo.js'
 
 type Translate = (key: string, params?: Record<string, string | number>) => string
@@ -67,14 +68,20 @@ export function MagpieProvidersPage({ snapshot, t, onUpdate, onAccountUpdate, wr
   readonly writing: boolean
 }): ReactElement {
   const providers = snapshot?.providers ?? []
-  const [selectedId, setSelectedId] = useState<string | null>(providers[0]?.id ?? null)
-  const selected = providers.find(provider => provider.id === selectedId) ?? providers[0] ?? null
+  // A selected provider keeps its place across a rename, which changes the ID it is found by.
+  const [selectedSelection, setSelectedSelection] = useState<{ readonly id: string; readonly renamedTo: string | null } | null>(() => providers[0] === undefined ? null : { id: providers[0].id, renamedTo: null })
+  const selected = providers.find(provider => provider.id === selectedSelection?.id)
+    ?? providers.find(provider => provider.id === selectedSelection?.renamedTo)
+    ?? providers[0]
+    ?? null
   const unlinkedAccounts = snapshot?.accountStatus === 'available'
     ? snapshot.accounts.filter(account => !providers.some(provider => accountBelongsToProvider(account, provider)))
     : []
   useEffect(() => {
-    if (selected !== null && selected.id !== selectedId) setSelectedId(selected.id)
-  }, [selected, selectedId])
+    if (selected !== null && selected.id !== selectedSelection?.id && selected.id !== selectedSelection?.renamedTo) {
+      setSelectedSelection({ id: selected.id, renamedTo: null })
+    }
+  }, [selected, selectedSelection])
 
   return createElement('div', { className: 'codingns-magpie-view' },
     snapshot?.providerStatus === 'unavailable'
@@ -88,7 +95,7 @@ export function MagpieProvidersPage({ snapshot, t, onUpdate, onAccountUpdate, wr
           type: 'button',
           className: `codingns-magpie-management-row${provider.id === selected?.id ? ' is-active' : ''}`,
           'aria-pressed': provider.id === selected?.id,
-          onClick: () => setSelectedId(provider.id),
+          onClick: () => setSelectedSelection({ id: provider.id, renamedTo: null }),
         },
           createElement(MagpieProviderLogo, { identities: [provider.accountAgent, provider.id, provider.name], logoDataUrl: provider.logoDataUrl, size: 24, className: 'codingns-magpie-provider-logo codingns-magpie-provider-logo-compact' }),
           createElement('span', { className: 'codingns-magpie-management-row-main' },
@@ -100,7 +107,16 @@ export function MagpieProvidersPage({ snapshot, t, onUpdate, onAccountUpdate, wr
       ),
       selected === null
         ? createElement(PanelEmpty, { message: t('magpie.management.noProviders') })
-        : createElement(ProviderEditor, { provider: selected, snapshot, t, onUpdate, onAccountUpdate, writing }),
+        : createElement(ProviderEditor, {
+          key: selected.id,
+          provider: selected,
+          snapshot,
+          t,
+          onUpdate,
+          onAccountUpdate,
+          onRenamed: (previousId, nextId) => setSelectedSelection({ id: previousId, renamedTo: nextId }),
+          writing,
+        }),
     ),
     unlinkedAccounts.length > 0 && createElement('section', { className: 'codingns-magpie-panel codingns-magpie-management-editor' },
       createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('div', undefined,
@@ -119,18 +135,21 @@ export function MagpieProvidersPage({ snapshot, t, onUpdate, onAccountUpdate, wr
   )
 }
 
-function ProviderEditor({ provider, snapshot, t, onUpdate, onAccountUpdate, writing }: {
+function ProviderEditor({ provider, snapshot, t, onUpdate, onAccountUpdate, onRenamed, writing }: {
   readonly provider: MagpieProviderManagementRecord
   readonly snapshot: MagpieManagementSnapshot | null
   readonly t: Translate
   readonly onUpdate: (update: MagpieProviderManagementUpdate) => Promise<void>
   readonly onAccountUpdate: (update: MagpieAccountManagementUpdate) => Promise<void>
+  /** The provider was saved under another ID: the list keeps showing it under that one. */
+  readonly onRenamed: (previousId: string, nextId: string) => void
   readonly writing: boolean
 }): ReactElement {
   const editableEndpoints = provider.endpoints.filter(endpoint => endpoint.editable)
   const endpointKey = editableEndpoints.map(endpoint => `${endpoint.field}:${endpoint.url}`).join('|')
   const modelsKey = provider.models.map(model => `${model.id}:${model.exposed ? 'on' : 'off'}`).join('|')
   const [name, setName] = useState(provider.name)
+  const [id, setId] = useState(provider.id)
   const [endpointField, setEndpointField] = useState(editableEndpoints[0]?.field ?? '')
   const [endpointUrl, setEndpointUrl] = useState(editableEndpoints[0]?.url ?? '')
   const [enabledModelIds, setEnabledModelIds] = useState<readonly string[]>(() => provider.models.filter(model => model.exposed).map(model => model.id))
@@ -139,6 +158,7 @@ function ProviderEditor({ provider, snapshot, t, onUpdate, onAccountUpdate, writ
   const [notice, setNotice] = useState('')
   useEffect(() => {
     setName(provider.name)
+    setId(provider.id)
     setEndpointField(editableEndpoints[0]?.field ?? '')
     setEndpointUrl(editableEndpoints[0]?.url ?? '')
     setEnabledModelIds(provider.models.filter(model => model.exposed).map(model => model.id))
@@ -146,11 +166,13 @@ function ProviderEditor({ provider, snapshot, t, onUpdate, onAccountUpdate, writ
   }, [provider.id, provider.name, endpointKey, modelsKey])
 
   const endpoint = editableEndpoints.find(item => item.field === endpointField)
+  const nextId = magpieProviderId(id)
   const proposed = (): MagpieProviderManagementUpdate | null => {
     const models = provider.models.filter(model => enabledModelIds.includes(model.id)).map(model => model.id)
     const currentModels = provider.models.filter(model => model.exposed).map(model => model.id)
     const update: MagpieProviderManagementUpdate = {
       id: provider.id,
+      ...(provider.idEditable && nextId !== provider.id ? { newId: nextId } : {}),
       ...(name.trim() === provider.name ? {} : { name: name.trim() }),
       ...(endpoint === undefined || endpointUrl.trim() === endpoint.url ? {} : { endpointField: endpoint.field, endpointUrl: endpointUrl.trim() }),
       ...(provider.modelsEditable && models.join('\n') !== currentModels.join('\n') ? { models } : {}),
@@ -167,6 +189,7 @@ function ProviderEditor({ provider, snapshot, t, onUpdate, onAccountUpdate, writ
     setNotice('')
     try {
       await onUpdate(review)
+      if (review.newId !== undefined) onRenamed(provider.id, review.newId)
       setReview(null)
       setNotice(t('magpie.management.saved'))
     } catch {
@@ -211,6 +234,24 @@ function ProviderEditor({ provider, snapshot, t, onUpdate, onAccountUpdate, writ
     createElement('label', { className: 'codingns-magpie-field' },
       createElement('span', undefined, t('magpie.management.providerName')),
       createElement('input', { value: name, maxLength: 80, onChange: (event: { currentTarget: { value: string } }) => setName(event.currentTarget.value) }),
+    ),
+    createElement('label', { className: 'codingns-magpie-field' },
+      createElement('span', undefined, t('magpie.management.providerId')),
+      createElement('input', {
+        className: 'codingns-magpie-provider-id-input',
+        value: id,
+        maxLength: 64,
+        disabled: !provider.idEditable,
+        spellCheck: false,
+        autoCapitalize: 'none',
+        autoCorrect: 'off',
+        'aria-label': t('magpie.management.providerId'),
+        onChange: (event: { currentTarget: { value: string } }) => setId(event.currentTarget.value.toLowerCase()),
+      }),
+      createElement('small', undefined, t(provider.idEditable ? 'magpie.management.providerIdHint' : 'magpie.management.providerIdLocked')),
+      provider.idEditable && id !== provider.id && createElement('small', undefined, nextId === ''
+        ? t('magpie.management.providerIdInvalid')
+        : t('magpie.management.providerIdPreview', { id: nextId })),
     ),
     editableEndpoints.length > 0 && createElement('div', { className: 'codingns-magpie-field-row' },
       createElement('label', { className: 'codingns-magpie-field' },
@@ -259,6 +300,7 @@ function ProviderEditor({ provider, snapshot, t, onUpdate, onAccountUpdate, writ
     review !== null && createElement('div', { className: 'codingns-magpie-confirm' },
       createElement('strong', undefined, t('magpie.management.reviewProvider')),
       createElement('span', undefined, summarizeProviderUpdate(review, t)),
+      review.newId !== undefined && createElement('small', undefined, t('magpie.management.providerIdRenameHint')),
       createElement('div', { className: 'codingns-magpie-management-actions' },
         createElement('button', { type: 'button', disabled: saving || writing, onClick: () => setReview(null) }, t('magpie.management.cancel')),
         createElement('button', { type: 'button', className: 'is-primary', disabled: saving || writing, onClick: () => void apply() }, saving || writing ? t('magpie.management.saving') : t('magpie.management.apply')),
@@ -266,7 +308,7 @@ function ProviderEditor({ provider, snapshot, t, onUpdate, onAccountUpdate, writ
     ),
     notice !== '' && createElement('div', { className: 'codingns-magpie-management-message', role: 'status' }, notice),
     review === null && createElement('div', { className: 'codingns-magpie-management-actions' },
-      createElement('button', { type: 'button', disabled: writing, onClick: () => { setName(provider.name); setEndpointUrl(editableEndpoints.find(item => item.field === endpointField)?.url ?? ''); setEnabledModelIds(provider.models.filter(model => model.exposed).map(model => model.id)); setNotice('') } }, t('magpie.management.reset')),
+      createElement('button', { type: 'button', disabled: writing, onClick: () => { setName(provider.name); setId(provider.id); setEndpointUrl(editableEndpoints.find(item => item.field === endpointField)?.url ?? ''); setEnabledModelIds(provider.models.filter(model => model.exposed).map(model => model.id)); setNotice('') } }, t('magpie.management.reset')),
       createElement('button', { type: 'button', className: 'is-primary', disabled: writing || proposed() === null, onClick: requestReview }, t('magpie.management.reviewChanges')),
     ),
   )
@@ -1076,6 +1118,7 @@ function PanelEmpty({ message }: { readonly message: string }): ReactElement {
 
 function summarizeProviderUpdate(update: MagpieProviderManagementUpdate, t: Translate): string {
   const changes: string[] = []
+  if (update.newId !== undefined) changes.push(t('magpie.management.reviewProviderId', { from: update.id, to: update.newId }))
   if (update.name !== undefined) changes.push(t('magpie.management.reviewName', { value: update.name }))
   if (update.endpointUrl !== undefined) changes.push(t('magpie.management.reviewEndpoint', { field: update.endpointField ?? '', value: update.endpointUrl }))
   if (update.models !== undefined) changes.push(t('magpie.management.reviewModels', { count: update.models.length }))
