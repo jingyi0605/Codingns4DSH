@@ -17,6 +17,10 @@ import type {
   MagpieUsageRequestPage,
   MagpieUsageSeriesPoint,
   MagpieUsageSession,
+  MagpieUpdateActionResult,
+  MagpieUpdateAvailabilityIssue,
+  MagpieUpdateNotes,
+  MagpieUpdateStatus,
 } from '../../shared/contracts/magpie-management.js'
 import {
   CODINGNS_SUBSCRIPTION_REPORTS_FIELD,
@@ -180,6 +184,13 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
   const [managementLoading, setManagementLoading] = useState(true)
   const [managementIssue, setManagementIssue] = useState<MagpieManagementAvailabilityIssue | null>(null)
   const [managementWriting, setManagementWriting] = useState(false)
+  const [updateStatus, setUpdateStatus] = useState<MagpieUpdateStatus | null>(null)
+  const [updateNotes, setUpdateNotes] = useState<MagpieUpdateNotes | null>(null)
+  const [updateLoading, setUpdateLoading] = useState(true)
+  const [updateError, setUpdateError] = useState<MagpieUpdateAvailabilityIssue | null>(null)
+  const [updateConfirming, setUpdateConfirming] = useState(false)
+  const [updateNotice, setUpdateNotice] = useState('')
+  const [updateOpen, setUpdateOpen] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
   const dashboardSequence = useRef(0)
   const requestSequence = useRef(0)
@@ -237,6 +248,74 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
     void loadManagement(controller.signal)
     return () => controller.abort()
   }, [loadManagement, refreshKey])
+
+  const loadUpdates = useCallback(async (signal: AbortSignal): Promise<void> => {
+    setUpdateLoading(true)
+    setUpdateError(null)
+    try {
+      const [status, notes] = await Promise.all([
+        callMagpieRpc<MagpieUpdateStatus>(rpc, 'update/status', {}, signal),
+        callMagpieRpc<MagpieUpdateNotes>(rpc, 'update/notes', {}, signal),
+      ])
+      if (signal.aborted) return
+      setUpdateStatus(status)
+      setUpdateNotes(notes)
+    } catch (error) {
+      if (signal.aborted) return
+      setUpdateError(magpieUpdateIssueForRpcError(error))
+    } finally {
+      if (!signal.aborted) setUpdateLoading(false)
+    }
+  }, [rpc])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void loadUpdates(controller.signal)
+    return () => controller.abort()
+  }, [loadUpdates, refreshKey])
+
+  const checkForUpdate = useCallback(async (): Promise<void> => {
+    setUpdateLoading(true)
+    setUpdateError(null)
+    setUpdateNotice('')
+    try {
+      const [status, notes] = await Promise.all([
+        callMagpieRpc<MagpieUpdateStatus>(rpc, 'update/check', {}, undefined),
+        callMagpieRpc<MagpieUpdateNotes>(rpc, 'update/notes', {}, undefined),
+      ])
+      setUpdateStatus(status)
+      setUpdateNotes(notes)
+    } catch (error) {
+      setUpdateError(magpieUpdateIssueForRpcError(error))
+    } finally {
+      setUpdateLoading(false)
+    }
+  }, [rpc])
+
+  const installUpdate = useCallback(async (): Promise<void> => {
+    setUpdateLoading(true)
+    setUpdateError(null)
+    setUpdateNotice('')
+    try {
+      const result = await callMagpieRpc<MagpieUpdateActionResult>(rpc, 'update/install', { confirmed: true }, undefined)
+      if (result.status !== null) setUpdateStatus(result.status)
+      setUpdateConfirming(false)
+      setUpdateNotice(result.restartExpected ? t('magpie.update.restartRequested') : t('magpie.update.requested'))
+    } catch (error) {
+      setUpdateError(magpieUpdateIssueForRpcError(error))
+    } finally {
+      setUpdateLoading(false)
+    }
+  }, [rpc, t])
+
+  useEffect(() => {
+    if (!updateOpen) return
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setUpdateOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [updateOpen])
 
   const updateProvider = useCallback(async (update: MagpieProviderManagementUpdate): Promise<void> => {
     setManagementWriting(true)
@@ -356,6 +435,15 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
       createElement('div', { className: 'codingns-magpie-topbar-right' },
         createElement('button', {
           type: 'button',
+          className: 'codingns-magpie-version-button',
+          'aria-haspopup': 'dialog',
+          'aria-expanded': updateOpen,
+          onClick: () => setUpdateOpen(value => !value),
+          'aria-label': t('magpie.update.open', { version: updateStatus?.current ?? '—' }),
+          title: t('magpie.update.open', { version: updateStatus?.current ?? '—' }),
+        }, updateStatus?.current ?? '—'),
+        createElement('button', {
+          type: 'button',
           className: 'codingns-magpie-icon-button',
           disabled: dashboardLoading || managementLoading || managementWriting,
           'aria-busy': dashboardLoading || managementLoading,
@@ -365,6 +453,23 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
         }, createElement(RefreshIcon, { busy: dashboardLoading || managementLoading })),
       ),
     ),
+    updateOpen && createElement(MagpieUpdateDialog, {
+      status: updateStatus,
+      notes: updateNotes,
+      loading: updateLoading,
+      error: updateError,
+      confirming: updateConfirming,
+      notice: updateNotice,
+      t,
+      onCheck: checkForUpdate,
+      onConfirm: installUpdate,
+      onConfirmingChange: setUpdateConfirming,
+      onRefresh: () => {
+        const controller = new AbortController()
+        void loadUpdates(controller.signal)
+      },
+      onClose: () => setUpdateOpen(false),
+    }),
     usageReports && createElement('div', { className: 'codingns-magpie-toolbar has-tabs' },
       createElement('div', { className: 'codingns-magpie-toolbar-left' },
         createElement('div', { className: 'codingns-magpie-usage-tabs', role: 'group', 'aria-label': t('magpie.usage') },
@@ -407,7 +512,9 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
             : dashboardError && dashboard === null
               ? createElement(EmptyState, { message: t('magpie.unavailable') })
               : section === 'overview'
-                ? createElement(OverviewPage, { dashboard, loading: dashboardLoading, error: dashboardError, chartMetric, onChartMetricChange: setChartMetric, t, onOpenSession: openSession })
+                ? createElement(OverviewPage, {
+                  dashboard, loading: dashboardLoading, error: dashboardError, chartMetric, onChartMetricChange: setChartMetric, t, onOpenSession: openSession,
+                })
                 : section === 'sessions'
                   ? createElement(SessionsPage, { dashboard, sessions: filteredSessions, search: sessionSearch, onSearch: setSessionSearch, onOpenSession: openSession, t })
                   : section === 'requests'
@@ -473,6 +580,142 @@ export function OverviewPage({ dashboard, loading, error, chartMetric, onChartMe
         if (target !== undefined) onOpenSession(target)
       },
     }),
+  )
+}
+
+function MagpieUpdateDialog({ status, notes, loading, error, confirming, notice, t, onCheck, onConfirm, onConfirmingChange, onRefresh, onClose }: {
+  readonly status: MagpieUpdateStatus | null
+  readonly notes: MagpieUpdateNotes | null
+  readonly loading: boolean
+  readonly error: MagpieUpdateAvailabilityIssue | null
+  readonly confirming: boolean
+  readonly notice: string
+  readonly t: (key: string, params?: Record<string, string | number>) => string
+  readonly onCheck: () => void
+  readonly onConfirm: () => void
+  readonly onConfirmingChange: (value: boolean) => void
+  readonly onRefresh: () => void
+  readonly onClose: () => void
+}): ReactElement {
+  return createElement('div', {
+    className: 'codingns-magpie-update-overlay',
+    role: 'presentation',
+    onMouseDown: (event: { target: unknown; currentTarget: unknown }) => {
+      if (event.target === event.currentTarget) onClose()
+    },
+  },
+    createElement('div', {
+      className: 'codingns-magpie-update-dialog',
+      role: 'dialog',
+      'aria-modal': true,
+      'aria-label': t('magpie.update.title'),
+      onMouseDown: (event: { stopPropagation: () => void }) => event.stopPropagation(),
+    },
+      createElement(MagpieUpdatePanel, {
+        status,
+        notes,
+        loading,
+        error,
+        confirming,
+        notice,
+        t,
+        onCheck,
+        onConfirm,
+        onConfirmingChange,
+        onRefresh,
+        onClose,
+      }),
+    ),
+  )
+}
+
+function MagpieUpdatePanel({ status, notes, loading, error, confirming, notice, t, onCheck, onConfirm, onConfirmingChange, onRefresh, onClose }: {
+  readonly status: MagpieUpdateStatus | null
+  readonly notes: MagpieUpdateNotes | null
+  readonly loading: boolean
+  readonly error: MagpieUpdateAvailabilityIssue | null
+  readonly confirming: boolean
+  readonly notice: string
+  readonly t: (key: string, params?: Record<string, string | number>) => string
+  readonly onCheck: () => void
+  readonly onConfirm: () => void
+  readonly onConfirmingChange: (value: boolean) => void
+  readonly onRefresh: () => void
+  readonly onClose: () => void
+}): ReactElement {
+  const updateAvailable = status !== null && ['found', 'ready', 'available', 'error'].includes(status.state)
+  const release = notes?.releases.find(item => item.version === status?.latest) ?? notes?.releases[0]
+  const progress = status?.state === 'downloading' && status.total !== null && status.total > 0 && status.done !== null
+    ? Math.max(0, Math.min(100, Math.round(status.done / status.total * 100)))
+    : null
+  return createElement('section', { className: 'codingns-magpie-panel codingns-magpie-update-panel' },
+    createElement('div', { className: 'codingns-magpie-panel-head' },
+      createElement('div', undefined,
+        createElement('h2', undefined, t('magpie.update.title')),
+        createElement('p', undefined, t('magpie.update.description')),
+      ),
+      createElement('div', { className: 'codingns-magpie-update-panel-actions' },
+        createElement('button', {
+          type: 'button',
+          className: 'codingns-magpie-text-button',
+          disabled: loading,
+          onClick: onRefresh,
+        }, t(loading ? 'magpie.refreshing' : 'magpie.refresh')),
+        createElement('button', {
+          type: 'button',
+          className: 'codingns-magpie-update-close',
+          onClick: onClose,
+          'aria-label': t('magpie.update.close'),
+          title: t('magpie.update.close'),
+        }, '×'),
+      ),
+    ),
+    error !== null
+      ? createElement(InlineNotice, { message: t(updateIssueLocaleKey(error)) })
+      : status === null
+        ? createElement(EmptyState, { message: t(loading ? 'magpie.loading' : 'magpie.update.unavailable'), loading })
+        : createElement('div', { className: 'codingns-magpie-update-body' },
+          createElement('div', { className: 'codingns-magpie-update-status' },
+            createElement('strong', undefined, updateStateLabel(status.state, t)),
+            createElement('span', undefined, t('magpie.update.current', { version: status.current })),
+            status.latest !== null && status.latest !== status.current && createElement('span', undefined, t('magpie.update.latest', { version: status.latest })),
+          ),
+          status.error !== null && createElement('div', { className: 'codingns-magpie-management-message' }, status.error),
+          progress !== null && createElement('div', { className: 'codingns-magpie-update-progress' },
+            createElement('span', { style: { width: `${progress}%` } }),
+            createElement('small', undefined, `${progress}%`),
+          ),
+          release !== undefined && release.notes.trim() !== '' && createElement('details', {
+            className: 'codingns-magpie-update-notes',
+            open: status.latest !== null && status.latest !== status.current,
+          },
+            createElement('summary', undefined, t('magpie.update.releaseNotes', { version: release.version })),
+            createElement('div', undefined, release.notes),
+          ),
+          confirming && updateAvailable
+            ? createElement('div', { className: 'codingns-magpie-confirm codingns-magpie-update-confirm' },
+              createElement('strong', undefined, t('magpie.update.confirmTitle')),
+              createElement('span', undefined, t('magpie.update.confirmWarning')),
+              createElement('div', { className: 'codingns-magpie-management-actions' },
+                createElement('button', { type: 'button', disabled: loading, onClick: () => onConfirmingChange(false) }, t('magpie.management.cancel')),
+                createElement('button', { type: 'button', className: 'is-primary', disabled: loading, onClick: onConfirm }, loading ? t('magpie.refreshing') : t('magpie.update.confirm')),
+              ),
+            )
+            : createElement('div', { className: 'codingns-magpie-management-actions' },
+              updateAvailable && createElement('button', {
+                type: 'button',
+                className: 'is-primary',
+                disabled: loading,
+                onClick: () => onConfirmingChange(true),
+              }, t(status.state === 'error' && status.retry ? 'magpie.update.retry' : 'magpie.update.manual')),
+              status.state === 'checking' && createElement('span', { className: 'codingns-magpie-management-message' }, t('magpie.update.checking')),
+              status.state === 'downloading' && createElement('span', { className: 'codingns-magpie-management-message' }, t('magpie.update.downloading')),
+            ),
+          notice !== '' && createElement('div', { className: 'codingns-magpie-management-message', role: 'status' }, notice),
+          !confirming && createElement('div', { className: 'codingns-magpie-update-actions' },
+            createElement('button', { type: 'button', disabled: loading, onClick: onCheck }, loading ? t('magpie.refreshing') : t('magpie.update.check')),
+          ),
+        ),
   )
 }
 
@@ -1088,10 +1331,25 @@ function SearchIcon(): ReactElement {
   )
 }
 
-export async function callMagpieRpc<T>(rpc: CodingNsRpcClient, action: 'usage/dashboard' | 'usage/requests' | 'management/snapshot' | 'management/provider/update' | 'management/group/update' | 'management/account/update', payload: unknown, signal?: AbortSignal): Promise<T> {
+export async function callMagpieRpc<T>(rpc: CodingNsRpcClient, action: 'usage/dashboard' | 'usage/requests' | 'management/snapshot' | 'management/provider/update' | 'management/group/update' | 'management/account/update' | 'update/status' | 'update/notes' | 'update/check' | 'update/install', payload: unknown, signal?: AbortSignal): Promise<T> {
   const result = await callCodingNsRpcResult(rpc, `magpie/${action}`, payload, signal)
   if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
   return result.value as T
+}
+
+export function magpieUpdateIssueForRpcError(error: unknown): MagpieUpdateAvailabilityIssue {
+  const record = error !== null && typeof error === 'object' ? error as { code?: unknown; message?: unknown } : undefined
+  const code = typeof record?.code === 'string' ? record.code : ''
+  const message = typeof record?.message === 'string' ? record.message : ''
+  if (code === 'CODINGNS_MAGPIE_UPDATE_UNSUPPORTED') return 'cli-version-unsupported'
+  if (code === 'CODINGNS_MAGPIE_UPDATE_INVALID') return 'update-response-invalid'
+  if (code === 'CODINGNS_MAGPIE_UPDATE_CONFIRMATION_REQUIRED') return 'host-request-failed'
+  if (code === 'CODINGNS_RPC_NOT_FOUND'
+    || (code === 'Error' && /^Unknown Magpie RPC: update\/(?:status|notes|check|install)$/u.test(message))) {
+    return 'host-rpc-outdated'
+  }
+  if (code === 'CODINGNS_MAGPIE_DISABLED') return 'feature-disabled'
+  return 'host-request-failed'
 }
 
 export function magpieDashboardIssueForRpcError(error: unknown): MagpieDashboardAvailabilityIssue {
@@ -1139,6 +1397,22 @@ function managementIssueLocaleKey(issue: MagpieManagementAvailabilityIssue): str
     case 'feature-disabled': return 'magpie.featureDisabled'
     case 'host-request-failed': return 'magpie.hostRequestFailed'
   }
+}
+
+function updateIssueLocaleKey(issue: MagpieUpdateAvailabilityIssue): string {
+  switch (issue) {
+    case 'web-api-unavailable': return 'magpie.webApiUnavailable'
+    case 'cli-unavailable': return 'magpie.cliUnavailable'
+    case 'cli-version-unsupported': return 'magpie.update.unsupported'
+    case 'update-response-invalid': return 'magpie.update.invalid'
+    case 'host-rpc-outdated': return 'magpie.hostRpcOutdated'
+    case 'feature-disabled': return 'magpie.featureDisabled'
+    case 'host-request-failed': return 'magpie.hostRequestFailed'
+  }
+}
+
+function updateStateLabel(state: MagpieUpdateStatus['state'], t: (key: string, params?: Record<string, string | number>) => string): string {
+  return t(`magpie.update.state.${state}`)
 }
 
 function sumNullable(left: number | null, right: number | null): number | null {
@@ -1247,11 +1521,12 @@ const pageStyle: CSSProperties = {
 }
 
 const MAGPIE_PAGE_CSS = `
-.codingns-magpie-page{--mp-accent:var(--dsw-alias-state-business-primary,#4176e6);--mp-chart:var(--mp-accent);--mp-ink:var(--dsw-alias-label-primary,CanvasText);--mp-muted:var(--dsw-alias-label-tertiary,GrayText);--mp-caption:var(--dsw-alias-label-caption,GrayText);--mp-line:var(--dsw-alias-border-l2,rgba(0,0,0,.1));--mp-line-strong:var(--dsw-alias-border-l3,rgba(0,0,0,.12));--mp-card:var(--dsw-specific-input-major,var(--dsw-alias-bg-layer-1,transparent));--mp-layer:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2,rgba(127,127,127,.06)));--mp-hover:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1));--mp-surface:var(--dsw-alias-bg-base,Canvas);--mp-radius:var(--dsw-radius-lg,12px);display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0;font:inherit;color:var(--mp-ink);background:var(--mp-surface)}
+.codingns-magpie-page{--mp-accent:var(--dsw-alias-state-business-primary,#4176e6);--mp-chart:var(--mp-accent);--mp-ink:var(--dsw-alias-label-primary,CanvasText);--mp-muted:var(--dsw-alias-label-tertiary,GrayText);--mp-caption:var(--dsw-alias-label-caption,GrayText);--mp-line:var(--dsw-alias-border-l2,rgba(0,0,0,.1));--mp-line-strong:var(--dsw-alias-border-l3,rgba(0,0,0,.12));--mp-card:var(--dsw-specific-input-major,var(--dsw-alias-bg-layer-1,transparent));--mp-layer:var(--dsw-alias-bg-module-platform,var(--dsw-alias-bg-layer-2,rgba(127,127,127,.06)));--mp-hover:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.1));--mp-surface:var(--dsw-alias-bg-base,Canvas);--mp-radius:var(--dsw-radius-lg,12px);position:relative;display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0;font:inherit;color:var(--mp-ink);background:var(--mp-surface)}
 .codingns-magpie-page *{box-sizing:border-box}
 .codingns-magpie-topbar{flex:0 0 auto;display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center;gap:12px;min-height:56px;padding:var(--mp-topbar-pad-y) calc(var(--mp-topbar-pad-x) + var(--mp-leading-inset));border-bottom:.5px solid var(--mp-line-strong);background:var(--mp-surface)}
 .codingns-magpie-topbar-left{display:flex;align-items:center;justify-self:start;min-width:0;max-width:100%}
 .codingns-magpie-topbar-right{display:flex;align-items:center;justify-self:end;gap:8px;min-width:0}
+.codingns-magpie-version-button{display:inline-flex;align-items:center;min-height:30px;padding:0 9px;border:.5px solid var(--mp-line-strong);border-radius:999px;background:var(--mp-card);color:var(--mp-muted);font:inherit;font-size:${uiFontSize(12)};font-variant-numeric:tabular-nums;cursor:pointer;transition:background .15s,color .15s,border-color .15s}.codingns-magpie-version-button:hover,.codingns-magpie-version-button[aria-expanded=true]{border-color:color-mix(in srgb,var(--mp-accent) 55%,var(--mp-line-strong));background:color-mix(in srgb,var(--mp-accent) 8%,var(--mp-card));color:var(--mp-ink)}.codingns-magpie-version-button:focus-visible{outline:2px solid color-mix(in srgb,var(--mp-accent) 55%,transparent);outline-offset:1px}
 .codingns-magpie-icon-button{display:grid;place-items:center;flex:0 0 auto;width:30px;height:30px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--mp-muted);cursor:pointer;transition:background .15s,color .15s}
 .codingns-magpie-icon-button:hover{background:var(--mp-hover);color:var(--mp-ink)}
 .codingns-magpie-icon-button:active{background:var(--mp-layer)}
@@ -1303,6 +1578,7 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-quota-window{padding:11px 0;border-top:.5px solid var(--mp-line)}.codingns-magpie-quota-window-head,.codingns-magpie-quota-foot,.codingns-magpie-history-line-head{display:flex;align-items:center;justify-content:space-between;gap:9px}.codingns-magpie-quota-window-head{font-size:${uiFontSize(13)};font-weight:500}.codingns-magpie-quota-window-head span{color:var(--mp-muted);font-variant-numeric:tabular-nums}.quota-track{height:6px}.quota-track span{background:linear-gradient(90deg,var(--mp-accent),color-mix(in srgb,var(--mp-accent) 55%,transparent))}.codingns-magpie-quota-foot{color:var(--mp-caption);font-size:${uiFontSize(12)}}
 .codingns-magpie-daily-chart{display:grid;grid-template-columns:1fr auto;align-items:center;gap:9px;margin-top:4px;padding-top:10px;border-top:.5px solid var(--mp-line);color:var(--mp-muted);font-size:${uiFontSize(12)}}.codingns-magpie-sparkline{width:100%;height:30px;overflow:visible}.codingns-magpie-sparkline polyline{stroke:var(--mp-accent);stroke-width:2;vector-effect:non-scaling-stroke}
 .codingns-magpie-history-panel{padding:17px;margin-top:14px}.codingns-magpie-history-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.codingns-magpie-history-card{padding:12px;border:1px solid var(--mp-line);border-radius:9px;background:var(--mp-card)}.codingns-magpie-history-card>strong,.codingns-magpie-history-card>small{display:block}.codingns-magpie-history-card>strong{font-size:${uiFontSize(13)};font-weight:600}.codingns-magpie-history-card>small{margin-top:3px;color:var(--mp-caption);font-size:${uiFontSize(12)}}.codingns-magpie-history-line{margin-top:10px}.codingns-magpie-history-line-head{font-size:${uiFontSize(12)}}.codingns-magpie-history-line-head span:last-child{font-variant-numeric:tabular-nums;font-weight:650}
+.codingns-magpie-update-overlay{position:absolute;inset:0;z-index:20;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:calc(var(--dsh-frame-top-clearance,0px) + 68px) 18px 24px;background:color-mix(in srgb,var(--mp-surface) 72%,rgba(0,0,0,.28));backdrop-filter:blur(3px)}.codingns-magpie-update-dialog{width:min(720px,100%);max-height:100%;overflow:auto;border:.5px solid var(--mp-line-strong);border-radius:var(--mp-radius);background:var(--mp-surface);box-shadow:var(--dsw-elevation-prominent,0 18px 48px rgba(0,0,0,.22))}.codingns-magpie-update-panel{padding:16px 17px;margin-bottom:0;border:0}.codingns-magpie-update-panel .codingns-magpie-panel-head{align-items:flex-start}.codingns-magpie-update-panel-actions{display:flex;align-items:center;gap:10px;flex:0 0 auto}.codingns-magpie-update-close{display:grid;place-items:center;width:28px;height:28px;padding:0;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--mp-muted);font:inherit;font-size:20px;line-height:1;cursor:pointer}.codingns-magpie-update-close:hover{background:var(--mp-hover);color:var(--mp-ink)}.codingns-magpie-update-close:focus-visible{outline:2px solid color-mix(in srgb,var(--mp-accent) 55%,transparent);outline-offset:1px}.codingns-magpie-update-body{display:grid;gap:9px}.codingns-magpie-update-status{display:flex;align-items:center;flex-wrap:wrap;gap:8px;color:var(--mp-muted);font-size:${uiFontSize(12)}}.codingns-magpie-update-status strong{color:var(--mp-ink);font-size:${uiFontSize(14)}}.codingns-magpie-update-progress{position:relative;height:7px;overflow:hidden;border-radius:999px;background:var(--mp-layer)}.codingns-magpie-update-progress span{display:block;height:100%;border-radius:inherit;background:var(--mp-accent);transition:width .2s ease}.codingns-magpie-update-progress small{display:block;margin-top:4px;color:var(--mp-caption);font-size:${uiFontSize(11)}}.codingns-magpie-update-notes{padding:9px 10px;border:1px solid var(--mp-line);border-radius:8px;background:var(--mp-card);color:var(--mp-muted);font-size:${uiFontSize(12)};line-height:1.5}.codingns-magpie-update-notes summary{cursor:pointer;color:var(--mp-ink);font-weight:600}.codingns-magpie-update-notes div{white-space:pre-wrap;overflow-wrap:anywhere}.codingns-magpie-update-actions{display:flex;justify-content:flex-start}.codingns-magpie-update-actions button{min-height:30px;padding:0 11px;border:1px solid var(--mp-line-strong);border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--mp-ink);font:inherit;font-size:${uiFontSize(12)};cursor:pointer}.codingns-magpie-update-actions button:disabled{opacity:.45;cursor:not-allowed}
 .codingns-magpie-management-grid{display:grid;grid-template-columns:minmax(190px,260px) minmax(0,1fr);align-items:start;gap:12px}.codingns-magpie-management-list{max-height:calc(100vh - 190px);overflow:auto;padding:5px}.codingns-magpie-management-row{width:100%;display:flex;align-items:center;justify-content:space-between;gap:9px;min-height:48px;padding:8px 10px;border:0;border-bottom:.5px solid var(--mp-line);background:transparent;color:var(--mp-ink);font:inherit;text-align:left;cursor:pointer}.codingns-magpie-management-row:last-child{border-bottom:0}.codingns-magpie-management-row:hover,.codingns-magpie-management-row.is-active{background:var(--mp-hover)}.codingns-magpie-management-row.is-active{box-shadow:inset 2px 0 var(--mp-accent)}.codingns-magpie-management-row-main{display:flex;flex:1 1 auto;flex-direction:column;align-items:flex-start;gap:3px;min-width:0;text-align:left}.codingns-magpie-management-row-main strong,.codingns-magpie-management-row-main small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.codingns-magpie-management-row-main strong{max-width:100%;text-align:left;font-size:${uiFontSize(13)};font-weight:600}.codingns-magpie-management-row-main small{color:var(--mp-caption);font-size:${uiFontSize(12)}}.codingns-magpie-state{display:inline-flex;align-items:center;gap:5px;flex:0 0 auto;padding:3px 7px;border-radius:999px;background:var(--mp-layer);color:var(--mp-muted);font-size:${uiFontSize(11)};font-weight:700}.codingns-magpie-state:before{content:'';width:6px;height:6px;border-radius:50%;background:currentColor}.codingns-magpie-state.is-on{background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#3f9d6b) 12%,transparent);color:var(--mp-accent)}.codingns-magpie-state.is-off{background:color-mix(in srgb,var(--dsw-alias-state-warn-primary,#c08a3e) 12%,transparent);color:var(--dsw-alias-state-warn-label,var(--dsw-alias-state-warn-primary,#a06a2c))}.codingns-magpie-management-editor{padding:17px}.codingns-magpie-management-statusline{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin:-2px 0 13px;color:var(--mp-muted);font-size:${uiFontSize(13)}}.codingns-magpie-field{display:flex;flex:1 1 150px;flex-direction:column;gap:6px;min-width:0;margin:0 0 12px;color:var(--mp-muted);font-size:${uiFontSize(13)};font-weight:500}.codingns-magpie-field small{font-size:${uiFontSize(11)};font-weight:400;line-height:1.4}.codingns-magpie-field input,.codingns-magpie-field select,.codingns-magpie-field textarea{width:100%;min-width:0;box-sizing:border-box;padding:7px 10px;border:.5px solid var(--dsw-alias-border-l4,rgba(0,0,0,.16));border-radius:var(--dsw-radius-sm,8px);background:var(--mp-card);color:var(--mp-ink);font:inherit;font-size:${uiFontSize(13)};outline:none}.codingns-magpie-field textarea{resize:vertical;line-height:1.5;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}.codingns-magpie-field-row{display:flex;gap:9px;align-items:stretch}.codingns-magpie-management-actions{display:flex;justify-content:flex-end;flex-wrap:wrap;gap:7px;margin-top:10px}.codingns-magpie-management-actions button{min-height:32px;padding:0 12px;border:.5px solid var(--mp-line-strong);border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--mp-ink);font:inherit;font-size:${uiFontSize(13)};cursor:pointer}.codingns-magpie-management-actions button.is-primary{border-color:transparent;background:var(--dsw-alias-button-primary-fill,var(--mp-accent));color:var(--dsw-alias-label-primary-foreground,#fff)}.codingns-magpie-management-actions button:disabled{opacity:.45;cursor:not-allowed}.codingns-magpie-confirm{display:grid;gap:7px;margin:12px 0;padding:11px;border:1px solid rgba(59,126,98,.24);border-radius:9px;background:color-mix(in srgb,var(--dsw-alias-state-success-primary,#3f9d6b) 8%,transparent);font-size:${uiFontSize(11)}}.codingns-magpie-confirm>span{overflow-wrap:anywhere;color:var(--mp-muted);line-height:1.5}.codingns-magpie-management-message{margin-top:10px;color:var(--mp-accent);font-size:${uiFontSize(11)}}.codingns-magpie-management-account-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.codingns-magpie-management-account{padding:16px}.codingns-magpie-management-balance{margin:8px 0;color:var(--mp-ink);font-size:${uiFontSize(14)};font-weight:700}.codingns-magpie-management-window{padding:10px 0;border-top:1px solid var(--mp-line)}.codingns-magpie-management-window>small,.codingns-magpie-management-readat{display:block;margin-top:5px;color:var(--mp-muted);font-size:${uiFontSize(11)}}.codingns-magpie-management-members{display:flex;flex-wrap:wrap;gap:5px;margin:-2px 0 13px}.codingns-magpie-member-chip{max-width:100%;overflow:hidden;padding:4px 7px;border:1px solid var(--mp-line);border-radius:6px;background:var(--mp-card);color:var(--mp-ink);font-size:${uiFontSize(11)};text-overflow:ellipsis;white-space:nowrap}.codingns-magpie-member-chip.is-muted{opacity:.55}.codingns-magpie-management-policy{flex:0 0 auto;color:var(--mp-muted);font-size:${uiFontSize(11)}}.codingns-magpie-checkbox{display:flex;align-items:center;gap:8px;margin:0;color:var(--mp-ink);font-size:${uiFontSize(13)}}.codingns-magpie-checkbox input{accent-color:var(--mp-accent)}
 .codingns-magpie-field-checkbox{margin:2px 0 12px}.codingns-magpie-management-hint{margin:0 0 14px;color:var(--mp-caption);font-size:${uiFontSize(11)};line-height:1.5}
 .codingns-magpie-checkbox-list{display:grid;gap:4px;padding:8px;border:1px solid var(--mp-line);border-radius:8px;background:var(--mp-card)}
