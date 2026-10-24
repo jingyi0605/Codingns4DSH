@@ -42,6 +42,7 @@ import { groupQuotaRowsByProvider, resolveQuotaAccountBalance } from './subscrip
 /** Top-level native tabs: Overview stands alone; Providers and Routing manage Magpie; Usage hosts its reports. */
 type PageTab = 'overview' | 'providers' | 'groups' | 'usage'
 type UsageTab = 'quotas' | 'sessions' | 'requests'
+
 type ChartMetric = 'calls' | 'tokens' | 'cost'
 export type ModelBreakdownMode = 'aggregate' | 'account'
 type MagpiePageProps = {
@@ -89,11 +90,6 @@ const USAGE_TABS: readonly { readonly id: UsageTab; readonly label: string; read
 ]
 const PAGE_SIZE = 50
 
-/** 订阅卡显示口径的切换项；顺序与截图一致：先「已用」，再「剩余」。 */
-const QUOTA_VIEWS: readonly { readonly id: SubscriptionQuotaView; readonly label: string }[] = [
-  { id: 'used', label: 'magpie.quotaViewUsed' },
-  { id: 'remaining', label: 'magpie.quotaViewRemaining' },
-]
 /** 只描述“筛选到哪个会话”的字段，底部弹层等嵌入式视图不必伪造完整会话指标。 */
 export interface MagpieRequestScope {
   readonly id: string
@@ -104,6 +100,11 @@ export interface MagpieRequestScope {
 /** 请求视图每页条数；底部弹层复用同一分页尺寸。 */
 export const MAGPIE_REQUESTS_PAGE_SIZE = PAGE_SIZE
 
+/** 订阅卡显示口径的切换项；顺序与截图一致：先「已用」，再「剩余」。 */
+const QUOTA_VIEWS: readonly { readonly id: SubscriptionQuotaView; readonly label: string }[] = [
+  { id: 'used', label: 'magpie.quotaViewUsed' },
+  { id: 'remaining', label: 'magpie.quotaViewRemaining' },
+]
 
 /**
  * 读取 Host 保存的订阅卡显示口径，并返回一个写入函数。
