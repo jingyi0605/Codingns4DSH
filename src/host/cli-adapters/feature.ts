@@ -30,7 +30,7 @@ import { MagpieWebService } from './magpie-web.js'
 import { MagpieUpdateService } from './magpie-update.js'
 import type { MagpieDashboardPeriod, MagpieDashboardStreamChunk, MagpieUsageDashboard } from '../../shared/contracts/magpie-management.js'
 import type { MagpieUsageSnapshot } from '../../shared/contracts/subscription.js'
-import { MagpieInstallDetectionService, type MagpieDetectionServiceOptions } from './magpie-detection.js'
+import { MagpieInstallDetectionService, normalizeCustomCommand, type MagpieDetectionServiceOptions } from './magpie-detection.js'
 import type { MagpieDetectionRequest } from '../../shared/contracts/magpie-management.js'
 import { createMagpieSessionRouting } from './magpie-session-routing.js'
 import { normalizeSubagentBridgeSettings, normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
@@ -444,7 +444,7 @@ export function createCliAdaptersFeature(options: {
           const request = readMagpieDetectionRequest(payload)
           const force = readMagpieDetectionForce(payload)
           // A custom path is request-scoped; it must not poison later automatic detection.
-          const detectionService = request.commandPath === undefined
+          const detectionService = request.commandPath === undefined || normalizeCustomCommand(request.commandPath) === null
             ? magpieDetection
             : new MagpieInstallDetectionService({ ...options.magpieDetectionOptions, customCommand: request.commandPath })
           const detection = await detectionService.detect(request, { force: force || request.commandPath !== undefined })
