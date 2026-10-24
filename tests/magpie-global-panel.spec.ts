@@ -259,7 +259,7 @@ test('Magpie management nests primary and secondary accounts under providers', (
     availabilityIssue: null,
     providerStatus: 'available',
     providers: [{
-      id: 'openai-subscription', name: 'Codex Subscription', accountAgent: 'codex', preset: null, protocol: 'chat', host: 'api.example.com', website: null,
+      id: 'openai-subscription', idEditable: true, name: 'Codex Subscription', accountAgent: 'codex', preset: null, protocol: 'chat', host: 'api.example.com', website: null,
       state: 'on', account: 'test-account', keyMasked: null,
       endpoints: [{ field: 'chat', url: 'https://api.example.com/v1', editable: true }],
       models: [
@@ -329,9 +329,21 @@ test('Magpie management nests primary and secondary accounts under providers', (
   assert.match(groups, /option value="session"[^>]*>整个会话<\/option>/u, 'stickiness options show Magpie business names')
   assert.match(groups, /codingns-magpie-management-policy">按顺序</u, 'the group list shows the business name instead of the raw policy value')
   assert.doesNotMatch(groups, /option value="order"[^>]*>order</u, 'raw policy values stay out of the option labels')
+  // The provider ID stays visible and editable, with its own field beside the name.
+  assert.match(providers, /<span>提供商 ID<\/span>/u, 'the editor shows the provider ID field in the page language')
+  assert.match(providers, /class="codingns-magpie-provider-id-input"[^>]*value="openai-subscription"/u, 'the ID field carries the current provider ID')
+  assert.doesNotMatch(providers, /class="codingns-magpie-provider-id-input"[^>]*disabled/u, 'an ID Magpie writes is editable')
   assert.match(providers, /openai-subscription\/backup/u, 'provider editor renders disabled models as available choices')
   assert.match(providers, /class="codingns-magpie-model-name"[^>]*>Backup Model</u, 'provider model names remain visible')
   assert.match(providers, /type="checkbox"/u)
+
+  const lockedSnapshot: MagpieManagementSnapshot = {
+    ...snapshot,
+    providers: snapshot.providers.map(provider => ({ ...provider, id: 'b.ai', idEditable: false })),
+  }
+  const lockedMarkup = renderToStaticMarkup(createElement(MagpieProvidersPage, { ...props, snapshot: lockedSnapshot }))
+  assert.match(lockedMarkup, /class="codingns-magpie-provider-id-input"[^>]*disabled=""/u, 'an ID Magpie will not write again is shown read-only')
+  assert.match(lockedMarkup, /Magpie 以这个不会再写入的 ID 保存该提供商/u, 'the editor says why the ID cannot change')
 
   const partialSnapshot: MagpieManagementSnapshot = {
     ...snapshot,

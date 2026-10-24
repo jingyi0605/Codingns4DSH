@@ -710,6 +710,32 @@ test('Magpie account routing updates use Web API login routes and block disablin
   assert.equal(fixture.calls.filter(item => item.path === '/api/login/off').length, postsBeforeFinalDisable)
 })
 
+test('Magpie provider IDs are read with whether they can be written', () => {
+  const parsed = parseMagpieWebProviders({ providers: [
+    { id: 'grox-ds', name: 'Grox-Deepseek', chat: 'https://www.mcgrox.top', was: ['grox'] },
+    { id: 'b.ai', name: 'Hand-written', chat: 'https://relay.example.test/v1' },
+  ] })
+  assert.ok(parsed)
+  assert.equal(parsed.records[0]?.id, 'grox-ds')
+  assert.equal(parsed.records[0]?.name, 'Grox-Deepseek')
+  assert.equal(parsed.records[0]?.idEditable, true, 'an ID in Magpie\'s own spelling may be renamed')
+  assert.equal(parsed.records[1]?.idEditable, false, 'an ID Magpie stored by hand is one its editor refuses to write')
+})
+
+test('Magpie provider ID updates accept only the spelling Magpie writes and only reachable IDs', () => {
+  assert.deepEqual(readProviderUpdate({ id: 'demo', newId: 'demo-relay' }), { id: 'demo', newId: 'demo-relay' })
+  assert.deepEqual(readProviderUpdate({ id: 'demo', newId: ' Demo-Relay ' }), { id: 'demo', newId: 'demo-relay' }, 'the ID is stored lower case')
+  assert.throws(() => readProviderUpdate({ id: 'demo', newId: 'demo' }), /no changes/u, 'an unchanged ID is not a rename')
+  assert.deepEqual(readProviderUpdate({ id: 'demo', name: 'Renamed', newId: 'demo-2' }), { id: 'demo', newId: 'demo-2', name: 'Renamed' })
+  assert.throws(() => readProviderUpdate({ id: 'demo', newId: 'Demo Relay' }), /Invalid Magpie provider ID/u)
+  assert.throws(() => readProviderUpdate({ id: 'demo', newId: '-demo' }), /Invalid Magpie provider ID/u)
+  assert.throws(() => readProviderUpdate({ id: 'demo', newId: '' }), /Invalid Magpie provider ID/u)
+  assert.throws(() => readProviderUpdate({ id: 'demo', newId: 'magpie' }), /reserves this provider ID/u)
+  assert.throws(() => readProviderUpdate({ id: 'demo', newId: 'group' }), /reserves this provider ID/u)
+  assert.throws(() => readProviderUpdate({ id: 'demo', newId: 'auto' }), /reserves this provider ID/u)
+  assert.throws(() => readProviderUpdate({ id: 'demo', newId: 'x'.repeat(65) }), /Invalid Magpie provider ID/u)
+})
+
 test('Magpie provider Web API patches omit credentials and preserve unedited fields through read-back', async () => {
   const fixture = createManagementWebApiFixture()
   const service = new MagpieManagementService({ webApi: fixture.api })
@@ -722,7 +748,12 @@ test('Magpie provider Web API patches omit credentials and preserve unedited fie
   assert.equal(provider?.state, 'off')
   assert.deepEqual(provider?.models.map(model => model.id), ['demo/model-b'])
   const save = fixture.calls.find(item => item.path === '/api/provider/save')
-  assert.deepEqual(Object.keys(save?.body ?? {}).sort(), ['chat', 'id', 'models', 'name'])
+  // Every base URL goes back as Magpie returned it, replaced by the one edited: a save that left
+  // one out is read as a provider without that API and refused ("a provider needs a base URL").
+  assert.deepEqual(save?.body, {
+    id: 'demo', name: 'Renamed Demo', chat: 'https://new.example.test/v1',
+    responses: 'https://responses.example.test/v1', models: ['model-b'],
+  })
   assert.deepEqual(save?.body?.models, ['model-b'])
   assert.doesNotMatch(JSON.stringify(save?.body), /raw-secret|balance-secret|sk-live/u)
   assert.equal(fixture.state.providers[0]?.headers && (fixture.state.providers[0].headers as { Authorization: string }).Authorization, 'raw-secret')
@@ -730,6 +761,46 @@ test('Magpie provider Web API patches omit credentials and preserve unedited fie
 
   await service.updateProvider({ id: 'demo', on: true })
   assert.ok(fixture.calls.some(item => item.path === '/api/provider/on'))
+})
+
+test('Magpie provider renames save under the current ID and read the provider back under the new one', async () => {
+  const fixture = createManagementWebApiFixture()
+  const service = new MagpieManagementService({ webApi: fixture.api })
+  const otherBefore = JSON.stringify(fixture.state.providers[1])
+  const result = await service.updateProvider({ id: 'demo', newId: 'demo-relay', name: 'Relay demo', models: ['demo/model-b'] })
+  const saved = result.snapshot.providers.find(item => item.id === 'demo-relay')
+  assert.equal(result.id, 'demo-relay', 'the result names the provider by the ID it has now')
+  assert.equal(saved?.name, 'Relay demo')
+  assert.equal(result.snapshot.providers.some(item => item.id === 'demo'), false, 'the provider no longer answers to the ID it had')
+  assert.deepEqual(saved?.models.filter(model => model.exposed).map(model => model.id), ['demo-relay/model-b'], 'picks are read back under the new ID')
+  assert.equal(saved?.idEditable, true)
+  const save = fixture.calls.find(item => item.path === '/api/provider/save' && item.body?.from !== undefined)
+  assert.equal(save?.body?.from, 'demo', 'Magpie saves the fields under the ID the provider had')
+  assert.equal(save?.body?.id, 'demo-relay')
+  assert.deepEqual(save?.body?.models, ['model-b'], 'a pick is appended to the ID the provider is moved to')
+  assert.equal(save?.body?.chat, 'https://api.example.test/v1', 'the base URLs go back as Magpie returned them')
+  assert.equal(save?.body?.responses, 'https://responses.example.test/v1')
+  assert.equal(JSON.stringify(fixture.state.providers.find(item => item.id === 'other')), otherBefore)
+  // The routing group naming the provider's models followed it, as Magpie's own rename does.
+  assert.deepEqual(fixture.state.groups[0]?.members, ['demo-relay/model-a', 'demo-relay/model-b'])
+  assert.equal(fixture.state.providers.find(item => item.id === 'demo-relay')?.was && (fixture.state.providers.find(item => item.id === 'demo-relay')!.was as string[]).includes('demo'), true)
+
+  // A rename keeps the provider's state switch on the ID it has now.
+  await service.updateProvider({ id: 'demo-relay', on: false })
+  assert.ok(fixture.calls.some(item => item.path === '/api/provider/off' && item.body?.id === 'demo-relay'))
+})
+
+test('Magpie provider renames refuse an ID another provider answers to or one this Host cannot write', async () => {
+  const fixture = createManagementWebApiFixture()
+  const service = new MagpieManagementService({ webApi: fixture.api })
+  fixture.state.providers[1]!.was = ['other-old']
+  await assert.rejects(service.updateProvider({ id: 'demo', newId: 'other' }), /already answers to this ID/u)
+  await assert.rejects(service.updateProvider({ id: 'demo', newId: 'other-old' }), /already answers to this ID/u, 'an ID Magpie remembers as an alias is taken too')
+  assert.equal(fixture.calls.some(item => item.path === '/api/provider/save' && item.body?.from !== undefined), false, 'a refused rename writes nothing')
+  await assert.rejects(service.updateProvider({ id: 'legacy.id', newId: 'legacy' }), /cannot be renamed/u)
+  // Magpie itself would save over the provider holding the ID, so the Host verifies rather than trusts.
+  fixture.overwriteTakenId = true
+  await assert.rejects(service.updateProvider({ id: 'demo', newId: 'other' }), /already answers to this ID/u)
 })
 
 test('Magpie routing-group Web API writes preserve patterns and isolate other groups and providers', async () => {
@@ -981,6 +1052,8 @@ function createManagementWebApiFixture(): {
   changeOtherGroupOnSave: boolean
   /** Like Magpie's own handler: a save writes every group field, so a key left out is reset. */
   writeAllGroupFields: boolean
+  /** Like Magpie's own handler: a save under a taken ID replaces the provider that has it. */
+  overwriteTakenId: boolean
 } {
   const state = {
     providers: [
@@ -991,6 +1064,8 @@ function createManagementWebApiFixture(): {
         models: [{ id: 'model-a', name: 'Model A' }, { id: 'model-b', name: 'Model B' }],
       },
       { id: 'other', name: 'Other provider', chat: 'https://other.example.test/v1', off: false, chosen: ['model-x'], models: [{ id: 'model-x', name: 'Model X' }] },
+      // A provider saved under an ID Magpie's own editor refuses to write again.
+      { id: 'legacy.id', name: 'Legacy provider', chat: 'https://legacy.example.test/v1', off: false, chosen: [], models: [] },
     ],
     groups: [
       { id: 'group/fast-pool', name: 'Fast pool', members: ['demo/model-a', 'demo/model-b'], match: [], routing: 'order', affinity: 'session', extra: 'preserve' },
@@ -1007,6 +1082,7 @@ function createManagementWebApiFixture(): {
     calls,
     changeOtherGroupOnSave: false,
     writeAllGroupFields: false,
+    overwriteTakenId: false,
     api: {
       async requestJson(path, options = {}) {
         const body = options.body !== null && typeof options.body === 'object' && !Array.isArray(options.body)
@@ -1018,17 +1094,37 @@ function createManagementWebApiFixture(): {
         if (path === '/api/usage/quotas') return []
         if (path === '/api/login/usage') return { codex: cloneRecords(state.accounts) }
         if (path === '/api/provider/save') {
-          const current = state.providers.find(provider => provider.id === body?.id)
-          assert.ok(current)
-          for (const [key, value] of Object.entries(body ?? {})) {
-            if (key === 'models' && Array.isArray(value)) {
-              current.chosen = [...value]
-              current.models = value.map(id => {
-                const before = (current.models as Array<{ id: string; name?: string }>).find(model => model.id === id)
-                return before ?? { id, name: id }
-              })
-            } else current[key] = value
+          // Magpie saves the fields under `from`, the ID the provider had, then moves the provider
+          // to `id`: the groups naming its models follow it, and the old ID stays a remembered alias.
+          if (typeof body?.from === 'string' && body.from !== body.id) {
+            const before = state.providers.find(provider => provider.id === body.from)
+            assert.ok(before, 'a rename saves under the ID the provider had')
+            const to = String(body.id)
+            const taken = state.providers.find(provider => provider.id === to)
+            if (fixture.overwriteTakenId) {
+              if (taken !== undefined) state.providers.splice(state.providers.indexOf(taken), 1)
+            } else {
+              assert.equal(taken, undefined, 'Magpie replaces the provider saved under a taken ID')
+            }
+            const was = [...(Array.isArray(before.was) ? before.was as string[] : []).filter(alias => alias !== to), body.from]
+            applyProviderFields(before, { ...body, id: undefined, from: undefined })
+            before.id = to
+            before.was = was
+            // Magpie takes the groups naming the provider's models with it (agent.RenameProvider).
+            const renamed = (member: unknown): unknown => typeof member === 'string' && member.startsWith(`${body.from}/`)
+              ? `${to}/${member.slice(String(body.from).length + 1)}`
+              : member
+            for (const group of state.groups) {
+              if (Array.isArray(group.members)) group.members = (group.members as string[]).map(renamed)
+              if (Array.isArray(group.match)) group.match = (group.match as string[]).map(renamed)
+            }
           }
+          const current = state.providers.find(provider => provider.id === body?.id)
+          if (current === undefined) {
+            assert.ok(body?.from !== undefined || fixture.overwriteTakenId || typeof body?.id !== 'string')
+            return { ok: true }
+          }
+          applyProviderFields(current, body)
           return { ok: true }
         }
         if (path === '/api/provider/on' || path === '/api/provider/off') {
@@ -1072,4 +1168,19 @@ const MAGPIE_GROUP_SAVE_FIELDS = [
 
 function cloneRecords<T>(records: readonly T[]): T[] {
   return structuredClone(records)
+}
+
+/** Write a provider save body onto its stored row, as Magpie's handler stores what the form sent. */
+function applyProviderFields(current: Record<string, unknown>, body: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(body)) {
+    // `from` names the ID the provider had for that one save; it is not a field of the provider.
+    if (key === 'from' || key === 'id') continue
+    if (key === 'models' && Array.isArray(value)) {
+      current.chosen = [...value]
+      current.models = value.map(id => {
+        const before = (current.models as Array<{ id: string; name?: string }>).find(model => model.id === id)
+        return before ?? { id, name: id }
+      })
+    } else if (value !== undefined) current[key] = value
+  }
 }
