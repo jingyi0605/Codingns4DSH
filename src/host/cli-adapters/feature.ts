@@ -117,6 +117,7 @@ export function createCliAdaptersFeature(options: {
       }
       let subscriptions: Pick<ProviderSubscriptionService, 'read' | 'reset'> = options.subscriptions ?? buildSubscriptions(context.services.settings?.get())
       let magpieDetection = options.magpieDetection ?? new MagpieInstallDetectionService(options.magpieDetectionOptions)
+      let magpieDetectionRequest = 0
       // 最近一次可用的 Magpie 入口；探测会随用户指定的路径变化而重建，Web 服务总是读最新值。
       let magpieCommand: string | null = null
       let magpieVersion: string | null = null
@@ -442,16 +443,24 @@ export function createCliAdaptersFeature(options: {
         const signal = isAbortSignal(rpcSignal) ? rpcSignal : lifetime.signal
         // 安装探测本身就是启用前的判断依据，因此不要求模块已启用。
         if (action === 'management/detection') {
+          const requestId = ++magpieDetectionRequest
           const request = readMagpieDetectionRequest(payload)
           const force = readMagpieDetectionForce(payload)
-          // A custom path is request-scoped; it must not poison later automatic detection.
+          // Only a successful custom probe replaces the Host-session selection.
           const customCommand = normalizeCustomCommand(request.commandPath)
           const detectionService = customCommand === null
             ? magpieDetection
             : new MagpieInstallDetectionService({ ...options.magpieDetectionOptions, customCommand })
           const detection = await detectionService.detect(customCommand === null ? {} : { commandPath: customCommand }, { force: force || customCommand !== null })
-          magpieCommand = MagpieInstallDetectionService.isUsable(detection) ? detection.command : null
-          magpieVersion = MagpieInstallDetectionService.isUsable(detection) ? detection.version : null
+          if (requestId !== magpieDetectionRequest || lifetime.signal.aborted) return detection
+          const usable = MagpieInstallDetectionService.isUsable(detection)
+          if (usable || customCommand === null) {
+            if (usable && customCommand !== null) magpieDetection = detectionService
+            magpieInstalled = usable
+            magpieCommand = usable ? detection.command : null
+            magpieVersion = usable ? detection.version : null
+            scheduleMagpieWebSync(context.services.settings?.get().modules.magpieManagement === true && usable)
+          }
           return detection
         }
         if (context.services.settings?.get().modules.magpieManagement !== true) {

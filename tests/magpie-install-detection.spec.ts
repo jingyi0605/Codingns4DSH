@@ -10,7 +10,9 @@ import { createCliAdaptersFeature } from '../src/host/cli-adapters/feature.js'
 import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js'
 import { FeatureRegistry } from '../src/features/registry.js'
 import { CodingNsRpcTable } from '../src/host/rpc-table.js'
-import { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler } from '../src/host/rpc.js'
+import { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler, registerCodingNsRpc } from '../src/host/rpc.js'
+import { MagpieWebService } from '../src/host/cli-adapters/magpie-web.js'
+import { MagpieUpdateService } from '../src/host/cli-adapters/magpie-update.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
 import type { MagpieInstallDetection } from '../src/shared/contracts/magpie-management.js'
 import { magpieManagementFeature } from '../src/client/features/magpie-management.js'
@@ -323,6 +325,170 @@ test('Magpie detection RPC is owner-only on the Connection channel and closed on
   const limited = await handler('magpie/management/detection', {}, new AbortController().signal, { principal: { kind: 'session' } })
   assert.equal(limited.ok, false)
   assert.equal(limited.ok === false && limited.error.code, 'CODINGNS_RPC_FORBIDDEN')
+})
+
+test('a successful manual path is shared by Host detection, the real settings gate, and Web startup', async (t) => {
+  const command = 'C:\\Users\\dev\\Desktop\\magpie-windows-amd64.exe'
+  const slowCommand = 'C:\\tools\\slow-magpie.exe'
+  let finishSlow: (() => void) | undefined
+  const calls: string[] = []
+  const starts: (string | null)[] = []
+  let runnable = true
+  // Intercept the default Web service before it can start a real child or make API reads.
+  t.mock.method(MagpieWebService.prototype, 'start', async function (this: MagpieWebService) {
+    starts.push((this as unknown as { startupCommand: () => string | null }).startupCommand())
+  })
+  t.mock.method(MagpieUpdateService.prototype, 'startBackgroundChecks', () => {})
+  const table = new CodingNsRpcTable()
+  let settings = { ...DEFAULT_CODINGNS_SETTINGS, modules: { magpieManagement: false } }
+  const listeners = new Set<(next: typeof settings, previous: typeof settings) => void>()
+  const registry = new FeatureRegistry({
+    rpc: table,
+    settings: {
+      get: () => settings,
+      watch: (listener: (next: typeof settings, previous: typeof settings) => void) => {
+        listeners.add(listener)
+        return () => { listeners.delete(listener) }
+      },
+    },
+  } as never)
+  registry.register(createCliAdaptersFeature({
+    registry: new CodingNsCliAdapterRegistry([]),
+    magpieDetectionOptions: {
+      platform: 'win32', environment: WINDOWS_ENVIRONMENT, pathEntries: emptyPath,
+      resolvePath: async () => null, listDirectory: async () => [],
+      runVersion: async (path) => {
+        calls.push(path)
+        if (path === slowCommand) return new Promise(resolve => { finishSlow = () => resolve(okVersion('magpie 0.1.1330')) })
+        return path === command && runnable ? okVersion('magpie 0.1.1358') : null
+      },
+    },
+  }))
+  await registry.start('cliAdapters')
+  t.after(() => registry.disable('cliAdapters'))
+  let disposeRpc: (() => Promise<void>) | undefined
+  registerCodingNsRpc({
+    effect(effect: () => () => Promise<void>) { disposeRpc = effect() },
+    webServer: { register() { return () => {} } },
+    connection: { fetch: { register() { return () => {} } } },
+  } as never, table, {
+    writable: true,
+    describe: () => [{ ns: 'codingns', revision: 1, value: settings }],
+    get: () => settings,
+    mutate: async (_namespace, operations) => {
+      const previous = settings
+      settings = { ...settings, modules: { magpieManagement: operations[0]?.value === true } }
+      for (const listener of listeners) listener(settings, previous)
+    },
+  })
+  t.after(async () => { await disposeRpc?.() })
+  const probe = table.resolve('magpie/management/detection')!
+  const setting = table.resolve('settings/set')!
+  const toggle = (value: boolean) => setting.handler(setting.action, {
+    ops: [{ op: 'set', path: ['modules', 'magpieManagement'], value }],
+  })
+
+  assert.equal((await probe.handler(probe.action, {}) as MagpieInstallDetection).installed, false)
+  await assert.rejects(toggle(true), { code: 'CODINGNS_MAGPIE_NOT_INSTALLED' })
+  const olderProbe = probe.handler(probe.action, { commandPath: slowCommand, force: true })
+  const detected = await probe.handler(probe.action, { commandPath: command, force: true }) as MagpieInstallDetection
+  assert.equal(detected.command, command)
+  assert.equal(detected.version, '0.1.1358')
+  assert.ok(finishSlow)
+  finishSlow()
+  await olderProbe
+  assert.equal((await probe.handler(probe.action, {}) as MagpieInstallDetection).command, command)
+  assert.deepEqual(starts, [], 'manual detection alone never enables or starts Web')
+
+  await toggle(true)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(settings.modules.magpieManagement, true)
+  assert.deepEqual(starts, [command], 'the default Web startup reads the manual command, not PATH')
+  assert.equal(calls.filter(path => path === command).length, 2, 'the settings gate revalidates the selected command')
+
+  const invalid = await probe.handler(probe.action, { commandPath: 'C:\\missing\\magpie.exe', force: true }) as MagpieInstallDetection
+  assert.equal(invalid.installed, false)
+  assert.equal((await probe.handler(probe.action, {}) as MagpieInstallDetection).command, command,
+    'a failed custom probe does not replace the previously working path')
+
+  await toggle(false)
+  await new Promise(resolve => setImmediate(resolve))
+  runnable = false
+  await assert.rejects(toggle(true), { code: 'CODINGNS_MAGPIE_NOT_INSTALLED' })
+  assert.equal(settings.modules.magpieManagement, false, 'a removed command cannot be enabled using a cached success')
+  await toggle(false)
+  const disposedProbe = probe.handler(probe.action, { commandPath: slowCommand, force: true })
+  await registry.disable('cliAdapters')
+  const startsBeforeDisposal = starts.length
+  finishSlow()
+  await disposedProbe
+  assert.equal(starts.length, startsBeforeDisposal, 'a late probe cannot restart a disposed feature')
+  await assert.rejects(toggle(true), { code: 'CODINGNS_MAGPIE_NOT_INSTALLED' })
+})
+
+test('the Magpie card and its panel share manual detection state and keep disabling available', async (t) => {
+  const command = 'C:\\Users\\dev\\Desktop\\magpie-windows-amd64.exe'
+  const calls: unknown[] = []
+  const writes: unknown[] = []
+  const services = {
+    rpc: { call: async (_channel: string, _endpoint: string, payload: unknown) => {
+      calls.push(payload)
+      const custom = (payload as { commandPath?: string }).commandPath === command
+      return { ok: true as const, value: {
+        installed: custom, platform: 'windows', source: custom ? 'custom' : null,
+        command: custom ? command : null, version: custom ? '0.1.1358' : null, reason: null, checkedAt: 'now',
+      } }
+    } },
+    settings: { mutate: async (operations: unknown) => { writes.push(operations); return true } },
+    dshVersion: '0.2.1-rc.3',
+    locale: { bind: () => (key: string) => key, subscribe: () => () => undefined, getSnapshot: () => ({ revision: 0 }) },
+  }
+  const registry = new FeatureRegistry({} as never)
+  registry.register(magpieManagementFeature)
+  const snapshot = { status: 'ready', writable: true, value: { ...DEFAULT_CODINGNS_SETTINGS, modules: {} }, revision: 1 }
+  const section = createHookRenderer(CodingNsSettingsSection as never, {
+    settings: { subscribe: () => () => undefined, getSnapshot: () => snapshot }, registry, services,
+  } as never)
+  t.after(() => section.dispose())
+  const elements = (node: ReactNode): ReactElement<any>[] => isValidElement<{ children?: ReactNode }>(node)
+    ? [node as ReactElement<any>, ...Children.toArray((node as ReactElement<any>).props.children).flatMap(elements)] : []
+  const entry = elements(section.render() as ReactNode).find(element => element.props.entry?.module === magpieManagementFeature)!
+  const card = createHookRenderer(entry.type as (props: any) => ReactElement, entry.props)
+  t.after(() => card.dispose())
+  const switchIn = (output: ReactNode) => elements(output).find(element => typeof element.props.onChange === 'function')!
+  assert.equal(switchIn(card.render()).props.disabled, true, 'enable is blocked while checking')
+  await new Promise(resolve => setImmediate(resolve))
+  let output = card.render()
+  assert.equal(switchIn(output).props.disabled, true, 'automatic lookup did not find Magpie')
+  elements(output).find(element => element.type === 'details')!.props.onToggle({ currentTarget: { open: true } })
+  const panelIn = (tree: ReactNode) => elements(tree).find(element => element.type === magpieManagementFeature.settingsPanel)!
+  let panelElement = panelIn(card.render())
+  const panel = createHookRenderer(panelElement.type as (props: any) => ReactElement, panelElement.props)
+  t.after(() => panel.dispose())
+  const buttonIn = (tree: ReactNode, key: string) => elements(tree).find(element => element.type === 'button' && element.props.children === key)!
+  buttonIn(panel.render(), 'magpie.install.customToggle').props.onClick()
+  elements(panel.render()).find(element => element.type === 'input')!.props.onChange({ currentTarget: { value: command } })
+  buttonIn(panel.render(), 'magpie.install.customApply').props.onClick()
+  assert.equal(switchIn(card.render()).props.disabled, true)
+  await new Promise(resolve => setImmediate(resolve))
+  output = card.render()
+  assert.equal(switchIn(output).props.disabled, false, 'manual success unlocks the same card switch')
+  assert.equal(elements(output).some(element => element.props['data-codingns-requirement'] !== undefined), false)
+  panelElement = panelIn(output)
+  assert.equal(elements(panel.render(panelElement.props)).find(element => element.props['data-state'])!.props['data-state'], 'ready')
+  assert.deepEqual(calls, [{}, { commandPath: command, force: true }], 'the panel does not issue an independent automatic check')
+  switchIn(output).props.onChange(true)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(writes, [[{ op: 'set', path: ['modules', 'magpieManagement'], value: true }]])
+
+  buttonIn(panel.render(), 'magpie.install.recheck').props.onClick()
+  card.render()
+  await new Promise(resolve => setImmediate(resolve))
+  output = card.render({ ...entry.props, snapshot: { ...snapshot, value: { ...snapshot.value, modules: { magpieManagement: true } } } })
+  assert.equal(switchIn(output).props.disabled, false, 'an enabled module can still be disabled when detection fails')
+  switchIn(output).props.onChange(false)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(writes.at(-1), [{ op: 'set', path: ['modules', 'magpieManagement'], value: false }])
 })
 
 test('client detection reader maps RPC failures to stable states', async () => {

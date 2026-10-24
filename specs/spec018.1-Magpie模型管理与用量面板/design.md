@@ -84,6 +84,9 @@ Quota cards normalize provider/name/kind/user/plan/alias/balance/readAt, quota w
 
 ## 4. State and refresh lifecycle
 
+- The settings card owns the installation requirement state and passes it to its panel; manual rechecks update the same state that gates the switch. Checking, missing, and unavailable results block enabling, not disabling.
+- A successful custom-path probe becomes the Host feature's selected detector and Web startup command until that feature is disposed. Failed custom probes leave that selection intact; late probe results cannot replace a newer selection or restart a disposed feature. The existing owner-only detection RPC remains the boundary for executable-path input.
+- The registered settings RPC validates enablement through that same detection endpoint with a forced version check, rather than constructing an unrelated automatic detector. No manual path is written to persistent settings or Magpie configuration.
 - Page load and period changes create a new AbortController and request sequence.
 - Closing the page, selecting a new period, or choosing another session aborts the previous request.
 - Dashboard and request reads use independent pending/error states.

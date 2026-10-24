@@ -117,7 +117,13 @@ export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable, setti
     () => {
       const unregisterSettings = settingsProvider === undefined
         ? undefined
-        : table.register('settings', createCodingNsSettingsRpcHandler(settingsProvider))
+        : table.register('settings', createCodingNsSettingsRpcHandler(settingsProvider, {
+          detectMagpie: async () => {
+            const target = table.resolve('magpie/management/detection')
+            if (target === null) throw new CodingNsRpcError('CODINGNS_MAGPIE_NOT_INSTALLED', 'Magpie detection is unavailable')
+            return await target.handler(target.action, { force: true }) as MagpieInstallDetection
+          },
+        }))
       const handler = createCodingNsRpcHandler(table, { connection })
       // DSH 0.1.7 的 connection.rpc.handle() 会在当前插件 Fiber 中再次读取
       // webServer；该 Fiber 没有 webServer 注入时会直接抛错。这里使用当前

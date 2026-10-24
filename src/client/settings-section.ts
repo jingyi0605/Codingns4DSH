@@ -149,7 +149,7 @@ function FeatureCard({ entry, snapshot, services, restartStates, notify }: Featu
   const needsRequirement = ui.requirementKey !== undefined
   const installedRequirement = useMagpieInstallRequirement(needsRequirement ? services : null)
   const requirement = needsRequirement ? installedRequirement : null
-  const requirementBlocked = requirement !== null && requirement.state === 'missing'
+  const requirementBlocked = !enabled && requirement !== null && requirement.state !== 'ready'
   // 常驻模块不提供关闭入口；设置未就绪、只读或本机缺少依赖时也不允许切换。
   const switchDisabled = temporarilyDisabled || ui.alwaysEnabled === true || !versionCompatible
     || snapshot.status === 'loading' || !snapshot.writable || requirementBlocked
@@ -239,7 +239,7 @@ function FeatureCard({ entry, snapshot, services, restartStates, notify }: Featu
           'data-codingns-requirement': requirement.state,
           style: { marginBottom: 10, color: requirement.state === 'missing' ? dshThemeColor.error : dshThemeColor.labelSecondary },
         }, t(requirement.state === 'missing' ? requirement.requirementKey : requirement.checkingKey)),
-      !hasOpened || panel === undefined ? null : createElement(panel, { services, enabled, snapshot, notify }),
+      !hasOpened || panel === undefined ? null : createElement(panel, { services, enabled, snapshot, notify, requirement }),
     ),
   )
 }

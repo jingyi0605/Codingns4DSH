@@ -82,9 +82,10 @@ function MagpiePanelIcon({ size }: GlobalPanelIconProps): ReactElement {
  * 使用的是哪个入口/版本、没检测到时该做什么。检测在 Host 执行，面板不直接
  * 访问文件系统，也不显示 Host 异常原文。
  */
-function MagpieInstallPanel({ services, enabled }: FeaturePanelProps): ReactElement {
+function MagpieInstallPanel({ services, enabled, requirement: cardRequirement }: FeaturePanelProps): ReactElement {
   const t = useCodingNsTranslator(services.locale)
-  const requirement = useMagpieInstallRequirement(services)
+  const ownRequirement = useMagpieInstallRequirement(cardRequirement == null ? services : null)
+  const requirement = cardRequirement ?? ownRequirement
   const [showCustom, setShowCustom] = useState(false)
   const [customPath, setCustomPath] = useState('')
   const detection = requirement.detection

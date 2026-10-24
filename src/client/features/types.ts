@@ -9,6 +9,7 @@ import type { PeerHostScopedClient } from '../peer-host-scoped-client.js'
 import type { HostRouter } from '../host-router.js'
 import type { PeerHostSessionController } from '../peer-host-session-controller.js'
 import type { PwaNotificationClient } from '../pwa-notifications.js'
+import type { FeatureRequirement } from '../feature-requirement.js'
 
 /** 一次 Codingns4DSH RPC 的结果，与 DSH Connection 的结果形状一致。 */
 export type CodingNsRpcResult =
@@ -83,6 +84,8 @@ export interface FeaturePanelProps {
   readonly services: CodingNsClientServices
   /** 当前是否启用；未启用时面板需要自行灰显并禁用输入。 */
   readonly enabled: boolean
+  /** Share the card's prerequisite check and recheck action with its panel. */
+  readonly requirement?: FeatureRequirement | null
   /** 设置快照，用于读取表单初值和可写状态。 */
   readonly snapshot: CodingNsSettingsSnapshot<CodingNsSettings>
   /** 将设置写入结果显示在设置区域顶部。 */
