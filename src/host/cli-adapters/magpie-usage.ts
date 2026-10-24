@@ -498,7 +498,7 @@ export class MagpieUsageService {
         const nextOffset = candidateOffset + page.rows.length
         exhausted = page.rows.length === 0
           || nextOffset <= candidateOffset
-          || (page.total === null ? page.rows.length < candidateLimit : nextOffset >= page.total)
+          || (page.total === null ? page.rows.length < pageLimit : nextOffset >= page.total)
         candidateOffset = nextOffset
         // A single identity keeps the existing paged scan behavior. Aggregated DSH sessions
         // must scan every contributing identity so one provider conversation cannot hide another.

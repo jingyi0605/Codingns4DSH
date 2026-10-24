@@ -439,6 +439,32 @@ test('Magpie request pages aggregate bounded session aliases and deduplicate led
   }), null, 'direct service callers cannot fan out beyond the bounded alias list')
 })
 
+test('Magpie request pages keep totals unknown when an alias scan hits its bound', async () => {
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      const url = new URL(path, 'http://127.0.0.1:3430')
+      const identity = url.searchParams.get('q')
+      if (identity === 'dsh-session') {
+        const offset = Number(url.searchParams.get('offset'))
+        return {
+          rows: Array.from({ length: 100 }, (_, index) => ({
+            route_id: offset + index + 1, agent: 'claude', session: 'dsh-session', provider: 'example-provider', req: 'example-provider/model',
+          })),
+        }
+      }
+      if (identity === 'provider-session') return { rows: [] }
+      throw new Error(`unexpected query identity: ${identity}`)
+    } },
+  })
+
+  const page = await service.readRequestPage({
+    period: 'today', offset: 0, limit: 2, sessionId: 'dsh-session', sessionIds: ['dsh-session', 'provider-session'], sessionAgent: 'claude',
+  })
+  assert.ok(page)
+  assert.equal(page.total, null, 'a short bounded final page is not proof the candidate ledger was exhausted')
+  assert.equal(page.hasMore, true)
+})
+
 test('Magpie request pages use the resolved ledger session identity for Command Code', async () => {
   const providerSessionId = 'command-acp-session'
   const nativeSessionId = 'native-dsh-session'
@@ -496,8 +522,18 @@ test('Magpie Host RPCs stay gated until the module setting is enabled', async (t
     async updateGroup(value: unknown) { managementCalls += 1; return value },
     async updateAccount(value: unknown) { managementCalls += 1; return value },
   }
-  const registry = new FeatureRegistry({ rpc: table, settings: { get: () => settings, watch: () => () => undefined } } as never)
-  registry.register(createCliAdaptersFeature({ registry: new CodingNsCliAdapterRegistry([]), magpieUsage: usage as never, magpieManagement: management as never }))
+  const adapterRegistry = new CodingNsCliAdapterRegistry([], {}, { sessionStore })
+  const registry = new FeatureRegistry({
+    rpc: table,
+    settings: { get: () => settings, watch: () => () => undefined },
+    nativeSessions: {
+      get: (id: string) => id === 'dsh-session' ? nativeSession : undefined,
+      list: () => [],
+      listRemote: async () => [],
+      subscribe: () => () => undefined,
+    },
+  } as never)
+  registry.register(createCliAdaptersFeature({ registry: adapterRegistry, magpieUsage: usage as never, magpieManagement: management as never }))
   await registry.start('cliAdapters')
   t.after(() => registry.disable('cliAdapters'))
 
