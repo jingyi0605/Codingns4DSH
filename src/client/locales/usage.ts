@@ -206,19 +206,10 @@ export const en: Record<string, string> = {
   'usage.resetCardsByWindow': 'Resets · 5h {fiveHour} · weekly {weekly}',
   'usage.resetCardsCount': '{count} reset cards',
   'usage.resetCardsExpiresAt': 'Expires {time}',
-  // 路由卡片底部的“查看请求”入口与请求模态框。
+  // 路由标题栏的“查看请求”入口与请求模态框；明细文案复用 magpie.* 词典。
   'usage.magpieViewRequests': 'View requests',
   'usage.magpieRequestsTitle': 'Magpie requests',
-  'usage.magpieRequestsLoading': 'Loading requests…',
-  'usage.magpieRequestsUnavailable': 'This session’s Magpie requests are unavailable.',
-  'usage.magpieRequestsEmpty': 'No Magpie requests for this session today.',
-  'usage.magpieRequestsCount': '{count} requests',
-  'usage.magpieRequestsLoaded': 'Showing {count}',
-  'usage.magpieRequestsLoadMore': 'Load more',
-  'usage.magpieRequestsRetry': 'Retry',
   'usage.magpieRequestsClose': 'Close',
-  'usage.magpieRequestsTokens': 'In {input} · Out {output}',
-  'usage.magpieRequestsToday': 'Today',
 }
 
 export const zh: Record<string, string> = {
@@ -423,17 +414,8 @@ export const zh: Record<string, string> = {
   'usage.resetCardsByWindow': '重置卡 · 5 小时 {fiveHour} · 每周 {weekly}',
   'usage.resetCardsCount': '{count} 张重置卡',
   'usage.resetCardsExpiresAt': '最近到期 {time}',
-  // 路由卡片底部的“查看请求”入口与请求模态框。
+  // 路由标题栏的“查看请求”入口与请求模态框；明细文案复用 magpie.* 词典。
   'usage.magpieViewRequests': '查看请求',
   'usage.magpieRequestsTitle': 'Magpie 请求',
-  'usage.magpieRequestsLoading': '正在读取请求…',
-  'usage.magpieRequestsUnavailable': '暂时无法读取此会话的 Magpie 请求。',
-  'usage.magpieRequestsEmpty': '这个会话今天还没有 Magpie 请求。',
-  'usage.magpieRequestsCount': '{count} 条请求',
-  'usage.magpieRequestsLoaded': '已显示 {count} 条',
-  'usage.magpieRequestsLoadMore': '加载更多',
-  'usage.magpieRequestsRetry': '重试',
   'usage.magpieRequestsClose': '关闭',
-  'usage.magpieRequestsTokens': '输入 {input} · 输出 {output}',
-  'usage.magpieRequestsToday': '今日',
 }

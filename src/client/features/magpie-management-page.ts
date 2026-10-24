@@ -90,6 +90,16 @@ const QUOTA_VIEWS: readonly { readonly id: SubscriptionQuotaView; readonly label
   { id: 'used', label: 'magpie.quotaViewUsed' },
   { id: 'remaining', label: 'magpie.quotaViewRemaining' },
 ]
+/** 只描述“筛选到哪个会话”的字段，底部弹层等嵌入式视图不必伪造完整会话指标。 */
+export interface MagpieRequestScope {
+  readonly id: string
+  readonly agent: string
+  readonly dshSessionName?: string
+}
+
+/** 请求视图每页条数；底部弹层复用同一分页尺寸。 */
+export const MAGPIE_REQUESTS_PAGE_SIZE = PAGE_SIZE
+
 
 /**
  * 读取 Host 保存的订阅卡显示口径，并返回一个写入函数。
@@ -588,10 +598,11 @@ export function RequestsPage({ page, loading, error, selectedSession, offset, on
   readonly page: MagpieUsageRequestPage | null
   readonly loading: boolean
   readonly error: boolean
-  readonly selectedSession: MagpieUsageSession | null
+  readonly selectedSession: MagpieRequestScope | null
   readonly offset: number
   readonly onOffsetChange: (value: number) => void
-  readonly onClearSession: () => void
+  /** 传 null 表示会话由外层固定筛选，不提供“清除筛选”动作。 */
+  readonly onClearSession: (() => void) | null
   readonly t: (key: string, params?: Record<string, string | number>) => string
 }): ReactElement {
   const items = page?.items ?? []
@@ -608,7 +619,7 @@ export function RequestsPage({ page, loading, error, selectedSession, offset, on
       createElement('span', { className: 'codingns-magpie-provider-inline' },
         createElement(MagpieProviderLogo, { identities: [selectedSession.agent], size: 20, className: 'codingns-magpie-provider-logo codingns-magpie-provider-logo-compact', fallback: 'none' }),
         selectedSession.dshSessionName ?? t('magpie.requestFor', { agent: selectedSession.agent, id: selectedSession.id })),
-      createElement('button', { type: 'button', className: 'codingns-magpie-text-button', onClick: onClearSession }, t('magpie.clearSession')),
+      onClearSession !== null && createElement('button', { type: 'button', className: 'codingns-magpie-text-button', onClick: onClearSession }, t('magpie.clearSession')),
     ),
     error && createElement(InlineNotice, { message: t('magpie.usageUnavailable') }),
     loading && page === null
@@ -1457,3 +1468,22 @@ html[data-codingns-mobile-sidebar="on"] .codingns-magpie-page{padding-left:0;--m
 }
 
 `
+
+/** 管理页样式的固定标识；重复注入时直接复用已有样式表。 */
+const MAGPIE_PAGE_STYLE_ID = 'codingns4dsh-magpie-page-style'
+
+/**
+ * 把管理页样式注入 `document.head`（只注入一次）。
+ *
+ * 管理页自身在根节点里内联 `<style>`；底部弹层等嵌入式视图没有这个根节点，
+ * 复用请求明细前必须先装上同一份样式表。
+ */
+export function installMagpiePageStyles(): void {
+  if (typeof document === 'undefined') return
+  if (document.querySelector(`style[data-plugin-css="${MAGPIE_PAGE_STYLE_ID}"]`) !== null) return
+  const style = document.createElement('style')
+  style.dataset.plugin = 'codingns4dsh'
+  style.dataset.pluginCss = MAGPIE_PAGE_STYLE_ID
+  style.textContent = MAGPIE_PAGE_CSS
+  document.head.appendChild(style)
+}
