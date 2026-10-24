@@ -271,6 +271,12 @@ export interface MagpieProviderEndpoint {
 
 export interface MagpieProviderManagementRecord {
   readonly id: string
+  /**
+   * Whether this Host may write the ID, which Magpie spells in lower-case letters, digits and
+   * dashes only; false when Magpie already stored an ID in another spelling, because a save
+   * under such an ID is refused by its own editor.
+   */
+  readonly idEditable: boolean
   readonly name: string
   /** Agent identity from Magpie's nested provider.account object, not the provider ID. */
   readonly accountAgent: string | null
@@ -382,6 +388,11 @@ export interface MagpieManagementSnapshot {
 
 export interface MagpieProviderManagementUpdate {
   readonly id: string
+  /**
+   * The ID this provider keeps afterwards. Magpie saves the rest under the ID it had and then
+   * moves it, taking the routing groups and Agent configs that name its models along.
+   */
+  readonly newId?: string
   readonly name?: string
   readonly endpointField?: MagpieProviderEndpointField
   readonly endpointUrl?: string

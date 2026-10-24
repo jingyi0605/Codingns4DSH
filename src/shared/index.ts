@@ -272,6 +272,7 @@ export type {
   MagpieUsageSeriesPoint,
   MagpieUsageSession,
 } from './contracts/magpie-management.js'
+export { isMagpieProviderId, magpieProviderId } from './magpie-provider-id.js'
 export type {
   AggregatedHostCapabilitySummary,
   AggregatedHostFetchRequest,

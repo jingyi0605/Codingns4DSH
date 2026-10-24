@@ -13,6 +13,7 @@ import type {
   MagpieRoutingGroupManagementUpdate,
   MagpieRoutingGroupMember,
 } from '../../shared/contracts/magpie-management.js'
+import { isMagpieProviderId, magpieProviderId } from '../../shared/magpie-provider-id.js'
 import { MagpieWebService, type MagpieWebRequestOptions } from './magpie-web.js'
 
 const MAX_PROVIDERS = 100
@@ -31,6 +32,16 @@ const MEMBER_LEVELS: readonly string[] = ['none', 'minimal', 'low', 'medium', 'h
 const GROUP_EFFORTS = new Set(['', 'auto'])
 const STICKINESS_POLICIES = new Set(['auto', 'session', 'turn', 'off', 'strict'])
 const ACCOUNT_AGENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u
+/**
+ * IDs Magpie refuses a provider, whatever its spelling (`provider.Rename`): the gateway itself,
+ * the prefix its routing groups carry, and the destination of model IDs that name none.
+ */
+const RESERVED_PROVIDER_IDS = new Set(['magpie', 'group', 'auto'])
+/**
+ * Fields a provider save does not write back: `was` is the IDs Magpie remembers the provider by,
+ * and `id` is read back under the ID a rename gives it.
+ */
+const PROVIDER_SAVE_KEEPS = new Set(['was', 'id'])
 
 const PROVIDER_VIEW_FIELDS = new Set([
   'host', 'key', 'keyList', 'balanceToken', 'account', 'ready', 'chosen', 'speaks', 'models', 'exposed', 'unlisted',
@@ -102,34 +113,47 @@ export class MagpieManagementService {
       if (update.endpointField !== undefined && !currentRecord.endpoints.some(endpoint => endpoint.field === update.endpointField && endpoint.editable)) {
         throw new TypeError('Only an endpoint already present on this provider can be edited')
       }
+      const newId = update.newId !== undefined && update.newId !== currentRecord.id ? update.newId : undefined
+      if (newId !== undefined) {
+        if (!currentRecord.idEditable) throw new TypeError('Magpie stored this provider under an ID it will not write again, so it cannot be renamed')
+        // Magpie answers a rename to a taken ID by saving over that provider, so the ID has to be
+        // free here: in the snapshot, and among the IDs Magpie remembers the providers by.
+        if (before.snapshot.providers.some(provider => provider.id !== currentRecord.id
+          && (provider.id === newId || magpieProviderAliasIds(before.rawProviders ?? [], provider.id).includes(newId)))) {
+          throw new TypeError('Another Magpie provider already answers to this ID')
+        }
+      }
 
       const hasConfigChange = providerHasConfigChange(update, currentRecord)
       const hasStateChange = update.on !== undefined && currentRecord.state !== (update.on ? 'on' : 'off')
-      if (!hasConfigChange && !hasStateChange) return { changed: 'provider', id: update.id, snapshot: before.snapshot }
+      if (!hasConfigChange && !hasStateChange && newId === undefined) {
+        return { changed: 'provider', id: update.id, snapshot: before.snapshot }
+      }
 
       const protectedBefore = providerConfigFingerprint(current)
-      if (hasConfigChange) {
+      if (hasConfigChange || newId !== undefined) {
         await this.requestApi('/api/provider/save', {
-          method: 'POST', body: providerSavePayload(currentRecord, update), ...signalOption(signal),
+          method: 'POST', body: providerSavePayload(currentRecord, update, newId), ...signalOption(signal),
         })
       }
       if (hasStateChange) {
         await this.requestApi(`/api/provider/${update.on ? 'on' : 'off'}`, {
-          method: 'POST', body: { id: update.id }, ...signalOption(signal),
+          method: 'POST', body: { id: newId ?? update.id }, ...signalOption(signal),
         })
       }
 
       const after = await this.readWebState(signal)
-      const saved = after.snapshot.providers.find(item => item.id === update.id)
-      const savedRaw = after.rawProviders?.find(item => item.id === update.id)
+      const savedId = newId ?? update.id
+      const saved = after.snapshot.providers.find(item => item.id === savedId)
+      const savedRaw = after.rawProviders?.find(item => item.id === savedId)
       this.remember(after)
       if (saved === undefined || savedRaw === undefined || !providerUpdateMatches(update, saved)
         || !providerRecordMatchesUpdate(currentRecord, update, saved)
         || providerConfigFingerprint(savedRaw) !== protectedBefore
-        || !otherProvidersUnchanged(before.rawProviders ?? [], after.rawProviders ?? [], update.id)) {
+        || !otherProvidersUnchanged(before.rawProviders ?? [], after.rawProviders ?? [], savedId, update.id)) {
         throw new Error('Magpie provider update could not be verified without changing protected settings')
       }
-      return { changed: 'provider', id: update.id, snapshot: after.snapshot }
+      return { changed: 'provider', id: savedId, snapshot: after.snapshot }
     })
   }
 
@@ -391,7 +415,8 @@ export function parseMagpieWebAccounts(
 export function readProviderUpdate(value: unknown): MagpieProviderManagementUpdate {
   const record = asRecord(value)
   if (record === null || typeof record.id !== 'string' || !PROVIDER_ID.test(record.id)) throw new TypeError('Invalid Magpie provider update')
-  assertAllowedKeys(record, ['id', 'name', 'endpointField', 'endpointUrl', 'models', 'on'])
+  assertAllowedKeys(record, ['id', 'newId', 'name', 'endpointField', 'endpointUrl', 'models', 'on'])
+  const newId = record.newId === undefined || record.newId === record.id ? undefined : readProviderId(record.newId)
   const name = optionalUpdateText(record.name, 80, 'provider name')
   const endpointField = record.endpointField
   const endpointUrl = optionalUpdateUrl(record.endpointUrl)
@@ -404,14 +429,33 @@ export function readProviderUpdate(value: unknown): MagpieProviderManagementUpda
     : endpointUrl
   if ((endpointField === undefined) !== (canonicalEndpointUrl === undefined)) throw new TypeError('Endpoint field and URL must be updated together')
   const models = record.models === undefined ? undefined : readModelList(record.models, record.id, false)
-  if (name === undefined && endpointUrl === undefined && models === undefined && on === undefined) throw new TypeError('Provider update has no changes')
+  if (newId === undefined && name === undefined && endpointUrl === undefined && models === undefined && on === undefined) throw new TypeError('Provider update has no changes')
   return {
     id: record.id,
+    ...(newId === undefined ? {} : { newId }),
     ...(name === undefined ? {} : { name }),
     ...(endpointField === undefined || canonicalEndpointUrl === undefined ? {} : { endpointField: endpointField as MagpieProviderEndpointField, endpointUrl: canonicalEndpointUrl }),
     ...(models === undefined ? {} : { models }),
     ...(on === undefined ? {} : { on }),
   }
+}
+
+/**
+ * Read the ID a provider is renamed to, in the spelling Magpie itself writes it: lower-case
+ * letters, digits and single dashes, its `provider.Slug`. Magpie answers any other spelling by
+ * refusing the save, and it refuses some IDs even when they are spelled that way.
+ */
+function readProviderId(value: unknown): string {
+  const text = typeof value === 'string' ? value.trim().toLocaleLowerCase() : ''
+  if (text === '' || text.length > 64 || text !== magpieProviderId(text)) throw new TypeError('Invalid Magpie provider ID')
+  if (RESERVED_PROVIDER_IDS.has(text)) throw new TypeError('Magpie reserves this provider ID')
+  return text
+}
+
+/** The IDs a provider answers to: Magpie's `was`, the ones it had before a rename. */
+function magpieProviderAliasIds(rawProviders: readonly Record<string, unknown>[], providerId: string): readonly string[] {
+  const aliases = readStringList(rawProviders.find(item => item.id === providerId)?.was, 100)
+  return (aliases ?? []).map(alias => alias.toLocaleLowerCase())
 }
 
 export function readGroupUpdate(value: unknown): MagpieRoutingGroupManagementUpdate {
@@ -528,6 +572,7 @@ function readWebProvider(record: Record<string, unknown>): { readonly record: Ma
   if (rawAccountAgent !== undefined && rawAccountAgent !== null && accountAgent === null) partial = true
   const normalized: MagpieProviderManagementRecord = {
     id,
+    idEditable: isMagpieProviderId(id),
     name,
     ...icon,
     accountAgent,
@@ -773,14 +818,28 @@ function providerHasConfigChange(update: MagpieProviderManagementUpdate, current
     || update.models !== undefined && !sameStringOrder(update.models, current.models.filter(model => model.exposed).map(model => model.id))
 }
 
-function providerSavePayload(current: MagpieProviderManagementRecord, update: MagpieProviderManagementUpdate): Record<string, unknown> {
+/**
+ * The body of a provider save. A rename goes in as `from`, the ID the provider has now, plus the
+ * new `id`: Magpie saves the other fields under the ID it had and then gives it `id`, carrying
+ * the routing groups and Agent configs that name its models along with it.
+ *
+ * The base URLs go back exactly as Magpie returned them: a save that left one out is read as a
+ * provider without that API and is refused with "a provider needs a base URL".
+ */
+function providerSavePayload(current: MagpieProviderManagementRecord, update: MagpieProviderManagementUpdate, newId?: string): Record<string, unknown> {
   const payload: Record<string, unknown> = { id: current.id }
+  if (newId !== undefined) {
+    payload.id = newId
+    payload.from = current.id
+  }
   if (update.name !== undefined) payload.name = update.name
-  if (update.endpointField !== undefined && update.endpointUrl !== undefined) {
-    payload[update.endpointField] = update.endpointUrl
+  for (const endpoint of current.endpoints) {
+    payload[endpoint.field] = endpoint.field === update.endpointField && update.endpointUrl !== undefined ? update.endpointUrl : endpoint.url
   }
   if (update.models !== undefined) {
-    payload.models = update.models.map(model => localModelId(current.id, model))
+    // Magpie appends a pick to the provider it is named under, which for a rename is its new ID.
+    const providerId = newId ?? current.id
+    payload.models = update.models.map(model => localModelId(providerId, model.startsWith(`${current.id}/`) ? `${providerId}/${model.slice(current.id.length + 1)}` : model))
   }
   return payload
 }
@@ -833,8 +892,13 @@ function groupSavePayload(
   return payload
 }
 
+/**
+ * Fingerprint what a provider save must leave alone: everything but the fields it writes
+ * (`providerSavePayload`) and the two it keeps of its own. A rename is read back as such rather
+ * than as an untouched field, so it is the one ID change this Host accepts.
+ */
 function providerConfigFingerprint(record: Record<string, unknown>): string {
-  const viewOrMutable = new Set([...PROVIDER_VIEW_FIELDS, ...PROVIDER_MUTABLE_FIELDS])
+  const viewOrMutable = new Set([...PROVIDER_VIEW_FIELDS, ...PROVIDER_MUTABLE_FIELDS, ...PROVIDER_SAVE_KEEPS])
   const preserved = Object.fromEntries(Object.entries(record).filter(([key]) => !viewOrMutable.has(key)))
   const key = asRecord(record.key)
   const keyList = Array.isArray(record.keyList)
@@ -878,9 +942,17 @@ function groupRecordFingerprint(record: Record<string, unknown>): string {
   return stableJson({ record: parsed, protected: groupConfigFingerprint(record) })
 }
 
-function otherProvidersUnchanged(before: readonly Record<string, unknown>[], after: readonly Record<string, unknown>[], id: string): boolean {
-  const beforeOthers = before.filter(item => item.id !== id)
-  const afterOthers = after.filter(item => item.id !== id)
+function otherProvidersUnchanged(
+  before: readonly Record<string, unknown>[],
+  after: readonly Record<string, unknown>[],
+  id: string,
+  previousId: string = id,
+): boolean {
+  // A rename moves one provider between two IDs: neither is another provider whose change would
+  // be a side effect of this save.
+  const own = new Set([id, previousId])
+  const beforeOthers = before.filter(item => !own.has(String(item.id)))
+  const afterOthers = after.filter(item => !own.has(String(item.id)))
   if (beforeOthers.length !== afterOthers.length) return false
   const afterById = new Map(afterOthers.map(item => [String(item.id), item]))
   return beforeOthers.every(item => {
@@ -914,11 +986,13 @@ function otherAccountsUnchanged(
 }
 
 function providerUpdateMatches(update: MagpieProviderManagementUpdate, saved: MagpieProviderManagementRecord): boolean {
+  // A rename is read back under the new ID; every other field of the record then stands as it is.
+  if (update.newId !== undefined && saved.id !== update.newId) return false
   if (update.name !== undefined && update.name !== saved.name) return false
   if (update.on !== undefined && (update.on ? 'on' : 'off') !== saved.state) return false
   if (update.endpointField !== undefined && update.endpointUrl !== undefined
     && saved.endpoints.find(item => item.field === update.endpointField)?.url !== update.endpointUrl) return false
-  if (update.models !== undefined && !sameStringOrder(update.models, saved.models.filter(model => model.exposed).map(model => model.id))) return false
+  if (update.models !== undefined && !sameRenamedModels(update.models, update.id, update.newId ?? update.id, saved.models.filter(model => model.exposed).map(model => model.id))) return false
   return true
 }
 
@@ -930,13 +1004,19 @@ function providerRecordMatchesUpdate(
   if (saved.name !== (update.name ?? before.name)) return false
   if (saved.state !== (update.on === undefined ? before.state : update.on ? 'on' : 'off')) return false
   const models = update.models ?? before.models.filter(model => model.exposed).map(model => model.id)
-  if (!sameStringOrder(models, saved.models.filter(model => model.exposed).map(model => model.id))) return false
+  if (!sameRenamedModels(models, update.id, update.newId ?? update.id, saved.models.filter(model => model.exposed).map(model => model.id))) return false
   return ENDPOINT_FIELDS.every(field => {
     const expected = field === update.endpointField && update.endpointUrl !== undefined
       ? update.endpointUrl
       : before.endpoints.find(endpoint => endpoint.field === field)?.url
     return expected === saved.endpoints.find(endpoint => endpoint.field === field)?.url
   })
+}
+
+/** Model IDs as a renamed provider now spells them: `<id>/<model>` under the ID it was given. */
+function sameRenamedModels(expected: readonly string[], fromId: string, toId: string, saved: readonly string[]): boolean {
+  const renamed = expected.map(model => model.startsWith(`${fromId}/`) && fromId !== toId ? `${toId}/${model.slice(fromId.length + 1)}` : model)
+  return sameStringOrder(renamed, saved)
 }
 
 function groupUpdateMatches(update: MagpieRoutingGroupManagementUpdate, saved: MagpieRoutingGroupManagementRecord): boolean {
