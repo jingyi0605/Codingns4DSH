@@ -32,6 +32,8 @@ interface Fixture {
   /** 运行结果：入口 → 版本输出。 */
   readonly runs?: Readonly<Record<string, MagpieCliRunResult>>
   readonly pathHit?: string | null
+  /** PATH after the Host has read the platform environment; on Windows this models registry PATH. */
+  readonly pathEntries?: string
 }
 
 const NOW = Date.parse('2026-10-23T00:00:00Z')
@@ -55,7 +57,7 @@ function serviceFor(fixture: Fixture): MagpieInstallDetectionService {
     resolvePath: async () => fixture.pathHit ?? null,
     isExecutable: async path => files.has(fixture.platform === 'win32' ? path.toLowerCase() : path),
     listDirectory: async directory => fixture.directories?.[directory] ?? [],
-    pathEntries: emptyPath,
+    pathEntries: () => fixture.pathEntries ?? emptyPath(),
     runVersion: async (command) => {
       const key = fixture.platform === 'win32' ? command.toLowerCase() : command
       const run = Object.entries(fixture.runs ?? {}).find(([entry]) => (fixture.platform === 'win32' ? entry.toLowerCase() : entry) === key)
@@ -134,6 +136,40 @@ test('Windows detection finds a standalone install outside PATH through the comm
   const detection = await service.detect()
   assert.equal(detection.installed, true)
   assert.equal(detection.command, 'C:\\Users\\dev\\AppData\\Local\\pnpm\\magpie.exe')
+})
+
+test('Windows detection reads the registry-derived PATH and finds the GitHub installer binary', async () => {
+  const directory = 'C:\\Users\\dev\\tools\\magpie'
+  const service = serviceFor({
+    platform: 'win32',
+    environment: WINDOWS_ENVIRONMENT,
+    pathHit: null,
+    pathEntries: `${directory};C:\\Windows\\System32`,
+    directories: {
+      [directory]: ['magpie-cli-windows-amd64.exe'],
+    },
+    runs: { [`${directory}\\magpie-cli-windows-amd64.exe`]: okVersion('magpie 0.1.1352') },
+  })
+  const detection = await service.detect()
+  assert.equal(detection.installed, true)
+  assert.equal(detection.source, 'common-location')
+  assert.equal(detection.command, `${directory}\\magpie-cli-windows-amd64.exe`)
+  assert.equal(detection.version, '0.1.1352')
+})
+
+test('Windows detection checks the official installer user bin directory', async () => {
+  const directory = 'C:\\Users\\dev\\.local\\bin'
+  const service = serviceFor({
+    platform: 'win32',
+    environment: WINDOWS_ENVIRONMENT,
+    pathHit: null,
+    directories: { [directory]: ['magpie.exe'] },
+    runs: { [`${directory}\\magpie.exe`]: okVersion('magpie 0.1.1352') },
+  })
+  const detection = await service.detect()
+  assert.equal(detection.installed, true)
+  assert.equal(detection.command, `${directory}\\magpie.exe`)
+  assert.equal(detection.version, '0.1.1352')
 })
 
 test('an entry that exists but cannot run is reported as installed-but-unusable', async () => {
