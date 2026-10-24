@@ -165,6 +165,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const [clock, setClock] = useState(() => Date.now())
   const rootRef = useRef<HTMLDivElement>(null)
   const magpiePopoverRef = useRef<HTMLDivElement>(null)
+  const magpieRequestsDialogRef = useRef<HTMLDivElement>(null)
   const resetDialogRef = useRef<HTMLDivElement>(null)
   // 重置成功后的刷新不能重跑加载 effect，否则 usage 会被清空导致底部入口闪断。
   const refreshRef = useRef<null | ((options?: { readonly afterPending?: boolean }) => Promise<void>)>(null)
@@ -395,7 +396,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     })()
   }
 
-  useDismissOnOutsidePointer(rootRef, open, () => setOpen(false))
+  useDismissOnOutsidePointer(rootRef, open, () => setOpen(false), { portal: magpieRequestsDialogRef })
   useDismissOnOutsidePointer(resetDialogRef, resetOpen && !resetPending, closeResetDialog)
 
   if (!eligible || snapshot === null) return null
@@ -431,6 +432,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         onToggleGroup: toggleQuotaGroup,
         placement: magpiePlacement,
         popoverRef: magpiePopoverRef,
+        requestsDialogRef: magpieRequestsDialogRef,
       }),
     )
   }
@@ -541,7 +543,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   )
 }
 
-function MagpieUsagePopover({ rpc, usage, t, tab = 'usage', onTabChange = () => {}, expandedGroups = [], onToggleGroup = () => {}, placement = { left: 0, width: 400 }, popoverRef }: {
+function MagpieUsagePopover({ rpc, usage, t, tab = 'usage', onTabChange = () => {}, expandedGroups = [], onToggleGroup = () => {}, placement = { left: 0, width: 400 }, popoverRef, requestsDialogRef }: {
   readonly rpc: CodingNsRpcClient
   readonly usage: MagpieUsageSnapshot
   readonly t: CodingNsTranslator
@@ -551,6 +553,7 @@ function MagpieUsagePopover({ rpc, usage, t, tab = 'usage', onTabChange = () => 
   readonly onToggleGroup?: (provider: string) => void
   readonly placement?: { readonly left: number; readonly width: number }
   readonly popoverRef?: RefObject<HTMLDivElement>
+  readonly requestsDialogRef?: RefObject<HTMLDivElement>
 }): ReactElement {
   const aggregateRows = usage.aggregate === null ? [] : [
     [t('usage.magpieRequests'), formatMagpieNumber(usage.aggregate.calls)],
@@ -614,7 +617,9 @@ function MagpieUsagePopover({ rpc, usage, t, tab = 'usage', onTabChange = () => 
       style: magpieTabPanelStyle,
     },
       tab === 'usage' ? MagpieUsagePanel({ usage, aggregateRows, sessionRows, t })
-        : MagpieRoutePanel({ rpc, usage, quotas, t, expandedGroups, onToggleGroup }),
+        : MagpieRoutePanel({ rpc, usage, quotas, t, expandedGroups, onToggleGroup,
+          ...(requestsDialogRef === undefined ? {} : { requestsDialogRef }),
+        }),
     ),
   )
 }
@@ -710,13 +715,14 @@ function formatQuotaWindowCredits(window: MagpieQuotaWindow): string | null {
   return credits === null ? null : formatQuotaCredits(credits)
 }
 
-function MagpieRoutePanel({ rpc, usage, quotas, t, expandedGroups, onToggleGroup }: {
+function MagpieRoutePanel({ rpc, usage, quotas, t, expandedGroups, onToggleGroup, requestsDialogRef }: {
   readonly rpc: CodingNsRpcClient
   readonly usage: MagpieUsageSnapshot
   readonly quotas: readonly MagpieQuota[]
   readonly t: CodingNsTranslator
   readonly expandedGroups: readonly string[]
   readonly onToggleGroup: (provider: string) => void
+  readonly requestsDialogRef?: RefObject<HTMLDivElement>
 }): ReactElement {
   const route = usage.route
   const groups = groupQuotasByProvider(quotas)
@@ -784,6 +790,7 @@ function MagpieRoutePanel({ rpc, usage, quotas, t, expandedGroups, onToggleGroup
             sessionName: usage.sessionName ?? null,
             agent: usage.agent,
             t,
+            ...(requestsDialogRef === undefined ? {} : { requestsDialogRef }),
           }),
           createElement('span', { className: active ? 'codingns4dsh-magpie-route-node-active' : undefined, style: magpieRouteStatusStyle },
             createElement('span', { style: magpieRouteStatusDotStyle }),
@@ -831,12 +838,13 @@ function MagpieRoutePanel({ rpc, usage, quotas, t, expandedGroups, onToggleGroup
  * `MagpieRoutePanel` 渲染元素，真正的状态留在本组件内部。模态框内的请求明细
  * 直接复用管理页的 `RequestsPage`，只把会话筛选固定为当前会话。
  */
-export function MagpieRouteRequests({ rpc, sessionId, sessionName, agent, t }: {
+export function MagpieRouteRequests({ rpc, sessionId, sessionName, agent, t, requestsDialogRef }: {
   readonly rpc: CodingNsRpcClient
   readonly sessionId: string | null
   readonly sessionName: string | null
   readonly agent: string
   readonly t: CodingNsTranslator
+  readonly requestsDialogRef?: RefObject<HTMLDivElement>
 }): ReactElement {
   const enabled = canReadMagpieSessionRequests(sessionId, agent)
   const [open, setOpen] = useState(false)
@@ -939,6 +947,7 @@ export function MagpieRouteRequests({ rpc, sessionId, sessionName, agent, t }: {
       error,
       t,
       onClose: close,
+      ...(requestsDialogRef === undefined ? {} : { dialogRef: requestsDialogRef }),
       onOffsetChange: (value: number) => {
         // 追加下一页；重试则从头重读，避免把同一页拼两遍。
         if (value === 0) setPage(null)
@@ -982,7 +991,7 @@ async function readMagpieSessionRequestPage(
  * 管理页视图自带统计条、桌面表格 / 移动卡片、分页和空状态，这里只负责把会话固定住，
  * 不再维护一套重复的请求卡片渲染。
  */
-function MagpieSessionRequestsDialog({ sessionId, sessionName, agent, page, offset, loading, error, t, onClose, onOffsetChange, onRetry }: {
+function MagpieSessionRequestsDialog({ sessionId, sessionName, agent, page, offset, loading, error, t, onClose, dialogRef, onOffsetChange, onRetry }: {
   readonly sessionId: string
   readonly sessionName: string | null
   readonly agent: string
@@ -992,11 +1001,13 @@ function MagpieSessionRequestsDialog({ sessionId, sessionName, agent, page, offs
   readonly error: boolean
   readonly t: CodingNsTranslator
   readonly onClose: () => void
+  readonly dialogRef?: RefObject<HTMLDivElement>
   readonly onOffsetChange: (value: number) => void
   readonly onRetry: () => void
 }): ReactElement {
   const dialog = createElement('div', {
     className: 'codingns4dsh-magpie-requests-overlay',
+    ref: dialogRef,
     role: 'presentation',
     style: magpieRequestsOverlayStyle,
     // 只有按在遮罩自身时才关闭；从内容内部按下再拖到遮罩上不会误关。

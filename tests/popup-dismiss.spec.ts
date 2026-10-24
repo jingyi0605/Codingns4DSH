@@ -126,7 +126,8 @@ test('所有弹层统一改用共用关闭模块，不再依赖重复点击触�
   assert.doesNotMatch(fileDom, /onDocumentClick/u)
 
   // 订阅浮框迁移到共用 hook 后不再自带 pointerdown/Escape 监听。
-  assert.match(subscription, /useDismissOnOutsidePointer\(rootRef, open, \(\) => setOpen\(false\)\)/u)
+  assert.match(subscription, /useDismissOnOutsidePointer\(rootRef, open, \(\) => setOpen\(false\), \{ portal: magpieRequestsDialogRef \}\)/u)
+  assert.match(subscription, /const magpieRequestsDialogRef = useRef<HTMLDivElement>\(null\)/u)
   assert.doesNotMatch(subscription, /document\.addEventListener\('pointerdown'/u)
 
   // 归档模态框的遮罩同样按 pointerdown 关闭。
