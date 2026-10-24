@@ -35,6 +35,10 @@ function createFakeLauncher(root: string): string {
   const launcher = join(root, 'fake-dsh.mjs')
   writeFileSync(launcher, `
 const mode = process.env.CODINGNS_TEST_FAKE_DSH_MODE
+if (mode === 'env') {
+  console.log(process.env.CODINGNS4DSH_LOGIN_COOKIE_NAME)
+  process.exit(0)
+}
 if (mode === 'exit') {
   process.exit(Number(process.env.CODINGNS_TEST_FAKE_DSH_CODE ?? '17'))
 }
@@ -68,6 +72,20 @@ function createEnvironment(mode: 'exit' | 'signal', launcher: string, root: stri
 function runStage0(env: NodeJS.ProcessEnv) {
   return spawnSync('/bin/bash', [stage0Script], { encoding: 'utf8', env, timeout: 10_000 })
 }
+
+test('stage0 launcher overrides inherited login cookie names', { skip: process.platform === 'win32' }, () => {
+  const root = mkdtempSync(join(tmpdir(), 'codingns-stage0-cookie-'))
+  try {
+    const launcher = createFakeLauncher(root)
+    const env = createEnvironment('env', launcher, root)
+    env.CODINGNS4DSH_LOGIN_COOKIE_NAME = 'dsh_codingns_desktop'
+    const result = runStage0(env)
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.equal(result.stdout.trim(), 'dsh_codingns_stage0_021')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('stage0 启动器透传 DSH 退出码并输出退出诊断', { skip: process.platform === 'win32' }, () => {
   const root = mkdtempSync(join(tmpdir(), 'codingns-stage0-launcher-'))
