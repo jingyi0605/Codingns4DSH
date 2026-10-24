@@ -18,6 +18,7 @@ import { MagpieWebService, type MagpieWebRequestOptions } from './magpie-web.js'
 const MAX_PROVIDERS = 100
 const MAX_GROUPS = 200
 const MAX_ACCOUNTS = 500
+const MAX_PROVIDER_ICON_FETCHES = 64
 const PROVIDER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u
 const GROUP_ID = /^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$/u
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/+@-]{0,299}$/u
@@ -46,7 +47,7 @@ const LOGIN_CONTAINER_FIELDS = new Set(['accounts', 'logins', 'data', 'users', '
 
 const MANAGEMENT_CACHE_TTL_MS = 15_000
 export interface MagpieManagementServiceOptions {
-  readonly webApi?: Pick<MagpieWebService, 'requestJson'>
+  readonly webApi?: Pick<MagpieWebService, 'requestJson'> & Partial<Pick<MagpieWebService, 'requestAssetDataUrl'>>
   readonly now?: () => number
 }
 
@@ -67,6 +68,7 @@ export class MagpieManagementService {
 
   private snapshotCache: { readonly state: MagpieWebManagementState; readonly loadedAt: number } | undefined
   private snapshotRefresh: Promise<MagpieWebManagementState> | undefined
+  private readonly providerLogoCache = new Map<string, string | null>()
   constructor(options: MagpieManagementServiceOptions = {}) {
     this.webApi = options.webApi
     this.now = options.now ?? Date.now
@@ -205,7 +207,12 @@ export class MagpieManagementService {
       this.readApi('/api/usage/quotas', signal),
       this.readApi('/api/login/usage', signal),
     ])
-    const parsedProviders = providerResult.ok ? parseMagpieWebProviders(providerResult.value) : null
+    // Logos come from the same provider rows, so they are inlined before the snapshot is
+    // remembered: a cached snapshot and the mutation results both carry them already.
+    const providers = providerResult.ok ? parseMagpieWebProviders(providerResult.value) : null
+    const parsedProviders = providers === null
+      ? null
+      : { ...providers, records: await this.attachProviderLogos(providers.records, signal) }
     const parsedGroups = groupResult.ok ? parseMagpieWebGroups(groupResult.value) : null
     const parsedAccounts = providerResult.ok || quotaResult.ok || loginUsageResult.ok
       ? parseMagpieWebAccounts(
@@ -260,6 +267,50 @@ export class MagpieManagementService {
   private async requestApi(path: string, options: MagpieWebRequestOptions): Promise<unknown> {
     if (this.webApi === undefined) throw new Error('Magpie Web API is unavailable')
     return this.webApi.requestJson(path, options)
+  }
+
+  /**
+   * Inline each provider's Magpie icon, as the subscription page does for its provider cards.
+   *
+   * Provider rows carry the same `icon` field `/api/usage/quotas` does (`claude-color`,
+   * `file:<name>`), so the three views show one logo from one source. A missing icon only
+   * costs that row its logo: the Client still falls back to its own icon table.
+   */
+  private async attachProviderLogos(
+    records: readonly MagpieProviderManagementRecord[],
+    signal?: AbortSignal,
+  ): Promise<readonly MagpieProviderManagementRecord[]> {
+    const requestAssetDataUrl = this.webApi?.requestAssetDataUrl
+    if (typeof requestAssetDataUrl !== 'function') return records
+    const icons = [...new Set(records
+      .map(record => record.icon)
+      .filter((icon): icon is string => icon !== undefined))].slice(0, MAX_PROVIDER_ICON_FETCHES)
+    if (icons.length === 0) return records
+    const logos = new Map<string, string | null>()
+    await Promise.all(icons.map(async (icon) => {
+      const cached = this.providerLogoCache.get(icon)
+      const logo = cached === undefined ? await this.readProviderLogoDataUrl(icon, signal) : cached
+      if (cached === undefined) this.providerLogoCache.set(icon, logo)
+      logos.set(icon, logo)
+    }))
+    return records.map((record) => {
+      const logoDataUrl = record.icon === undefined ? null : logos.get(record.icon) ?? null
+      return logoDataUrl === null ? record : { ...record, logoDataUrl }
+    })
+  }
+
+  private async readProviderLogoDataUrl(icon: string, signal?: AbortSignal): Promise<string | null> {
+    const requestAssetDataUrl = this.webApi?.requestAssetDataUrl
+    if (typeof requestAssetDataUrl !== 'function') return null
+    for (const path of magpieIconAssetPaths(icon)) {
+      try {
+        const value = await requestAssetDataUrl.call(this.webApi, path, signal === undefined ? {} : { signal })
+        if (value !== null && value !== '') return value
+      } catch {
+        signal?.throwIfAborted()
+      }
+    }
+    return null
   }
 }
 
@@ -420,6 +471,9 @@ function readWebProvider(record: Record<string, unknown>): { readonly record: Ma
   let partial = false
   const name = safeText(record.name, 180) ?? id
   if (record.name !== name) partial = true
+  // The icon is display-only, so an unusable value leaves the row without one rather than
+  // downgrading a provider whose settings were all read exactly.
+  const icon = optionalQuotaIcon(record.icon)
   const endpoints: MagpieProviderEndpoint[] = []
   for (const field of ENDPOINT_FIELDS) {
     const value = record[field]
@@ -475,6 +529,7 @@ function readWebProvider(record: Record<string, unknown>): { readonly record: Ma
   const normalized: MagpieProviderManagementRecord = {
     id,
     name,
+    ...icon,
     accountAgent,
     preset: optionalSafeText(record.preset, 100),
     protocol: endpoints[0]?.field ?? null,
@@ -1123,6 +1178,27 @@ function readStringList(value: unknown, limit: number): readonly string[] | null
   if (!Array.isArray(value) || value.length > limit) return null
   const items = value.map(item => safeText(item, 512))
   return items.some(item => item === null) ? null : items as string[]
+}
+
+/**
+ * Accept one Magpie icon reference: a built-in icon name or a `file:` asset name.
+ *
+ * `/api/providers` and `/api/usage/quotas` carry the same shape; anything else is ignored so
+ * the value can only ever reach the fixed asset routes in `magpieIconAssetPaths`.
+ */
+function optionalQuotaIcon(value: unknown): { readonly icon?: string } {
+  const icon = safeText(value, 300)
+  if (icon === null) return {}
+  if (/^file:[A-Za-z0-9][A-Za-z0-9._~-]{0,255}$/u.test(icon)) return { icon }
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(icon) ? { icon } : {}
+}
+
+function magpieIconAssetPaths(icon: string): readonly string[] {
+  if (/^file:[A-Za-z0-9][A-Za-z0-9._~-]{0,255}$/u.test(icon)) {
+    return [`/api/icons/${encodeURIComponent(icon.slice('file:'.length))}`]
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(icon)) return []
+  return [`/icons/${icon}.svg`, `/icons/${icon}.png`]
 }
 
 function safeJsonClone(value: unknown, depth = 0): unknown {
