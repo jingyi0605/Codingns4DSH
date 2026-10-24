@@ -3,6 +3,13 @@ import { randomBytes } from 'node:crypto'
 import { commandEnvironment, resolveCommandPath, terminateChildProcess, WINDOWS, windowsShellInvocation } from './process-utils.js'
 
 const WEB_KEY_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/u
+/** `magpie web` announces its page on stdout at every start, an in-place update restart included. */
+const WEB_LINK_PATTERN = /\bmagpie web on http:\/\/127\.0\.0\.1:(\d+)(?:\/|\s)/gu
+/** Codes a loopback connection fails with when the page's listener moved or went away. */
+const CONNECTION_FAILURE_CODE = /^(?:ECONNREFUSED|ECONNRESET|EPIPE|EHOSTUNREACH|ENETUNREACH|ETIMEDOUT|EAI_AGAIN)$/u
+/** The subset that never reached the page, so a mutation may be sent again as well. */
+const CONNECT_FAILURE_CODE = /^(?:ECONNREFUSED|EHOSTUNREACH|ENETUNREACH)$/u
+const PORT_ANNOUNCEMENT_WAITS_MS = [100, 200, 400] as const
 const START_TIMEOUT_MS = 20_000
 const REQUEST_TIMEOUT_MS = 8_000
 const AUTH_COOKIE_TTL_MS = 5 * 60_000
@@ -41,6 +48,8 @@ export class MagpieWebService {
   private readonly key: string
   private child: ChildProcess | null = null
   private baseUrl: URL | null = null
+  /** 子进程最近一次在 stdout 上声明的页面端口；`magpie web` 原地更新重启后会重新声明。 */
+  private announcedPort: number | null = null
   private startup: Promise<void> | null = null
   private stopped = false
   private disposed = false
@@ -64,7 +73,11 @@ export class MagpieWebService {
   async start(): Promise<void> {
     if (this.disposed) throw new Error('Magpie Web service has been disposed')
     this.stopped = false
-    if (this.child !== null && this.baseUrl !== null) return
+    if (this.child !== null && this.baseUrl !== null) {
+      // 更新后的 `magpie web` 会以同一 PID 重启到新的临时端口，这里先跟随最新声明。
+      this.adoptAnnouncedPort()
+      return
+    }
     if (this.startup !== null) return this.startup
     const lifecycle = this.lifecycle
     const starting = this.startMagpieWeb(lifecycle)
@@ -82,6 +95,7 @@ export class MagpieWebService {
     const child = this.child
     this.child = null
     this.baseUrl = null
+    this.announcedPort = null
     this.clearAuthCookie()
     if (child !== null) await this.stopChild(child)
     await this.startup?.catch(() => undefined)
@@ -93,22 +107,14 @@ export class MagpieWebService {
   }
 
   async requestJson(path: string, options: MagpieWebRequestOptions = {}): Promise<unknown> {
-    if (!/^\/api\/[A-Za-z0-9_./?=&%-]{1,600}$/u.test(path) || path.includes('..')) {
-      throw new TypeError('Invalid Magpie Web API route')
-    }
-    await this.start()
-    if (this.baseUrl === null || this.child === null) throw new Error('Magpie Web is not running')
-    return this.fetchJson(this.baseUrl, this.key, path, options, false)
+    assertApiPath(path)
+    return this.withStalePageRecovery(() => this.performJson(path, options, false), options.method === 'POST')
   }
 
   /** Fixed wrappers may accept Magpie's 204 response when an operation hands over to a restart. */
   async requestJsonOrNoContent(path: string, options: MagpieWebRequestOptions = {}): Promise<unknown | null> {
-    if (!/^\/api\/[A-Za-z0-9_./?=&%-]{1,600}$/u.test(path) || path.includes('..')) {
-      throw new TypeError('Invalid Magpie Web API route')
-    }
-    await this.start()
-    if (this.baseUrl === null || this.child === null) throw new Error('Magpie Web is not running')
-    return this.fetchJson(this.baseUrl, this.key, path, options, true)
+    assertApiPath(path)
+    return this.withStalePageRecovery(() => this.performJson(path, options, true), options.method === 'POST')
   }
 
   /** Fetch a Magpie-owned image through the authenticated Web session. */
@@ -118,9 +124,56 @@ export class MagpieWebService {
     if (!MAGPIE_ASSET_PATH_PATTERN.test(path) || path.includes('..') || decodedPath.includes('..') || decodedPath.includes('\\')) {
       throw new TypeError('Invalid Magpie Web asset route')
     }
+    return this.withStalePageRecovery(async () => {
+      const baseUrl = await this.ensureRunning()
+      return this.fetchAssetDataUrl(baseUrl, this.key, path, options)
+    })
+  }
+
+  private async performJson(path: string, options: MagpieWebRequestOptions, allowNoContent: boolean): Promise<unknown | null> {
+    const baseUrl = await this.ensureRunning()
+    return this.fetchJson(baseUrl, this.key, path, options, allowNoContent)
+  }
+
+  private async ensureRunning(): Promise<URL> {
     await this.start()
     if (this.baseUrl === null || this.child === null) throw new Error('Magpie Web is not running')
-    return this.fetchAssetDataUrl(this.baseUrl, this.key, path, options)
+    return this.baseUrl
+  }
+
+  /**
+   * Magpie applies an update by restarting its own `web` process in place: the PID stays,
+   * the ephemeral port changes, and the previous listener stops answering. A connection
+   * that never reached the page is retried once against the port it announced again;
+   * anything else (an HTTP status, a malformed body, an abort) is reported as it is.
+   */
+  private async withStalePageRecovery<T>(request: () => Promise<T>, mutation = false): Promise<T> {
+    try {
+      return await request()
+    } catch (error) {
+      if (!isConnectionFailure(error, mutation) || !await this.adoptRestartedPort()) throw error
+      return request()
+    }
+  }
+
+  /** Wait briefly for the restarted child to announce its new link, then follow it. */
+  private async adoptRestartedPort(): Promise<boolean> {
+    if (this.adoptAnnouncedPort()) return true
+    for (const wait of PORT_ANNOUNCEMENT_WAITS_MS) {
+      await delay(wait)
+      if (this.adoptAnnouncedPort()) return true
+    }
+    return false
+  }
+
+  /** Follow the page port the child announced last; the auth cookie is named after the port. */
+  private adoptAnnouncedPort(): boolean {
+    const announced = this.announcedPort
+    if (announced === null || this.child === null || this.baseUrl === null) return false
+    if (this.baseUrl.port === String(announced)) return false
+    this.baseUrl = new URL(`http://127.0.0.1:${announced}`)
+    this.clearAuthCookie()
+    return true
   }
 
   private async startMagpieWeb(lifecycle: number): Promise<void> {
@@ -146,11 +199,12 @@ export class MagpieWebService {
       ...(WINDOWS && /\.(?:cmd|bat)$/iu.test(command) ? { windowsVerbatimArguments: true } : {}),
     })
     this.child = child
+    this.announcedPort = null
     child.once('error', () => {
-      if (this.child === child) { this.child = null; this.baseUrl = null; this.clearAuthCookie() }
+      if (this.child === child) { this.child = null; this.baseUrl = null; this.announcedPort = null; this.clearAuthCookie() }
     })
     child.once('exit', () => {
-      if (this.child === child) { this.child = null; this.baseUrl = null; this.clearAuthCookie() }
+      if (this.child === child) { this.child = null; this.baseUrl = null; this.announcedPort = null; this.clearAuthCookie() }
     })
 
     const deadline = Date.now() + this.startupTimeoutMs
@@ -158,11 +212,14 @@ export class MagpieWebService {
     let webPort: number | null = null
     const readStartupOutput = (chunk: Buffer | string): void => {
       startupOutput = `${startupOutput}${chunk.toString()}`.slice(-8_192)
-      const match = startupOutput.match(/\bmagpie web on http:\/\/127\.0\.0\.1:(\d+)(?:\/|\s)/u)
-      if (match !== null) {
-        const port = Number(match[1])
-        if (Number.isSafeInteger(port) && port > 0 && port <= 65_535) webPort = port
-      }
+      // 更新后原地重启的同一个子进程会再打印一次链接：取最后一条声明，启动等待仍用第一条。
+      const matches = [...startupOutput.matchAll(WEB_LINK_PATTERN)]
+      const last = matches.at(-1)
+      if (last === undefined) return
+      const port = Number(last[1])
+      if (!Number.isSafeInteger(port) || port <= 0 || port > 65_535) return
+      if (this.child === child) this.announcedPort = port
+      if (webPort === null) webPort = port
     }
     child.stdout?.setEncoding('utf8')
     child.stdout?.on('data', readStartupOutput)
@@ -348,6 +405,24 @@ async function readBoundedBytes(response: Response, maximum: number): Promise<Ui
 async function discard(response: Response): Promise<void> { await response.body?.cancel().catch(() => undefined) }
 function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === 'object' && value !== null && !Array.isArray(value) }
 function delay(ms: number): Promise<void> { return new Promise(resolve => setTimeout(resolve, ms)) }
+
+function assertApiPath(path: string): void {
+  if (!/^\/api\/[A-Za-z0-9_./?=&%-]{1,600}$/u.test(path) || path.includes('..')) {
+    throw new TypeError('Invalid Magpie Web API route')
+  }
+}
+
+/**
+ * A loopback connection that never reached the page: the listener moved or went away.
+ * A mutation is only retried when the connection was refused, since a reset or a timeout
+ * may have happened after Magpie applied it.
+ */
+function isConnectionFailure(error: unknown, mutation: boolean): boolean {
+  if (!(error instanceof TypeError)) return false
+  const code = (error as { cause?: { code?: unknown } }).cause?.code
+  if (typeof code === 'string') return (mutation ? CONNECT_FAILURE_CODE : CONNECTION_FAILURE_CODE).test(code)
+  return !mutation && /\bfetch failed\b/u.test(error.message)
+}
 
 function awaitWithSignal<T>(task: Promise<T>, signal: AbortSignal): Promise<T> {
   if (signal.aborted) return Promise.reject(signal.reason instanceof Error ? signal.reason : new Error('请求已取消'))
