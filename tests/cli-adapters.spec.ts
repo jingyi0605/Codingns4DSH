@@ -2025,6 +2025,87 @@ test('Native DSH cli/models catalog receives exact Magpie metadata and source ma
   assert.equal(models[1]!.source, undefined, 'same family/name must not infer Magpie provenance')
 })
 
+test('Host 对尚未记账的原生 DSH Magpie 模型下发占位快照而不是官方余量', async (t) => {
+  const table = new CodingNsRpcTable()
+  const nativeSessions = {
+    get(sessionId: string) {
+      return sessionId === 'native-unbooked-session'
+        ? { header: { cwd: '/workspace' }, modelSelection: { next: { provider: 'magpie', model: 'auto/deepseek-v4.1-flash' } } }
+        : undefined
+    },
+  }
+  const registry = new CodingNsCliAdapterRegistry([], {}, { nativeSessions })
+  // `read()` 返回 null 复现「会话身份还不在 Magpie 账本里」；目录仍然可以确认模型。
+  const magpieUsage = {
+    async read() { return null },
+    async readModelMetadata(adapterId: string, modelId: string) {
+      assert.equal(adapterId, 'dsh')
+      return modelId === 'auto/deepseek-v4.1-flash' ? { id: modelId } : null
+    },
+  }
+  const settings = {
+    get: () => ({ modules: { magpieManagement: true } }),
+    watch: () => () => undefined,
+  }
+  const magpieWeb = {
+    async start() {},
+    async stop() {},
+    async dispose() {},
+    async requestJson() { throw new Error('Unexpected Web API request') },
+  }
+  const features = new FeatureRegistry({ rpc: table, settings })
+  features.register(createCliAdaptersFeature({
+    registry,
+    magpieUsage: magpieUsage as never,
+    magpieWeb: magpieWeb as never,
+  }))
+  await features.start('cliAdapters')
+  t.after(() => features.disable('cliAdapters'))
+  registry.setSession('native-unbooked-session', { adapterId: 'dsh', providerId: 'magpie', modelId: 'auto/deepseek-v4.1-flash' })
+  registry.setSession('native-ordinary-session', { adapterId: 'dsh', providerId: 'deepseek', modelId: 'deepseek-v4.1-flash' })
+
+  const target = table.resolve('cli/subscription')!
+  const pending = await target.handler(target.action, { sessionId: 'native-unbooked-session', adapterId: 'dsh', modelId: 'auto/deepseek-v4.1-flash' }) as {
+    readonly providerUsage: unknown
+    readonly magpie: { readonly quotaStatus: string; readonly agent: string; readonly modelId: string } | null
+  }
+  assert.equal(pending.providerUsage, null, 'a confirmed Magpie model must never fall back to the official balance')
+  assert.equal(pending.magpie?.quotaStatus, 'provider-unavailable', 'the client re-reads route data only for this placeholder')
+  assert.equal(pending.magpie?.agent, 'dsh')
+  assert.equal(pending.magpie?.modelId, 'auto/deepseek-v4.1-flash')
+
+  // 官方模型没有 Magpie 目录确认，仍然回退普通订阅读取。
+  const ordinary = await target.handler(target.action, { sessionId: 'native-ordinary-session', adapterId: 'dsh', modelId: 'deepseek-v4.1-flash' }) as { readonly magpie: unknown }
+  assert.equal(ordinary.magpie, null)
+})
+
+test('Host 不会把未确认的 Magpie 模型当成 Magpie 用量', async (t) => {
+  const table = new CodingNsRpcTable()
+  const registry = new CodingNsCliAdapterRegistry([])
+  const magpieUsage = {
+    async read() { return null },
+    async readModelMetadata() { return null },
+  }
+  const settings = {
+    get: () => ({ modules: { magpieManagement: true } }),
+    watch: () => () => undefined,
+  }
+  const magpieWeb = {
+    async start() {}, async stop() {}, async dispose() {},
+    async requestJson() { throw new Error('Unexpected Web API request') },
+  }
+  const features = new FeatureRegistry({ rpc: table, settings })
+  features.register(createCliAdaptersFeature({ registry, magpieUsage: magpieUsage as never, magpieWeb: magpieWeb as never }))
+  await features.start('cliAdapters')
+  t.after(() => features.disable('cliAdapters'))
+  registry.setSession('unconfirmed-session', { adapterId: 'dsh', providerId: 'magpie', modelId: 'magpie/not-listed-model' })
+
+  const target = table.resolve('cli/subscription')!
+  const result = await target.handler(target.action, { sessionId: 'unconfirmed-session', adapterId: 'dsh', modelId: 'magpie/not-listed-model' }) as { readonly magpie: unknown; readonly providerUsage: unknown }
+  assert.equal(result.magpie, null, 'an unconfirmed model must not borrow another provider’s usage snapshot')
+  assert.notEqual(result.providerUsage, null, 'the official subscription path stays authoritative')
+})
+
 test('Host 通过只读 Magpie 用量检测显示快照，否则回退普通订阅读取', async (t) => {
   const table = new CodingNsRpcTable()
   const registry = new CodingNsCliAdapterRegistry([{
