@@ -243,6 +243,9 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       return
     }
     let active = true
+    // 未解析的 Magpie 配额必须快速补读：官方余额一旦抢先显示，用户要等到下一次
+    // 轮询（默认 5 分钟）或整页刷新才会切到 Magpie。
+    let upstreamUnresolved = false
     setEligible(false)
     setSnapshot(null)
     setAdapterId(null)
@@ -305,6 +308,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
           ? normalizeSubscriptionSnapshot(await callCliRpc<unknown>(props.rpc, 'subscription', payload, requestSignal))
           : await loadUsage(props.rpc, cacheKey, payload)
         if (next !== null) subscriptionUsageCache.set(cacheKey, { usage: next, capturedAt: Date.now() })
+        upstreamUnresolved = shouldResolveMagpieQuota(next?.magpie)
         if (active) setSnapshot(next)
       } catch {
         if (signal.aborted || routeSignal?.aborted === true) return false
@@ -318,7 +322,11 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       }
     }
     const intervalMins = props.getRefreshIntervalMins?.() ?? DEFAULT_SUBSCRIPTION_USAGE_SETTINGS.refreshIntervalMins
-    const poll = startSerialPolling(refresh, Math.max(0, intervalMins) * 60_000, { timeoutMs: 30_000 })
+    const pollIntervalMs = Math.max(0, intervalMins) * 60_000
+    const poll = startSerialPolling(refresh, pollIntervalMs, {
+      timeoutMs: 30_000,
+      getIntervalMs: () => upstreamUnresolved ? Math.min(pollIntervalMs, MAGPIE_QUOTA_RETRY_MS) : pollIntervalMs,
+    })
     refreshRef.current = poll.refresh
     return () => {
       active = false
@@ -1641,8 +1649,25 @@ function createModelRow(model: Sub2ApiModelUsage, unit: string): ReactElement {
 function resolveDisplayWindow(usage: CliSubscriptionUsage): CliSubscriptionWindow | null {
   return usage.primary ?? usage.secondary ?? usage.monthly
 }
+/** 配额解析完成前的补读间隔；与弹层打开时的路由读取共用串行轮询。 */
+const MAGPIE_QUOTA_RETRY_MS = 3_000
+
+/**
+ * Magpie 用量入口是否还需要带路由补读。
+ *
+ * Host 会为「已确认属于 Magpie、但会话身份还没写进账本」的模型下发带会话数据的
+ * `provider-unavailable` 占位快照；还在启动中的网关则是 `unavailable`。
+ * 两种状态都表示上游未知，必须按 `MAGPIE_QUOTA_RETRY_MS` 快速重新解析，否则首屏
+ * 会一直停在官方余额或 Magpie 标签上，直到整页刷新。
+ *
+ * 上游已解析（`provider-unavailable` 但 `upstreamProvider` 有值，例如该厂商本来
+ * 就不上报任何配额窗口）不再补读——再读也只是重复确认同一个结论。没有上游信息的
+ * 占位快照才有资格要求补读，Host 也只在这种情况下才下发它。
+ */
 function shouldResolveMagpieQuota(usage: MagpieUsageSnapshot | null | undefined): boolean {
-  return usage?.quotaStatus === 'provider-unavailable' && usage.sessionId !== null && usage.session !== null
+  if (usage === null || usage === undefined) return false
+  if (usage.quotaStatus !== 'available') return usage.upstreamProvider === null
+  return usage.sessionId !== null && usage.session !== null && usage.quotas.length === 0
 }
 function resolveMagpieQuotaRemaining(usage: MagpieUsageSnapshot): number | null {
   if (usage.quotaStatus !== 'available') return null

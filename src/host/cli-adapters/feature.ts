@@ -24,10 +24,12 @@ import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
 import { CommandCodeSubscriptionService } from './command-code-subscription.js'
 import { ProviderSubscriptionService } from './provider-subscription.js'
 import { attachMagpieSessionNames, MagpieUsageService, magpieAgentForAdapter, type MagpieSessionNameBinding } from './magpie-usage.js'
+import { readDshProviderSource } from './dsh-config.js'
 import { MagpieManagementService } from './magpie-management.js'
 import { MagpieWebService } from './magpie-web.js'
 import { MagpieUpdateService } from './magpie-update.js'
 import type { MagpieDashboardPeriod, MagpieDashboardStreamChunk, MagpieUsageDashboard } from '../../shared/contracts/magpie-management.js'
+import type { MagpieUsageSnapshot } from '../../shared/contracts/subscription.js'
 import { MagpieInstallDetectionService, type MagpieDetectionServiceOptions } from './magpie-detection.js'
 import type { MagpieDetectionRequest } from '../../shared/contracts/magpie-management.js'
 import { createMagpieSessionRouting } from './magpie-session-routing.js'
@@ -399,9 +401,12 @@ export function createCliAdaptersFeature(options: {
               && session !== undefined && session.adapterId === subscription.adapterId) {
               const magpie = await magpieUsage.read(session, requestSignal, subscription.includeRoute, subscription.sessionId)
               requestSignal.throwIfAborted()
-              if (magpie !== null) {
+              const snapshot = magpie ?? (subscription.sessionId === undefined
+                ? null
+                : await pendingMagpieUsage(magpieUsage, nativeSessions, subscription.sessionId, session, requestSignal))
+              if (snapshot !== null) {
                 const sessionName = subscription.sessionId === undefined ? undefined : readDshSessionDisplayName(subscription.sessionId, sessionStore, nativeSessions)
-                return { providerUsage: null, magpie: sessionName === undefined ? magpie : { ...magpie, sessionName } }
+                return { providerUsage: null, magpie: sessionName === undefined ? snapshot : { ...snapshot, sessionName } }
               }
             }
             requestSignal.throwIfAborted()
@@ -1558,6 +1563,109 @@ function nativePreStepContext(
     adapterId: DSH_NATIVE_SESSION_ADAPTER_ID,
     // 会话级开关优先；用户没有单独设置过该会话时跟随「DSH 原生会话」总开关。
     translationEnabled: session.translationEnabled ?? translation.nativeEnabled === true,
+  }
+}
+
+function readOptionalText(value: unknown): string | undefined {
+  return typeof value === 'string' ? value.trim() || undefined : undefined
+}
+
+/** 原生 Provider 选中的模型，用于在 Magpie 会话身份可读之前判断该模型是否由 Magpie 提供。 */
+function readNativeModelSelection(
+  nativeSessions: CodingNsHostServices['nativeSessions'],
+  sessionId: string,
+): { readonly providerId?: string; readonly modelId: string } | undefined {
+  if (nativeSessions === undefined) return undefined
+  let session: unknown
+  try { session = nativeSessions.get(sessionId) } catch { return undefined }
+  const root = asRecord(session)
+  const selection = asRecord(root?.modelSelection) ?? asRecord(asRecord(asRecord(root?.record)?.rows)?.modelSelection)
+  const value = asRecord(selection?.val) ?? selection
+  // 待用的 pending/next 优先；lastUsed 可能仍描述上一个模型。
+  for (const candidate of [asRecord(value?.pending), asRecord(value?.next), asRecord(value?.lastUsed)]) {
+    const modelId = readOptionalText(candidate?.model)
+    if (modelId === undefined) continue
+    const providerId = readOptionalText(candidate?.provider)
+    return providerId === undefined ? { modelId } : { providerId, modelId }
+  }
+  return undefined
+}
+
+/** Magpie 网关只监听本机回环；Provider 指向这里时才算 Magpie 自己的路由。 */
+const MAGPIE_GATEWAY_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]', '::1'])
+
+function isMagpieGateway(baseUrl: string): boolean {
+  try {
+    const target = new URL(baseUrl)
+    // 端口由 `magpie web` 绑定（默认 3425），配置里改端口也应视为同一网关，
+    // 因此这里只要求回环地址，不再硬编码端口。
+    return MAGPIE_GATEWAY_HOSTS.has(target.hostname)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Provider ID 本身可能是任意用户命名，因此先看 DSH 配置里的 baseURL；
+ * 配置读不到时只接受与 `readDshDefaultProvider()` 相同的 Magpie 名称约定。
+ */
+function isMagpieGatewayProvider(providerId: string): boolean {
+  const source = readDshProviderSource(providerId)
+  if (source !== null) return isMagpieGateway(source.baseUrl)
+  return /^magpie(?:[-_.].*)?$/iu.test(providerId)
+}
+
+/**
+ * 读到用量之后仍然要判断「这个模型是不是 Magpie 的」。
+ *
+ * `magpieUsage.read()` 只有在会话身份（Provider 会话 ID 或 DSH 会话 ID）已经出现在
+ * Magpie 账本里时才返回快照。新会话的首个请求可能还没被 Magpie Web 记账，或者两边的
+ * 会话 ID 在滚动升级期间并不相等，这时返回 null 会让 Host 直接回退到官方余量。
+ * 只有确认模型由 Magpie 提供时才下发占位快照，避免官方数字抢占首屏。
+ */
+async function pendingMagpieUsage(
+  magpie: MagpieUsageService,
+  nativeSessions: CodingNsHostServices['nativeSessions'],
+  sessionId: string,
+  session: CodingNsCliSessionConfig,
+  signal: AbortSignal,
+): Promise<MagpieUsageSnapshot | null> {
+  const agent = magpieAgentForAdapter(session.adapterId)
+  const modelId = session.modelId?.trim()
+  if (agent === null || modelId === undefined || modelId === '') return null
+  try {
+    const selectedProviderId = session.providerId?.trim()
+    const providerId = selectedProviderId === undefined || selectedProviderId === ''
+      ? readNativeModelSelection(nativeSessions, sessionId)?.providerId
+      : selectedProviderId
+    if (providerId === undefined || !isMagpieGatewayProvider(providerId)) return null
+    const confirmed = await magpie.readModelMetadata(session.adapterId, modelId, signal)
+    signal.throwIfAborted()
+    return confirmed === null ? null : pendingMagpieSnapshot(agent, modelId)
+  } catch {
+    // 目录不可读、超时或请求被取消：保持原有回退语义，不伪造 Magpie 用量。
+    return null
+  }
+}
+
+/** Magpie 已经确认提供该模型、但会话身份还读不到时下发的占位快照。 */
+function pendingMagpieSnapshot(agent: string, modelId: string): MagpieUsageSnapshot {
+  const capturedAt = new Date().toISOString()
+  return {
+    agent,
+    modelId,
+    capturedAt,
+    usageStatus: 'unavailable',
+    aggregate: null,
+    sessionId: null,
+    session: null,
+    routeStatus: 'not-requested',
+    route: null,
+    upstreamProvider: null,
+    upstreamProviders: [],
+    // 客户端据此在 3 秒内带路由补读，而不是停留在官方余额上。
+    quotaStatus: 'provider-unavailable',
+    quotas: [],
   }
 }
 
