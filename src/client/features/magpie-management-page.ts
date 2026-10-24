@@ -1253,7 +1253,7 @@ function QuotaAccountSection({ quota, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SE
         const barPercent = quotaView === 'used' ? used : remaining
         const headline = quotaView === 'used'
           ? (used === null ? window.display ?? '—' : t('magpie.used', { percent: Math.round(used) }))
-          : (window.remainingPercent === null ? window.display ?? '—' : t('magpie.remaining', { percent: Math.round(window.remainingPercent) }))
+          : (remaining === null ? window.display ?? '—' : t('magpie.remaining', { percent: Math.round(remaining) }))
         return createElement('div', { key: window.name, className: 'codingns-magpie-quota-window' },
           createElement('div', { className: 'codingns-magpie-quota-window-head' },
             createElement('strong', undefined, window.name),
