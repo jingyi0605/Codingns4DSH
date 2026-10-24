@@ -444,10 +444,11 @@ export function createCliAdaptersFeature(options: {
           const request = readMagpieDetectionRequest(payload)
           const force = readMagpieDetectionForce(payload)
           // A custom path is request-scoped; it must not poison later automatic detection.
-          const detectionService = request.commandPath === undefined || normalizeCustomCommand(request.commandPath) === null
+          const customCommand = normalizeCustomCommand(request.commandPath)
+          const detectionService = customCommand === null
             ? magpieDetection
-            : new MagpieInstallDetectionService({ ...options.magpieDetectionOptions, customCommand: request.commandPath })
-          const detection = await detectionService.detect(request, { force: force || request.commandPath !== undefined })
+            : new MagpieInstallDetectionService({ ...options.magpieDetectionOptions, customCommand })
+          const detection = await detectionService.detect(customCommand === null ? {} : { commandPath: customCommand }, { force: force || customCommand !== null })
           magpieCommand = MagpieInstallDetectionService.isUsable(detection) ? detection.command : null
           magpieVersion = MagpieInstallDetectionService.isUsable(detection) ? detection.version : null
           return detection
