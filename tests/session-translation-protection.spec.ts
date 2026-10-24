@@ -20,6 +20,36 @@ test('protects paths adjacent to translated labels and explicit paths containing
   assert.deepEqual(protectedText.values, [path])
 })
 
+test('unquoted paths stop at Chinese prose punctuation without exposing Chinese filenames', () => {
+  const paths = ['C:\\工作目录\\深搜进阶2（剪枝）\\剪枝20261021.pptx', '/tmp/中文目录/报告.zip', '../目录/报告.zip', 'docs/调查报告/说明.md', '\\\\server\\目录\\报告.zip']
+  for (const path of paths) {
+    for (const punctuation of ['，', '。', '；', '：', '！', '？', '、']) {
+      const source = `${path}${punctuation}请阅读并给出明确规划。`
+      const protectedText = protectText(source)
+      assert.deepEqual(protectedText.values, [path], source)
+      assert.equal(protectedText.text, `${marker}${punctuation}请阅读并给出明确规划。`)
+      assert.equal(restoreText(protectedText.text, protectedText.values), source)
+    }
+  }
+})
+
+test('explicit paths retain punctuation and spaces inside filenames', () => {
+  for (const path of ['C:\\工作 目录\\报告，最终版；说明.pptx', '/tmp/中文 目录/报告，最终版.zip', '../目录/报告，最终版.zip', 'docs/调查报告/报告，最终版.zip', '\\\\server\\目录\\报告，最终版.zip']) {
+    for (const literal of [`"${path}"`, `'${path}'`, `「${path}」`, `\`${path}\``]) {
+      const source = `${literal}，请阅读。`
+      const protectedText = protectText(source)
+      assert.deepEqual(protectedText.values, [literal])
+      assert.equal(protectedText.text, `${marker}，请阅读。`)
+      assert.equal(restoreText(protectedText.text, protectedText.values), source)
+    }
+    const source = `${path}，请阅读。`
+    const protectedText = protectText(source, { literals: [path] })
+    assert.deepEqual(protectedText.values, [path])
+    assert.equal(protectedText.text, `${marker}，请阅读。`)
+    assert.equal(restoreText(protectedText.text, protectedText.values), source)
+  }
+})
+
 test('host wrapper handling does not expose ordinary user HTML or source code', () => {
   const source = '<system-reminder>中文描述 <button>中文按钮</button> {{working_directory}}</system-reminder>'
   assert.equal(protectText(source).text, marker)
@@ -72,6 +102,23 @@ function fixture(reply: (source: string, request: Request) => string) {
   service.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
   service.activate()
   return { service, sources }
+}
+
+for (const adapter of ['claude-code', 'dsh']) {
+  test(`${adapter} translates first-turn prose immediately following a PPT path`, async (t) => {
+    const path = 'C:\\Sync\\强化课程\\强化\\强化上\\搜索\\深搜进阶2（剪枝）\\剪枝20261021.pptx'
+    const prose = '这个ppt是给准备csp-j的学生讲解dfs中的剪枝内容的，时长三小时，我感觉内容量有些少了，你看一下还有哪些可以补充的内容，给到我明确的规划'
+    const english = 'This PPT teaches DFS pruning to students preparing for CSP-J. The class lasts three hours, but the content feels insufficient. Review what can be added and give me a concrete plan.'
+    const f = fixture(source => source.replace(prose, english))
+    t.after(() => f.service.dispose())
+    const result = await f.service.translateInputDetailed!(adapter, `${path}，${prose}`, undefined, true)
+    assert.equal(result.translated, `${path}，${english}`)
+    assert.equal(result.sourceLanguage, 'zh')
+    assert.equal(result.failed, undefined)
+    assert.equal(result.alreadyTargetLanguage, undefined)
+    assert.deepEqual(result.model, { provider: 'test', model: 'primary' })
+    assert.deepEqual(f.sources, [`${marker}，${prose}`])
+  })
 }
 
 for (const adapter of ['codex', 'dsh']) {
