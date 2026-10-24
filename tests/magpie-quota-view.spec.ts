@@ -125,6 +125,18 @@ test('已用口径把进度条与百分比读成消耗量，剩余口径读成�
   assert.match(usedMarkup, /0\.35 \/ 5\.27 USD/u, 'the amount line is independent of the view')
 })
 
+test('剩余口径从已用百分比反推时仍显示百分比', () => {
+  const usedOnly: MagpieDashboardQuota = {
+    ...quota(),
+    windows: [{ ...quota().windows[0]!, usedPercent: 6, remainingPercent: null }],
+  }
+  const markup = renderToStaticMarkup(createElement(QuotasPage, { dashboard: dashboard([usedOnly]), loading: false, quotaView: 'remaining', t }))
+
+  assert.match(markup, /剩余 94%/u, 'the headline should use the normalized remaining share')
+  assert.match(markup, /width:94%/u, 'the progress bar and headline should use the same share')
+  assert.doesNotMatch(markup, /剩余 —/u, 'a missing upstream remaining field is not missing data when used is present')
+})
+
 test('订阅页工具栏最右提供「已用 / 剩余」切换，默认剩余', () => {
   const settings = memorySettings()
   const renderer = createHookRenderer(
