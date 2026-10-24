@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { decorateMagpieModels, type NativeModelCatalogEntry } from '../src/client/native-model-translation-menu.js'
-import { MAGPIE_MODEL_LOGO_URL } from '../src/client/magpie-model-tag.js'
+import { magpieModelLogoUrl } from '../src/client/magpie-model-tag.js'
+import { PROVIDER_ICON_PATH } from '../src/shared/provider-icon-resources.js'
 
 class FakeText {
   readonly value: string
@@ -137,7 +138,8 @@ test('native DSH model options tag exact Magpie IDs and avoid ambiguous labels',
     assert.equal(tag.children[0]!.tagName, 'img')
     assert.equal(tag.children[0]!.style.width, '16px')
     assert.equal(tag.children[0]!.style.height, '16px')
-    assert.equal(tag.children[0]!.getAttribute('src'), MAGPIE_MODEL_LOGO_URL)
+    assert.equal(tag.children[0]!.getAttribute('src'), magpieModelLogoUrl())
+    assert.equal(tag.children[0]!.getAttribute('src'), `${PROVIDER_ICON_PATH}magpie.png`, 'the badge loads the Host-served icon instead of a remote URL')
   }
   assert.equal(ordinarySameName.querySelector('[data-codingns-magpie-model-tag]'), null)
 
