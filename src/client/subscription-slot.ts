@@ -20,6 +20,7 @@ import {
   formatQuotaNumber,
   groupQuotasByProvider,
   readWindowCreditBalance,
+  quotaWindowRemaining,
   resolveQuotaBalanceLabel,
   resolveQuotaCreditBalance,
 } from './features/subscription-quota-groups.js'
@@ -674,7 +675,7 @@ function createMagpieQuotaCard(quota: MagpieQuota, t: CodingNsTranslator, index:
     quota.windows.length === 0
       ? createElement('div', { style: magpieQuotaMetaStyle }, t('usage.magpieQuotaNoWindows'))
       : quota.windows.map((window, windowIndex) => {
-          const remaining = window.remainingPercent
+          const remaining = quotaWindowRemaining(window)
           // 积分窗口（WorkBuddy 的 `0 / 350`）按数量读更准确：百分比在这里没有意义。
           const credits = formatQuotaWindowCredits(window)
           const amount = window.display ?? (window.amount !== null && window.limit !== null ? `${window.amount} / ${window.limit}${window.unit === null ? '' : ` ${window.unit}`}` : null)
@@ -1668,13 +1669,15 @@ const MAGPIE_QUOTA_RETRY_MS = 3_000
 function shouldResolveMagpieQuota(usage: MagpieUsageSnapshot | null | undefined): boolean {
   if (usage === null || usage === undefined) return false
   if (usage.quotaStatus !== 'available') return usage.upstreamProvider === null
-  return usage.sessionId !== null && usage.session !== null && usage.quotas.length === 0
+  return usage.sessionId !== null && usage.session !== null && (usage.quotas?.length ?? 0) === 0
 }
 function resolveMagpieQuotaRemaining(usage: MagpieUsageSnapshot): number | null {
-  if (usage.quotaStatus !== 'available') return null
-  for (const quota of usage.quotas) {
+  for (const quota of usage.quotas ?? []) {
     for (const window of quota.windows) {
-      if (window.remainingPercent !== null) return window.remainingPercent
+      // A few Magpie responses report only `used`; the quota card derives the same
+      // remaining share, so the compact trigger must use that normalized value too.
+      const remaining = quotaWindowRemaining(window)
+      if (remaining !== null) return remaining
     }
   }
   return null

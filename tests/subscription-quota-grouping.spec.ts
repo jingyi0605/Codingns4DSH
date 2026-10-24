@@ -534,6 +534,21 @@ test('有额度窗口时入口显示百分比环，金额余额留在弹层里',
   assert.doesNotMatch(textOf(trigger.props?.children), /74\.40/u, 'the folded entry stays a single readout')
 })
 
+test('Codex quota trigger derives the ring from used percentage even before route status resolves', async (t) => {
+  const { mount } = registerSlot(t)
+  const codexQuotas = [{
+    provider: 'codex', name: 'Codex', kind: 'subscription', user: 'codex@example.com', plan: 'Plus', alias: null,
+    balance: '69643.12 credits', readAt: null,
+    windows: [{ name: '5 hours', usedPercent: 10, remainingPercent: null, resetsAt: null, display: null, amount: null, limit: null, unit: null, holdsWhy: null, startsAt: null, runsOut: null, runsOutAt: null }],
+  }]
+  const view = mount(magpieSlotRpc(() => codexQuotas, 'codex@example.com'))
+  const trigger = await waitForTrigger(view)
+  const markup = JSON.stringify(trigger.props?.children)
+  assert.match(markup, /conic-gradient/u, 'a detected Codex quota should keep the circular readout')
+  assert.match(markup, /90/u, 'the ring should derive remaining quota from used percentage')
+  assert.doesNotMatch(textOf(trigger.props?.children), /Magpie/u, 'the fallback label should not replace a detected quota')
+})
+
 test('只有积分额度时入口显示剩余积分而不是 0% 空环', async (t) => {
   const { mount } = registerSlot(t)
   const creditQuotas = [{
