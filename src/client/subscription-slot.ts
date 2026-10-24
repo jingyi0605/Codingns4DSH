@@ -1,5 +1,6 @@
 import { startSerialPolling } from './serial-polling.js'
 import { createElement, Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import type { ReactElement, RefObject } from 'react'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
@@ -968,7 +969,7 @@ function MagpieSessionRequestsDialog({ sessionId, sessionName, agent, page, offs
   readonly onOffsetChange: (value: number) => void
   readonly onRetry: () => void
 }): ReactElement {
-  return createElement('div', {
+  const dialog = createElement('div', {
     className: 'codingns4dsh-magpie-requests-overlay',
     role: 'presentation',
     style: magpieRequestsOverlayStyle,
@@ -1019,6 +1020,10 @@ function MagpieSessionRequestsDialog({ sessionId, sessionName, agent, page, offs
       ),
     ),
   )
+  // The usage popover has its own lower stacking context. Portaling the modal
+  // to body lets it actually cover the host sidebar instead of being clipped
+  // by the popover's parent context.
+  return typeof document === 'undefined' ? dialog : createPortal(dialog, document.body)
 }
 
 function createMagpieRows(rows: readonly (readonly [string, string | null])[]): ReactElement {
@@ -1903,7 +1908,7 @@ const magpieRouteMetaValueStyle = { color: dshThemeColor.labelSecondary, fontSiz
 // 请求入口与请求模态框：入口与状态徽标同高并排在标题栏，模态框覆盖视口并在内部滚动。
 const magpieRouteHeadingActionsStyle = { display: 'inline-flex', alignItems: 'center', gap: 8, minWidth: 0 }
 const magpieRouteRequestsButtonStyle = { flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 4, boxSizing: 'border-box' as const, padding: '2px 8px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 999, background: dshThemeColor.menuBackground, color: dshThemeColor.labelSecondary, fontFamily: 'inherit', fontSize: uiFontSize(11), lineHeight: '15px', cursor: 'pointer', whiteSpace: 'nowrap' as const, transition: 'background .15s ease,color .15s ease' }
-const magpieRequestsOverlayStyle = { position: 'fixed' as const, inset: 0, zIndex: 1500, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, boxSizing: 'border-box' as const, background: dshThemeColor.overlay }
+const magpieRequestsOverlayStyle = { position: 'fixed' as const, inset: 0, zIndex: 2147483000, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, boxSizing: 'border-box' as const, background: dshThemeColor.overlay }
 const magpieRequestsDialogStyle = { ...dshPopupSurfaceStyle, display: 'flex', flexDirection: 'column' as const, gap: 10, width: 'min(96vw, 1320px)', maxHeight: 'min(88vh, 820px)', boxSizing: 'border-box' as const, padding: 14, borderRadius: 14 }
 const magpieRequestsHeadingStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, paddingBottom: 10, borderBottom: `1px solid ${dshThemeColor.border}` }
 const magpieRequestsHeadingActionsStyle = { display: 'inline-flex', alignItems: 'center', gap: 8, flex: 'none' }
