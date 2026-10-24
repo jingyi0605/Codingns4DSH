@@ -192,6 +192,67 @@ export type MagpieManagementAvailabilityIssue =
   | 'feature-disabled'
   | 'host-request-failed'
 
+export type MagpieUpdateState =
+  | 'checking'
+  | 'latest'
+  | 'found'
+  | 'downloading'
+  | 'ready'
+  | 'available'
+  | 'source'
+  | 'error'
+  | 'blocked'
+
+export type MagpieUpdateAvailabilityIssue =
+  | 'web-api-unavailable'
+  | 'cli-unavailable'
+  | 'cli-version-unsupported'
+  | 'update-response-invalid'
+  | 'host-rpc-outdated'
+  | 'feature-disabled'
+  | 'host-request-failed'
+
+export interface MagpieUpdateStatus {
+  readonly state: MagpieUpdateState
+  readonly current: string
+  readonly latest: string | null
+  readonly notes: string | null
+  readonly url: string | null
+  readonly stuck: string | null
+  readonly error: string | null
+  readonly retry: boolean
+  readonly done: number | null
+  readonly total: number | null
+  readonly size: number | null
+  readonly waiting: boolean
+  readonly gaveUp: boolean
+}
+
+export interface MagpieUpdateReleaseNote {
+  readonly version: string
+  readonly notes: string
+  readonly url: string | null
+}
+
+export interface MagpieUpdateNotes {
+  readonly latest: string | null
+  readonly releases: readonly MagpieUpdateReleaseNote[]
+  readonly error: string | null
+}
+
+export interface MagpieUpdateSnapshot {
+  readonly capturedAt: string
+  readonly availabilityIssue: MagpieUpdateAvailabilityIssue | null
+  readonly status: MagpieUpdateStatus | null
+  readonly notes: MagpieUpdateNotes | null
+}
+
+export interface MagpieUpdateActionResult {
+  readonly requested: boolean
+  readonly restartExpected: boolean
+  readonly status: MagpieUpdateStatus | null
+}
+
 export type MagpieProviderState = 'on' | 'off' | 'unknown'
 
 export interface MagpieProviderModel {

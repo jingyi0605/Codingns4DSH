@@ -98,7 +98,17 @@ export class MagpieWebService {
     }
     await this.start()
     if (this.baseUrl === null || this.child === null) throw new Error('Magpie Web is not running')
-    return this.fetchJson(this.baseUrl, this.key, path, options)
+    return this.fetchJson(this.baseUrl, this.key, path, options, false)
+  }
+
+  /** Fixed wrappers may accept Magpie's 204 response when an operation hands over to a restart. */
+  async requestJsonOrNoContent(path: string, options: MagpieWebRequestOptions = {}): Promise<unknown | null> {
+    if (!/^\/api\/[A-Za-z0-9_./?=&%-]{1,600}$/u.test(path) || path.includes('..')) {
+      throw new TypeError('Invalid Magpie Web API route')
+    }
+    await this.start()
+    if (this.baseUrl === null || this.child === null) throw new Error('Magpie Web is not running')
+    return this.fetchJson(this.baseUrl, this.key, path, options, true)
   }
 
   /** Fetch a Magpie-owned image through the authenticated Web session. */
@@ -167,7 +177,7 @@ export class MagpieWebService {
       const baseUrl = new URL(`http://127.0.0.1:${webPort}`)
       this.baseUrl = baseUrl
       try {
-        const value = await this.fetchJson(baseUrl, this.key, '/api/providers', {})
+        const value = await this.fetchJson(baseUrl, this.key, '/api/providers', {}, false)
         if (isRecord(value) && Array.isArray(value.providers)) return
       } catch {
         if (this.stopped || lifecycle !== this.lifecycle || this.child !== child) {
@@ -181,12 +191,16 @@ export class MagpieWebService {
     throw new Error('Magpie Web did not become ready before the startup timeout')
   }
 
-  private async fetchJson(baseUrl: URL, key: string, path: string, options: MagpieWebRequestOptions): Promise<unknown> {
+  private async fetchJson(baseUrl: URL, key: string, path: string, options: MagpieWebRequestOptions, allowNoContent: boolean): Promise<unknown | null> {
     const response = await this.fetchAuthenticated(baseUrl, key, path, 'application/json', options)
     if (!response.ok) {
       if (response.status === 401 || response.status === 403) this.clearAuthCookie()
       await discard(response)
       throw new Error(`Magpie Web API returned HTTP ${response.status}`)
+    }
+    if (allowNoContent && response.status === 204) {
+      await discard(response)
+      return null
     }
     const value = await readBoundedJson(response)
     if (value === null) throw new Error('Magpie Web API returned an invalid or oversized response')

@@ -26,6 +26,7 @@ import { ProviderSubscriptionService } from './provider-subscription.js'
 import { attachMagpieSessionNames, MagpieUsageService, magpieAgentForAdapter, type MagpieSessionNameBinding } from './magpie-usage.js'
 import { MagpieManagementService } from './magpie-management.js'
 import { MagpieWebService } from './magpie-web.js'
+import { MagpieUpdateService } from './magpie-update.js'
 import type { MagpieDashboardPeriod, MagpieDashboardStreamChunk, MagpieUsageDashboard } from '../../shared/contracts/magpie-management.js'
 import { MagpieInstallDetectionService, type MagpieDetectionServiceOptions } from './magpie-detection.js'
 import type { MagpieDetectionRequest } from '../../shared/contracts/magpie-management.js'
@@ -79,6 +80,7 @@ export function createCliAdaptersFeature(options: {
   updateCheck?: CliUpdateCheckOptions
   magpieUsage?: MagpieUsageService
   magpieManagement?: MagpieManagementService
+  magpieUpdates?: MagpieUpdateService
   magpieWeb?: MagpieWebService
   /** 本机 Magpie 安装探测；测试可注入固定的平台与命令结果。 */
   magpieDetection?: MagpieInstallDetectionService
@@ -112,14 +114,19 @@ export function createCliAdaptersFeature(options: {
       let magpieDetection = options.magpieDetection ?? new MagpieInstallDetectionService(options.magpieDetectionOptions)
       // 最近一次可用的 Magpie 入口；探测会随用户指定的路径变化而重建，Web 服务总是读最新值。
       let magpieCommand: string | null = null
+      let magpieVersion: string | null = null
       const magpieWeb = options.magpieWeb ?? new MagpieWebService({ startupCommand: () => magpieCommand })
       const magpieUsage = options.magpieUsage ?? new MagpieUsageService({ lifetimeSignal: lifetime.signal, webApi: magpieWeb })
       const magpieManagement = options.magpieManagement ?? new MagpieManagementService({ webApi: magpieWeb })
+      const magpieUpdates = options.magpieUpdates ?? new MagpieUpdateService({ webApi: magpieWeb, version: () => magpieVersion })
       let magpieWebDesired = false
       let magpieWebSync: Promise<void> = Promise.resolve()
       const scheduleMagpieWebSync = (enabled: boolean): void => {
         magpieWebDesired = enabled
-        if (!enabled) void magpieWeb.stop().catch(() => undefined)
+        if (!enabled) {
+          magpieUpdates.stopBackgroundChecks()
+          void magpieWeb.stop().catch(() => undefined)
+        }
         const next = magpieWebSync.then(async () => {
           if (magpieWebDesired !== enabled) return
           if (!enabled) {
@@ -128,6 +135,7 @@ export function createCliAdaptersFeature(options: {
           }
           try {
             await magpieWeb.start()
+            magpieUpdates.startBackgroundChecks()
           } catch (error) {
             console.warn('codingns4dsh: Magpie Web startup failed; the next Web API request will retry', error)
           }
@@ -139,6 +147,7 @@ export function createCliAdaptersFeature(options: {
       let magpieInstalled = await magpieDetection.detect().then((detection) => {
         const usable = MagpieInstallDetectionService.isUsable(detection)
         magpieCommand = usable ? detection.command : null
+        magpieVersion = usable ? detection.version : null
         return usable
       }, () => false)
       scheduleMagpieWebSync(context.services.settings?.get().modules.magpieManagement === true && magpieInstalled)
@@ -434,6 +443,7 @@ export function createCliAdaptersFeature(options: {
           // 指定的入口随请求带入，保证“指定路径”和“结果”来自同一次探测。
           const detection = await magpieDetection.detect(request, { force: force || request.commandPath !== undefined })
           magpieCommand = MagpieInstallDetectionService.isUsable(detection) ? detection.command : null
+          magpieVersion = MagpieInstallDetectionService.isUsable(detection) ? detection.version : null
           return detection
         }
         if (context.services.settings?.get().modules.magpieManagement !== true) {
@@ -460,6 +470,14 @@ export function createCliAdaptersFeature(options: {
             return magpieManagement.updateGroup(payload, signal)
           case 'management/account/update':
             return magpieManagement.updateAccount(payload, signal)
+          case 'update/status':
+            return magpieUpdates.readStatus(signal)
+          case 'update/notes':
+            return magpieUpdates.readNotes(signal)
+          case 'update/check':
+            return magpieUpdates.checkForUpdate(signal)
+          case 'update/install':
+            return magpieUpdates.installUpdate(payload, signal)
           default:
             throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `Unknown Magpie RPC: ${action}`)
         }
@@ -786,6 +804,7 @@ export function createCliAdaptersFeature(options: {
         // Close native interaction cards before unloading their provider transports.
         lifetime.abort()
         updates.dispose()
+        magpieUpdates.dispose()
         await management.dispose()
         await registry.dispose()
         await sessionStore.flush()
