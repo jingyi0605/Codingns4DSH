@@ -244,9 +244,12 @@ export class LanAccessDshProxy {
       try {
         await this.takeOverDshWebToken()
       } catch (error) {
-        // Token 交换失败不能撤销已经绑定的局域网端口；保留监听并记录错误，后续请求会收到上游认证状态。
+        // Do not leave a listener that can serve a page but cannot authenticate its API requests.
         active.error = error instanceof Error ? error.message : String(error)
-        console.error('codingns4dsh: DSH Web Token 接管失败，局域网监听仍保持可用', error)
+        this.active = null
+        active.state = 'error'
+        await active.close()
+        throw error
       }
       this.quickApps?.started(config.listenHost)
       return this.snapshot(active)
@@ -493,6 +496,7 @@ export class LanAccessDshProxy {
   /** DSH 启动时的认证 URL 只在 Host 内交换一次 Cookie，绝不下发到浏览器。 */
   private async takeOverDshWebToken(): Promise<void> {
     if (this.authenticatedUrl === undefined) return
+    this.upstreamCookie = null
     const response = await fetch(this.authenticatedUrl, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
     const cookie = getSetCookie(response.headers)
     if (response.status !== 303 || cookie === undefined) throw new Error(`DSH Web Token 接管失败 (${response.status})`)
