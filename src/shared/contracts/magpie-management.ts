@@ -180,7 +180,14 @@ export interface MagpieUsageRequestPage {
   readonly hasMore: boolean
   readonly sessionId: string | null
   readonly sessionAgent: string | null
+  /** Counts from the selected DSH session history; unavailable for unscoped requests. */
+  readonly sessionMetrics?: MagpieSessionMetrics | null
   readonly items: readonly MagpieUsageRequest[]
+}
+
+export interface MagpieSessionMetrics {
+  readonly turns: number
+  readonly steps: number
 }
 
 export type MagpieManagementAvailabilityIssue =

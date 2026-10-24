@@ -1837,6 +1837,7 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   const firstPage = {
     period: 'today', offset: 0, limit: 50, total: 120, hasMore: true,
     sessionId: 'agent-session-1', sessionAgent: 'claude',
+    sessionMetrics: { turns: 12, steps: 34 },
     items: [
       magpieRequestFixture(),
       magpieRequestFixture({ routeId: 2, status: '500', servedModel: null, cost: null }),
@@ -1845,6 +1846,7 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   const secondPage = {
     period: 'today', offset: 50, limit: 50, total: 120, hasMore: true,
     sessionId: 'agent-session-1', sessionAgent: 'claude',
+    sessionMetrics: { turns: 12, steps: 34 },
     items: [magpieRequestFixture({ routeId: 51, requestedModel: 'group/auto-claude-5-opus', servedModel: 'claude/claude-5-opus' })],
   }
   const rpc = {
@@ -1888,6 +1890,9 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   assert.match(pageContent, /报告费用/u)
   assert.match(pageContent, /输出速度/u)
   assert.match(pageContent, /首字耗时/u)
+  assert.match(pageContent, /回合/u)
+  assert.match(pageContent, /12/u)
+  assert.match(pageContent, /步骤 34/u)
   assert.match(pageContent, /auto-gpt-6-1-sol/u)
   assert.match(pageContent, /gpt-6\.1-sol/u)
   assert.match(pageContent, /primary/u, 'the reused request view should render the account label')

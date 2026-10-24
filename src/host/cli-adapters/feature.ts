@@ -28,7 +28,7 @@ import { readDshProviderSource } from './dsh-config.js'
 import { MagpieManagementService } from './magpie-management.js'
 import { MagpieWebService } from './magpie-web.js'
 import { MagpieUpdateService } from './magpie-update.js'
-import type { MagpieDashboardPeriod, MagpieDashboardStreamChunk, MagpieUsageDashboard } from '../../shared/contracts/magpie-management.js'
+import type { MagpieDashboardPeriod, MagpieDashboardStreamChunk, MagpieSessionMetrics, MagpieUsageDashboard } from '../../shared/contracts/magpie-management.js'
 import type { MagpieUsageSnapshot } from '../../shared/contracts/subscription.js'
 import { MagpieInstallDetectionService, normalizeCustomCommand, type MagpieDetectionServiceOptions } from './magpie-detection.js'
 import type { MagpieDetectionRequest } from '../../shared/contracts/magpie-management.js'
@@ -69,6 +69,7 @@ import { sessionPromptScope, type SessionPromptAdapter } from '../../dsh-capabil
 import { createSessionPromptTranslation } from '../features/session-prompt-translation.js'
 import { codexPerformanceProjection } from './codex-performance-projection.js'
 import { grokContextProjection, grokPerformanceProjection } from './grok-performance-projection.js'
+import { countSessionTurnSteps } from './session-performance-projection.js'
 import type { SessionPerformanceAdapter } from '../../dsh-capabilities/host/session-performance-adapter.js'
 import { fromCliProviderId, toCliProviderId } from '../../shared/cli-provider-route.js'
 import { DshAgentTeamAdapter, type TeamAgent } from '../../dsh-capabilities/host/agent-team-adapter.js'
@@ -467,8 +468,15 @@ export function createCliAdaptersFeature(options: {
             const force = input?.force === true
             return streamMagpieDashboard(magpieUsage, period, signal, force, sessionStore, nativeSessions)
           }
-          case 'usage/requests':
-            return magpieUsage.readRequestPage(readMagpieRequestOptions(payload), signal)
+          case 'usage/requests': {
+            const request = readMagpieRequestOptions(payload)
+            const page = await magpieUsage.readRequestPage(request, signal)
+            if (page === null || request.sessionId === undefined) return page
+            return {
+              ...page,
+              sessionMetrics: readMagpieSessionMetrics(sessionStore, nativeSessions, request.sessionId, request.sessionIds),
+            }
+          }
           case 'management/snapshot':
             return magpieManagement.readSnapshot(signal)
           case 'management/provider/update':
@@ -2256,6 +2264,32 @@ function readMagpieRequestOptions(payload: unknown): {
     ...(sessionId === undefined ? {} : { sessionId }),
     ...(sessionIds === undefined ? {} : { sessionIds }),
     ...(sessionAgent === undefined ? {} : { sessionAgent }),
+  }
+}
+
+function readMagpieSessionMetrics(
+  sessionStore: CodingNsCliSessionStore,
+  nativeSessions: CodingNsNativeSessionBridge | undefined,
+  sessionId: string,
+  sessionIds: readonly string[] | undefined,
+): MagpieSessionMetrics | null {
+  if (nativeSessions === undefined) return null
+  const identities = new Set([sessionId, ...(sessionIds ?? [])])
+  const bindings = sessionStore.list({ includeArchived: true }).filter((record) =>
+    identities.has(record.dshSessionId) || (record.providerSessionId !== undefined && identities.has(record.providerSessionId)))
+  const direct = bindings.find((record) => record.dshSessionId === sessionId)
+  const boundSessionIds = [...new Set(bindings.map((record) => record.dshSessionId))]
+  if (direct === undefined && boundSessionIds.length > 1) return null
+  const dshSessionId = direct?.dshSessionId ?? boundSessionIds[0] ?? sessionId
+  let session: unknown
+  try { session = nativeSessions.get(dshSessionId) } catch { return null }
+  const snapshotEvents = asRecord(session)?.snapshotEvents
+  if (typeof snapshotEvents !== 'function') return null
+  try {
+    const events: unknown = snapshotEvents.call(session)
+    return Array.isArray(events) ? countSessionTurnSteps(events) : null
+  } catch {
+    return null
   }
 }
 

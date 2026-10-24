@@ -6,6 +6,7 @@ import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js
 import { FeatureRegistry } from '../src/features/registry.js'
 import { CodingNsRpcTable } from '../src/host/rpc-table.js'
 import { createCodingNsSettingsRpcHandler, registerCodingNsRpc } from '../src/host/rpc.js'
+import { CodingNsCliSessionStore } from '../src/host/cli-adapters/session-store.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
 import { magpieManagementFeature } from '../src/client/features/magpie-management.js'
 import { callMagpieRpc, magpieDashboardIssueForRpcError, magpieManagementIssueForRpcError } from '../src/client/features/magpie-management-page.js'
@@ -469,6 +470,15 @@ test('Magpie Host RPCs stay gated until the module setting is enabled', async (t
   let dashboardCalls = 0
   let requestCalls = 0
   let managementCalls = 0
+  const sessionStore = new CodingNsCliSessionStore()
+  sessionStore.upsert('dsh-session', { adapterId: 'claude-code', providerSessionId: 'provider-session' })
+  const nativeSession = {
+    snapshotEvents: () => [
+      { type: 'step/end', data: { turn: 1, step: 1 } },
+      { type: 'step/end', data: { turn: 1, step: 2 } },
+      { type: 'step/end', data: { turn: 2, step: 1 } },
+    ],
+  }
   let settings = { ...DEFAULT_CODINGNS_SETTINGS, modules: { magpieManagement: false } }
   const usage = {
     async readDashboard(period: string) {
@@ -511,8 +521,16 @@ test('Magpie Host RPCs stay gated until the module setting is enabled', async (t
   assert.deepEqual(await requests.handler(requests.action, { period: 'week', offset: 0, limit: 10 }), {
     period: 'week', offset: 0, limit: 10,
   })
+  const scopedPage = await requests.handler(requests.action, {
+    period: 'week', offset: 0, limit: 10, sessionId: 'provider-session', sessionAgent: 'claude',
+  })
+  assert.deepEqual((scopedPage as { sessionMetrics?: unknown }).sessionMetrics, { turns: 2, steps: 3 })
+  const missingHistory = await requests.handler(requests.action, {
+    period: 'week', offset: 0, limit: 10, sessionId: 'missing-session', sessionAgent: 'claude',
+  })
+  assert.equal((missingHistory as { sessionMetrics?: unknown }).sessionMetrics, null)
   assert.equal(dashboardCalls, 1)
-  assert.equal(requestCalls, 1)
+  assert.equal(requestCalls, 3)
   assert.deepEqual(await managementSnapshot.handler(managementSnapshot.action, {}), { providerStatus: 'available' })
   assert.deepEqual(await providerUpdate.handler(providerUpdate.action, { id: 'demo', name: 'Renamed' }), { id: 'demo', name: 'Renamed' })
   assert.deepEqual(await groupUpdate.handler(groupUpdate.action, { id: 'fast', routing: 'order' }), { id: 'fast', routing: 'order' })

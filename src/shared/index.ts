@@ -267,6 +267,7 @@ export type {
   MagpieUsageDashboard,
   MagpieUsageGroup,
   MagpieUsageMetrics,
+  MagpieSessionMetrics,
   MagpieUsageRequest,
   MagpieUsageRequestPage,
   MagpieUsageSeriesPoint,

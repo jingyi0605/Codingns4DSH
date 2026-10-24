@@ -15,7 +15,19 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { codexPerformanceProjection } from '../src/host/cli-adapters/codex-performance-projection.js'
 import { grokContextProjection, grokPerformanceProjection } from '../src/host/cli-adapters/grok-performance-projection.js'
+import { countSessionTurnSteps } from '../src/host/cli-adapters/session-performance-projection.js'
 import { createCodingNsNativeSessionBridge } from '../src/host/native-session-bridge.js'
+
+test('session turn and step counts fold completed native steps across the full history', () => {
+  assert.deepEqual(countSessionTurnSteps([
+    { type: 'step/start', data: { turn: 1, step: 1 } },
+    { type: 'step/end', data: { turn: 1, step: 1 } },
+    { type: 'step/end', data: { turn: 1, step: 2 } },
+    { type: 'step/end', data: { turn: 2, step: 1 } },
+    { type: 'assistant/attempt', data: { turn: 99 } },
+  ]), { turns: 2, steps: 3 })
+  assert.deepEqual(countSessionTurnSteps([]), { turns: 0, steps: 0 })
+})
 
 test('performance capabilities reject legacy and unverified versions with explainable diagnostics', () => {
   const slots = createPresentationSlots()

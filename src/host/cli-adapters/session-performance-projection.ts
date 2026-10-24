@@ -23,6 +23,35 @@ const stateSchema = totalsSchema.extend({
 type State = z.infer<typeof stateSchema>
 export interface RequestPerformanceEvent { readonly type: string; readonly time: number; readonly data: any }
 
+export interface SessionTurnStepCounts {
+  readonly turns: number
+  readonly steps: number
+}
+
+/** Count completed steps and the turns represented by their turn values. */
+export function countSessionTurnSteps(events: readonly unknown[]): SessionTurnStepCounts {
+  let turns = 0
+  let steps = 0
+  let hasTurn = false
+  let lastTurn: unknown
+  for (const candidate of events) {
+    if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) continue
+    const event = candidate as { readonly type?: unknown; readonly data?: unknown }
+    if (event.type !== 'step/end') continue
+    steps += 1
+    const data = typeof event.data === 'object' && event.data !== null && !Array.isArray(event.data)
+      ? event.data as Record<string, unknown>
+      : undefined
+    const turn = data?.turn
+    if (!hasTurn || lastTurn !== turn) {
+      turns += 1
+      lastTurn = turn
+      hasTurn = true
+    }
+  }
+  return { turns, steps }
+}
+
 /** Fold source request measurements, independently of translated messages and synthetic tool declarations. */
 export function createSessionPerformanceProjection(key: string, read: (chunk: any) => { id: unknown; samples: readonly unknown[] } | undefined) {
   return {
