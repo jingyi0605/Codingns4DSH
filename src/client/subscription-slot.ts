@@ -963,7 +963,7 @@ function canReadMagpieSessionRequests(sessionId: string | null, agent: string): 
   return sessionId !== null && sessionId.trim() !== '' && sessionId.length <= 512 && /^[a-z0-9][a-z0-9-]*$/u.test(agent)
 }
 
-/** 只读取今天的会话请求，与路由卡片和“当前 Agent 会话”用量保持同一时间口径。 */
+/** Include every date in the selected session's paginated request history. */
 async function readMagpieSessionRequestPage(
   rpc: CodingNsRpcClient,
   sessionId: string,
@@ -972,7 +972,7 @@ async function readMagpieSessionRequestPage(
   signal: AbortSignal,
 ): Promise<MagpieUsageRequestPage | null> {
   const result = await callCodingNsRpcResult(rpc, 'magpie/usage/requests', {
-    period: 'today',
+    period: 'all',
     offset,
     limit: MAGPIE_REQUESTS_PAGE_SIZE,
     sessionId,
@@ -1005,6 +1005,7 @@ function MagpieSessionRequestsDialog({ sessionId, sessionName, agent, page, offs
   readonly onOffsetChange: (value: number) => void
   readonly onRetry: () => void
 }): ReactElement {
+  const displaySessionName = sessionName ?? page?.sessionName ?? null
   const dialog = createElement('div', {
     className: 'codingns4dsh-magpie-requests-overlay',
     ref: dialogRef,
@@ -1047,7 +1048,7 @@ function MagpieSessionRequestsDialog({ sessionId, sessionName, agent, page, offs
             page,
             loading,
             error,
-            selectedSession: { id: sessionId, agent, ...(sessionName === null ? {} : { dshSessionName: sessionName }) },
+            selectedSession: { id: sessionId, agent, ...(displaySessionName === null ? {} : { dshSessionName: displaySessionName }) },
             offset,
             onOffsetChange,
             onClearSession: null,

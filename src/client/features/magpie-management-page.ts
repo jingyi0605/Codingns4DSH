@@ -907,7 +907,7 @@ export function RequestsPage({ page, loading, error, selectedSession, offset, on
     selectedSession !== null && createElement('div', { className: 'codingns-magpie-selection' },
       createElement('span', { className: 'codingns-magpie-provider-inline' },
         createElement(MagpieProviderLogo, { identities: [selectedSession.agent], size: 20, className: 'codingns-magpie-provider-logo codingns-magpie-provider-logo-compact', fallback: 'none' }),
-        selectedSession.dshSessionName ?? t('magpie.requestFor', { agent: selectedSession.agent, id: selectedSession.id })),
+        selectedSession.dshSessionName ?? page?.sessionName ?? t('magpie.requestFor', { agent: selectedSession.agent, id: selectedSession.id })),
       onClearSession !== null && createElement('button', { type: 'button', className: 'codingns-magpie-text-button', onClick: onClearSession }, t('magpie.clearSession')),
     ),
     error && createElement(InlineNotice, { message: t('magpie.usageUnavailable') }),

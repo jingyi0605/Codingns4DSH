@@ -1899,6 +1899,7 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   const firstPage = {
     period: 'all', offset: 0, limit: 50, total: 120, hasMore: true,
     sessionId: 'agent-session-1', sessionAgent: 'claude',
+    sessionName: 'Native DSH title',
     aggregate: {
       calls: 150, errors: 0, inputTokens: 4_900_000, outputTokens: 140_600, cacheReadTokens: 0, cacheWriteTokens: 0,
       reasoningTokens: null, cost: 0, unpriced: 150, credits: null, credited: null, timed: 150,
@@ -1913,6 +1914,7 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   const secondPage = {
     period: 'all', offset: 50, limit: 50, total: 120, hasMore: true,
     sessionId: 'agent-session-1', sessionAgent: 'claude',
+    sessionName: 'Native DSH title',
     aggregate: {
       calls: 150, errors: 0, inputTokens: 4_900_000, outputTokens: 140_600, cacheReadTokens: 0, cacheWriteTokens: 0,
       reasoningTokens: null, cost: 0, unpriced: 150, credits: null, credited: null, timed: 150,
@@ -1960,6 +1962,7 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   assert.equal((overlay as { readonly ref?: unknown } | null)?.ref, requestsDialogRef, 'the portaled overlay must be registered as inside the usage popover for outside-pointer dismissal')
   const pageContent = renderRequestsPageContent(dialog)
   assert.match(pageContent, /请求模型/u, 'the reused management view should render its table headers')
+  assert.match(pageContent, /Native DSH title/u, 'the request dialog should display the matched DSH session name')
   assert.match(pageContent, /实际模型/u)
   assert.match(pageContent, /报告费用/u)
   assert.match(pageContent, /输出速度/u)
