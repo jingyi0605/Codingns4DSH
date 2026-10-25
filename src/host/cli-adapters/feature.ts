@@ -409,7 +409,7 @@ export function createCliAdaptersFeature(options: {
                 ? null
                 : await pendingMagpieUsage(magpieUsage, nativeSessions, subscription.sessionId, session, requestSignal))
               if (snapshot !== null) {
-                const sessionName = subscription.sessionId === undefined ? undefined : readDshSessionDisplayName(subscription.sessionId, sessionStore, nativeSessions)
+                const sessionName = subscription.sessionId === undefined ? undefined : readDshSessionDisplayName(subscription.sessionId, sessionStore, nativeSessions, context.services.dshContext)
                 return { providerUsage: null, magpie: sessionName === undefined ? snapshot : { ...snapshot, sessionName } }
               }
             }
@@ -469,13 +469,13 @@ export function createCliAdaptersFeature(options: {
         switch (action) {
           case 'usage/dashboard': {
             const dashboard = await magpieUsage.readDashboard(readMagpieDashboardPeriod(payload), signal)
-            return attachMagpieSessionNames(dashboard, await magpieSessionNameBindings(sessionStore, nativeSessions, signal))
+            return attachMagpieSessionNames(dashboard, await magpieSessionNameBindings(sessionStore, nativeSessions, signal, context.services.dshContext))
           }
           case 'usage/dashboard/stream': {
             const input = asRecord(payload)
             const period = readMagpieDashboardPeriod(payload)
             const force = input?.force === true
-            return streamMagpieDashboard(magpieUsage, period, signal, force, sessionStore, nativeSessions)
+            return streamMagpieDashboard(magpieUsage, period, signal, force, sessionStore, nativeSessions, context.services.dshContext)
           }
           case 'usage/requests': {
             const request = readMagpieRequestOptions(payload)
@@ -483,6 +483,7 @@ export function createCliAdaptersFeature(options: {
             if (page === null || request.sessionId === undefined) return page
             return {
               ...page,
+              sessionName: readDshSessionDisplayName(request.sessionId, sessionStore, nativeSessions, context.services.dshContext) ?? null,
               sessionMetrics: readMagpieSessionMetrics(sessionStore, nativeSessions, request.sessionId, request.sessionIds),
             }
           }
@@ -2207,8 +2208,9 @@ async function* streamMagpieDashboard(
   force: boolean,
   sessionStore: CodingNsCliSessionStore,
   nativeSessions: CodingNsNativeSessionBridge | undefined,
+  dshContext: unknown,
 ): AsyncIterable<MagpieDashboardStreamChunk> {
-  const names = magpieSessionNameBindings(sessionStore, nativeSessions, signal).catch(() => [] as readonly MagpieSessionNameBinding[])
+  const names = magpieSessionNameBindings(sessionStore, nativeSessions, signal, dshContext).catch(() => [] as readonly MagpieSessionNameBinding[])
   let latest: MagpieUsageDashboard | undefined
   for await (const chunk of service.readDashboardStream(period, signal, force)) {
     latest = chunk.dashboard
@@ -2323,6 +2325,7 @@ async function magpieSessionNameBindings(
   sessionStore: CodingNsCliSessionStore,
   nativeSessions: CodingNsNativeSessionBridge | undefined,
   signal?: AbortSignal,
+  dshContext?: unknown,
 ): Promise<readonly MagpieSessionNameBinding[]> {
   const records = sessionStore.list({ includeArchived: true })
   const bindings: MagpieSessionNameBinding[] = []
@@ -2334,12 +2337,12 @@ async function magpieSessionNameBindings(
   const nativeNames = new Map<string, string>()
   for (const value of nativeValues) {
     const sessionId = nativeSessionId(value)
-    const name = readNativeSessionDisplayName(value)
+    const name = readNativeSessionDisplayName(value, dshContext)
     if (sessionId !== undefined && name !== undefined) nativeNames.set(sessionId, name)
   }
   for (const record of records) {
     knownSessionIds.add(record.dshSessionId)
-    const name = nativeNames.get(record.dshSessionId) ?? readDshSessionDisplayName(record.dshSessionId, sessionStore, nativeSessions)
+    const name = nativeNames.get(record.dshSessionId) ?? readDshSessionDisplayName(record.dshSessionId, sessionStore, nativeSessions, dshContext)
     bindings.push({
       dshSessionId: record.dshSessionId,
       adapterId: record.adapterId,
@@ -2353,7 +2356,7 @@ async function magpieSessionNameBindings(
   for (const value of nativeValues) {
     const sessionId = nativeSessionId(value)
     if (sessionId === undefined || knownSessionIds.has(sessionId)) continue
-    const name = readNativeSessionDisplayName(value)
+    const name = readNativeSessionDisplayName(value, dshContext)
     bindings.push({ dshSessionId: sessionId, adapterId: 'dsh', ...(name === undefined ? {} : { name }) })
   }
   return bindings
@@ -2363,24 +2366,73 @@ function readDshSessionDisplayName(
   sessionId: string,
   sessionStore: CodingNsCliSessionStore,
   nativeSessions: CodingNsNativeSessionBridge | undefined,
+  dshContext?: unknown,
 ): string | undefined {
-  return readNativeSessionDisplayName(nativeSessions?.get(sessionId)) ?? cleanDisplayName(sessionStore.get(sessionId)?.title)
+  const direct = readNativeSession(nativeSessions, sessionId)
+  const directName = readNativeSessionDisplayName(direct, dshContext)
+  if (directName !== undefined) return directName
+  const directRecord = sessionStore.get(sessionId)
+  const directRecordName = cleanDisplayName(directRecord?.title)
+  if (directRecordName !== undefined) return directRecordName
+  const binding = sessionStore.list({ includeArchived: true }).find((record) => record.dshSessionId === sessionId || record.providerSessionId === sessionId)
+  if (binding === undefined) return undefined
+  return readNativeSessionDisplayName(readNativeSession(nativeSessions, binding.dshSessionId), dshContext)
+    ?? cleanDisplayName(binding.title)
 }
 
-function readNativeSessionDisplayName(value: unknown): string | undefined {
+function readNativeSessionDisplayName(value: unknown, dshContext?: unknown): string | undefined {
   const root = asRecord(value)
   if (root === null) return undefined
   const projection = asRecord(root.projections) ?? asRecord(asRecord(root.record)?.projections)
   const values = asRecord(projection?.values)
   const record = asRecord(root.record)
+  const header = asRecord(root.header)
+  const recordHeader = asRecord(record?.header)
   const rows = asRecord(record?.rows)
   const rowProjection = asRecord(rows?.projections)
   const rowValues = asRecord(rowProjection?.values)
-  for (const candidate of [values?.title, rowValues?.title, root.title, root.name, root.displayName, record?.title, record?.name]) {
+  const titleService = asRecord(readOptionalDshService(dshContext, 'sessionTitle'))
+  if (typeof titleService?.get === 'function') {
+    try {
+      const snapshot = titleService.get(value)
+      const title = cleanDisplayName(asRecord(snapshot)?.title ?? snapshot)
+      if (title !== undefined) return title
+    } catch { /* The optional native title service may not accept this session shape. */ }
+  }
+  for (const candidate of [
+    values?.title, rowValues?.title, root.title, root.name, root.displayName,
+    header?.title, header?.name, header?.displayName,
+    record?.title, record?.name, recordHeader?.title, recordHeader?.name,
+  ]) {
     const title = cleanDisplayName(candidate)
     if (title !== undefined) return title
   }
+  if (typeof root.snapshotEvents === 'function') {
+    try {
+      const events: unknown = root.snapshotEvents.call(value)
+      if (Array.isArray(events)) {
+        for (let index = events.length - 1; index >= 0; index -= 1) {
+          const event = asRecord(events[index])
+          if (event?.type !== 'session/title') continue
+          const title = cleanDisplayName(asRecord(event.data)?.title ?? event.title)
+          if (title !== undefined) return title
+        }
+      }
+    } catch { /* A missing or closed native history cannot block usage rendering. */ }
+  }
   return undefined
+}
+
+function readNativeSession(nativeSessions: CodingNsNativeSessionBridge | undefined, sessionId: string): unknown {
+  try { return nativeSessions?.get(sessionId) }
+  catch { return undefined }
+}
+
+function readOptionalDshService(context: unknown, name: string): unknown {
+  const get = (context as { readonly get?: unknown } | null | undefined)?.get
+  if (typeof get !== 'function') return undefined
+  try { return (get as (service: string) => unknown).call(context, name) }
+  catch { return undefined }
 }
 
 function cleanDisplayName(value: unknown): string | undefined {

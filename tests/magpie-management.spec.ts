@@ -531,6 +531,7 @@ test('Magpie Host RPCs stay gated until the module setting is enabled', async (t
   const sessionStore = new CodingNsCliSessionStore()
   sessionStore.upsert('dsh-session', { adapterId: 'claude-code', providerSessionId: 'provider-session' })
   const nativeSession = {
+    header: { title: 'Native DSH title' },
     snapshotEvents: () => [
       { type: 'step/end', data: { turn: 1, step: 1 } },
       { type: 'step/end', data: { turn: 1, step: 2 } },
@@ -592,6 +593,7 @@ test('Magpie Host RPCs stay gated until the module setting is enabled', async (t
   const scopedPage = await requests.handler(requests.action, {
     period: 'week', offset: 0, limit: 10, sessionId: 'provider-session', sessionAgent: 'claude',
   })
+  assert.equal((scopedPage as { sessionName?: unknown }).sessionName, 'Native DSH title')
   assert.deepEqual((scopedPage as { sessionMetrics?: unknown }).sessionMetrics, { turns: 2, steps: 3 })
   const missingHistory = await requests.handler(requests.action, {
     period: 'week', offset: 0, limit: 10, sessionId: 'missing-session', sessionAgent: 'claude',
