@@ -61,6 +61,7 @@ test('Codingns4DSH 设置用模块名字典表达开关，结构不随模块数�
     agentAdapterPreferences: {},
     subagentBridge: { enabled: false, maxConcurrentSubagents: 8 },
     sessionTranslation: DEFAULT_SESSION_TRANSLATION_SETTINGS,
+    sessionHandleEviction: { enabled: true, idleTtlMs: 600_000, maxOpenHandles: 32 },
     gitManagement: DEFAULT_GIT_MANAGEMENT_SETTINGS,
     terminalEnhancement: DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
     workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
