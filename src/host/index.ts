@@ -7,7 +7,7 @@
  */
 import type { Context } from '@deepseek-ai/cordis'
 import { FeatureRegistry } from '../features/registry.js'
-import { captureRestartFeatureStates, enabledFeatureNames, type CodingNsSettings } from '../shared/contracts/config.js'
+import { captureRestartFeatureStates, DEFAULT_SESSION_HANDLE_EVICTION_SETTINGS, enabledFeatureNames, type CodingNsSettings, type SessionHandleEvictionSettings } from '../shared/contracts/config.js'
 import { HOST_FEATURES, createHostFeatures } from './features/index.js'
 import type { CodingNsHostServices } from './features/types.js'
 import { registerCodingNsRpc } from './rpc.js'
@@ -39,6 +39,7 @@ import { isStage0Runtime, registerStage0DevHmr } from './stage0-dev-hmr.js'
 import { CODINGNS_STAGE0_GLOBAL } from '../shared/runtime-environment.js'
 import { registerProviderIconRoutes } from './provider-icon-assets.js'
 import { listWorkspaceRoots as listRegistryWorkspaceRoots, resolveWorkspaceRoot as resolveRegistryWorkspaceRoot } from './workspace-root.js'
+import { installSessionHandleEviction } from './session-handle-eviction.js'
 
 export async function apply(ctx?: Context): Promise<void> {
   if (ctx === undefined) return
@@ -55,6 +56,13 @@ export async function apply(ctx?: Context): Promise<void> {
   ctx.inject(['sessionPersistence'], (sessionCtx) => {
     const persistence = sessionCtx.get('sessionPersistence') as unknown
     if (!isRecord(persistence) || typeof persistence.root !== 'string') return
+    const eviction = installSessionHandleEviction(persistence, {
+      settings: readSessionHandleEvictionSettings(ctx),
+      logger: {
+        debug: (message, fields) => debugInfo(`codingns4dsh: ${message}`, fields),
+        warn: (message, fields) => debugWarn(`codingns4dsh: ${message}`, fields),
+      },
+    })
     const open = persistence.open
     if (typeof open !== 'function') return
     const lifetime = new AbortController()
@@ -86,6 +94,7 @@ export async function apply(ctx?: Context): Promise<void> {
       sessionCtx.effect(() => () => {
         lifetime.abort()
         if (persistence.open === wrappedOpen) persistence.open = open
+        void eviction?.dispose()
       }, 'codingns4dsh: 会话读取修复包装')
     } catch (error) {
       // 冻结的服务保持原生读取行为；不能退回全盘扫描拖慢启动。
@@ -308,6 +317,27 @@ export async function apply(ctx?: Context): Promise<void> {
       }
     }, 'codingns4dsh: 功能模块启停同步')
   })
+}
+
+function readSessionHandleEvictionSettings(ctx: Context): SessionHandleEvictionSettings {
+  try {
+    const configured = (ctx as unknown as { readonly fiber?: { readonly config?: unknown } }).fiber?.config
+    const config = isRecord(configured) && typeof configured.get === 'function' ? configured.get() : configured
+    const value = isRecord(config) && isRecord(config.sessionHandleEviction) ? config.sessionHandleEviction : {}
+    const idleTtlMs = typeof value.idleTtlMs === 'number' && Number.isFinite(value.idleTtlMs)
+      ? Math.max(1_000, Math.floor(value.idleTtlMs))
+      : DEFAULT_SESSION_HANDLE_EVICTION_SETTINGS.idleTtlMs
+    const maxOpenHandles = typeof value.maxOpenHandles === 'number' && Number.isFinite(value.maxOpenHandles)
+      ? Math.max(1, Math.floor(value.maxOpenHandles))
+      : DEFAULT_SESSION_HANDLE_EVICTION_SETTINGS.maxOpenHandles
+    return {
+      enabled: value.enabled !== false,
+      idleTtlMs,
+      maxOpenHandles,
+    }
+  } catch {
+    return DEFAULT_SESSION_HANDLE_EVICTION_SETTINGS
+  }
 }
 
 function readOptionalService(ctx: Context, name: string): unknown {

@@ -13,6 +13,8 @@ import {
   SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MINS_LIMITS,
   SUBSCRIPTION_USAGE_TIMEOUT_SECS_LIMITS,
   SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS,
+  SESSION_HANDLE_EVICTION_IDLE_TTL_MS_LIMITS,
+  SESSION_HANDLE_EVICTION_MAX_OPEN_HANDLES_LIMITS,
   type CodingNsConfig,
   type CodingNsSettings,
 } from '../shared/contracts/config.js'
@@ -58,6 +60,17 @@ export const CodingNsSettingsSchema = z.object({
       .max(SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS.max)
       .default(DEFAULT_CODINGNS_SETTINGS.subagentBridge?.maxConcurrentSubagents ?? 8),
   }).default(DEFAULT_CODINGNS_SETTINGS.subagentBridge ?? { enabled: false, maxConcurrentSubagents: 8 }),
+  sessionHandleEviction: z.object({
+    enabled: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.sessionHandleEviction.enabled),
+    idleTtlMs: z.number().step(1)
+      .min(SESSION_HANDLE_EVICTION_IDLE_TTL_MS_LIMITS.min)
+      .max(SESSION_HANDLE_EVICTION_IDLE_TTL_MS_LIMITS.max)
+      .default(DEFAULT_CODINGNS_SETTINGS.sessionHandleEviction.idleTtlMs),
+    maxOpenHandles: z.number().step(1)
+      .min(SESSION_HANDLE_EVICTION_MAX_OPEN_HANDLES_LIMITS.min)
+      .max(SESSION_HANDLE_EVICTION_MAX_OPEN_HANDLES_LIMITS.max)
+      .default(DEFAULT_CODINGNS_SETTINGS.sessionHandleEviction.maxOpenHandles),
+  }).default(DEFAULT_CODINGNS_SETTINGS.sessionHandleEviction),
   gitManagement: z.object({
     commitMessageEnabled: z.boolean().default(true),
     commitMessageDetail: z.union([z.const('concise'), z.const('detailed')]).default('concise'),

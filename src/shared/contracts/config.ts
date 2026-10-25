@@ -125,6 +125,8 @@ export interface CodingNsSettings {
   subagentBridge?: SubagentBridgeSettings
   /** 外部 Agent 会话输入与输出的翻译设置。 */
   sessionTranslation?: SessionTranslationSettings
+  /** Bounds for the host-side resident DSH session-handle safety net. */
+  sessionHandleEviction: SessionHandleEvictionSettings
   /** Commit message generation preferences, independent of translation settings. */
   gitManagement?: GitManagementSettings
 }
@@ -149,6 +151,21 @@ export const SUBAGENT_BRIDGE_MAX_CONCURRENT_LIMITS = { min: 1, max: 32 } as cons
 export const DEFAULT_SUBAGENT_BRIDGE_SETTINGS: SubagentBridgeSettings = {
   enabled: false,
   maxConcurrentSubagents: 8,
+}
+
+/** Host-side bounds for resident DSH JSONL session handles. */
+export interface SessionHandleEvictionSettings {
+  enabled: boolean
+  idleTtlMs: number
+  maxOpenHandles: number
+}
+
+export const SESSION_HANDLE_EVICTION_IDLE_TTL_MS_LIMITS = { min: 1_000, max: 86_400_000 } as const
+export const SESSION_HANDLE_EVICTION_MAX_OPEN_HANDLES_LIMITS = { min: 1, max: 1_024 } as const
+export const DEFAULT_SESSION_HANDLE_EVICTION_SETTINGS: SessionHandleEvictionSettings = {
+  enabled: true,
+  idleTtlMs: 600_000,
+  maxOpenHandles: 32,
 }
 
 /** 归一化子代理托管设置：只有显式 true 才算开启；并发数按上下限收敛。 */
@@ -602,6 +619,7 @@ export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   agentAdapterPreferences: {},
   subagentBridge: DEFAULT_SUBAGENT_BRIDGE_SETTINGS,
   sessionTranslation: DEFAULT_SESSION_TRANSLATION_SETTINGS,
+  sessionHandleEviction: DEFAULT_SESSION_HANDLE_EVICTION_SETTINGS,
   gitManagement: DEFAULT_GIT_MANAGEMENT_SETTINGS,
   terminalEnhancement: DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   workspaceSessionEnhancement: DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
