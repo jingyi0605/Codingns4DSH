@@ -250,66 +250,48 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
     return () => controller.abort()
   }, [loadManagement, refreshKey])
 
-  const loadUpdates = useCallback(async (signal: AbortSignal, check = false): Promise<void> => {
+  const loadUpdates = useCallback(async (signal: AbortSignal): Promise<void> => {
     setUpdateLoading(true)
     setUpdateError(null)
     try {
-      const status = await callMagpieRpc<MagpieUpdateStatus>(rpc, 'update/status', {}, signal)
+      const [status, notes] = await Promise.all([
+        callMagpieRpc<MagpieUpdateStatus>(rpc, 'update/status', {}, signal),
+        callMagpieRpc<MagpieUpdateNotes>(rpc, 'update/notes', {}, signal),
+      ])
       if (signal.aborted) return
       setUpdateStatus(status)
-      // Preserve an in-flight download or a binary already waiting for installation.
-      if (check && !['checking', 'downloading', 'ready'].includes(status.state)) {
-        const checked = await callMagpieRpc<MagpieUpdateStatus>(rpc, 'update/check', {}, signal)
-        if (signal.aborted) return
-        setUpdateStatus(checked)
-      }
+      setUpdateNotes(notes)
     } catch (error) {
       if (signal.aborted) return
       setUpdateError(magpieUpdateIssueForRpcError(error))
     } finally {
       if (!signal.aborted) setUpdateLoading(false)
     }
-    // Optional release notes must not block status polling or installation controls.
-    if (signal.aborted) return
-    const notes = await callMagpieRpc<MagpieUpdateNotes>(rpc, 'update/notes', {}, signal).catch(() => null)
-    if (!signal.aborted && notes !== null) setUpdateNotes(notes)
   }, [rpc])
 
   useEffect(() => {
     const controller = new AbortController()
-    void loadUpdates(controller.signal, true)
+    void loadUpdates(controller.signal)
     return () => controller.abort()
   }, [loadUpdates, refreshKey])
 
-  const updateState = updateStatus?.state
-  useEffect(() => {
-    if (updateLoading || (updateState !== 'checking' && updateState !== 'downloading')) return
-    const controller = new AbortController()
-    let timer: ReturnType<typeof setTimeout>
-    const poll = async (): Promise<void> => {
-      try {
-        const status = await callMagpieRpc<MagpieUpdateStatus>(rpc, 'update/status', {}, controller.signal)
-        if (controller.signal.aborted) return
-        setUpdateStatus(status)
-        setUpdateError(null)
-        if (status.state !== 'checking' && status.state !== 'downloading') return
-      } catch (error) {
-        if (controller.signal.aborted) return
-        setUpdateError(magpieUpdateIssueForRpcError(error))
-      }
-      timer = setTimeout(() => { void poll() }, 1000)
-    }
-    timer = setTimeout(() => { void poll() }, 1000)
-    return () => {
-      controller.abort()
-      clearTimeout(timer)
-    }
-  }, [rpc, updateLoading, updateState])
-
   const checkForUpdate = useCallback(async (): Promise<void> => {
+    setUpdateLoading(true)
+    setUpdateError(null)
     setUpdateNotice('')
-    await loadUpdates(new AbortController().signal, true)
-  }, [loadUpdates])
+    try {
+      const [status, notes] = await Promise.all([
+        callMagpieRpc<MagpieUpdateStatus>(rpc, 'update/check', {}, undefined),
+        callMagpieRpc<MagpieUpdateNotes>(rpc, 'update/notes', {}, undefined),
+      ])
+      setUpdateStatus(status)
+      setUpdateNotes(notes)
+    } catch (error) {
+      setUpdateError(magpieUpdateIssueForRpcError(error))
+    } finally {
+      setUpdateLoading(false)
+    }
+  }, [rpc])
 
   const installUpdate = useCallback(async (): Promise<void> => {
     setUpdateLoading(true)
@@ -424,10 +406,6 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
   const usageReports = pageTab === 'usage'
   /** Provider and routing-group settings are not period-scoped, so the period filter is hidden there. */
   const periodScoped = pageTab === 'overview' || pageTab === 'usage'
-  const updateAvailable = updateStatus?.latest != null && updateStatus.latest !== updateStatus.current
-  const versionLabel = updateAvailable
-    ? t('magpie.update.openAvailable', { version: updateStatus.current, latest: updateStatus.latest })
-    : t('magpie.update.open', { version: updateStatus?.current ?? '—' })
   return createElement('div', {
     className: 'codingns-magpie-page',
     role: 'region',
@@ -466,16 +444,13 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
       createElement('div', { className: 'codingns-magpie-topbar-right' },
         createElement('button', {
           type: 'button',
-          className: `codingns-magpie-version-button${updateAvailable ? ' has-update' : ''}`,
+          className: 'codingns-magpie-version-button',
           'aria-haspopup': 'dialog',
           'aria-expanded': updateOpen,
           onClick: () => setUpdateOpen(value => !value),
-          'aria-label': versionLabel,
-          title: versionLabel,
-        },
-          updateStatus?.current ?? '—',
-          updateAvailable && createElement('span', { className: 'codingns-magpie-update-badge', 'aria-hidden': true }, t('magpie.update.badge')),
-        ),
+          'aria-label': t('magpie.update.open', { version: updateStatus?.current ?? '—' }),
+          title: t('magpie.update.open', { version: updateStatus?.current ?? '—' }),
+        }, updateStatus?.current ?? '—'),
         createElement('button', {
           type: 'button',
           className: 'codingns-magpie-icon-button',
@@ -1604,7 +1579,6 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-topbar-left{display:flex;align-items:center;justify-self:start;min-width:0;max-width:100%}
 .codingns-magpie-topbar-right{display:flex;align-items:center;justify-self:end;gap:8px;min-width:0}
 .codingns-magpie-version-button{display:inline-flex;align-items:center;min-height:30px;padding:0 9px;border:.5px solid var(--mp-line-strong);border-radius:999px;background:var(--mp-card);color:var(--mp-muted);font:inherit;font-size:${uiFontSize(12)};font-variant-numeric:tabular-nums;cursor:pointer;transition:background .15s,color .15s,border-color .15s}.codingns-magpie-version-button:hover,.codingns-magpie-version-button[aria-expanded=true]{border-color:color-mix(in srgb,var(--mp-accent) 55%,var(--mp-line-strong));background:color-mix(in srgb,var(--mp-accent) 8%,var(--mp-card));color:var(--mp-ink)}.codingns-magpie-version-button:focus-visible{outline:2px solid color-mix(in srgb,var(--mp-accent) 55%,transparent);outline-offset:1px}
-.codingns-magpie-version-button.has-update{gap:6px;border-color:color-mix(in srgb,var(--mp-accent) 55%,var(--mp-line-strong));color:var(--mp-ink)}.codingns-magpie-update-badge{display:inline-flex;align-items:center;padding:1px 5px;border-radius:999px;background:var(--mp-accent);color:var(--dsw-alias-label-on-primary,#fff);font-size:${uiFontSize(10)};font-weight:600;line-height:1.4}
 .codingns-magpie-icon-button{display:grid;place-items:center;flex:0 0 auto;width:30px;height:30px;border:0;border-radius:var(--dsw-radius-sm,8px);background:transparent;color:var(--mp-muted);cursor:pointer;transition:background .15s,color .15s}
 .codingns-magpie-icon-button:hover{background:var(--mp-hover);color:var(--mp-ink)}
 .codingns-magpie-icon-button:active{background:var(--mp-layer)}
