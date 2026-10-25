@@ -367,6 +367,38 @@ test('Magpie request pages exact-match session/native_session and return only no
   assert.equal(invalidPage, null, 'invalid offsets are rejected before a Web API request')
 })
 
+test('Magpie request pages return complete card metrics without preloading later request rows', async () => {
+  const paths: string[] = []
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      paths.push(path)
+      if (path.startsWith('/api/usage?')) return {
+        calls: 150, errors: 0, input: 4_900_000, output: 140_600, cost: 0,
+        sessions: [{ agent: 'dsh', id: 'target-session', calls: 150, errors: 0, input: 4_900_000, output: 140_600, cost: 0, ttft_ms: 8_142.1, decode_ms: 1_342_857, decode_out: 140_600, decode_n: 150 }],
+      }
+      const url = new URL(path, 'http://127.0.0.1:3430')
+      assert.equal(url.pathname, '/api/usage/requests')
+      const offset = Number(url.searchParams.get('offset'))
+      return offset === 0
+        ? { total: 150, rows: [
+            { route_id: 1, agent: 'dsh', session: 'target-session', provider: 'example-provider', req: 'example-provider/model', in: 10, out: 2, status: 200 },
+            { route_id: 2, agent: 'dsh', session: 'target-session', provider: 'example-provider', req: 'example-provider/model', in: 20, out: 3, status: 200 },
+          ] }
+        : { total: 150, rows: [] }
+    } },
+  })
+
+  const page = await service.readRequestPage({
+    period: 'all', offset: 0, limit: 2, sessionId: 'target-session', sessionAgent: 'dsh',
+  })
+  assert.ok(page)
+  assert.equal(page.items.length, 2, 'only the requested page is returned')
+  assert.equal(page.aggregate?.calls, 150, 'the card count comes from the usage summary')
+  assert.equal(page.aggregate?.inputTokens, 4_900_000)
+  assert.equal(paths.filter((path) => path.startsWith('/api/usage?period=all')).length, 1)
+  assert.deepEqual(paths.filter((path) => path.includes('/api/usage/requests')).map((path) => new URL(path, 'http://127.0.0.1:3430').searchParams.get('offset')), ['0', '2'])
+})
+
 test('Magpie session request pages filter before pagination when q returns unrelated candidates', async () => {
   const requested: string[] = []
   const targetRows = (start: number, count: number): readonly Record<string, unknown>[] => Array.from({ length: count }, (_, index) => ({
@@ -398,7 +430,7 @@ test('Magpie session request pages filter before pagination when q returns unrel
   assert.deepEqual(page.items.map((item) => item.routeId), [149], 'exact matching happens before the page is sliced')
   assert.equal(page.total, 2, 'a fully scanned candidate result reports the exact session total')
   assert.equal(page.hasMore, false)
-  assert.deepEqual(requested.map((path) => new URL(path, 'http://127.0.0.1:3430').searchParams.get('offset')), ['0', '100'])
+  assert.deepEqual(requested.filter((path) => path.includes('/api/usage/requests')).map((path) => new URL(path, 'http://127.0.0.1:3430').searchParams.get('offset')), ['0', '100'])
 })
 
 test('Magpie request pages aggregate bounded session aliases and deduplicate ledger rows', async () => {
@@ -433,7 +465,7 @@ test('Magpie request pages aggregate bounded session aliases and deduplicate led
   assert.equal(page.total, 2)
   assert.equal(page.hasMore, false)
   assert.deepEqual(page.items.map((item) => item.routeId), [2], 'pagination is applied after merging and deduplicating aliases')
-  assert.deepEqual(requested.map((path) => new URL(path, 'http://127.0.0.1:3430').searchParams.get('q')), ['dsh-session', 'provider-session'])
+  assert.deepEqual(requested.filter((path) => path.includes('/api/usage/requests')).map((path) => new URL(path, 'http://127.0.0.1:3430').searchParams.get('q')), ['dsh-session', 'provider-session'])
   assert.equal(await service.readRequestPage({
     period: 'today', offset: 0, limit: 10, sessionId: 'dsh-session', sessionIds: Array.from({ length: 17 }, (_, index) => `id-${index}`), sessionAgent: 'claude',
   }), null, 'direct service callers cannot fan out beyond the bounded alias list')

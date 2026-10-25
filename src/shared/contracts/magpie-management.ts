@@ -180,6 +180,8 @@ export interface MagpieUsageRequestPage {
   readonly hasMore: boolean
   readonly sessionId: string | null
   readonly sessionAgent: string | null
+  /** Complete usage metrics for the selected period; request rows remain paginated. */
+  readonly aggregate?: MagpieUsageMetrics | null
   /** Counts from the selected DSH session history; unavailable for unscoped requests. */
   readonly sessionMetrics?: MagpieSessionMetrics | null
   readonly items: readonly MagpieUsageRequest[]

@@ -443,6 +443,9 @@ export class MagpieUsageService {
       ? []
       : [...new Set([sessionId, ...sessionIds.filter((value): value is string => value !== null)])]
     if (requestedSessionIds.length > MAX_MAGPIE_SESSION_IDENTITIES) return null
+    // Usage summaries are returned separately from the request ledger. This keeps
+    // the cards complete without preloading rows that belong to later pages.
+    const aggregatePromise = this.readRequestAggregate(options.period, sessionAgent, requestedSessionIds, signal)
 
     const readCandidatePage = async (offset: number, limit: number, querySessionId: string | null): Promise<{ readonly rows: readonly unknown[]; readonly total: number | null } | null> => {
       const query = new URLSearchParams({ period: magpieWebPeriod(options.period), limit: String(limit), offset: String(offset) })
@@ -470,6 +473,7 @@ export class MagpieUsageService {
         hasMore: page.total === null ? page.rows.length >= options.limit : options.offset + page.rows.length < page.total,
         sessionId,
         sessionAgent,
+        aggregate: await aggregatePromise,
         items: items.slice(0, options.limit),
       }
     }
@@ -532,8 +536,36 @@ export class MagpieUsageService {
       hasMore: !fullyScanned || matching.length > requestedEnd,
       sessionId,
       sessionAgent,
+      aggregate: await aggregatePromise,
       items: matching.slice(options.offset, requestedEnd),
     }
+  }
+
+  private async readRequestAggregate(
+    period: MagpieDashboardPeriod,
+    sessionAgent: string | null,
+    sessionIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<MagpieUsageMetrics | null> {
+    const response = await this.readWebJson(`/api/usage?period=${magpieWebPeriod(period)}`, signal)
+    if (!response.ok) return null
+    const root = asRecord(response.value)
+    if (root === null) return null
+    if (sessionIds.length === 0) return readMagpieUsageMetrics(root)
+    const sessions = root.sessions
+    if (!Array.isArray(sessions) || sessionAgent === null) return null
+    const acceptedAgents = MAGPIE_USAGE_AGENT_ALIASES[sessionAgent] ?? [sessionAgent]
+    const acceptedIds = new Set(sessionIds)
+    let aggregate: MagpieUsageMetrics | null = null
+    for (const item of sessions) {
+      const record = asRecord(item)
+      if (record === null || !acceptedIds.has(cleanText(record.id) ?? '')
+        || !acceptedAgents.includes(cleanText(record.agent) ?? '')) continue
+      aggregate = aggregate === null
+        ? readMagpieUsageMetrics(record)
+        : sumMagpieUsageMetrics(aggregate, readMagpieUsageMetrics(record))
+    }
+    return aggregate
   }
 
   private async readFromWeb(
@@ -546,23 +578,24 @@ export class MagpieUsageService {
     includeRoute: boolean,
   ): Promise<MagpieUsageSnapshot | null> {
     const capturedAt = new Date(this.now()).toISOString()
-    const [usageResult, quotaResult] = await Promise.all([
+    const [usageResult, sessionResult, quotaResult] = await Promise.all([
       this.readWebJson('/api/usage?period=today', signal),
+      this.readWebJson('/api/usage?period=all', signal),
       this.readWebJson('/api/usage/quotas', signal),
     ])
     const aggregate = usageResult.ok ? readTotals(usageResult.value) : null
-    const primarySession = usageResult.ok && magpieSessionId !== null
-      ? readSession(usageResult.value, agent, magpieSessionId)
+    const primarySession = sessionResult.ok && magpieSessionId !== null
+      ? readSession(sessionResult.value, agent, magpieSessionId)
       : null
-    const fallbackSession = primarySession === null && usageResult.ok && fallbackSessionId !== null
-      ? readSession(usageResult.value, agent, fallbackSessionId)
+    const fallbackSession = primarySession === null && sessionResult.ok && fallbackSessionId !== null
+      ? readSession(sessionResult.value, agent, fallbackSessionId)
       : null
     const sessionUsage = primarySession ?? fallbackSession
     const resolvedSessionId = primarySession !== null ? magpieSessionId : fallbackSession !== null ? fallbackSessionId : magpieSessionId
     if (sessionUsage === null) return null
     const canReadRoute = includeRoute && resolvedSessionId !== null && resolvedSessionId.length <= 128
     const routeHistoryResult = canReadRoute
-      ? await this.readWebJson(`/api/usage/requests?period=today&offset=0&limit=100&q=${encodeURIComponent(resolvedSessionId)}`, signal)
+      ? await this.readWebJson(`/api/usage/requests?period=all&offset=0&limit=100&q=${encodeURIComponent(resolvedSessionId)}`, signal)
       : { ok: false as const }
     const routeRows = routeHistoryResult.ok ? asRecord(routeHistoryResult.value)?.rows : null
     const routeHistoryValid = Array.isArray(routeRows) && routeRows.length <= 500
@@ -1170,28 +1203,34 @@ function mergeMagpieUsageSessions(
 ): MagpieUsageSession {
   return {
     ...current,
+    ...sumMagpieUsageMetrics(current, row),
     id: owner?.dshSessionId ?? current.id,
     agent: owner?.agent ?? current.agent,
-    calls: sumMagpieUsageMetric(current.calls, row.calls),
-    errors: sumMagpieUsageMetric(current.errors, row.errors),
-    retried: sumMagpieUsageMetric(current.retried, row.retried),
-    inputTokens: sumMagpieUsageMetric(current.inputTokens, row.inputTokens),
-    outputTokens: sumMagpieUsageMetric(current.outputTokens, row.outputTokens),
-    cacheReadTokens: sumMagpieUsageMetric(current.cacheReadTokens, row.cacheReadTokens),
-    cacheWriteTokens: sumMagpieUsageMetric(current.cacheWriteTokens, row.cacheWriteTokens),
-    reasoningTokens: sumMagpieUsageMetric(current.reasoningTokens, row.reasoningTokens),
-    cost: sumMagpieUsageMetric(current.cost, row.cost),
-    unpriced: sumMagpieUsageMetric(current.unpriced, row.unpriced),
-    credits: sumMagpieUsageMetric(current.credits, row.credits),
-    credited: sumMagpieUsageMetric(current.credited, row.credited),
-    timed: sumMagpieUsageMetric(current.timed, row.timed),
-    ttftMs: sumMagpieUsageMetric(current.ttftMs, row.ttftMs),
-    decodeMs: sumMagpieUsageMetric(current.decodeMs, row.decodeMs),
-    decodeTokens: sumMagpieUsageMetric(current.decodeTokens, row.decodeTokens),
-    decodeCount: sumMagpieUsageMetric(current.decodeCount, row.decodeCount),
     ...(current.dshSessionName === undefined && owner?.name !== null && owner?.name !== undefined
       ? { dshSessionName: owner.name }
       : {}),
+  }
+}
+
+function sumMagpieUsageMetrics(left: MagpieUsageMetrics, right: MagpieUsageMetrics): MagpieUsageMetrics {
+  return {
+    calls: sumMagpieUsageMetric(left.calls, right.calls),
+    errors: sumMagpieUsageMetric(left.errors, right.errors),
+    retried: sumMagpieUsageMetric(left.retried, right.retried),
+    inputTokens: sumMagpieUsageMetric(left.inputTokens, right.inputTokens),
+    outputTokens: sumMagpieUsageMetric(left.outputTokens, right.outputTokens),
+    cacheReadTokens: sumMagpieUsageMetric(left.cacheReadTokens, right.cacheReadTokens),
+    cacheWriteTokens: sumMagpieUsageMetric(left.cacheWriteTokens, right.cacheWriteTokens),
+    reasoningTokens: sumMagpieUsageMetric(left.reasoningTokens, right.reasoningTokens),
+    cost: sumMagpieUsageMetric(left.cost, right.cost),
+    unpriced: sumMagpieUsageMetric(left.unpriced, right.unpriced),
+    credits: sumMagpieUsageMetric(left.credits, right.credits),
+    credited: sumMagpieUsageMetric(left.credited, right.credited),
+    timed: sumMagpieUsageMetric(left.timed, right.timed),
+    ttftMs: sumMagpieUsageMetric(left.ttftMs, right.ttftMs),
+    decodeMs: sumMagpieUsageMetric(left.decodeMs, right.decodeMs),
+    decodeTokens: sumMagpieUsageMetric(left.decodeTokens, right.decodeTokens),
+    decodeCount: sumMagpieUsageMetric(left.decodeCount, right.decodeCount),
   }
 }
 

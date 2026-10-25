@@ -653,8 +653,9 @@ test('Magpie compact usage reads only Web API usage and exact session ledger dat
   const result = await service.read({ adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, undefined, true)
   assert.deepEqual(calls.map((call) => call.url), [
     '/api/usage?period=today',
+    '/api/usage?period=all',
     '/api/usage/quotas',
-    '/api/usage/requests?period=today&offset=0&limit=100&q=agent-session-1',
+    '/api/usage/requests?period=all&offset=0&limit=100&q=agent-session-1',
   ])
   assert.ok(calls.every((call) => call.method === 'GET'))
   assert.equal(result?.usageStatus, 'available')
@@ -671,6 +672,65 @@ test('Magpie compact usage reads only Web API usage and exact session ledger dat
     windows: [], active: true, error: null, until: null, renew: null, credits: null,
   }])
   assert.doesNotMatch(JSON.stringify(result), /Bearer|Authorization|prompt|response body/u)
+})
+
+test('Magpie session usage includes earlier dates while gateway usage stays daily', async () => {
+  for (const activeToday of [true, false]) {
+    const paths: string[] = []
+    const sessionId = 'multi-day-session'
+    const service = new MagpieUsageService({
+      now: () => Date.parse('2026-10-25T12:00:00Z'),
+      webApi: { async requestJson(path) {
+        paths.push(path)
+        if (path === '/api/usage?period=today') return {
+          calls: 9, input: 900, output: 90, cost: 0.9,
+          sessions: activeToday ? [{ id: sessionId, agent: 'dsh', calls: 1, input: 100, output: 10, cost: 0.1 }] : [],
+        }
+        if (path === '/api/usage?period=all') return {
+          calls: 99, input: 9900, output: 990, cost: 9.9,
+          sessions: [
+            { id: sessionId, agent: 'dsh', calls: 3, input: 600, output: 60, cost: 0.6 },
+            { id: 'another-session', agent: 'dsh', calls: 96, input: 9300, output: 930, cost: 9.3 },
+          ],
+        }
+        if (path === '/api/usage/quotas') return []
+        if (path.startsWith('/api/usage/requests?')) {
+          const url = new URL(path, 'http://127.0.0.1:3430')
+          assert.equal(url.searchParams.get('period'), 'all', 'route lookup must also include older requests')
+          assert.equal(url.searchParams.get('q'), sessionId)
+          return { rows: [{
+            route_id: 3, t: activeToday ? '2026-10-25T10:00:00Z' : '2026-10-24T10:00:00Z',
+            agent: 'dsh', session: sessionId, provider: 'example-provider', req: 'example-provider/model-one',
+            served: 'example-provider/model-one', status: 200,
+          }] }
+        }
+        throw new Error(`Unexpected Magpie Web API path: ${path}`)
+      } },
+    })
+
+    const result = await service.read({ adapterId: 'dsh', modelId: 'example-provider/model-one' }, undefined, true, sessionId)
+    assert.ok(result, 'a session without requests today must still have lifetime usage')
+    assert.equal(result.aggregate?.calls, 9, 'gateway totals retain their daily scope')
+    assert.equal(result.session?.calls, 3)
+    assert.equal(result.session?.inputTokens, 600)
+    assert.equal(result.session?.outputTokens, 60)
+    assert.equal(result.session?.costUsd, 0.6)
+    assert.equal(result.route?.routeId, 3)
+    assert.ok(paths.includes('/api/usage?period=all'))
+  }
+})
+
+test('Magpie does not present daily session usage as lifetime usage when the all-time read fails', async () => {
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      if (path === '/api/usage?period=all') throw new Error('All-time usage unavailable')
+      if (path === '/api/usage/quotas') return []
+      return usageReply()
+    } },
+  })
+  assert.equal(await service.read({
+    adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1',
+  }), null)
 })
 
 test('Magpie usage service without the Host-owned Web API fails closed instead of starting a process', async () => {
@@ -704,7 +764,7 @@ test('Magpie 的持久请求记录补足过期路由，并只关联此会话用�
       if (target.pathname.endsWith('/route')) return Response.json({ session: sessionId, seq: 0, route: null })
       if (target.pathname.endsWith('/usage/requests')) {
         assert.equal(target.searchParams.get('q'), sessionId)
-        assert.equal(target.searchParams.get('period'), 'today')
+        assert.equal(target.searchParams.get('period'), 'all')
         return Response.json({ rows: [
           { route_id: 110, t: '2026-10-21T14:00:00Z', agent: 'claude', session: sessionId, req: 'group/auto-deepseek-v4-1-flash', provider: 'workbuddy', providerAccount: 'Account B', model: 'deepseek-v4.1-flash', served: 'deepseek-v4.1-flash', effort: 'high', status: 200 },
           { route_id: 109, t: '2026-10-21T13:00:00Z', agent: 'claude', session: sessionId, req: 'group/auto-deepseek-v4-1-flash', provider: 'workbuddy-ai', providerAccount: 'AI account', model: 'deepseek-v4.1-flash', served: 'deepseek-v4.1-flash', status: 200 },
@@ -916,6 +976,7 @@ test('Codex 仅使用 Codex 目录与精确匹配的 Codex 会话', async () => 
   assert.equal(cliReads, 0, 'compact usage does not shell out to Magpie CLI')
   assert.deepEqual(urls, [
     'http://127.0.0.1:3430/api/usage?period=today',
+    'http://127.0.0.1:3430/api/usage?period=all',
     'http://127.0.0.1:3430/api/usage/quotas',
   ])
   assert.equal(result?.agent, 'codex')
@@ -1108,7 +1169,7 @@ test('compact usage requires an exact Magpie Agent/session match from Web API da
   assert.equal(await service.read({ adapterId: 'other-agent', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, undefined, true), null)
   assert.equal(await service.read({ adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: 'agent-session-1' }, undefined, true), null)
   assert.equal(cliReads, 0, 'usage reads never query the CLI model catalog')
-  assert.equal(paths.filter(path => path === '/api/usage').length, 2)
+  assert.equal(paths.filter(path => path === '/api/usage').length, 4)
   assert.equal(paths.some(path => path === '/api/usage/requests'), false, 'no request is made without a matching Agent/session aggregate')
 })
 
@@ -1136,7 +1197,7 @@ test('aborting one compact usage read does not cancel a concurrent Web API read'
   caller.abort()
   await assert.rejects(cancelledRead)
   assert.equal((await survivingRead)?.usageStatus, 'available')
-  assert.equal(usageCalls, 2)
+  assert.equal(usageCalls, 4)
 })
 
 test('Web API request rows are exact-matched and failed reads do not leak raw errors', async () => {
@@ -1836,19 +1897,29 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   const calls: { readonly endpoint: string; readonly payload: Record<string, unknown> }[] = []
   const requestsDialogRef = { current: null as never }
   const firstPage = {
-    period: 'today', offset: 0, limit: 50, total: 120, hasMore: true,
+    period: 'all', offset: 0, limit: 50, total: 120, hasMore: true,
     sessionId: 'agent-session-1', sessionAgent: 'claude',
+    aggregate: {
+      calls: 150, errors: 0, inputTokens: 4_900_000, outputTokens: 140_600, cacheReadTokens: 0, cacheWriteTokens: 0,
+      reasoningTokens: null, cost: 0, unpriced: 150, credits: null, credited: null, timed: 150,
+      ttftMs: 8_142.1, decodeMs: 1_342_857, decodeTokens: 140_600, decodeCount: 150,
+    },
     sessionMetrics: { turns: 12, steps: 34 },
     items: [
-      magpieRequestFixture(),
+      magpieRequestFixture({ time: '2026-10-25T01:20:05Z' }),
       magpieRequestFixture({ routeId: 2, status: '500', servedModel: null, cost: null }),
     ],
   }
   const secondPage = {
-    period: 'today', offset: 50, limit: 50, total: 120, hasMore: true,
+    period: 'all', offset: 50, limit: 50, total: 120, hasMore: true,
     sessionId: 'agent-session-1', sessionAgent: 'claude',
+    aggregate: {
+      calls: 150, errors: 0, inputTokens: 4_900_000, outputTokens: 140_600, cacheReadTokens: 0, cacheWriteTokens: 0,
+      reasoningTokens: null, cost: 0, unpriced: 150, credits: null, credited: null, timed: 150,
+      ttftMs: 8_142.1, decodeMs: 1_342_857, decodeTokens: 140_600, decodeCount: 150,
+    },
     sessionMetrics: { turns: 12, steps: 34 },
-    items: [magpieRequestFixture({ routeId: 51, requestedModel: 'group/auto-claude-5-opus', servedModel: 'claude/claude-5-opus' })],
+    items: [magpieRequestFixture({ routeId: 51, time: '2026-10-23T01:20:05Z', requestedModel: 'group/auto-claude-5-opus', servedModel: 'claude/claude-5-opus' })],
   }
   const rpc = {
     call: async (_channel: string, endpoint: string, payload: unknown) => {
@@ -1878,7 +1949,7 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
 
   assert.equal(calls.length, 1)
   assert.equal(calls[0]!.endpoint, 'magpie/usage/requests')
-  assert.deepEqual(calls[0]!.payload, { period: 'today', offset: 0, limit: 50, sessionId: 'agent-session-1', sessionAgent: 'claude' })
+  assert.deepEqual(calls[0]!.payload, { period: 'all', offset: 0, limit: 50, sessionId: 'agent-session-1', sessionAgent: 'claude' })
   const dialog = findRequestDialogElement(output)
   assert.ok(dialog, 'clicking the entry should open the request dialog')
   const dialogTree = renderRequestDialog(dialog)
@@ -1893,6 +1964,8 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   assert.match(pageContent, /报告费用/u)
   assert.match(pageContent, /输出速度/u)
   assert.match(pageContent, /首字耗时/u)
+  assert.match(pageContent, /4\.9M/u, 'the metric strip uses complete usage metrics instead of the loaded rows')
+  assert.match(pageContent, /150/u, 'the request count is not limited to the loaded page')
   assert.match(pageContent, /回合/u)
   assert.match(pageContent, /12/u)
   assert.match(pageContent, /步骤 34/u)
@@ -1911,13 +1984,17 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
     output = view.render()
   }
   assert.equal(calls.length, 2)
-  assert.deepEqual(calls[1]!.payload, { period: 'today', offset: 2, limit: 50, sessionId: 'agent-session-1', sessionAgent: 'claude' }, 'loading more continues after the rows already shown')
+  assert.deepEqual(calls[1]!.payload, { period: 'all', offset: 2, limit: 50, sessionId: 'agent-session-1', sessionAgent: 'claude' }, 'loading more keeps all dates in scope')
   const nextDialog = findRequestDialogElement(output)
   assert.ok(nextDialog)
   const nextContent = renderRequestsPageContent(nextDialog)
   assert.match(nextContent, /auto-gpt-6-1-sol/u, 'loading more keeps the rows already shown')
   assert.match(nextContent, /claude-5-opus/u, 'loading more appends the next page instead of replacing the list')
   assert.match(nextContent, /3 \/ 120/u)
+  const nextPage = findRequestsPageElement(renderRequestDialog(nextDialog))
+  assert.deepEqual((nextPage?.props?.page as { items: { time: string }[] }).items.map((item) => item.time), [
+    '2026-10-25T01:20:05Z', '2026-10-24T01:20:05Z', '2026-10-23T01:20:05Z',
+  ], 'requests from earlier dates remain in the appended list')
 
   const closeButton = findTestElement(renderRequestDialog(nextDialog), (element) => element.type === 'button' && element.props?.className === 'codingns4dsh-magpie-requests-close')
   assert.ok(closeButton)
@@ -1954,7 +2031,7 @@ test('Codex request rows reconcile a stale provider id with the configured provi
   })
   assert.equal(page?.items[0]?.provider, 'grox-codex')
   assert.equal(page?.items[0]?.account, 'codex', 'a session row without providerAccount uses the configured provider account label')
-  assert.deepEqual(paths, ['/api/usage/requests?period=today&limit=100&offset=0&q=codex-session', '/api/providers'])
+  assert.deepEqual(paths, ['/api/usage?period=today', '/api/usage/requests?period=today&limit=100&offset=0&q=codex-session', '/api/providers'])
 })
 
 test('会话请求分页扫到整本账本末尾时给出精确总数，不再把最后一页标成还有更多', async () => {
@@ -1964,7 +2041,7 @@ test('会话请求分页扫到整本账本末尾时给出精确总数，不再�
   const ledger: Record<string, unknown>[] = []
   for (let index = 0; index < 149; index++) {
     ledger.push({
-      route_id: 1000 + index, t: `2026-10-24T10:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}Z`,
+      route_id: 1000 + index, t: `2026-10-${25 - Math.floor(index / 50)}T10:${String(Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}Z`,
       agent: 'dsh', session: sessionId, provider: 'grox-ds', req: 'group/auto-deepseek', model: 'deepseek-v4.1-flash', served: 'deepseek-v4.1-flash', status: 200,
     })
     if (index % 3 === 0) {
@@ -1981,6 +2058,7 @@ test('会话请求分页扫到整本账本末尾时给出精确总数，不再�
       async requestJson(path) {
         paths.push(path)
         const url = new URL(path, 'http://127.0.0.1:3430')
+        assert.equal(url.searchParams.get('period'), 'all')
         const offset = Number(url.searchParams.get('offset'))
         const limit = Number(url.searchParams.get('limit'))
         return { total: ledger.length, rows: ledger.slice(offset, offset + limit) }
@@ -1988,21 +2066,24 @@ test('会话请求分页扫到整本账本末尾时给出精确总数，不再�
     },
   })
 
-  const first = await service.readRequestPage({ period: 'today', offset: 0, limit: 50, sessionId, sessionAgent: 'dsh' })
+  const first = await service.readRequestPage({ period: 'all', offset: 0, limit: 50, sessionId, sessionAgent: 'dsh' })
   assert.equal(first?.items.length, 50)
   assert.equal(first?.total, null, 'a page that stops at its probe does not know the identity total yet')
   assert.equal(first?.hasMore, true)
-  assert.match(paths[0] ?? '', /limit=100&offset=0&q=dsh-session-1$/u, 'candidates are read in bounded pages')
+  assert.match(paths.find((path) => path.includes('/api/usage/requests')) ?? '', /limit=100&offset=0&q=dsh-session-1$/u, 'candidates are read in bounded pages')
 
-  const second = await service.readRequestPage({ period: 'today', offset: 50, limit: 50, sessionId, sessionAgent: 'dsh' })
+  const second = await service.readRequestPage({ period: 'all', offset: 50, limit: 50, sessionId, sessionAgent: 'dsh' })
   assert.equal(second?.items.length, 50)
   assert.equal(second?.hasMore, true)
 
-  const last = await service.readRequestPage({ period: 'today', offset: 100, limit: 50, sessionId, sessionAgent: 'dsh' })
+  const last = await service.readRequestPage({ period: 'all', offset: 100, limit: 50, sessionId, sessionAgent: 'dsh' })
   assert.equal(last?.items.length, 49, 'the last page keeps every remaining request of the session')
   assert.equal(last?.total, 149, 'the whole candidate window was read, so the exact total is known')
   assert.equal(last?.hasMore, false, 'the last page must not offer a next page')
-  assert.equal(paths.length, 5, 'each page reads only the candidate prefix it needs, not the whole ledger')
+  assert.equal(paths.filter((path) => path.includes('/api/usage/requests')).length, 5, 'each page reads only the candidate prefix it needs, not the whole ledger')
+  assert.deepEqual(new Set([...first!.items, ...second!.items, ...last!.items].map((item) => item.time?.slice(0, 10))), new Set([
+    '2026-10-25', '2026-10-24', '2026-10-23',
+  ]), 'pagination preserves every date in the session history')
 })
 
 test('查看请求模态框在读取失败时给出重试，没有可绑定会话时不显示入口', async (t) => {
