@@ -401,7 +401,7 @@ test('会话快照严格区分本会话账号与同厂商的其它账号', async
 })
 
 /** 构造会话级 Magpie 快照响应，配额的账号来自 `accounts`。 */
-function magpieSlotRpc(accounts: (includeRoute: boolean) => unknown, routeAccount: string | null) {
+function magpieSlotRpc(accounts: (includeRoute: boolean) => unknown, routeAccount: string | null, sessionName?: string) {
   return {
     call: async (_channel: string, method: string, payload: unknown) => {
       if (method.endsWith('/session/get')) {
@@ -417,6 +417,7 @@ function magpieSlotRpc(accounts: (includeRoute: boolean) => unknown, routeAccoun
             agent: 'claude', modelId: 'auto/deepseek-v4.1-flash', capturedAt: new Date().toISOString(), usageStatus: 'available',
             aggregate: { calls: 1, errors: 0, inputTokens: 20, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001 },
             sessionId: 'provider-session',
+            ...(sessionName === undefined ? {} : { sessionName }),
             session: { id: 'provider-session', agent: 'claude', calls: 1, errors: 0, inputTokens: 20, outputTokens: 10, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.001 },
             routeStatus: includeRoute ? 'available' : 'not-requested',
             route: includeRoute ? {
@@ -467,6 +468,25 @@ function registerSlot(t: { after: (fn: () => void) => void }) {
 }
 
 
+
+test('Magpie usage displays the session name and ID on separate rows', async (t) => {
+  const { mount } = registerSlot(t)
+  const view = mount(magpieSlotRpc(() => [], null, 'Analyze module implementation'))
+  const trigger = await waitForTrigger(view)
+  ;(trigger.props!.onClick as () => void)()
+  const popover = renderPopoverContent(view.render())
+  const identity = findElement(popover, (props) => {
+    const children = props.children as Element[] | undefined
+    return props.style !== null && typeof props.style === 'object'
+      && (props.style as { display?: string }).display === 'grid'
+      && Array.isArray(children) && children[1]?.type === 'code' && children[1].props?.children === 'provider-session'
+  })
+  assert.ok(identity, 'the session identity should contain the name row and the ID row')
+  const [nameRow, idRow] = identity.props!.children as Element[]
+  assert.equal((nameRow!.props!.style as { display: string }).display, 'flex')
+  assert.equal((nameRow!.props!.children as Element[])[1]?.props?.children, 'Analyze module implementation')
+  assert.equal(idRow!.props!.children, 'provider-session')
+})
 
 test('订阅弹层按厂商分组显示多账号，并只展开会话实际使用的账号', async (t) => {
   const { mount } = registerSlot(t)
