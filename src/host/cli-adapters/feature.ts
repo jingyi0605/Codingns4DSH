@@ -23,7 +23,7 @@ import { CodingNsCliSessionStore } from './session-store.js'
 import { CodingNsDshMessageProjector } from './dsh-message-projector.js'
 import { CommandCodeSubscriptionService } from './command-code-subscription.js'
 import { ProviderSubscriptionService } from './provider-subscription.js'
-import { attachMagpieSessionNames, MagpieUsageService, magpieAgentForAdapter, type MagpieSessionNameBinding } from './magpie-usage.js'
+import { attachMagpieSessionNames, MagpieUsageService, magpieAgentForAdapter, magpieUsageAgentAliases, type MagpieContextRequestOptions, type MagpieSessionNameBinding } from './magpie-usage.js'
 import { readDshProviderSource } from './dsh-config.js'
 import { MagpieManagementService } from './magpie-management.js'
 import { MagpieWebService } from './magpie-web.js'
@@ -400,6 +400,14 @@ export function createCliAdaptersFeature(options: {
           case 'subscription': {
             const subscription = readSubscriptionRequest(payload)
             const requestSignal = signal ?? lifetime.signal
+            // A newly opened native DSH session may not be in the Host bridge's
+            // local store yet. Adopt it before reading the Registry, otherwise
+            // the native model/provider selection is invisible and the request
+            // incorrectly falls back to the official DSH balance.
+            if (subscription.adapterId === 'dsh' && subscription.sessionId !== undefined && nativeSessions !== undefined) {
+              await nativeSessions.ensure(subscription.sessionId)
+              requestSignal.throwIfAborted()
+            }
             const session = subscription.sessionId === undefined ? undefined : registry.getSession(subscription.sessionId)
             if (context.services.settings?.get().modules.magpieManagement === true
               && session !== undefined && session.adapterId === subscription.adapterId) {
@@ -407,7 +415,7 @@ export function createCliAdaptersFeature(options: {
               requestSignal.throwIfAborted()
               const snapshot = magpie ?? (subscription.sessionId === undefined
                 ? null
-                : await pendingMagpieUsage(magpieUsage, nativeSessions, subscription.sessionId, session, requestSignal))
+                : await pendingMagpieUsage(magpieUsage, nativeSessions, subscription.sessionId, session, requestSignal, subscription.includeRoute))
               if (snapshot !== null) {
                 const sessionName = subscription.sessionId === undefined ? undefined : readDshSessionDisplayName(subscription.sessionId, sessionStore, nativeSessions, context.services.dshContext)
                 return { providerUsage: null, magpie: sessionName === undefined ? snapshot : { ...snapshot, sessionName } }
@@ -462,6 +470,13 @@ export function createCliAdaptersFeature(options: {
             scheduleMagpieWebSync(context.services.settings?.get().modules.magpieManagement === true && usable)
           }
           return detection
+        }
+        if (action === 'context') {
+          const request = readMagpieContextRequest(payload)
+          const target = await resolveMagpieContextTarget(request.sessionId, sessionStore, nativeSessions, magpieUsage, signal)
+          if (target === null || !magpieInstalled) return null
+          try { await magpieWeb.start() } catch { return null }
+          return magpieUsage.readContext(target, signal)
         }
         if (context.services.settings?.get().modules.magpieManagement !== true) {
           throw new CodingNsRpcError('CODINGNS_MAGPIE_DISABLED', 'Magpie management is disabled')
@@ -1596,6 +1611,11 @@ function readNativeModelSelection(
   sessionId: string,
 ): { readonly providerId?: string; readonly modelId: string } | undefined {
   if (nativeSessions === undefined) return undefined
+  const current = nativeSessions.modelSelection?.(sessionId)
+  if (current !== undefined && current.model.trim() !== '') {
+    const provider = current.provider.trim()
+    return provider === '' ? { modelId: current.model.trim() } : { providerId: provider, modelId: current.model.trim() }
+  }
   let session: unknown
   try { session = nativeSessions.get(sessionId) } catch { return undefined }
   const root = asRecord(session)
@@ -1635,6 +1655,39 @@ function isMagpieGatewayProvider(providerId: string): boolean {
   return /^magpie(?:[-_.].*)?$/iu.test(providerId)
 }
 
+/** Resolve the exact identities needed for one Magpie context read. */
+async function resolveMagpieContextTarget(
+  sessionId: string,
+  sessionStore: CodingNsCliSessionStore,
+  nativeSessions: CodingNsNativeSessionBridge | undefined,
+  magpieUsage: MagpieUsageService,
+  signal: AbortSignal,
+): Promise<MagpieContextRequestOptions | null> {
+  const normalizedSessionId = sessionId.trim()
+  if (normalizedSessionId === '') return null
+  let stored = sessionStore.get(normalizedSessionId)
+  if (stored === undefined && nativeSessions !== undefined) {
+    try { await nativeSessions.ensure(normalizedSessionId); signal.throwIfAborted() } catch { return null }
+    stored = sessionStore.get(normalizedSessionId)
+  }
+  const adapterId = stored?.adapterId ?? DSH_NATIVE_SESSION_ADAPTER_ID
+  const selection = adapterId === DSH_NATIVE_SESSION_ADAPTER_ID
+    ? readNativeModelSelection(nativeSessions, normalizedSessionId)
+    : undefined
+  const modelId = stored?.modelId?.trim() || selection?.modelId
+  if (modelId === undefined || modelId === '') return null
+  const providerId = stored?.providerId?.trim() || selection?.providerId
+  if (adapterId === DSH_NATIVE_SESSION_ADAPTER_ID) {
+    if (providerId === undefined || !isMagpieGatewayProvider(providerId)) return null
+  } else if (await magpieUsage.readModelMetadata(adapterId, modelId, signal) === null) {
+    return null
+  }
+  const agents = magpieUsageAgentAliases(adapterId)
+  if (agents.length === 0) return null
+  const sessionIds = [...new Set([normalizedSessionId, stored?.providerSessionId?.trim() ?? ''].filter(Boolean))]
+  return { agents, sessionIds }
+}
+
 /**
  * 读到用量之后仍然要判断「这个模型是不是 Magpie 的」。
  *
@@ -1649,19 +1702,23 @@ async function pendingMagpieUsage(
   sessionId: string,
   session: CodingNsCliSessionConfig,
   signal: AbortSignal,
+  includeRoute = false,
 ): Promise<MagpieUsageSnapshot | null> {
   const agent = magpieAgentForAdapter(session.adapterId)
   const modelId = session.modelId?.trim()
   if (agent === null || modelId === undefined || modelId === '') return null
   try {
-    const selectedProviderId = session.providerId?.trim()
-    const providerId = selectedProviderId === undefined || selectedProviderId === ''
-      ? readNativeModelSelection(nativeSessions, sessionId)?.providerId
-      : selectedProviderId
-    if (providerId === undefined || !isMagpieGatewayProvider(providerId)) return null
+    if (session.adapterId === DSH_NATIVE_SESSION_ADAPTER_ID) {
+      const providerId = session.providerId?.trim() || readNativeModelSelection(nativeSessions, sessionId)?.providerId
+      if (providerId === undefined || !isMagpieGatewayProvider(providerId)) return null
+    }
     const confirmed = await magpie.readModelMetadata(session.adapterId, modelId, signal)
     signal.throwIfAborted()
-    return confirmed === null ? null : pendingMagpieSnapshot(agent, modelId)
+    if (confirmed === null) return null
+    // Gateway totals do not depend on a provider session binding. Keep them
+    // while the exact session row is pending, without attributing other rows.
+    return await magpie.read(session, signal, includeRoute, sessionId, { allowPendingSession: true })
+      ?? pendingMagpieSnapshot(agent, modelId)
   } catch {
     // 目录不可读、超时或请求被取消：保持原有回退语义，不伪造 Magpie 用量。
     return null
@@ -2233,6 +2290,12 @@ function readMagpieDetectionRequest(payload: unknown): MagpieDetectionRequest {
 /** `force` 只在用户主动重新检测时出现；缺省复用短期探测结果。 */
 function readMagpieDetectionForce(payload: unknown): boolean {
   return asRecord(payload)?.force === true
+}
+
+function readMagpieContextRequest(payload: unknown): { readonly sessionId: string } {
+  const sessionId = readOptionalMagpieIdentity(asRecord(payload)?.sessionId, 512)
+  if (sessionId === undefined) throw new TypeError('Magpie context requires a session ID')
+  return { sessionId }
 }
 
 function readMagpieRequestOptions(payload: unknown): {

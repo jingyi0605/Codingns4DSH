@@ -189,6 +189,47 @@ export interface MagpieUsageRequestPage {
   readonly items: readonly MagpieUsageRequest[]
 }
 
+export type MagpieContextPartKind = 'system' | 'tools' | 'memory' | 'files' | 'results' | 'chat'
+
+export interface MagpieContextItem {
+  readonly name: string
+  readonly tag?: string
+  readonly count?: number
+  readonly tokens: number
+}
+
+export interface MagpieContextPart {
+  readonly kind: MagpieContextPartKind
+  readonly tokens: number
+  readonly items: readonly MagpieContextItem[]
+}
+
+export interface MagpieContextPoint {
+  readonly id: number
+  readonly time: string | null
+  readonly tokens: number
+  readonly window: number | null
+  readonly cacheTokens: number
+}
+
+/** Sanitized metadata for one exact Magpie context session. Prompt text never crosses this contract. */
+export interface MagpieContextSession {
+  readonly agent: string
+  readonly key: string
+  readonly title: string | null
+  readonly model: string
+  readonly requests: number
+  readonly turns: number
+  readonly usedTokens: number
+  readonly contextWindow: number
+  readonly cacheTokens: number
+  readonly cacheRate: number
+  readonly compacts: number
+  readonly latestId: number | null
+  readonly parts: readonly MagpieContextPart[]
+  readonly points: readonly MagpieContextPoint[]
+}
+
 export interface MagpieSessionMetrics {
   readonly turns: number
   readonly steps: number

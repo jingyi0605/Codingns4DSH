@@ -11,6 +11,8 @@ import { createCliAdaptersFeature } from '../src/host/cli-adapters/feature.js'
 import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js'
 import { CodingNsRpcTable } from '../src/host/rpc-table.js'
 import { FeatureRegistry } from '../src/features/registry.js'
+import { createCodingNsNativeSessionBridge } from '../src/host/native-session-bridge.js'
+import { Context, getTraceable, symbols } from '@deepseek-ai/cordis'
 
 test('external selection capability rejects unverified versions and missing native accessors', () => {
   const context = { sessionController: { agents: { selectionFor() {} } } }
@@ -53,6 +55,50 @@ test('external selection view preserves native choices, setters, other sessions 
   dispose()
   assert.equal(owner.selectionFor, original)
   assert.equal(Object.hasOwn(owner, 'selectionFor'), false)
+})
+
+for (const traceable of [false, true]) test(`native route reads avoid resolver recursion with ${traceable ? 'Cordis proxies' : 'plain services'}`, () => {
+  const session = { header: { id: 'native-magpie' }, requestHeader: () => undefined }
+  const agent = { id: session.header.id, session }
+  const native = { provider: 'magpie', model: 'auto/deepseek-v4.1-flash', reasoningEffort: 'high' }
+  let reads = 0
+  const controller = {
+    create: async () => ({ sessionId: agent.id }),
+    agents: { selectionFor(_agent: { readonly id: string }) {
+      assert.ok(++reads < 10, 'native selection resolution must not recurse')
+      return { current: native }
+    } },
+  }
+  if (traceable) {
+    Object.defineProperty(controller.agents, symbols.tracker, { value: { property: 'ctx' } })
+    controller.agents = getTraceable(new Context(), controller.agents)
+    assert.notEqual(controller.agents.selectionFor, controller.agents.selectionFor)
+  }
+  const descriptor = Object.getOwnPropertyDescriptor(controller.agents, 'selectionFor')
+  const services: Record<string, unknown> = {
+    sessions: { get: () => session, list: () => [session] },
+    agents: { get: () => agent },
+    sessionController: controller,
+  }
+  const bridge = createCodingNsNativeSessionBridge({ get: (key: string) => services[key] } as never)
+  const registry = new CodingNsCliAdapterRegistry([], {}, { nativeSessions: bridge })
+  let resolutions = 0
+  const dispose = createSessionModelSelectionAdapter(controller).install(id => {
+    resolutions += 1
+    const config = registry.getSession(id)
+    return config.adapterId === 'dsh' ? undefined : { provider: config.adapterId, model: config.modelId! }
+  })
+  try {
+    assert.equal(registry.getSession(agent.id).providerId, native.provider)
+    assert.equal(reads, 1)
+    assert.equal(resolutions, 0, 'a raw native route read must not invoke our external overlay')
+    assert.deepEqual(controller.agents.selectionFor(agent).current, native)
+    assert.equal(resolutions, 1)
+    assert.equal(reads, 3)
+  } finally {
+    dispose()
+    assert.deepEqual(Object.getOwnPropertyDescriptor(controller.agents, 'selectionFor'), descriptor)
+  }
 })
 
 // Import installed Stage0 libraries into memory only: no launcher, profile,

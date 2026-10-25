@@ -21,6 +21,7 @@ import type {
   MagpieDashboardStreamChunk,
   MagpieDashboardStreamPart,
   MagpieDashboardQuota,
+  MagpieContextSession,
   MagpieQuotaHistory,
   MagpieUsageDashboard,
   MagpieUsageGroup,
@@ -33,6 +34,7 @@ import type {
 } from '../../shared/contracts/magpie-management.js'
 import { commandEnvironment, resolveCommandPath, runAsyncCommand, WINDOWS, withCommandSignal } from './process-utils.js'
 import { parseMagpieWebProviders } from './magpie-management.js'
+import { parseMagpieContextResponse } from './magpie-context.js'
 import type { MagpieWebService } from './magpie-web.js'
 
 const MAGPIE_CATALOG_TTL_MS = 60_000
@@ -167,6 +169,12 @@ export interface MagpieUsageRequestOptions {
   readonly sessionAgent?: string
 }
 
+export interface MagpieContextRequestOptions {
+  readonly agents: readonly string[]
+  readonly sessionIds: readonly string[]
+  readonly days?: number
+}
+
 /** Reads usage from the authenticated local Magpie Web API and exact-matches session identity. */
 export class MagpieUsageService {
   private readonly readModels: NonNullable<MagpieUsageServiceOptions['readModels']>
@@ -210,6 +218,7 @@ export class MagpieUsageService {
     signal?: AbortSignal,
     includeRoute = false,
     dshSessionId?: string,
+    options: { readonly allowPendingSession?: boolean } = {},
   ): Promise<MagpieUsageSnapshot | null> {
     signal?.throwIfAborted()
     const agent = magpieAgentForAdapter(session.adapterId)
@@ -218,23 +227,24 @@ export class MagpieUsageService {
 
     const providerSessionId = cleanText(session.providerSessionId)
     const nativeSessionId = cleanText(dshSessionId)
-    // Native DSH requests use the DSH session ID as their Magpie session
-    // identity. Other drivers must never treat that fallback as a provider ID.
-    const sessionId = providerSessionId !== null && providerSessionId !== nativeSessionId
+    // Native DSH requests are tagged with the DSH session ID. Keep the older
+    // provider-session fallback for callers that do not have the native ID yet,
+    // and for Magpie ledgers written before native_session tagging was added.
+    const sessionId = agent === 'dsh'
+      ? nativeSessionId ?? providerSessionId
+      : providerSessionId !== null && providerSessionId !== nativeSessionId ? providerSessionId : null
+    // Current Codex and Command Code gateway requests carry the Host's native
+    // session tag. Codex may use it only after the caller confirms Magpie.
+    const nativeTagged = agent === 'dsh' || agent === 'commandcode'
+      || agent === 'codex' && options.allowPendingSession === true
+    const magpieSessionId = nativeTagged ? nativeSessionId ?? sessionId : sessionId
+    // Older gateways can still index the same session by its provider ID.
+    const fallbackSessionId = nativeTagged
+      && nativeSessionId !== null && providerSessionId !== null && nativeSessionId !== providerSessionId
       ? providerSessionId
-      : agent === 'dsh' ? nativeSessionId : null
-    // Command Code's ACP child tags loopback Magpie requests with the DSH
-    // session ID injected by the Host, so the ledger key differs from the ACP
-    // session ID shown in the panel. Older Hosts without that ID keep the
-    // provider ID so the panel still reports the same "no usage" state.
-    const magpieSessionId = agent === 'commandcode' ? nativeSessionId ?? sessionId : sessionId
-    // During a rolling update the ACP child may still tag requests with its ACP
-    // session ID; fall back to it when the DSH-ID ledger row is absent.
-    const fallbackSessionId = agent === 'commandcode' && nativeSessionId !== null && sessionId !== null && nativeSessionId !== sessionId
-      ? sessionId
       : null
-    if (magpieSessionId === null) return null
-    return this.readFromWeb(agent, requestedModelId, sessionId, magpieSessionId, fallbackSessionId, signal, includeRoute)
+    if (magpieSessionId === null && !options.allowPendingSession) return null
+    return this.readFromWeb(agent, requestedModelId, sessionId, magpieSessionId, fallbackSessionId, signal, includeRoute, options.allowPendingSession === true)
   }
 
   /**
@@ -315,6 +325,15 @@ export class MagpieUsageService {
     if (id === null) return null
     const metadata = await this.loadModelMetadata(catalog, signal)
     return metadata?.get(id) ?? null
+  }
+
+  /** Read one exact, sanitized context session from Magpie's internal Web API. */
+  async readContext(options: MagpieContextRequestOptions, signal?: AbortSignal): Promise<MagpieContextSession | null> {
+    signal?.throwIfAborted()
+    const days = options.days === undefined ? 7 : Math.max(1, Math.min(30, Math.trunc(options.days)))
+    const response = await this.readWebJson(`/api/context?days=${days}`, signal)
+    if (!response.ok) return null
+    return parseMagpieContextResponse(response.value, options)
   }
 
   /** Read bounded, graph-ready usage and quota data through authenticated Magpie Web. */
@@ -549,7 +568,7 @@ export class MagpieUsageService {
   ): Promise<MagpieUsageMetrics | null> {
     const response = await this.readWebJson(`/api/usage?period=${magpieWebPeriod(period)}`, signal)
     if (!response.ok) return null
-    const root = asRecord(response.value)
+    const root = usageRecord(response.value)
     if (root === null) return null
     if (sessionIds.length === 0) return readMagpieUsageMetrics(root)
     const sessions = root.sessions
@@ -559,7 +578,7 @@ export class MagpieUsageService {
     let aggregate: MagpieUsageMetrics | null = null
     for (const item of sessions) {
       const record = asRecord(item)
-      if (record === null || !acceptedIds.has(cleanText(record.id) ?? '')
+      if (record === null || !acceptedIds.has(usageSessionId(record) ?? '')
         || !acceptedAgents.includes(cleanText(record.agent) ?? '')) continue
       aggregate = aggregate === null
         ? readMagpieUsageMetrics(record)
@@ -576,6 +595,7 @@ export class MagpieUsageService {
     fallbackSessionId: string | null,
     signal: AbortSignal | undefined,
     includeRoute: boolean,
+    allowPendingSession: boolean,
   ): Promise<MagpieUsageSnapshot | null> {
     const capturedAt = new Date(this.now()).toISOString()
     const [usageResult, sessionResult, quotaResult] = await Promise.all([
@@ -590,10 +610,16 @@ export class MagpieUsageService {
     const fallbackSession = primarySession === null && sessionResult.ok && fallbackSessionId !== null
       ? readSession(sessionResult.value, agent, fallbackSessionId)
       : null
-    const sessionUsage = primarySession ?? fallbackSession
-    const resolvedSessionId = primarySession !== null ? magpieSessionId : fallbackSession !== null ? fallbackSessionId : magpieSessionId
-    if (sessionUsage === null) return null
-    const canReadRoute = includeRoute && resolvedSessionId !== null && resolvedSessionId.length <= 128
+    // Magpie's all-time summary can omit a session already present today.
+    // Preserve that exact daily match with its scope, rather than hiding it.
+    const todaySession = primarySession === null && fallbackSession === null && allowPendingSession && usageResult.ok
+      ? (magpieSessionId === null ? null : readSession(usageResult.value, agent, magpieSessionId))
+        ?? (fallbackSessionId === null ? null : readSession(usageResult.value, agent, fallbackSessionId))
+      : null
+    const sessionUsage = primarySession ?? fallbackSession ?? todaySession
+    const resolvedSessionId = sessionUsage?.id ?? magpieSessionId
+    if (sessionUsage === null && (!allowPendingSession || aggregate === null)) return null
+    const canReadRoute = sessionUsage !== null && includeRoute && resolvedSessionId !== null && resolvedSessionId.length <= 128
     const routeHistoryResult = canReadRoute
       ? await this.readWebJson(`/api/usage/requests?period=all&offset=0&limit=100&q=${encodeURIComponent(resolvedSessionId)}`, signal)
       : { ok: false as const }
@@ -609,7 +635,7 @@ export class MagpieUsageService {
     const route = routeHistory[0]?.route ?? null
     const routeStatus = route !== null
       ? 'available' as const
-      : resolvedSessionId === null
+      : sessionUsage === null || resolvedSessionId === null
         ? 'session-unavailable' as const
         : !includeRoute
           ? 'not-requested' as const
@@ -621,7 +647,7 @@ export class MagpieUsageService {
       providerFromRoute(route),
       ...routeHistory.map((record) => record.provider),
     ].filter((provider): provider is string => provider !== null))]
-    const upstreamProviders = routeProviders.length > 0
+    const upstreamProviders = sessionUsage === null ? [] : routeProviders.length > 0
       ? routeProviders
       : [providerFromModelId(modelId, agent)].filter((provider): provider is string => provider !== null)
     const upstreamProvider = upstreamProviders[0] ?? null
@@ -641,9 +667,10 @@ export class MagpieUsageService {
       capturedAt,
       usageStatus: aggregate === null ? 'unavailable' : 'available',
       aggregate,
-      sessionId,
+      sessionId: sessionId ?? (sessionUsage === null ? null : resolvedSessionId),
       ...(resolvedSessionId === null ? {} : { requestSessionId: resolvedSessionId }),
       session: sessionUsage,
+      ...(todaySession === null ? {} : { sessionPeriod: 'today' as const }),
       routeStatus,
       route,
       upstreamProvider,
@@ -1291,7 +1318,7 @@ async function readBoundedJson(response: Response): Promise<unknown | null> {
 }
 
 function readTotals(value: unknown): MagpieUsageTotals | null {
-  const record = asRecord(value)
+  const record = usageRecord(value)
   if (record === null) return null
   const calls = safeCount(record.calls)
   const errors = safeCount(record.errors)
@@ -1305,18 +1332,29 @@ function readTotals(value: unknown): MagpieUsageTotals | null {
 }
 
 function readSession(value: unknown, agent: MagpieAgent, sessionId: string): MagpieSessionUsage | null {
-  const sessions = asRecord(value)?.sessions
+  const sessions = usageRecord(value)?.sessions
   if (!Array.isArray(sessions)) return null
   const usageAgents = MAGPIE_USAGE_AGENT_ALIASES[agent] ?? [agent]
   const row = sessions.find((item) => {
     const record = asRecord(item)
     const usageAgent = cleanText(record?.agent)
-    return cleanText(record?.id) === sessionId && usageAgent !== null && usageAgents.includes(usageAgent)
+    return usageSessionId(record) === sessionId && usageAgent !== null && usageAgents.includes(usageAgent)
   })
   const record = asRecord(row)
   const totals = readTotals(record)
   const usageAgent = cleanText(record?.agent)
   return record !== null && usageAgent !== null && totals !== null ? { id: sessionId, agent: usageAgent, ...totals } : null
+}
+
+/** Magpie 0.1.14xx can wrap usage payloads in `data`; older versions do not. */
+function usageRecord(value: unknown): Record<string, unknown> | null {
+  const record = asRecord(value)
+  const data = asRecord(record?.data)
+  return data ?? record
+}
+
+function usageSessionId(record: Record<string, unknown> | null): string | null {
+  return cleanText(record?.id) ?? cleanText(record?.session) ?? cleanText(record?.native_session)
 }
 
 /** Read the durable request ledger when Magpie's short in-memory trace has expired. */

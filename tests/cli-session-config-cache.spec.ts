@@ -65,3 +65,34 @@ test('强制读取会跳过短期快照', async () => {
   assert.deepEqual(await loadCliSessionConfig(rpc, 'session-3', { force: true }), { adapterId: 'zcode', modelId: 'provider/model' })
   assert.equal(calls, 2)
 })
+
+test('强制读取不会复用模型切换前的在途会话配置', async () => {
+  let calls = 0
+  const releases: Array<() => void> = []
+  const rpc = {
+    call: async () => {
+      const call = ++calls
+      await new Promise<void>((resolve) => { releases.push(resolve) })
+      return {
+        ok: true as const,
+        value: call === 1
+          ? { adapterId: 'dsh', providerId: 'deepseek-official', modelId: 'deepseek-chat' }
+          : { adapterId: 'dsh', providerId: 'magpie', modelId: 'auto/deepseek-v4.1-flash' },
+      }
+    },
+  }
+
+  const stale = loadCliSessionConfig(rpc, 'session-selection-race')
+  const current = loadCliSessionConfig(rpc, 'session-selection-race', { force: true })
+  assert.equal(calls, 2, 'force must issue a fresh RPC while the old read is still pending')
+  releases[0]?.()
+  releases[1]?.()
+
+  assert.deepEqual(await stale, { adapterId: 'dsh', providerId: 'deepseek-official', modelId: 'deepseek-chat' })
+  assert.deepEqual(await current, { adapterId: 'dsh', providerId: 'magpie', modelId: 'auto/deepseek-v4.1-flash' })
+  assert.deepEqual(await loadCliSessionConfig(rpc, 'session-selection-race'), {
+    adapterId: 'dsh',
+    providerId: 'magpie',
+    modelId: 'auto/deepseek-v4.1-flash',
+  })
+})

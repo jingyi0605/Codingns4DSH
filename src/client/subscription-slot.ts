@@ -174,6 +174,8 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const [resetPending, setResetPending] = useState(false)
   const [resetResult, setResetResult] = useState<CliSubscriptionResetOutcome | null>(null)
   const [resetError, setResetError] = useState<string | null>(null)
+  const sessionRef = useRef<string | undefined>(undefined)
+  const routeKeyRef = useRef<string | null>(null)
   // Agent-native session bindings are written by Host during a turn. Refresh
   // at turn state changes so a snapshot loaded before the binding is not kept.
   const modelSelectionRevision = props.useSession?.((value) => JSON.stringify([value.modelSelection, value.running]))
@@ -233,6 +235,8 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   useEffect(() => {
     const sessionId = props.sessionId?.trim()
     if (!sessionId) {
+      sessionRef.current = undefined
+      routeKeyRef.current = null
       setEligible(false)
       setSnapshot(null)
       setAdapterId(null)
@@ -249,18 +253,23 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     // 未解析的 Magpie 配额必须快速补读：官方余额一旦抢先显示，用户要等到下一次
     // 轮询（默认 5 分钟）或整页刷新才会切到 Magpie。
     let upstreamUnresolved = false
-    setEligible(false)
-    setSnapshot(null)
-    setAdapterId(null)
-    setProviderId(null)
-    setOpen(false)
-    setResetOpen(false)
-    setResetPending(false)
-    setResetResult(null)
-    setResetError(null)
-    setMagpieTab('usage')
+    if (sessionRef.current !== sessionId) {
+      sessionRef.current = sessionId
+      routeKeyRef.current = null
+      setEligible(false)
+      setSnapshot(null)
+      setAdapterId(null)
+      setProviderId(null)
+      setOpen(false)
+      setResetOpen(false)
+      setResetPending(false)
+      setResetResult(null)
+      setResetError(null)
+      setMagpieTab('usage')
+    }
     const refresh = async (signal: AbortSignal): Promise<boolean | void> => {
       let routeSignal: AbortSignal | undefined
+      let routeChanged = false
       setLoading(true)
       try {
         // 订阅入口必须读取当前会话的真实 Provider；模型选择器切换后不能复用
@@ -277,6 +286,16 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
           return
         }
         if (signal.aborted) return false
+        const cacheKey = JSON.stringify([adapterId, selection.providerId ?? '', selection.modelId ?? '', sessionId, selection.providerSessionId ?? ''])
+        routeChanged = routeKeyRef.current !== cacheKey
+        if (routeChanged) {
+          routeKeyRef.current = cacheKey
+          if (active) {
+            setSnapshot(null)
+            setOpen(false)
+            setMagpieTab('usage')
+          }
+        }
         if (active) {
           setEligible(true)
           setAdapterId(adapterId)
@@ -286,8 +305,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         // 模型也是读取键的一部分：Antigravity 的 Gemini 与 Claude/GPT 是两个独立配额组。
         // 会话 ID 同时承担 PeerHost 的路由身份；缓存也必须按会话隔离，
         // 否则本机与远端使用相同 Agent/Provider/模型时会互相复用上游结果。
-        const cacheKey = JSON.stringify([adapterId, selection.providerId ?? '', selection.modelId ?? '', sessionId, selection.providerSessionId ?? ''])
-        const magpieSnapshot = snapshotRef.current?.magpie
+        const magpieSnapshot = routeChanged ? undefined : snapshotRef.current?.magpie
         const includeRoute = magpieSnapshot !== null && magpieSnapshot !== undefined
           && (openRef.current || shouldResolveMagpieQuota(magpieSnapshot))
         const cached = subscriptionUsageCache.get(cacheKey)
@@ -316,8 +334,12 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       } catch {
         if (signal.aborted || routeSignal?.aborted === true) return false
         if (active) {
-          setEligible(false)
-          setSnapshot(null)
+          // A temporary Host/Web failure must not make the compact entry
+          // disappear. A later poll will replace the retained snapshot.
+          if (routeChanged || snapshotRef.current === null) {
+            setEligible(false)
+            setSnapshot(null)
+          }
         }
         return false
       } finally {
@@ -638,7 +660,7 @@ function MagpieUsagePanel({ usage, aggregateRows, sessionRows, t }: {
         : createElement('div', { style: magpieMutedTextStyle }, t('usage.magpieUsageUnavailable')),
     ),
     createElement('section', { style: magpieUsageSectionStyle },
-      createElement('strong', { style: magpieSectionTitleStyle }, t('usage.magpieSessionTitle')),
+      createElement('strong', { style: magpieSectionTitleStyle }, t(usage.sessionPeriod === 'today' ? 'usage.magpieSessionTodayTitle' : 'usage.magpieSessionTitle')),
       usage.sessionId !== null && createElement('div', { style: magpieSessionIdentityStyle },
         createElement('span', undefined, t('usage.magpieAgent', { agent: usage.agent })),
         usage.sessionName !== undefined && createElement('strong', { style: magpieSessionNameStyle, title: usage.sessionName }, usage.sessionName),
@@ -1713,6 +1735,7 @@ const MAGPIE_QUOTA_RETRY_MS = 3_000
  */
 function shouldResolveMagpieQuota(usage: MagpieUsageSnapshot | null | undefined): boolean {
   if (usage === null || usage === undefined) return false
+  if (usage.session === null) return true
   if (usage.quotaStatus !== 'available') return usage.upstreamProvider === null
   return usage.sessionId !== null && usage.session !== null && (usage.quotas?.length ?? 0) === 0
 }

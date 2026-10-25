@@ -33,6 +33,33 @@ test('原生会话桥接优先调用 SessionController 并复用已存在会话'
   assert.deepEqual(await bridge.listRemote(), [{ sessionId: 'dsh-1' }])
 })
 
+test('原生会话桥接读取 v4 live Agent 的当前模型路由', () => {
+  const agent = { id: 'dsh-live-selection' }
+  const session = { header: { id: 'dsh-live-selection', cwd: '/workspace' } }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      if (name === 'sessions') return { get: () => session, list: () => [session] }
+      if (name === 'agents') return { get: (id: string) => id === agent.id ? agent : undefined }
+      if (name === 'sessionController') return {
+        create: async () => ({ sessionId: agent.id }),
+        agents: {
+          selectionFor(value: unknown) {
+            assert.equal(value, agent)
+            return { current: { provider: 'magpie', model: 'auto/deepseek-v4.1-flash', reasoningEffort: 'high' } }
+          },
+        },
+      }
+      return undefined
+    },
+  } as never)
+
+  assert.deepEqual(bridge.modelSelection?.(agent.id), {
+    provider: 'magpie',
+    model: 'auto/deepseek-v4.1-flash',
+    reasoningEffort: 'high',
+  })
+})
+
 test('原生会话桥接通过 get 探测可选服务，不直接读取未注入属性', () => {
   const reads: string[] = []
   const ctx = new Proxy({

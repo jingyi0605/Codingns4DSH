@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { createSessionActivator, type SessionActivationController } from '../dsh-capabilities/host/session-activation-adapter.js'
+import { readNativeSessionModelSelection } from '../dsh-capabilities/host/session-model-selection-adapter.js'
 import { createDshCapabilityRegistry } from '../dsh-capabilities/routes.js'
 import { readCodingNsImageArtifact } from './image-artifact-store.js'
 import type { Context } from '@deepseek-ai/cordis'
@@ -28,6 +29,13 @@ export interface CodingNsNativeSessionStore {
 
 /** 插件可安全写入的 DSH Session generation；未来 generation 必须先有专用 adapter。 */
 export type CodingNsNativeSessionFormat = 3 | 4 | 'unknown' | 'unsupported'
+
+/** Current DSH model route exposed through the live Agent controller. */
+export interface CodingNsNativeModelSelection {
+  readonly provider: string
+  readonly model: string
+  readonly reasoningEffort?: string
+}
 
 /** 公共 CLI 投影层写入 DSH 的工具调用，不包含任何 Provider 私有字段。 */
 export interface CodingNsNativeToolCall {
@@ -155,6 +163,8 @@ export interface CodingNsNativeSessionBridge {
   readonly workspaceController?: CodingNsNativeWorkspaceController
   /** 获取已经进入 DSH 原生 SessionStore 的会话。 */
   get(sessionId: string): unknown | undefined
+  /** 读取 live Agent 的当前 route；v4 does not expose it on Session itself. */
+  modelSelection?(sessionId: string): CodingNsNativeModelSelection | undefined
   /** 读取 Session header generation，用于阻止未来格式被旧投影器误写。 */
   formatVersion?(sessionId: string): CodingNsNativeSessionFormat
   /** 获取当前 Host 已装载的原生会话；失败时返回空数组。 */
@@ -630,6 +640,9 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     get(sessionId) {
       return store?.get(sessionId)
     },
+    modelSelection(sessionId) {
+      return readNativeModelSelection(ctx, controller, sessionId, store?.get(sessionId))
+    },
     formatVersion(sessionId) {
       return sessionFormat(appendableSession(store?.get(sessionId)))
     },
@@ -1036,6 +1049,48 @@ function isModernDshVersion(value: string | undefined): boolean {
   const minor = Number(match[2])
   const patch = Number(match[3])
   return major > 0 || minor > 1 || minor === 1 && patch >= 7
+}
+
+function readNativeModelSelection(
+  ctx: Context,
+  controller: CodingNsNativeSessionController | undefined,
+  sessionId: string,
+  session: unknown,
+): CodingNsNativeModelSelection | undefined {
+  // DSH v4 keeps the effective selection on the live Agent. It is deliberately
+  // not copied onto Session, so inspecting Session.modelSelection cannot work.
+  const agent = nativeAgent(ctx, sessionId)
+  if (isRecord(agent) && typeof agent.id === 'string') {
+    try {
+      const current = readNativeSessionModelSelection(controller, agent as { readonly id: string })
+      const selection = normalizeNativeModelSelection(current)
+      if (selection !== undefined) return selection
+    } catch { /* Optional live-Agent selection is unavailable on older DSH hosts. */ }
+  }
+
+  // Once a request has started, the Session request header is a durable
+  // fallback even when the Agent has already been disposed or is cold.
+  const requestHeader = isRecord(session) ? session.requestHeader : undefined
+  if (typeof requestHeader === 'function') {
+    try {
+      const header = requestHeader.call(session)
+      const selection = normalizeNativeModelSelection(isRecord(header) ? header.config : undefined)
+      if (selection !== undefined) return selection
+    } catch { /* A closed or incompatible Session must not block subscription RPC. */ }
+  }
+  return undefined
+}
+
+function normalizeNativeModelSelection(value: unknown): CodingNsNativeModelSelection | undefined {
+  if (!isRecord(value) || typeof value.provider !== 'string' || value.provider.trim() === ''
+    || typeof value.model !== 'string' || value.model.trim() === '') return undefined
+  return {
+    provider: value.provider.trim(),
+    model: value.model.trim(),
+    ...(typeof value.reasoningEffort === 'string' && value.reasoningEffort.trim() !== ''
+      ? { reasoningEffort: value.reasoningEffort.trim() }
+      : {}),
+  }
 }
 
 function nativeAgent(ctx: Context, sessionId: string): unknown | null {

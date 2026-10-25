@@ -12,6 +12,16 @@ interface SelectionOwner {
   selectionFor(agent: { readonly id: string }): SelectionRef
 }
 
+// Cordis creates fresh method proxies. Symbol properties survive those proxies
+// and retain the native accessor across plugin reloads.
+const NATIVE_ACCESSOR = Symbol.for('codingns4dsh.native-model-selection')
+type SelectionAccessor = SelectionOwner['selectionFor'] & {
+  readonly [NATIVE_ACCESSOR]?: {
+    readonly native: SelectionOwner['selectionFor']
+    readonly installed: SelectionOwner['selectionFor']
+  }
+}
+
 export interface SessionModelSelectionAdapter {
   install(resolve: (sessionId: string) => SessionModelSelection | undefined): () => void
 }
@@ -23,6 +33,15 @@ function selectionOwner(controller: unknown): SelectionOwner | undefined {
 
 export function supportsSessionModelSelection(controller: unknown): boolean {
   return selectionOwner(controller) !== undefined
+}
+
+/** Read DSH's own route without re-entering our external session resolver. */
+export function readNativeSessionModelSelection(controller: unknown, agent: { readonly id: string }): SessionModelSelection | undefined {
+  const owner = selectionOwner(controller)
+  if (owner === undefined) return undefined
+  const current = owner.selectionFor as SelectionAccessor
+  const accessor = current[NATIVE_ACCESSOR]?.native ?? current
+  return accessor.call(owner, agent).current
 }
 
 /**
@@ -49,9 +68,12 @@ export function createSessionModelSelectionAdapter(controller: unknown): Session
           },
         })
       }
+      Object.defineProperty(selectionFor, NATIVE_ACCESSOR, {
+        value: { native: (original as SelectionAccessor)[NATIVE_ACCESSOR]?.native ?? original, installed: selectionFor },
+      })
       owner.selectionFor = selectionFor
       return () => {
-        if (owner.selectionFor !== selectionFor) return
+        if ((owner.selectionFor as SelectionAccessor)[NATIVE_ACCESSOR]?.installed !== selectionFor) return
         if (ownDescriptor !== undefined) Object.defineProperty(owner, 'selectionFor', ownDescriptor)
         else Reflect.deleteProperty(owner, 'selectionFor')
       }

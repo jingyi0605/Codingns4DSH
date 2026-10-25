@@ -35,8 +35,13 @@ export function loadCliSessionConfig(
   if (normalized === '') return Promise.resolve({ adapterId: 'dsh' })
   const cache = cacheFor(rpc)
   const existing = cache.get(normalized)
-  if (existing instanceof Promise) return existing
-  if (!options.force && existing !== undefined && Date.now() - existing.loadedAt < SESSION_CONFIG_CACHE_TTL_MS) {
+  // A forced read follows a model/provider change. Joining an older in-flight
+  // request would return the pre-change route and make the first usage lookup
+  // select the wrong account; the stale request is ignored by the identity
+  // guard below when it eventually settles.
+  if (existing instanceof Promise) {
+    if (!options.force) return existing
+  } else if (!options.force && existing !== undefined && Date.now() - existing.loadedAt < SESSION_CONFIG_CACHE_TTL_MS) {
     return Promise.resolve(existing.value)
   }
   const request = callCliRpc<CodingNsCliSessionConfig>(rpc, 'session/get', { sessionId: normalized })

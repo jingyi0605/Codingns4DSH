@@ -225,13 +225,16 @@ export interface MagpieUsageSnapshot {
   readonly modelId: string
   readonly capturedAt: string
   readonly usageStatus: 'available' | 'unavailable'
+  /** Gateway-wide usage for today. */
   readonly aggregate: MagpieUsageTotals | null
   readonly sessionId: string | null
   /** Identity used by the request ledger; may differ from the displayed/provider session ID. */
   readonly requestSessionId?: string
   /** DSH's human-readable title when the matched session is known. */
   readonly sessionName?: string
+  /** Matched session usage; all dates unless sessionPeriod explicitly says today. */
   readonly session: MagpieSessionUsage | null
+  readonly sessionPeriod?: 'today'
   readonly routeStatus: MagpieUsageRouteStatus
   readonly route: MagpieRouteUsage | null
   /** Provider identified from the exact route, or from a direct provider/model selection. */

@@ -2079,6 +2079,136 @@ test('Host 对尚未记账的原生 DSH Magpie 模型下发占位快照而不是
   assert.equal(ordinary.magpie, null)
 })
 
+test('Host activates an unloaded native DSH session before resolving Magpie subscription usage', async (t) => {
+  const table = new CodingNsRpcTable()
+  const nativeSession = {
+    modelSelection: { next: { provider: 'magpie', model: 'auto/deepseek-v4.1-flash' } },
+  }
+  let loaded = false
+  let ensureCalls = 0
+  const nativeSessions = {
+    available: true,
+    supportsEvents: false,
+    store: undefined,
+    controller: undefined,
+    get(sessionId: string) {
+      assert.equal(sessionId, 'native-unloaded-magpie')
+      return loaded ? nativeSession : undefined
+    },
+    list: () => loaded ? [nativeSession] : [],
+    listRemote: async () => loaded ? [nativeSession] : [],
+    ensure: async (sessionId: string) => {
+      ensureCalls += 1
+      assert.equal(sessionId, 'native-unloaded-magpie')
+      loaded = true
+      return sessionId
+    },
+    flush: async () => undefined,
+    subscribe: () => () => undefined,
+  }
+  const registry = new CodingNsCliAdapterRegistry([], {}, { nativeSessions: nativeSessions as never })
+  const magpieUsage = {
+    async read() { return null },
+    async readModelMetadata(adapterId: string, modelId: string) {
+      assert.equal(adapterId, 'dsh')
+      return modelId === 'auto/deepseek-v4.1-flash' ? { id: modelId } : null
+    },
+  }
+  const settings = {
+    get: () => ({ modules: { magpieManagement: true } }),
+    watch: () => () => undefined,
+  }
+  const magpieWeb = {
+    async start() {},
+    async stop() {},
+    async dispose() {},
+    async requestJson() { throw new Error('Unexpected Web API request') },
+  }
+  const features = new FeatureRegistry({ rpc: table, settings, nativeSessions: nativeSessions as never })
+  features.register(createCliAdaptersFeature({
+    registry,
+    magpieUsage: magpieUsage as never,
+    magpieWeb: magpieWeb as never,
+  }))
+  await features.start('cliAdapters')
+  t.after(() => features.disable('cliAdapters'))
+
+  const target = table.resolve('cli/subscription')!
+  const result = await target.handler(target.action, {
+    sessionId: 'native-unloaded-magpie',
+    adapterId: 'dsh',
+    modelId: 'auto/deepseek-v4.1-flash',
+  }) as {
+    readonly providerUsage: unknown
+    readonly magpie: { readonly quotaStatus: string; readonly agent: string; readonly modelId: string } | null
+  }
+  assert.equal(ensureCalls, 1, 'subscription lookup must adopt the native session before reading its config')
+  assert.equal(result.providerUsage, null, 'a confirmed Magpie native model must not fall back to official balance')
+  assert.deepEqual(result.magpie, {
+    agent: 'dsh',
+    modelId: 'auto/deepseek-v4.1-flash',
+    capturedAt: result.magpie?.capturedAt,
+    usageStatus: 'unavailable',
+    aggregate: null,
+    sessionId: null,
+    session: null,
+    routeStatus: 'not-requested',
+    route: null,
+    upstreamProvider: null,
+    upstreamProviders: [],
+    quotaStatus: 'provider-unavailable',
+    quotas: [],
+  })
+})
+
+test('Host shows gateway usage for fresh DSH and Codex Magpie sessions without borrowing session totals', async (t) => {
+  const table = new CodingNsRpcTable()
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: 'fake', command: 'fake' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { assert.fail('Subscription reads must not execute a turn') },
+  }])
+  const magpieUsage = new MagpieUsageService({
+    readModels: async agent => [
+      'Routing groups', 'auto/model-one    Model One',
+      `${agent} is shown every provider's models`,
+      'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async () => Response.json({ data: [{ id: 'auto/model-one' }] })) as typeof fetch,
+    webApi: { async requestJson(path) {
+      if (path === '/api/usage/quotas') return []
+      return { calls: 3, input: 300, output: 20, sessions: [{ agent: 'dsh', id: 'other-session', calls: 3 }] }
+    } },
+  })
+  let officialReads = 0
+  const features = new FeatureRegistry({
+    rpc: table,
+    settings: { get: () => ({ modules: { magpieManagement: true } }), watch: () => () => undefined },
+  })
+  features.register(createCliAdaptersFeature({
+    registry, magpieUsage,
+    subscriptions: { read: async () => { officialReads += 1; return null } } as never,
+    magpieWeb: { start: async () => {}, stop: async () => {}, dispose: async () => {} } as never,
+  }))
+  await features.start('cliAdapters')
+  t.after(() => features.disable('cliAdapters'))
+  for (const adapterId of ['dsh', 'codex']) {
+    const sessionId = `fresh-${adapterId}`
+    registry.setSession(sessionId, { adapterId, modelId: 'auto/model-one', ...(adapterId === 'dsh' ? { providerId: 'magpie' } : {}) })
+    const target = table.resolve('cli/subscription')!
+    const result = await target.handler(target.action, { sessionId, adapterId }) as {
+      providerUsage: unknown
+      magpie: { usageStatus: string; aggregate: { calls: number }; session: unknown }
+    }
+    assert.equal(result.providerUsage, null)
+    assert.equal(result.magpie.usageStatus, 'available')
+    assert.equal(result.magpie.aggregate.calls, 3)
+    assert.equal(result.magpie.session, null)
+  }
+  assert.equal(officialReads, 0)
+})
+
 test('Host 不会把未确认的 Magpie 模型当成 Magpie 用量', async (t) => {
   const table = new CodingNsRpcTable()
   const registry = new CodingNsCliAdapterRegistry([])
@@ -2367,6 +2497,22 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   await features.disable('cliAdapters')
   assert.equal(signal.aborted, true)
   assert.equal(listener, undefined)
+})
+
+test('Registry overlays the live v4 DSH Agent selection before any request header exists', () => {
+  const nativeSessions = {
+    get() { return { header: { cwd: '/workspace' } } },
+    modelSelection() { return { provider: 'magpie', model: 'auto/deepseek-v4.1-flash', reasoningEffort: 'high' } },
+  }
+  const registry = new CodingNsCliAdapterRegistry([], {}, { nativeSessions: nativeSessions as never })
+  registry.setSession('native-live-selection', { adapterId: 'dsh' })
+
+  assert.deepEqual(registry.getSession('native-live-selection'), {
+    adapterId: 'dsh',
+    providerId: 'magpie',
+    modelId: 'auto/deepseek-v4.1-flash',
+    effortId: 'high',
+  })
 })
 
 test('委派 carrier 在 Agent Loop 的 pre-step 边界改写，兼容深冻结的 llm 请求', async () => {

@@ -720,6 +720,82 @@ test('Magpie session usage includes earlier dates while gateway usage stays dail
   }
 })
 
+test('confirmed Magpie sessions retain gateway totals before an exact session ledger row exists', async () => {
+  const paths: string[] = []
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      paths.push(path)
+      if (path === '/api/usage/quotas') return []
+      return usageReply([{ agent: 'dsh', id: 'another-session', input: 12, output: 3 }])
+    } },
+  })
+  for (const adapterId of ['dsh', 'codex']) {
+    const result = await service.read({ adapterId, modelId: 'auto/model-one' },
+      undefined, true, 'new-dsh-session', { allowPendingSession: true })
+    assert.equal(result?.usageStatus, 'available')
+    assert.equal(result?.aggregate?.calls, 3)
+    assert.equal(result?.session, null, 'gateway totals must never be presented as this session usage')
+    assert.equal(result?.sessionId, adapterId === 'dsh' ? 'new-dsh-session' : null)
+    assert.equal(result?.routeStatus, 'session-unavailable')
+    assert.deepEqual(result?.quotas, [])
+  }
+  assert.equal(paths.some(path => path.startsWith('/api/usage/requests')), false)
+})
+
+test('confirmed Codex Magpie usage matches native session tags and preserves legacy provider bindings', async () => {
+  for (const [ledgerId, providerSessionId] of [
+    ['native-codex', 'codex-thread'],
+    ['native-codex', undefined],
+    ['codex-thread', 'codex-thread'],
+  ]) {
+    const service = new MagpieUsageService({
+      webApi: { async requestJson(path) {
+        if (path === '/api/usage/quotas') return []
+        if (path.startsWith('/api/usage/requests')) {
+          assert.equal(new URL(path, 'http://127.0.0.1').searchParams.get('q'), ledgerId)
+          return { rows: [] }
+        }
+        return usageReply([
+          { agent: 'codex', id: ledgerId, calls: 1, input: 18_000, output: 200 },
+          { agent: 'dsh', id: ledgerId, calls: 999, input: 999_999 },
+        ])
+      } },
+    })
+    const result = await service.read({
+      adapterId: 'codex', modelId: 'auto/model-one', providerSessionId,
+    }, undefined, true, 'native-codex', { allowPendingSession: true })
+    assert.equal(result?.session?.id, ledgerId)
+    assert.equal(result?.session?.calls, 1)
+    assert.equal(result?.session?.inputTokens, 18_000)
+    assert.equal(result?.requestSessionId, ledgerId)
+    assert.equal(result?.sessionId, providerSessionId ?? ledgerId)
+  }
+})
+
+test('confirmed Magpie sessions expose an exact daily match when the all-time summary omits it', async () => {
+  const sessionId = 'fresh-native-session'
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      if (path === '/api/usage/quotas') return []
+      if (path === '/api/usage?period=all') return usageReply([
+        { agent: 'dsh', id: 'unrelated-session', calls: 999 },
+      ])
+      if (path.startsWith('/api/usage/requests')) return { rows: [{
+        route_id: 1, agent: 'dsh', session: sessionId, provider: 'workbuddy',
+        req: 'auto/model-one', served: 'model-one', status: 200,
+      }] }
+      return usageReply([{ agent: 'dsh', id: sessionId, calls: 1, input: 7_500, output: 41 }])
+    } },
+  })
+  const result = await service.read({ adapterId: 'dsh', modelId: 'auto/model-one' },
+    undefined, true, sessionId, { allowPendingSession: true })
+  assert.equal(result?.session?.calls, 1)
+  assert.equal(result?.session?.inputTokens, 7_500)
+  assert.equal(result?.sessionPeriod, 'today', 'daily usage must not masquerade as lifetime usage')
+  assert.equal(result?.routeStatus, 'available')
+  assert.equal(result?.upstreamProvider, 'workbuddy')
+})
+
 test('Magpie does not present daily session usage as lifetime usage when the all-time read fails', async () => {
   const service = new MagpieUsageService({
     webApi: { async requestJson(path) {
@@ -945,6 +1021,32 @@ test('原生 DSH 的待用模型优先于上次使用模型以识别 Magpie 用�
   } finally {
     await registry.dispose()
   }
+})
+
+test('native DSH usage prefers the DSH identity and falls back to a legacy provider identity', async () => {
+  const service = createWebUsageService({
+    fetch: (async (url) => {
+      const path = new URL(String(url)).pathname
+      if (path.endsWith('/quotas')) return Response.json([])
+      return Response.json(usageReply([{ agent: 'dsh', id: 'native-session', input: 4, output: 2, cost: 0.001 }]))
+    }) as typeof fetch,
+  })
+  const current = await service.read({
+    adapterId: 'dsh', modelId: 'auto/deepseek-v4.1-flash', providerSessionId: 'legacy-provider-session',
+  }, undefined, false, 'native-session')
+  assert.equal(current?.session?.id, 'native-session')
+
+  const legacyService = createWebUsageService({
+    fetch: (async (url) => {
+      const path = new URL(String(url)).pathname
+      if (path.endsWith('/quotas')) return Response.json([])
+      return Response.json(usageReply([{ agent: 'dsh', id: 'legacy-provider-session', input: 4, output: 2, cost: 0.001 }]))
+    }) as typeof fetch,
+  })
+  const legacy = await legacyService.read({
+    adapterId: 'dsh', modelId: 'auto/deepseek-v4.1-flash', providerSessionId: 'legacy-provider-session',
+  }, undefined, false, 'native-session')
+  assert.equal(legacy?.session?.id, 'legacy-provider-session')
 })
 
 test('尚无路由时不把 auto 模型别名冒充成上游提供商', async () => {

@@ -489,7 +489,11 @@ export class CodingNsCliAdapterRegistry {
     }
     const session = this.sessions.get(sessionId)
     if (session !== undefined && (session.adapterId === 'dsh' || this.isEnabled(session.adapterId))) {
-      if (session.adapterId === 'dsh') return mergeDshNativeSelection(session, this.nativeSessions?.get(sessionId))
+      if (session.adapterId === 'dsh') return mergeDshNativeSelection(
+        session,
+        this.nativeSessions?.get(sessionId),
+        this.nativeSessions?.modelSelection?.(sessionId),
+      )
       // Provider 绑定可能在 llm/stream 的 session-binding 事件中先写入持久化索引，
       // 而旧的内存配置仍被页面复用；补齐缺失字段，避免续接时重新开空会话。
       return { ...mergeStoredSessionFields(session, this.sessionStore?.get(sessionId)), ...lastUsageField(this.lastUsages.get(sessionId)) }
@@ -524,7 +528,7 @@ export class CodingNsCliAdapterRegistry {
       ...(remembered?.serviceTierId ? { serviceTierId: remembered.serviceTierId } : {}),
       // 原生会话没有插件会话索引，翻译开关按适配器偏好持久化并在这里回读。
       ...(remembered?.translationEnabled === undefined ? {} : { translationEnabled: remembered.translationEnabled }),
-    }, this.nativeSessions?.get(sessionId))
+    }, this.nativeSessions?.get(sessionId), this.nativeSessions?.modelSelection?.(sessionId))
   }
 
   /** 只有已验证能维护连续事件流的驱动，Host 才把工具边界映射到 DSH step。 */
@@ -1278,19 +1282,21 @@ function preferenceSnapshot(
 function mergeDshNativeSelection(
   config: CodingNsCliSessionConfig,
   session: unknown,
+  currentSelection?: { readonly provider?: string; readonly model?: string; readonly reasoningEffort?: string },
 ): CodingNsCliSessionConfig {
   if (config.adapterId !== 'dsh') return config
   const root = asRecord(session)
   const rows = asRecord(root?.record)?.rows
   const selectionRow = asRecord(asRecord(rows)?.modelSelection)
-  const selection = asRecord(root?.modelSelection) ?? selectionRow
+  const selection = asRecord(currentSelection) ?? asRecord(root?.modelSelection) ?? selectionRow
   const value = asRecord(selection?.val) ?? selection
   const lastUsed = asRecord(value?.lastUsed)
   const next = asRecord(value?.next)
   const pending = asRecord(value?.pending)
+  const direct = stringValue(value?.provider) !== undefined && stringValue(value?.model) !== undefined ? value : undefined
   // Prefer the explicit pending/next route; lastUsed can describe a previous
   // model until DSH consumes the newly selected one.
-  const candidate = pending ?? next ?? lastUsed
+  const candidate = direct ?? pending ?? next ?? lastUsed
   if (candidate === null) return config
   const providerId = stringValue(candidate.provider)
   const modelId = stringValue(candidate.model)

@@ -15,7 +15,7 @@ test('Pi Magpie session usage reads the Web API and resolves the routed upstream
     webApi: {
       async requestJson(path: string) {
         urls.push(path)
-        if (path === '/api/usage?period=today') return {
+        if (path === '/api/usage?period=today' || path === '/api/usage?period=all') return {
           calls: 1, errors: 0, input: 1200, output: 80, cache_read: 200, cache_write: 0, cost: 0.001,
           sessions: [{ agent: 'pi', id: sessionId, calls: 1, errors: 0, input: 1200, output: 80, cache_read: 200, cache_write: 0, cost: 0.001 }],
         }
@@ -38,13 +38,13 @@ test('Pi Magpie session usage reads the Web API and resolves the routed upstream
   assert.equal(initial?.session?.id, sessionId)
   assert.equal(initial?.upstreamProvider, null, 'the local `magpie` provider must not be mistaken for the routed upstream')
   assert.equal(initial?.quotaStatus, 'provider-unavailable', 'automatic routing should be resolved from this session route')
-  assert.deepEqual(urls, ['/api/usage?period=today', '/api/usage/quotas'], 'the initial read stays aggregate-only')
+  assert.deepEqual(urls, ['/api/usage?period=today', '/api/usage?period=all', '/api/usage/quotas'], 'the initial read loads daily gateway and all-time session usage without route history')
 
   const routed = await service.read(session, undefined, true)
   assert.equal(routed?.routeStatus, 'available')
   assert.equal(routed?.upstreamProvider, 'workbuddy')
   assert.equal(routed?.quotas[0]?.windows[0]?.remainingPercent, 73)
-  assert.equal(urls.at(-1), '/api/usage/requests?period=today&offset=0&limit=100&q=pi-provider-session')
+  assert.equal(urls.at(-1), '/api/usage/requests?period=all&offset=0&limit=100&q=pi-provider-session')
 })
 
 test('Pi sessions using a Magpie model render the Magpie usage component', async (t) => {
