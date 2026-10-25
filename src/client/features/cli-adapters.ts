@@ -20,6 +20,8 @@ import { startContextBreakdownDom } from '../context-breakdown-dom.js'
 import { fetchSessionAdapters, replaceSessionAdapters, sessionAdapterId, subscribeSessionAdapters } from '../session-adapter-cache.js'
 import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
 import type { SessionPerformancePresentation } from '../../dsh-capabilities/client/session-performance-adapter.js'
+import { MagpieContextMeter } from '../magpie-context-meter.js'
+import { useMagpieContext } from '../magpie-context-store.js'
 import { providerIconUrl } from '../provider-icons.js'
 import { notifyAdapterCatalogChanged, subscribeAdapterCatalogChanged, watchAdapterCatalog } from '../adapter-catalog-watch.js'
 import { getModelCatalogCache, invalidateModelCatalogCache, loadModelCatalog } from '../model-catalog-cache.js'
@@ -133,7 +135,17 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
         .getProfile(uiContext).capabilities.get('session.external-performance')?.value as SessionPerformancePresentation | undefined
       if (performance !== undefined) context.resources.add(performance.install(
         sessionId => useSyncExternalStore(subscribeSessionAdapters,
-          () => sessionAdapterId(sessionId), () => sessionAdapterId(sessionId)), createElement, { useMemo, useSyncExternalStore }))
+          () => sessionAdapterId(sessionId), () => sessionAdapterId(sessionId)), createElement, { useMemo, useSyncExternalStore }, {
+          magpieContext: {
+            component: MagpieContextMeter,
+            rpc: context.services.rpc,
+            locale: context.services.locale,
+            useSnapshot: (rpc, sessionId) => {
+              const state = useMagpieContext(rpc as typeof context.services.rpc | undefined, sessionId)
+              return state.status === 'ready' ? state.value : null
+            },
+          },
+        }))
       const { registerDelegateCommand } = await import('../delegate-command.js')
       context.resources.add(registerDelegateCommand(uiContext, {
         rpc: context.services.rpc,

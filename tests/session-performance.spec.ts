@@ -1,14 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { DSH_TESTED_VERSION } from '../src/shared/contracts/version.js'
-import { createElement, useMemo, useSyncExternalStore } from 'react'
+import { createElement, useMemo, useState, useSyncExternalStore } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createDshCapabilityRegistry } from '../src/dsh-capabilities/routes.js'
 import { createSessionPerformanceAdapter } from '../src/dsh-capabilities/host/session-performance-adapter.js'
 import { createSessionPerformancePresentation } from '../src/dsh-capabilities/client/session-performance-adapter.js'
+import { MagpieContextMeter } from '../src/client/magpie-context-meter.js'
 import { CODEX_PERFORMANCE_PROJECTION } from '../src/shared/codex-performance.js'
 import { GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION } from '../src/shared/request-performance.js'
 import { createPresentationSlots } from './fixtures/presentation-slots.ts'
+import { createHookRenderer } from './fixtures/react-hook-renderer.ts'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -132,6 +134,85 @@ test('Grok context uses provider occupancy while preserving the native composer 
   assert.equal(slots.entries('codingns.grok-context.conversation.input.left').length, 0)
   action(); native(); root()
   await Promise.resolve()
+})
+
+test('Magpie context keeps the native meter and projects Magpie pressure without a duplicate trigger', () => {
+  const slots = createPresentationSlots()
+  const root = slots.register({ name: 'root', children: { 'conversation.composer.bar': { kind: 'single', scope: 'session-maybe' } } }, (() => null) as never)
+  const Native = (props: any) => createElement('span', undefined, JSON.stringify({
+    pressure: props.useProjection('contextPressure'),
+    breakdown: props.useProjection('contextBreakdown'),
+  }))
+  slots.register({ name: 'conversation.composer.bar', children: { 'conversation.composer.dock': { kind: 'list', scope: 'session' } } }, Native as never)
+  const Magpie = () => createElement('span', { 'data-magpie-context': true }, 'magpie')
+  let snapshot: any = null
+  const dispose = createSessionPerformancePresentation({ slots }).install(() => 'dsh', createElement, { useMemo, useSyncExternalStore }, {
+    magpieContext: { component: Magpie, rpc: {}, useSnapshot: () => snapshot },
+  })
+  const source = slots.entries('conversation.composer.dock').find((entry) => entry.options.id === 'codingns-magpie-context')
+  const mirrored = slots.entries('codingns.grok-context.conversation.composer.dock').find((entry) => entry.options.id === 'codingns-magpie-context')
+  assert.ok(source)
+  assert.ok(mirrored)
+  const composer = slots.entries('conversation.composer.bar')[0]!.component as any
+  const render = () => renderToStaticMarkup(createElement(composer, {
+    sessionId: 'magpie-session',
+    useProjection: (key: string) => key === 'contextPressure' ? { pressureTokens: 42 } : { systemTokens: 7 },
+  }))
+  assert.match(render(), /42/)
+  snapshot = { usedTokens: 19_411, contextWindow: 256_000 }
+  assert.match(render(), /19411/)
+  assert.doesNotMatch(render(), /systemTokens/)
+  dispose()
+  assert.equal(slots.entries('conversation.composer.dock').some((entry) => entry.options.id === 'codingns-magpie-context'), false)
+  assert.equal(slots.entries('codingns.grok-context.conversation.composer.dock').some((entry) => entry.options.id === 'codingns-magpie-context'), false)
+  root()
+})
+
+test('Magpie context enhancer has no standalone trigger while the native meter is unavailable', () => {
+  const html = renderToStaticMarkup(createElement(MagpieContextMeter, { rpc: {}, sessionId: 'ordinary-session' }))
+  assert.doesNotMatch(html, /<button/u)
+  assert.match(html, /data-codingns-magpie-context-enhancer/u)
+})
+
+test('composer context preserves hook order and native state as Magpie data arrives and clears', () => {
+  const slots = createPresentationSlots()
+  const root = slots.register({ name: 'root', children: { 'conversation.composer.bar': { kind: 'single', scope: 'session-maybe' } } }, (() => null) as never)
+  const Native = (props: any) => {
+    const pressure = props.useProjection('contextPressure')
+    const breakdown = props.useProjection('contextBreakdown')
+    const [open] = useState('native-meter-state')
+    return createElement('span', undefined, JSON.stringify({ pressure, breakdown, open }))
+  }
+  slots.register({ name: 'conversation.composer.bar', children: { 'conversation.composer.dock': { kind: 'list', scope: 'session' } } }, Native as never)
+  let snapshot: any = null
+  let adapter = 'codex'
+  const dispose = createSessionPerformancePresentation({ slots }).install(() => adapter,
+    (component, props) => (component as (props: any) => any)(props), { useMemo, useSyncExternalStore }, {
+      magpieContext: { component: () => null, rpc: {}, useSnapshot: () => snapshot },
+    })
+  const Composer = slots.entries('conversation.composer.bar')[0]!.component as (props: any) => any
+  const view = createHookRenderer(Composer, {
+    sessionId: 'new-codex',
+    useProjection(key: string) {
+      useState(key)
+      return key === 'contextPressure' ? { pressureTokens: 42 } : { systemTokens: 7 }
+    },
+  }, { checkHookOrder: true })
+  try {
+    assert.match(JSON.stringify(view.render()), /42/)
+    snapshot = { usedTokens: 19_411, contextWindow: 256_000 }
+    assert.match(JSON.stringify(view.render()), /19411/)
+    assert.match(JSON.stringify(view.render()), /native-meter-state/)
+    adapter = 'dsh'
+    snapshot = null
+    assert.match(JSON.stringify(view.render()), /systemTokens/)
+    snapshot = { usedTokens: 30_000, contextWindow: 270_000 }
+    assert.match(JSON.stringify(view.render()), /30000/)
+  } finally {
+    view.dispose()
+    dispose()
+    root()
+  }
 })
 
 test('performance UI follows late native registration and replacement', async () => {
