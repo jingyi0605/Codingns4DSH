@@ -162,3 +162,11 @@ This task list records the implementation order and the verification evidence fo
   - Main files: `src/client/magpie-context-meter.ts`; `tests/magpie-context-dom.spec.ts`.
   - Verify: 89 focused source tests passed; typecheck, version check, capability check, and diff check passed. The DOM fixture reproduced the original failure before the source correction.
   - Explicit non-goals: No build, development server, Desktop operation, or live visual replay.
+
+- [x] 3.4 Add the native context summary above the Magpie details
+  - Status: DONE
+  - What this does: Read the original native pressure and breakdown projections from the dock's session props and render usage, capacity, and the three native categories.
+  - What becomes visible: The popup starts with DSH usage and category token counts and estimated shares, followed by the existing Magpie panel. Native updates preserve the open popup.
+  - Main files: `src/client/magpie-context-meter.ts`; `src/client/locales/magpie.ts`; `tests/magpie-context-dom.spec.ts`.
+  - Verify: 89 focused source tests passed; typecheck, version check, capability check, localization check, and whitespace check passed.
+  - Explicit non-goals: No Host data changes, additional trigger, build, server, Desktop operation, or live visual replay.
