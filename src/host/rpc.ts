@@ -32,6 +32,7 @@ type CodingNsConnectionRpcHandler = (
   payload: unknown,
   signal: AbortSignal,
   peer?: unknown,
+  localRequest?: boolean,
 ) => Promise<CodingNsConnectionRpcResult<unknown>>
 
 function invokeConnectionRpcHandler(
@@ -40,8 +41,9 @@ function invokeConnectionRpcHandler(
   payload: unknown,
   signal: AbortSignal,
   peer: unknown,
+  localRequest = false,
 ): Promise<CodingNsConnectionRpcResult<unknown>> {
-  return handler(endpoint, payload, signal, peer)
+  return handler(endpoint, payload, signal, peer, localRequest)
 }
 
 /**
@@ -58,7 +60,7 @@ export function createCodingNsRpcHandler(
 ): CodingNsConnectionRpcHandler {
   // `peer` 是 DSH 0.2 Connection 注入的调用方作用域；0.1 carrier 没有该参数，
   // 因此保留可选形态，让同一处理器可被旧版 HTTP 回退入口复用。
-  return async (endpoint, payload, signal, peer?: unknown) => {
+  return async (endpoint, payload, signal, peer?: unknown, localRequest = false) => {
     debugInfo('codingns4dsh: host rpc request', { endpoint })
     // 探测会运行本机 CLI，属于只读但可感知的服务端操作，因此只对 Host 所有者开放；
     // 中继/子会话等受限 Peer 既不读取安装位置，也不能借此拉起进程；
@@ -73,7 +75,7 @@ export function createCodingNsRpcHandler(
       return failure('CODINGNS_RPC_NOT_FOUND', `未知 Codingns4DSH RPC: ${endpoint}`)
     }
     try {
-      const value = await target.handler(target.action, payload, { signal, peer })
+      const value = await target.handler(target.action, payload, { signal, peer, localRequest })
       debugInfo('codingns4dsh: host rpc success', { endpoint })
       return success(value)
     } catch (error) {
@@ -213,7 +215,7 @@ async function handleChannelRequest(
     return
   }
   try {
-    writeRpcResponse(response, body.rpcId, await invokeConnectionRpcHandler(handler, endpoint, body.payload, abortController.signal, admission.peer))
+    writeRpcResponse(response, body.rpcId, await invokeConnectionRpcHandler(handler, endpoint, body.payload, abortController.signal, admission.peer, isLocalUpdateRequest(request)))
   } catch (error) {
     response.statusCode = 500
     response.end(`handler failure: ${String(error)}`)
@@ -222,6 +224,20 @@ async function handleChannelRequest(
 
 interface WebServerLike {
   register(route: { kind: 'prefix'; path: string; handler: (request: IncomingMessage, response: ServerResponse) => void | Promise<void> }): () => void
+}
+
+/** Network provenance comes from the socket and same-origin browser headers, never RPC payloads or forwarded headers. */
+export function isLocalUpdateRequest(request: Pick<IncomingMessage, 'headers' | 'socket'>): boolean {
+  const address = request.socket.remoteAddress
+  if (address !== '127.0.0.1' && address !== '::1' && address !== '::ffff:127.0.0.1') return false
+  const origin = request.headers.origin
+  if (typeof origin !== 'string') return false
+  try {
+    const url = new URL(origin)
+    return ['http:', 'https:'].includes(url.protocol)
+      && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+      && url.host === request.headers.host && request.headers['sec-fetch-site'] !== 'cross-site'
+  } catch { return false }
 }
 
 function endpointFromChannelUrl(rawUrl: string | undefined): string | undefined {
@@ -255,6 +271,7 @@ function writeRpcResponse(response: ServerResponse, rpcId: string, result: Codin
 const CODINGNS_RPC_ENDPOINTS = [
   'auth/snapshot', 'auth/login', 'auth/logout', 'auth/devices', 'auth/bind', 'auth/unbind', 'auth/signalingTicket', 'auth/dsh/device/list', 'auth/dsh/device/start', 'auth/dsh/device/stop', 'auth/dsh/device/status', 'auth/dsh/relayTicket',
   'host/status',
+  'update/runtime', 'update/check', 'update/status',
   'avatar/discover', 'avatar/install', 'avatar/list', 'avatar/remove',
   'assistant/index', 'assistant/index/rebuild', 'assistant/index/configure', 'assistant/index/cancel', 'assistant/status', 'assistant/debug', 'assistant/preview', 'assistant/summary', 'assistant/turn',
   'assistant/chat/models', 'assistant/chat/start', 'assistant/chat/read', 'assistant/chat/cancel',

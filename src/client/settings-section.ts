@@ -33,7 +33,8 @@ import { CODINGNS_VERSION, DSH_COMPATIBILITY, isLegacyDshVersion } from '../shar
 import type { CodingNsSettingsSnapshot, CodingNsSettingsStore } from '../dsh-capabilities/settings-store.js'
 import { useMagpieInstallRequirement } from './feature-requirement.js'
 import type { SettingsNotice } from './features/types.js'
-import { CodingNsSettingsPromo, CODINGNS_GITHUB_URL } from './settings-promo.js'
+import { CODINGNS_GITHUB_URL } from './settings-promo.js'
+import { CodingNsSettingsUpdate } from './settings-update.js'
 import { SettingsSwitch } from './settings-controls.js'
 import { uiFontSize } from './font-scale.js'
 
@@ -60,9 +61,8 @@ export interface CodingNsSectionProps extends PropsRuntime<'settings.section'> {
 /**
  * DSH 设置页中的 Codingns4DSH 区块。
  *
- * 它只做一件事：遍历注册表中带界面描述的模块并渲染卡片。卡片内容来自模块
- * 自己的 settingsPanel，所以新增模块不会在这里产生分支。页面最上方是
- * GitHub Star 推广条（{@link CodingNsSettingsPromo}），属于纯展示内容。
+ * Module cards come from the registry. The header combines the existing brand
+ * banner with a version disclosure for update details.
  */
 export function CodingNsSettingsSection({ settings, registry, services, restartStates = {} }: CodingNsSectionProps): ReactElement {
   // useSyncExternalStore 要求 subscribe/getSnapshot 保持稳定引用，否则 React
@@ -88,7 +88,7 @@ export function CodingNsSettingsSection({ settings, registry, services, restartS
       'aria-live': 'polite',
       style: { ...dshSettingsToastStyle, borderColor: toast.kind === 'error' ? dshThemeColor.error : toast.kind === 'success' ? dshThemeColor.success : dshThemeColor.border },
     }, toast.message),
-    createElement(CodingNsSettingsPromo, { locale: services.locale }),
+    createElement(CodingNsSettingsUpdate, { services }),
     // 标题交给 DSH 设置页自己的导航项；这里只保留一句作用域说明，避免同一页出现两级标题。
     createElement('header', { style: dshSettingsHeaderStyle },
       createElement('p', { style: dshSettingsSubtitleStyle }, t('settings.subtitle')),

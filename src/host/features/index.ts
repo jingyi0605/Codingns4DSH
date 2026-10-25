@@ -15,6 +15,7 @@ import { createAssistantAvatarRuntimeFeature } from './assistant-avatar-runtime.
 import { createDesktopAssistantFeature } from '../desktop-assistant/feature.js'
 import { createSessionTitleOptimizationFeature } from './session-title-optimization.js'
 import { createSessionTranslationFeature } from './session-translation.js'
+import { createPluginUpdateFeature } from './plugin-update.js'
 import type { CodingNsHostServices } from './types.js'
 
 export interface HostFeatureOptions {
@@ -33,6 +34,7 @@ export function createHostFeatures(options: HostFeatureOptions = {}): readonly F
     createTerminalProcessFeature(),
     createDebugFeature(),
     createHostStatusFeature(),
+    createPluginUpdateFeature(),
     createGitManagementFeature(),
     createFileManagementFeature(),
     createQuickAppsFeature(),

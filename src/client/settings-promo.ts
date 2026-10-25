@@ -9,7 +9,7 @@
  * `useSyncExternalStore` 快照或写入循环。
  */
 import { createElement, useEffect } from 'react'
-import type { ReactElement } from 'react'
+import type { ReactElement, ReactNode } from 'react'
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
 import { CODINGNS_VERSION } from '../shared/contracts/version.js'
 import { installSettingsPromoStyles, settingsPromoClass } from './settings-promo-styles.js'
@@ -19,6 +19,8 @@ export const CODINGNS_GITHUB_URL = 'https://github.com/jingyi0605/Codingns4DSH'
 
 export interface SettingsPromoProps {
   readonly locale: CodingNsLocale
+  readonly versionControl?: ReactNode
+  readonly children?: ReactNode
 }
 
 /**
@@ -26,36 +28,39 @@ export interface SettingsPromoProps {
  *
  * @param props.locale - DSH 语言服务；文案由 `codingns` 命名空间提供。
  */
-export function CodingNsSettingsPromo({ locale }: SettingsPromoProps): ReactElement {
+export function CodingNsSettingsPromo({ locale, versionControl, children }: SettingsPromoProps): ReactElement {
   const t = useCodingNsTranslator(locale)
   useEffect(() => installSettingsPromoStyles(), [])
 
   return createElement(
     'aside',
     { className: settingsPromoClass.root, 'aria-label': t('settings.promo.sectionLabel') },
-    createElement('div', { className: settingsPromoClass.brand },
-      createElement('div', { className: settingsPromoClass.headline },
-        createElement(StarBurstIcon, { className: settingsPromoClass.logo }),
-        createElement('h3', { className: settingsPromoClass.title }, t('common.brand')),
+    createElement('div', { className: settingsPromoClass.row },
+      createElement('div', { className: settingsPromoClass.brand },
+        createElement('div', { className: settingsPromoClass.headline },
+          createElement(StarBurstIcon, { className: settingsPromoClass.logo }),
+          createElement('h3', { className: settingsPromoClass.title }, t('common.brand')),
+        ),
+        versionControl ?? createElement('span', { className: settingsPromoClass.version }, t('settings.promo.version', { version: CODINGNS_VERSION })),
       ),
-      createElement('span', { className: settingsPromoClass.version }, t('settings.promo.version', { version: CODINGNS_VERSION })),
+      createElement('p', { className: settingsPromoClass.text },
+        t('settings.promo.starHint'),
+        // The pointer is decorative and is excluded from the accessible text.
+        createElement('span', { className: settingsPromoClass.hand, 'aria-hidden': true }, '👉'),
+      ),
+      createElement('a', {
+        className: settingsPromoClass.action,
+        href: CODINGNS_GITHUB_URL,
+        target: '_blank',
+        rel: 'noreferrer',
+        'aria-label': t('settings.promo.actionLabel'),
+      },
+        createElement(GitHubMarkIcon),
+        createElement('span', undefined, t('settings.promo.github')),
+        createElement('span', { 'aria-hidden': true }, '⭐'),
+      ),
     ),
-    createElement('p', { className: settingsPromoClass.text },
-      t('settings.promo.starHint'),
-      // 手指图标只做强调，不进词典：它不承载语义，也不该被翻译。
-      createElement('span', { className: settingsPromoClass.hand, 'aria-hidden': true }, '👉'),
-    ),
-    createElement('a', {
-      className: settingsPromoClass.action,
-      href: CODINGNS_GITHUB_URL,
-      target: '_blank',
-      rel: 'noreferrer',
-      'aria-label': t('settings.promo.actionLabel'),
-    },
-      createElement(GitHubMarkIcon),
-      createElement('span', undefined, t('settings.promo.github')),
-      createElement('span', { 'aria-hidden': true }, '⭐'),
-    ),
+    children,
   )
 }
 

@@ -16,10 +16,12 @@ import { peerHostFeature } from './peer-host.js'
 import { globalVoiceAssistantFeature } from './global-voice-assistant.js'
 import { subagentCollapsedLineageFeature } from './subagent-collapsed-lineage.js'
 import { sessionTranslationFeature } from './session-translation.js'
+import { pluginUpdateFeature } from './plugin-update.js'
 import type { CodingNsClientFeatureModule, CodingNsClientServices } from './types.js'
 
 /** Client 侧功能模块清单：新增模块在这里登记一行，不需要改动设置页和入口。 */
 export const CLIENT_FEATURES: readonly CodingNsClientFeatureModule[] = [
+  pluginUpdateFeature,
   lanAccessFeature,
   loginProtectionFeature,
   reverseProxyFeature,

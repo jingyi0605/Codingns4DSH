@@ -15,6 +15,8 @@ import { createSessionPerformanceAdapter, supportsSessionPerformance } from './h
 import { createSessionPerformancePresentation, supportsSessionPerformancePresentation } from './client/session-performance-adapter.js'
 import { createAgentTeamAdapter, supportsExternalAgentTeam } from './host/agent-team-adapter.js'
 import { createGlobalPanelAdapter, supportsGlobalPanel } from './client/global-panel-adapter.js'
+import { createPluginUpdateManager, supportsPluginUpdateManager } from './host/plugin-update-adapter.js'
+import { CODINGNS_VERSION } from '../shared/contracts/version.js'
 
 /**
  * 注册 Codingns4DSH 当前实际消费的 DSH 服务能力。
@@ -35,6 +37,12 @@ export function createDshCapabilityRegistry(
   const add = <T>(route: DshCapabilityRoute<T>): void => registry.register(route)
 
   if (runtime === 'host') {
+    for (const [capability, id] of [['plugin.update.inspect', 'plugin-manager-inspect-021'], ['plugin.update.apply', 'plugin-manager-install-021']] as const) {
+      add({ id, capability, supportedDsh: '>=0.2.1-rc.2 <=0.2.1-rc.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-rc.2',
+        detect: supportsPluginUpdateManager, create: createPluginUpdateManager })
+    }
+    add({ id: 'plugin-host-version-020', capability: 'plugin.host.activation-status', supportedDsh: range020, runtime, priority: 10,
+      status: 'supported', introducedIn: '0.2.0-rc.2', detect: () => true, create: () => ({ version: CODINGNS_VERSION }) })
     for (const role of ['member', 'lead'] as const) {
       add({ id: `agent-team-external-${role}-021`, capability: `agent-team.external-${role}`, supportedDsh: '>=0.2.1-alpha.2 <=0.2.1-rc.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.2',
         detect: ctx => supportsExternalAgentTeam(ctx, role === 'lead'), create: createAgentTeamAdapter })
@@ -72,6 +80,8 @@ export function createDshCapabilityRegistry(
     addDsh020HostRoutes(add, range020)
     addPeerHostHostRoutes(add)
   } else {
+    add({ id: 'plugin-client-reload-unavailable-020', capability: 'plugin.client.reload-status', supportedDsh: range020, runtime, priority: 10,
+      status: 'supported', introducedIn: '0.2.0-rc.2', detect: () => false, create: () => undefined })
     add({ id: 'sidebar-panellist-main-020', capability: 'sidebar.global-panel', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: supportsGlobalPanel, create: createGlobalPanelAdapter })
     add({ id: 'session-performance-presentation-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3 <=0.2.1-rc.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformancePresentation, create: createSessionPerformancePresentation })

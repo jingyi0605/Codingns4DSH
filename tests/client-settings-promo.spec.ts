@@ -19,17 +19,16 @@ test('推广条常量与 GitHub 仓库地址唯一', async () => {
   const section = await readProjectFile('src/client/settings-section.ts')
   // 设置页版本信息与推广按钮必须共用同一个地址，不允许出现第二份字面量。
   assert.doesNotMatch(section, /https:\/\/github\.com\//u, 'settings-section.ts 不得再写死 GitHub 地址')
-  assert.match(section, /import \{ CodingNsSettingsPromo, CODINGNS_GITHUB_URL \} from '\.\/settings-promo\.js'/u)
+  assert.match(section, /import \{ CODINGNS_GITHUB_URL \} from '\.\/settings-promo\.js'/u)
 })
 
 test('设置页把推广条渲染在模块卡片之前', async () => {
   const section = await readProjectFile('src/client/settings-section.ts')
-  const promoIndex = section.indexOf('createElement(CodingNsSettingsPromo, { locale: services.locale })')
+  const promoIndex = section.indexOf('createElement(CodingNsSettingsUpdate, { services })')
   const cardsIndex = section.indexOf('settingsModules(registry).map')
   assert.ok(promoIndex > 0, '设置页缺少推广条渲染')
   assert.ok(cardsIndex > promoIndex, '推广条必须位于模块卡片之前')
-  // 推广条只读取 locale，不参与设置快照，避免给设置分区引入新的订阅或写入循环。
-  assert.match(section, /createElement\(CodingNsSettingsPromo, \{ locale: services\.locale \}\)/u)
+  assert.match(section, /createElement\(CodingNsSettingsUpdate, \{ services \}\)/u)
   const promo = stripComments(await readProjectFile('src/client/settings-promo.ts'))
   assert.doesNotMatch(promo, /useSyncExternalStore\(|settings\.mutate\(|services\.settings/u, '推广条不得读写设置作用域')
 })

@@ -15,6 +15,10 @@ export interface DshCapabilityMatrixRoute {
 
 /** 能力版本矩阵是运行时路由和版本检查的共同事实源。 */
 export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
+  route('plugin.update.inspect', 'plugin-manager-inspect-021', 'host', '>=0.2.1-rc.2 <=0.2.1-rc.2', 'supported', ['dsh-capabilities/host/plugin-update-adapter.ts', 'host/features/plugin-update.ts']),
+  route('plugin.update.apply', 'plugin-manager-install-021', 'host', '>=0.2.1-rc.2 <=0.2.1-rc.2', 'supported', ['dsh-capabilities/host/plugin-update-adapter.ts', 'host/update/service.ts']),
+  route('plugin.host.activation-status', 'plugin-host-version-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/update/service.ts']),
+  route('plugin.client.reload-status', 'plugin-client-reload-unavailable-020', 'client', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/client/plugin-reload-adapter.ts', 'client/update-panel.ts']),
   route('session.external-performance', 'session-performance-projection-021', 'host', '>=0.2.1-alpha.3 <=0.2.1-rc.3', 'supported', ['dsh-capabilities/host/session-performance-adapter.ts', 'host/cli-adapters/feature.ts']),
   route('session.external-performance', 'session-performance-presentation-021', 'client', '>=0.2.1-alpha.3 <=0.2.1-rc.3', 'supported', ['dsh-capabilities/client/session-performance-adapter.ts', 'client/features/cli-adapters.ts']),
   route('quick-app.proxy', 'quick-app-host-proxy-021', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/quick-app-proxy-adapter.ts', 'dsh-capabilities/host/quick-app-proxy-provider.ts', 'host/features/quick-apps.ts', 'host/index.ts']),
