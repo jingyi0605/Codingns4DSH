@@ -104,9 +104,10 @@ export class MagpieUpdateService {
       method: 'POST',
       body: { view: 'codingns-magpie-management', when: 'now' },
     })
-    const restartExpected = before.state === 'ready' || response === null
-    if (response === null) return { requested: true, restartExpected, status: null }
-    const status = parseMagpieUpdateStatus(response)
+    // A successful install may return an acknowledgement before Magpie hands the Web
+    // process over to the new binary. Only status reads/checks require a full status shape.
+    const status = response === null ? null : parseInstallResponse(response)
+    const restartExpected = before.state === 'ready' || status === null
     return { requested: true, restartExpected, status }
   }
 
@@ -194,6 +195,15 @@ export function parseMagpieUpdateStatus(value: unknown): MagpieUpdateStatus {
     size: optionalNonNegativeInteger(record.size),
     waiting: optionalBoolean(record.waiting, 'waiting'),
     gaveUp: optionalBoolean(record.gaveUp, 'gaveUp'),
+  }
+}
+
+function parseInstallResponse(value: unknown): MagpieUpdateStatus | null {
+  try {
+    return parseMagpieUpdateStatus(value)
+  } catch (error) {
+    if (error instanceof MagpieUpdateError && error.code === 'CODINGNS_MAGPIE_UPDATE_INVALID') return null
+    throw error
   }
 }
 

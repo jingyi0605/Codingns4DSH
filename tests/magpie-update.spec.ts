@@ -110,6 +110,24 @@ test('Magpie install requires explicit confirmation and handles a restart handof
   ])
 })
 
+test('Magpie install accepts a successful acknowledgement while the Web process restarts', async () => {
+  const service = new MagpieUpdateService({
+    version: () => MAGPIE_UPDATE_MINIMUM_VERSION,
+    webApi: {
+      async requestJson(path) {
+        if (path === '/api/update') return { state: 'found', current: '0.1.1322', latest: '0.1.1323' }
+        throw new Error(`unexpected JSON route ${path}`)
+      },
+      async requestJsonOrNoContent() {
+        return { accepted: true }
+      },
+    },
+  })
+
+  const result = await service.installUpdate({ confirmed: true })
+  assert.deepEqual(result, { requested: true, restartExpected: true, status: null })
+})
+
 test('Magpie background observation never invokes the check or install routes', async () => {
   const paths: string[] = []
   const service = new MagpieUpdateService({
