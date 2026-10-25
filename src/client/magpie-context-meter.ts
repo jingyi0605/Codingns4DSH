@@ -28,6 +28,23 @@ const PART_LABEL_KEYS: Readonly<Record<MagpieContextPartKind, string>> = {
   chat: 'magpie.context.chat',
 }
 const PART_ORDER: readonly MagpieContextPartKind[] = ['system', 'tools', 'memory', 'files', 'results', 'chat']
+const NATIVE_PARTS = [
+  { key: 'systemTokens', label: 'magpie.context.system', color: 'var(--dsw-static-neutral-bluish-400, #aeb3bc)' },
+  { key: 'toolsTokens', label: 'magpie.context.nativeTools', color: '#a78bfa' },
+  { key: 'messageTokens', label: 'magpie.context.nativeMessages', color: 'var(--dsw-static-blue-450, #4b8df8)' },
+] as const
+
+interface NativeContextPressure {
+  readonly projectedTokens?: number
+  readonly pressureTokens?: number
+  readonly contextWindow?: number
+}
+
+interface NativeContextBreakdown {
+  readonly systemTokens: number
+  readonly toolsTokens: number
+  readonly messageTokens: number
+}
 
 const FALLBACK_LOCALE: CodingNsLocale = {
   bind: () => resolveCodingNsTranslator(),
@@ -41,6 +58,7 @@ export interface MagpieContextMeterProps {
   readonly sessionId?: string
   readonly locale?: CodingNsLocale
   readonly useSession?: <Selected>(selector: (value: SessionSnapshot) => Selected) => Selected
+  readonly useProjection?: (key: string) => unknown
 }
 
 interface Placement {
@@ -53,11 +71,14 @@ interface Placement {
  * The native button receives Magpie's pressure through the composer projection;
  * this zero-layout entry only redirects its dialog to the Magpie inspector.
  */
-export function MagpieContextMeter({ rpc, sessionId, locale, useSession }: MagpieContextMeterProps): ReactElement | null {
+export function MagpieContextMeter({ rpc, sessionId, locale, useSession, useProjection }: MagpieContextMeterProps): ReactElement | null {
   const state = useMagpieContext(rpc, sessionId)
   const store = rpc === undefined || sessionId === undefined ? undefined : getMagpieContextStore(rpc, sessionId)
   const running = useSession?.(value => value.running) === true
   const revision = useSession?.(value => JSON.stringify([value.modelSelection, value.running]))
+  // Dock standard props expose the original projections, before the composer overrides Magpie pressure.
+  const nativePressure = useProjection?.('contextPressure') as NativeContextPressure | undefined
+  const nativeBreakdown = useProjection?.('contextBreakdown') as NativeContextBreakdown | undefined
   const [open, setOpen] = useState(false)
   const [activeKind, setActiveKind] = useState<MagpieContextPartKind | 'all'>('all')
   const [placement, setPlacement] = useState<Placement>({ left: 12, bottom: 52 })
@@ -152,7 +173,8 @@ export function MagpieContextMeter({ rpc, sessionId, locale, useSession }: Magpi
   if (state.status !== 'ready') return createElement('span', { ref: rootRef, 'data-codingns-magpie-context-enhancer': true, style: hiddenEnhancerStyle })
   const value = state.value
   const panel = open && typeof document !== 'undefined'
-    ? createPortal(createContextPanel(value, t, activeKind, setActiveKind, () => setOpen(false), placement, panelRef), document.body)
+    ? createPortal(createContextPanel(value, t, activeKind, setActiveKind, () => setOpen(false), placement, panelRef,
+      createNativeContextSummary(nativePressure, nativeBreakdown, t)), document.body)
     : null
   return createElement('span', { ref: rootRef, 'data-codingns-magpie-context-enhancer': true, style: hiddenEnhancerStyle }, panel)
 }
@@ -168,6 +190,54 @@ function findNativeContextTrigger(dock: HTMLElement): HTMLButtonElement | null {
   return null
 }
 
+function createNativeContextSummary(
+  pressure: NativeContextPressure | undefined,
+  breakdown: NativeContextBreakdown | undefined,
+  t: CodingNsTranslator,
+): ReactElement | null {
+  const used = pressure?.projectedTokens ?? pressure?.pressureTokens
+  const capacity = pressure?.contextWindow
+  if (!isTokenCount(used) || !isTokenCount(capacity) || capacity === 0) return null
+  const percent = Math.min(100, Math.round(used / capacity * 100))
+  const parts = breakdown !== undefined && NATIVE_PARTS.every(part => isTokenCount(breakdown?.[part.key]))
+    ? NATIVE_PARTS.map(part => ({ ...part, tokens: breakdown[part.key] }))
+    : []
+  const total = parts.reduce((sum, part) => sum + part.tokens, 0)
+  return createElement('section', {
+    className: 'codingns4dsh-magpie-context-native',
+    'aria-label': t('magpie.context.native'),
+  },
+    createElement('strong', { className: 'codingns4dsh-magpie-context-heading-label' }, t('magpie.context.native')),
+    createElement('div', { className: 'codingns4dsh-magpie-context-native-usage' },
+      createElement('span', undefined, t('magpie.context.usedPercent', { percent })),
+      createElement('strong', undefined, `~${formatTokens(used)} / ${formatTokens(capacity)}`)),
+    createElement('div', {
+      className: 'codingns4dsh-magpie-context-native-bar',
+      role: 'meter',
+      'aria-label': t('magpie.context.used'),
+      'aria-valuemin': 0,
+      'aria-valuemax': 100,
+      'aria-valuenow': percent,
+    }, total > 0
+      ? parts.map(part => createElement('span', { key: part.key, style: { width: `${percent * part.tokens / total}%`, background: part.color } }))
+      : createElement('span', { style: { width: `${percent}%`, background: dshThemeColor.labelTertiary } })),
+    parts.length > 0 && createElement('div', { className: 'codingns4dsh-magpie-context-caption' }, t('magpie.context.nativeComposition')),
+    parts.length > 0 && createElement('dl', { className: 'codingns4dsh-magpie-context-native-parts' },
+      parts.map(part => createElement('div', { key: part.key },
+        createElement('dt', undefined,
+          createElement('i', { 'aria-hidden': true, style: { background: part.color } }),
+          t(part.label)),
+        createElement('dd', undefined,
+          createElement('span', undefined, `~${formatTokens(part.tokens)}`),
+          createElement('span', { className: 'codingns4dsh-magpie-context-caption' },
+            `${total > 0 ? trimDecimal(part.tokens / total * 100) : '0'}%`))))),
+  )
+}
+
+function isTokenCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+}
+
 function createContextPanel(
   value: MagpieContextSession,
   t: CodingNsTranslator,
@@ -176,6 +246,7 @@ function createContextPanel(
   close: () => void,
   placement: Placement,
   panelRef: RefObject<HTMLDivElement | null>,
+  nativeSummary: ReactElement | null,
 ): ReactElement {
   const used = formatTokens(value.usedTokens)
   const windowSize = formatTokens(value.contextWindow)
@@ -193,6 +264,7 @@ function createContextPanel(
     'aria-label': t('magpie.context.window'),
     style: { left: placement.left, bottom: placement.bottom },
   },
+    nativeSummary,
     createElement('div', { className: 'codingns4dsh-magpie-context-heading' },
       createElement('div', undefined,
         createElement('div', { className: 'codingns4dsh-magpie-context-heading-label' }, t('magpie.context.used')),
@@ -254,6 +326,8 @@ function installStyles(): null {
   style.id = STYLE_ID
   style.textContent = `
 .codingns4dsh-magpie-context-panel{position:fixed;z-index:10000;width:min(980px,calc(100vw - 24px));max-height:min(82vh,780px);overflow:auto;box-sizing:border-box;padding:18px 20px 12px;color:${dshThemeColor.labelPrimary};background:${dshThemeColor.menuBackground};border:1px solid ${dshThemeColor.menuBorder};border-radius:14px;box-shadow:${dshThemeColor.prominentShadow};font-size:${uiFontSize(12)};line-height:1.35}
+.codingns4dsh-magpie-context-native{border-bottom:1px solid ${dshThemeColor.fieldBorder};padding-bottom:14px;margin-bottom:16px}.codingns4dsh-magpie-context-native-usage{display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin-top:7px;color:${dshThemeColor.labelSecondary};font-variant-numeric:tabular-nums}.codingns4dsh-magpie-context-native-usage strong{margin-left:auto;color:${dshThemeColor.labelPrimary};font-weight:500}.codingns4dsh-magpie-context-native-bar{display:flex;height:4px;overflow:hidden;margin:10px 0 12px;border-radius:99px;background:${dshThemeColor.surfaceSubtle}}.codingns4dsh-magpie-context-native-bar span{flex:none;height:100%;border-radius:1px}.codingns4dsh-magpie-context-native-parts{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px 24px;margin:8px 0 0}.codingns4dsh-magpie-context-native-parts>div{display:flex;justify-content:space-between;align-items:center;gap:8px;min-width:0}.codingns4dsh-magpie-context-native-parts dt{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:${dshThemeColor.labelSecondary}}.codingns4dsh-magpie-context-native-parts dt i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:6px}.codingns4dsh-magpie-context-native-parts dd{display:flex;gap:8px;margin:0;white-space:nowrap;font-variant-numeric:tabular-nums}.codingns4dsh-magpie-context-native-parts dd .codingns4dsh-magpie-context-caption{margin:0}
+@media (max-width:640px){.codingns4dsh-magpie-context-native-parts{grid-template-columns:minmax(0,1fr)}}
 .codingns4dsh-magpie-context-heading{display:grid;grid-template-columns:minmax(180px,1fr) minmax(160px,1fr) minmax(160px,1fr);gap:18px;align-items:start;margin-bottom:14px}.codingns4dsh-magpie-context-heading-label{color:${dshThemeColor.labelTertiary};font-size:${uiFontSize(12)};font-weight:600}.codingns4dsh-magpie-context-heading-value{font-size:${uiFontSize(28)};line-height:1;font-variant-numeric:tabular-nums}.codingns4dsh-magpie-context-heading-unit{color:${dshThemeColor.labelSecondary};margin-left:4px}.codingns4dsh-magpie-context-caption{color:${dshThemeColor.labelTertiary};margin-top:4px}.codingns4dsh-magpie-context-cache-value{display:block;color:#6bbd99;font-size:${uiFontSize(28)};line-height:1;font-variant-numeric:tabular-nums}.codingns4dsh-magpie-context-cache-track{height:6px;margin-top:8px;border-radius:99px;background:var(--dsw-alias-fill-tertiary,rgba(127,127,127,.12));overflow:hidden}.codingns4dsh-magpie-context-cache-track span{display:block;height:100%;background:#8bcfae;border-radius:inherit}.codingns4dsh-magpie-context-model{display:flex;justify-content:space-between;gap:8px;color:${dshThemeColor.labelSecondary};font-variant-numeric:tabular-nums}.codingns4dsh-magpie-context-model button{border:0;background:transparent;color:${dshThemeColor.labelTertiary};font-size:20px;line-height:18px;cursor:pointer}
 .codingns4dsh-magpie-context-treemap{display:flex;min-height:168px;gap:4px;margin:8px 0 10px}.codingns4dsh-magpie-context-block{min-width:0;display:flex;flex-direction:column;justify-content:flex-start;padding:9px 10px;border:1px solid color-mix(in srgb,var(--codingns-magpie-part-color) 25%,transparent);border-radius:8px;background:color-mix(in srgb,var(--codingns-magpie-part-color) 9%,transparent);color:var(--codingns-magpie-part-color);overflow:hidden}.codingns4dsh-magpie-context-block strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:${uiFontSize(12)}}.codingns4dsh-magpie-context-block span{font-size:${uiFontSize(11)};color:${dshThemeColor.labelTertiary};font-variant-numeric:tabular-nums}
 .codingns4dsh-magpie-context-legend{display:flex;flex-wrap:wrap;gap:5px 13px;border-bottom:1px solid ${dshThemeColor.fieldBorder};padding-bottom:10px}.codingns4dsh-magpie-context-legend button,.codingns4dsh-magpie-context-tabs button{border:0;background:transparent;color:${dshThemeColor.labelSecondary};cursor:pointer;padding:3px 0;font-size:${uiFontSize(11)};font-variant-numeric:tabular-nums}.codingns4dsh-magpie-context-legend button.is-active,.codingns4dsh-magpie-context-tabs button.is-active{color:${dshThemeColor.labelPrimary};font-weight:700}.codingns4dsh-magpie-context-legend i{display:inline-block;width:8px;height:8px;margin-right:5px;border-radius:2px}

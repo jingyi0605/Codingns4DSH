@@ -2,9 +2,12 @@ import assert from 'node:assert/strict'
 import { setImmediate } from 'node:timers/promises'
 import test from 'node:test'
 import { renderToStaticMarkup } from 'react-dom/server'
+import { useState } from 'react'
 import type { ReactElement, ReactPortal } from 'react'
 import { MagpieContextMeter } from '../src/client/magpie-context-meter.js'
 import { getMagpieContextStore } from '../src/client/magpie-context-store.js'
+import type { CodingNsLocale } from '../src/client/locale.js'
+import { en, zh } from '../src/client/locales/magpie.js'
 import type { MagpieContextSession } from '../src/shared/contracts/magpie-management.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 
@@ -106,14 +109,33 @@ function portalOf(output: ReactElement): ReactPortal {
   return portal
 }
 
+function contextLocale(language: 'en' | 'zh'): CodingNsLocale {
+  const dictionary = language === 'en' ? en : zh
+  const snapshot = { active: language, locales: [], revision: 0 }
+  return {
+    bind: () => (key, params) => (dictionary[key] ?? key).replace(/\{(\w+)\}/gu,
+      (slot, name) => String(params?.[name] ?? slot)),
+    getSnapshot: () => snapshot,
+    subscribe: () => () => undefined,
+    register: () => () => undefined,
+  }
+}
+
 test('the native context button opens Magpie through the slot outlet wrapper and refreshes in place', async t => {
   const { body, doc, dock, anchor, restore } = setupDom()
   const trigger = nativeContext(dock)
   let value = contextValue()
+  let pressure = { projectedTokens: 12_500, pressureTokens: 42_600, contextWindow: 1_000_000 }
+  let breakdown = { systemTokens: 1_900, toolsTokens: 8_300, messageTokens: 644 }
+  const locale = contextLocale('en')
+  const useProjection = (key: string): unknown => {
+    useState(key)
+    return key === 'contextPressure' ? pressure : breakdown
+  }
   const rpc = { call: async () => ({ ok: true as const, value }) }
   const store = getMagpieContextStore(rpc, 'dsh-session')
   const view = createHookRenderer(() => {
-    const output = MagpieContextMeter({ rpc, sessionId: 'dsh-session' })!
+    const output = MagpieContextMeter({ rpc, sessionId: 'dsh-session', useProjection, locale })!
     ;(output as unknown as { ref: { current: ContextElement } }).ref.current = anchor
     return output
   }, {}, { checkHookOrder: true })
@@ -136,6 +158,26 @@ test('the native context button opens Magpie through the slot outlet wrapper and
   for (const expected of [/21\.9K/u, /bash/u, /auto\/model-one/u, /17%/u,
     /context-block-system/u, /context-block-tools/u, /context-block-memory/u,
     /context-block-files/u, /context-block-results/u, /context-block-chat/u]) assert.match(markup, expected)
+  const summary = panel.props.children[0] as ReactElement
+  assert.equal(summary.type, 'section', 'native information belongs above the Magpie details')
+  assert.equal(summary.props['aria-label'], 'DSH context')
+  const nativeMarkup = renderToStaticMarkup(summary)
+  assert.match(nativeMarkup, /Context used 1%/u)
+  assert.match(nativeMarkup, /~12\.5K \/ 1M/u, 'prefer native projectedTokens over pressureTokens and Magpie tokens')
+  assert.match(nativeMarkup, /System prompt<\/dt><dd><span>~1\.9K<\/span>.*?>17\.5%<\/span>/u)
+  assert.match(nativeMarkup, /Tool definitions<\/dt><dd><span>~8\.3K<\/span>.*?>76\.5%<\/span>/u)
+  assert.match(nativeMarkup, /Conversation messages<\/dt><dd><span>~644<\/span>.*?>5\.9%<\/span>/u)
+  assert.doesNotMatch(nativeMarkup, /21\.9K|42\.6K|500K/u)
+
+  pressure = { ...pressure, projectedTokens: 25_000 }
+  breakdown = { systemTokens: 4_000, toolsTokens: 6_000, messageTokens: 10_000 }
+  const nativeRefresh = portalOf(view.render()).children as ReactElement
+  assert.equal(nativeRefresh.ref, panel.ref, 'native snapshot updates must retain the open panel')
+  const updatedNativeMarkup = renderToStaticMarkup(nativeRefresh.props.children[0] as ReactElement)
+  assert.match(updatedNativeMarkup, /~25K \/ 1M/u)
+  assert.match(updatedNativeMarkup, /Context used 3%/u)
+  for (const share of ['20%', '30%', '50%']) assert.ok(updatedNativeMarkup.includes(share))
+  assert.match(renderToStaticMarkup(nativeRefresh), /21\.9K/u, 'native updates must not replace the Magpie details')
 
   value = { ...value, usedTokens: 30_000, requests: 3 }
   await store.refresh()
@@ -156,6 +198,63 @@ test('the native context button opens Magpie through the slot outlet wrapper and
   assert.equal(nativeClick.defaultPrevented, false, 'disposing must restore the native click behavior')
 })
 
+test('native summary handles absent, zero, and independently arriving projection fields', async t => {
+  const { dock, anchor, restore } = setupDom()
+  const trigger = nativeContext(dock)
+  let pressure: unknown = { pressureTokens: 12_500, contextWindow: 1_000_000 }
+  let breakdown: unknown
+  let locale = contextLocale('en')
+  const rpc = { call: async () => ({ ok: true as const, value: contextValue() }) }
+  const view = createHookRenderer(() => {
+    const output = MagpieContextMeter({
+      rpc, sessionId: 'dsh-session', locale,
+      useProjection: key => { useState(key); return key === 'contextPressure' ? pressure : breakdown },
+    })!
+    ;(output as unknown as { ref: { current: ContextElement } }).ref.current = anchor
+    return output
+  }, {}, { checkHookOrder: true })
+  t.after(() => { view.dispose(); restore() })
+  view.render()
+  await setImmediate()
+  view.render()
+  trigger.dispatchEvent(new Event('click', { cancelable: true }))
+  const opened = portalOf(view.render()).children as ReactElement
+  const readSummary = (): string => {
+    const panel = portalOf(view.render()).children as ReactElement
+    assert.equal(panel.ref, opened.ref)
+    const summary = panel.props.children[0] as ReactElement | null
+    return summary === null ? '' : renderToStaticMarkup(summary)
+  }
+  assert.match(readSummary(), /~12\.5K \/ 1M/u, 'native pressureTokens is the fallback without projectedTokens')
+  assert.doesNotMatch(readSummary(), /<dl/u, 'missing breakdown must not invent category counts')
+
+  breakdown = { systemTokens: 0, toolsTokens: 0, messageTokens: 0 }
+  const zeroMarkup = readSummary()
+  assert.equal((zeroMarkup.match(/<span>~0<\/span>/gu) ?? []).length, 3)
+  assert.equal((zeroMarkup.match(/>0%<\/span>/gu) ?? []).length, 3)
+  assert.doesNotMatch(zeroMarkup, /NaN|Infinity/u)
+
+  breakdown = { systemTokens: 100, toolsTokens: 200 }
+  assert.doesNotMatch(readSummary(), /<dl/u, 'an incomplete estimate must not display a fabricated zero')
+
+  for (const unavailable of [undefined, { pressureTokens: 12_500 }, { pressureTokens: 12_500, contextWindow: 0 }]) {
+    pressure = unavailable
+    assert.equal(readSummary(), '', 'wait for both native usage and capacity')
+  }
+  pressure = { projectedTokens: 0, pressureTokens: 12_500, contextWindow: 1_000_000 }
+  assert.match(readSummary(), /~0 \/ 1M/u, 'zero projected usage must not fall back to older pressure')
+  pressure = { pressureTokens: 2_000_000, contextWindow: 1_000_000 }
+  assert.match(readSummary(), /Context used 100%/u, 'bound occupancy as the native meter does')
+  locale = contextLocale('zh')
+  breakdown = { systemTokens: 1_900, toolsTokens: 8_300, messageTokens: 644 }
+  const localized = readSummary()
+  for (const key of ['magpie.context.native', 'magpie.context.nativeTools', 'magpie.context.nativeMessages']) {
+    assert.ok(localized.includes(zh[key]!))
+  }
+  assert.equal(trigger.getAttribute('aria-expanded'), 'true')
+  assert.equal(ContextObserver.instances.length, 1)
+})
+
 test('native context binding survives button replacement and stays inside its own composer', async t => {
   const { body, dock, anchor, restore } = setupDom()
   const first = nativeContext(dock)
@@ -164,7 +263,14 @@ test('native context binding survives button replacement and stays inside its ow
   const other = nativeContext(otherDock)
   const rpc = { call: async () => ({ ok: true as const, value: contextValue() }) }
   const view = createHookRenderer(() => {
-    const output = MagpieContextMeter({ rpc, sessionId: 'dsh-session' })!
+    const output = MagpieContextMeter({
+      rpc, sessionId: 'dsh-session',
+      useProjection: key => {
+        useState(key)
+        return key === 'contextPressure' ? { pressureTokens: 12_500, contextWindow: 1_000_000 }
+          : { systemTokens: 1_900, toolsTokens: 8_300, messageTokens: 644 }
+      },
+    })!
     ;(output as unknown as { ref: { current: ContextElement } }).ref.current = anchor
     return output
   }, {})
