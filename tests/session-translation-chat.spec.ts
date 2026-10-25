@@ -4,6 +4,7 @@ import { Children, createElement, isValidElement, type ComponentType, type React
 import { renderToStaticMarkup } from 'react-dom/server'
 import { AssistantReasoningContent, TranslationAction, registerSessionTranslationChatUi } from '../src/client/session-translation-chat.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
+import { en, zh } from '../src/client/locales/panels.js'
 import type { CodingNsClientServices } from '../src/client/features/types.js'
 import type { SessionTranslationRecord } from '../src/shared/contracts/session-translation.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
@@ -217,6 +218,16 @@ test('pending translation is clickable, shows progress, and switches to complete
   tree = renderer.render({ ...props, record: { ...record, failed: true, translated: record.original } } as typeof props)
   html = renderToStaticMarkup(elements(tree).find((element) => element.props.role === 'dialog')!)
   assert.ok(html.includes(translationT('translation.statusFailed')))
+  assert.ok(html.includes(translationT('translation.failure.unknown')))
+  for (const dictionary of [en, zh]) {
+    const localizedT: typeof translationT = key => dictionary[key] ?? key
+    for (const code of ['timeout', 'cancelled', 'rate-limit', 'network', 'unavailable', 'invalid-response', 'configuration', 'provider'] as const) {
+      tree = renderer.render({ ...props, translationT: localizedT, record: { ...record, failed: true, failure: { code, retryable: false } } } as typeof props)
+      html = renderToStaticMarkup(elements(tree).find((element) => element.props.role === 'dialog')!)
+      assert.ok(html.includes(localizedT(`translation.failure.${code}`)), code)
+      assert.equal(html.includes(localizedT('translation.failure.unknown')), false, code)
+    }
+  }
   elements(tree).find((element) => element.type === 'button')!.props.onClick()
   tree = renderer.render()
   assert.equal(elements(tree).some((element) => element.props.role === 'dialog'), false)
@@ -298,12 +309,14 @@ test('failed user translation opens a compact attached popup with only the notic
       ;(trigger as any).ref.current = { getBoundingClientRect: () => ({ left: 200, right: 228, top: 500, bottom: 528 }) }
       const tree = popup.render({ ...base, inputFailure: { id: 'request', sessionId: 'session', record: {
         ...outputRecord, original: inputRecord.original, failed: true, sourceLanguage: 'zh', durationMs: 1300, totalTokens: 0,
+        failure: { code: 'network', retryable: true },
       } } } as typeof base)
       const dialog = elements(tree).find(element => element.props.role === 'dialog')!
       assert.ok(dialog, 'failure automatically opens the popup')
       const html = renderToStaticMarkup(dialog)
       assert.equal(dialog.props['aria-label'], translationT('translation.inputFailedTitle'))
       assert.ok(html.includes(translationT('translation.inputFailedHelp')))
+      assert.ok(html.includes(translationT('translation.failure.network')))
       for (const key of ['translation.actualSentText', 'translation.originalText', 'translation.detectedLanguage', 'translation.modelUsed', 'translation.detailsTitle']) {
         assert.equal(html.includes(translationT(key)), false, `failure prompt omits ${key}`)
       }
@@ -319,18 +332,20 @@ test('failed user translation opens a compact attached popup with only the notic
   }
 })
 
-test('input and reply history pass translation metrics to the popup action', () => {
+test('input and reply history pass translation metrics and sanitized failure diagnostics to the popup action', () => {
   const renderers = captureRenderers()
   const metrics = { durationMs: 1234, totalTokens: 456 }
+  const failure = { code: 'invalid-response', retryable: false }
+  const diagnostics = { failed: true, failure: { ...failure, message: 'private-provider-detail' } }
   for (const [key, node] of [
     ['user', { id: 'user-metrics', data: {
       content: [{ type: 'text', text: inputRecord.translated }],
-      source: { kind: 'user', codingnsTranslationInput: { ...inputRecord, ...metrics } },
+      source: { kind: 'user', codingnsTranslationInput: { ...inputRecord, ...metrics, ...diagnostics } },
     } }],
     ['assistant-step', {
       id: 'assistant-metrics', location: { kind: 'step', turn: { status: 'closed' } },
       data: { status: 'settled', turn: 1, step: 1, blocks: [
-        { kind: 'text', text: outputRecord.original, codingnsTranslation: { ...outputRecord, ...metrics } },
+        { kind: 'text', text: outputRecord.original, codingnsTranslation: { ...outputRecord, ...metrics, ...diagnostics } },
       ] },
     }],
   ] as const) {
@@ -343,6 +358,7 @@ test('input and reply history pass translation metrics to the popup action', () 
       const action = elements(contentRenderer?.render() ?? tree).find((element) => element.type === TranslationAction)!
       assert.equal(action.props.record.durationMs, metrics.durationMs)
       assert.equal(action.props.record.totalTokens, metrics.totalTokens)
+      assert.deepEqual(action.props.record.failure, failure)
       contentRenderer?.dispose()
     } finally { renderer.dispose() }
   }

@@ -31,7 +31,7 @@ import { clearOutputTranslationRetries, useOutputTranslation } from './session-t
 import type { CodingNsClientServices } from './features/types.js'
 import type { CodingNsTranslator } from './locale.js'
 import type { SessionTranslationInputRecord, SessionTranslationLanguage, SessionTranslationModel, SessionTranslationOutputKind, SessionTranslationRecord, SessionTranslationPendingInput, SessionTranslationRecoveryChoice } from '../shared/contracts/session-translation.js'
-import { readSessionTranslationMetrics, resolveSessionTranslationOptions } from '../shared/contracts/session-translation.js'
+import { readSessionTranslationDiagnostics, readSessionTranslationMetrics, resolveSessionTranslationOptions } from '../shared/contracts/session-translation.js'
 
 interface EventSourceLike {
   getSnapshot(): { readonly entries?: readonly unknown[] }
@@ -143,6 +143,7 @@ export function TranslationAction(props: TranslationActionProps): ReactElement |
   const detailsTitle = props.translationT(inputFailure ? 'translation.inputFailedTitle' : 'translation.detailsTitle')
   const pending = record === undefined || output.pending
   const failed = record?.failed === true
+  const failure = readSessionTranslationDiagnostics(record).failure
   const alreadyTargetLanguage = record?.alreadyTargetLanguage === true
   const statusText = pending
     ? props.translationT('translation.statusTranslating')
@@ -207,6 +208,7 @@ export function TranslationAction(props: TranslationActionProps): ReactElement |
     ...(record!.totalTokens === undefined ? [] : [`${record!.totalTokens} tok`]),
   ].join(' · ')),
   props.inputFailure === undefined ? null : createElement('p', { role: 'alert' }, props.translationT('translation.inputFailedHelp')),
+  pending || !failed ? null : createElement('p', { role: 'alert', style: { color: dshThemeColor.error } }, props.translationT(`translation.failure.${failure?.code ?? 'unknown'}`)),
   decisionError ? createElement('p', { role: 'alert', style: { color: dshThemeColor.error } }, props.translationT('translation.decisionFailed')) : null,
   props.inputFailure !== undefined ? createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 } },
     ...(['retry', 'send', 'cancel'] as const).map(choice => createElement('button', {
@@ -990,6 +992,7 @@ function readRecord(value: unknown): SessionTranslationRecord | undefined {
     ...(candidate.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
     ...(model === undefined ? {} : { model }),
     ...(candidate.failed === true ? { failed: true } : {}),
+    ...readSessionTranslationDiagnostics(candidate),
     ...readSessionTranslationMetrics(candidate),
   }
 }
@@ -1017,6 +1020,7 @@ function readInputRecord(value: unknown): SessionTranslationInputRecord | undefi
     ...(candidate.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
     ...(model === undefined ? {} : { model }),
     ...(candidate.failed === true ? { failed: true } : {}),
+    ...readSessionTranslationDiagnostics(candidate),
     ...readSessionTranslationMetrics(candidate),
   }
 }
@@ -1031,6 +1035,7 @@ function inputRecordForAction(record: SessionTranslationInputRecord): SessionTra
     ...(record.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
     ...(record.model === undefined ? {} : { model: record.model }),
     ...(record.failed === true ? { failed: true } : {}),
+    ...readSessionTranslationDiagnostics(record),
     ...readSessionTranslationMetrics(record),
   }
 }

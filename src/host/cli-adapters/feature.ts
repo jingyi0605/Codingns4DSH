@@ -53,6 +53,7 @@ import { hasLegacySessionAdapterHint } from './legacy-session-adapter.js'
 import {
   DSH_NATIVE_SESSION_ADAPTER_ID,
   formatSessionTranslationOutput,
+  readSessionTranslationDiagnostics,
   readSessionTranslationMetrics,
   type SessionTranslationInputRecord,
   type SessionTranslationRecord,
@@ -61,6 +62,7 @@ import { questionTranslationFields } from '../../shared/contracts/interaction-tr
 import { createInteractionTranslation } from '../features/interaction-translation.js'
 import { createSessionTranslationRecovery, SessionTranslationCancelled } from '../features/session-translation-recovery.js'
 import { isSessionTranslationInputEnabled } from '../features/session-translation-service.js'
+import { translationFailure } from '../features/session-translation-runtime.js'
 import { ASSISTANT_AGENT_PREFIX } from '../../dsh-capabilities/host/assistant-agent-adapter.js'
 import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
 import type { SessionModelSelectionAdapter } from '../../dsh-capabilities/host/session-model-selection-adapter.js'
@@ -1514,6 +1516,7 @@ async function translatePreStepInput(
       targetLanguage: readInputTargetLanguage(translation),
       ...(result.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
       ...(result.model === undefined ? {} : { model: result.model }),
+      ...readSessionTranslationDiagnostics(result),
       ...readSessionTranslationMetrics(result),
       ...(result.failed === true ? { failed: true } : {}),
     }
@@ -1551,6 +1554,7 @@ async function translatePreStepInput(
     targetLanguage: readInputTargetLanguage(translation),
     ...(result.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
     ...(result.model === undefined ? {} : { model: result.model }),
+    ...readSessionTranslationDiagnostics(result),
     ...readSessionTranslationMetrics(result),
     ...(result.failed === true ? { failed: true } : {}),
   }
@@ -1810,12 +1814,13 @@ async function* translateNativeStream(
           bilingual: result.bilingual,
           ...(result.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
           ...(result.model === undefined ? {} : { model: result.model }),
+          ...readSessionTranslationDiagnostics(result),
           ...readSessionTranslationMetrics(result),
           ...(result.failed === true ? { failed: true } : {}),
         }
       }
-    } catch {
-      record = { original, translated: original, targetLanguage: translation.outputLanguage ?? 'zh', outputKind: kind, bilingual, failed: true }
+    } catch (error) {
+      record = { original, translated: original, targetLanguage: translation.outputLanguage ?? 'zh', outputKind: kind, bilingual, failed: true, failure: translationFailure(error, signal) }
     }
     if (record === undefined) return undefined
     const visible = formatSessionTranslationOutput(record)
