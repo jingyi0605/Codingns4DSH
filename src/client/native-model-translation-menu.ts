@@ -5,6 +5,7 @@ export interface NativeModelCatalogEntry {
   readonly id: string
   readonly name: string
   readonly source?: 'magpie'
+  readonly magpieProviderId?: string
 }
 
 /**
@@ -115,7 +116,7 @@ export function decorateMagpieModels(menu: HTMLElement, models: readonly NativeM
       existing?.remove()
       continue
     }
-    if (existing?.dataset.modelId === model.id) {
+    if (existing?.dataset.modelId === model.id && existing.dataset.providerId === model.magpieProviderId) {
       // Move only when native content was appended after the logo; otherwise avoid
       // triggering the observer again for an already-correct row.
       if (row.children[row.children.length - 1] !== existing) {
@@ -125,7 +126,7 @@ export function decorateMagpieModels(menu: HTMLElement, models: readonly NativeM
       continue
     }
     existing?.remove()
-    const tag = createMagpieModelTagNode(document, model.id)
+    const tag = createMagpieModelTagNode(document, model.id, model.magpieProviderId)
     // The native row owns the checkmark; append after all native content so the logo is last.
     row.append(tag)
   }

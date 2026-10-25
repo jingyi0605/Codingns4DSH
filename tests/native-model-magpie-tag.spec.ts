@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { decorateMagpieModels, type NativeModelCatalogEntry } from '../src/client/native-model-translation-menu.js'
-import { magpieModelLogoUrl } from '../src/client/magpie-model-tag.js'
+import { createMagpieModelTagNode, MagpieModelTag, magpieModelLogoUrl } from '../src/client/magpie-model-tag.js'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { PROVIDER_ICON_PATH } from '../src/shared/provider-icon-resources.js'
 
 class FakeText {
@@ -132,7 +134,7 @@ test('native DSH model options tag exact Magpie IDs and avoid ambiguous labels',
   assert.deepEqual(magpie.children, stableChildren, 'a stable native row is not re-parented on every observer scan')
   for (const tag of tags) {
     assert.equal(tag.children.length, 1, 'the badge contains one logo only')
-    assert.equal(tag.style.width, '18px')
+    assert.equal(tag.style.minWidth, '18px')
     assert.equal(tag.style.height, '18px')
     assert.equal(tag.style.marginInlineStart, 'auto', 'native badges align to the trailing side of the model row')
     assert.equal(tag.children[0]!.tagName, 'img')
@@ -149,4 +151,34 @@ test('native DSH model options tag exact Magpie IDs and avoid ambiguous labels',
   decorateMagpieModels(menu as never, [models[0]!], document as never)
   decorateMagpieModels(menu as never, [], document as never)
   assert.equal(menu.querySelectorAll('[data-codingns-magpie-model-tag]').length, 0, 'an empty catalog also clears stale badges')
+})
+
+test('Magpie provider text is shared by React, native DSH and imperative model tags', () => {
+  const document = { createElement: (tagName: string) => new FakeElement(tagName) }
+  const tag = createMagpieModelTagNode(document as never, 'tlp/shared-model', 'tlp')
+  assert.equal(tag.textContent, 'tlp')
+  assert.equal(tag.title, 'tlp')
+  assert.equal(tag.getAttribute('aria-label'), 'tlp')
+  assert.equal(tag.children.length, 2)
+  assert.equal(tag.children[0]!.style.fontSize, '12px')
+  assert.equal(tag.children[1]!.tagName, 'img', 'provider precedes the Magpie logo')
+  const markup = renderToStaticMarkup(createElement(MagpieModelTag, { providerId: 'tlp' }))
+  assert.match(markup, />tlp<\/span><img/u)
+  assert.match(markup, /font-size:12px/u)
+  assert.match(markup, /aria-label="tlp"/u)
+
+  const menu = new FakeElement('div')
+  const row = modelRow(undefined, 'Shared Model')
+  menu.append(row)
+  const models: NativeModelCatalogEntry[] = [{ id: 'tlp/shared-model', name: 'Shared Model', source: 'magpie', magpieProviderId: 'tlp' }]
+  decorateMagpieModels(menu as never, models, document as never)
+  decorateMagpieModels(menu as never, models, document as never)
+  assert.equal(menu.querySelectorAll('[data-codingns-magpie-model-tag]').length, 1)
+  assert.equal(row.children[0]!.textContent, 'Shared Model', 'native labels remain owned by DSH')
+  assert.equal(row.children[1]!.textContent, 'tlp')
+
+  decorateMagpieModels(menu as never, [{ ...models[0]!, magpieProviderId: 'renamed-provider' }], document as never)
+  assert.equal(row.children[1]!.textContent, 'renamed-provider', 'existing tags refresh when provider data changes')
+  decorateMagpieModels(menu as never, [{ id: 'tlp/shared-model', name: 'Shared Model', source: 'magpie' }], document as never)
+  assert.equal(row.children[1]!.textContent, '', 'older Hosts without provider fields retain logo-only tags')
 })

@@ -21,7 +21,9 @@ const tagStyle = {
   flex: 'none',
   alignItems: 'center',
   justifyContent: 'center',
-  width: '18px',
+  minWidth: '18px',
+  maxWidth: '45%',
+  gap: '4px',
   height: '18px',
   marginInlineStart: 'auto',
   whiteSpace: 'nowrap',
@@ -37,27 +39,43 @@ const tagLogoStyle = {
   borderRadius: '4px',
 } as const
 
+const providerStyle = {
+  minWidth: 0,
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
+  fontSize: '12px',
+  color: 'var(--dsw-alias-label-secondary)',
+} as const
+
 /** Compact visual source marker shared by every model-list surface. */
-export function MagpieModelTag(): ReactElement {
+export function MagpieModelTag(props: { readonly providerId?: string | undefined }): ReactElement {
   return createElement('span', {
     [MAGPIE_MODEL_TAG_ATTRIBUTE]: '',
     role: 'note',
-    'aria-label': 'Provided by Magpie',
-    title: 'Provided by Magpie',
+    'aria-label': props.providerId ?? 'Provided by Magpie',
+    title: props.providerId ?? 'Provided by Magpie',
     style: tagStyle,
-  }, createElement('img', { src: magpieModelLogoUrl(), alt: 'Provided by Magpie', style: tagLogoStyle }))
+  }, props.providerId === undefined ? null : createElement('span', { style: providerStyle }, props.providerId),
+  createElement('img', { src: magpieModelLogoUrl(), alt: 'Provided by Magpie', style: tagLogoStyle }))
 }
 
 /** Native DSH owns its menu DOM, so its option rows receive the same badge imperatively. */
-export function createMagpieModelTagNode(document: Document, modelId?: string): HTMLSpanElement {
+export function createMagpieModelTagNode(document: Document, modelId?: string, providerId?: string): HTMLSpanElement {
   const tag = document.createElement('span')
   tag.setAttribute(MAGPIE_MODEL_TAG_ATTRIBUTE, '')
   if (modelId !== undefined) tag.dataset.modelId = modelId
+  if (providerId !== undefined) tag.dataset.providerId = providerId
   tag.setAttribute('role', 'note')
-  tag.setAttribute('aria-label', 'Provided by Magpie')
-  tag.title = 'Provided by Magpie'
+  tag.setAttribute('aria-label', providerId ?? 'Provided by Magpie')
+  tag.title = providerId ?? 'Provided by Magpie'
   Object.assign(tag.style, tagStyle)
 
+  if (providerId !== undefined) {
+    const provider = document.createElement('span')
+    provider.textContent = providerId
+    Object.assign(provider.style, providerStyle)
+    tag.append(provider)
+  }
   const logo = document.createElement('img')
   logo.setAttribute('src', magpieModelLogoUrl())
   logo.setAttribute('alt', 'Provided by Magpie')

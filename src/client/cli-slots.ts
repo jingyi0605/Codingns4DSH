@@ -520,7 +520,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
 
   const catalog = catalogState?.adapterId === selection.adapterId && catalogState.sessionId === sessionId ? catalogState.value : null
   const nativeModels = selection.adapterId === DSH_NATIVE_SESSION_ADAPTER_ID
-    ? (catalog?.groups ?? []).flatMap((group) => group.models.map(({ id, name, source }) => ({ id, name, ...(source === 'magpie' ? { source } : {}) })))
+    ? (catalog?.groups ?? []).flatMap((group) => group.models.map(({ id, name, source, magpieProviderId }) => ({ id, name, ...(source === 'magpie' ? { source } : {}), ...(magpieProviderId === undefined ? {} : { magpieProviderId }) })))
     : []
   nativeMagpieModelsRef.current = nativeModels
   const nativeMagpieModelRevision = JSON.stringify(nativeModels)
@@ -870,7 +870,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
                 },
                   createElement('span', { style: { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, item.name),
                   item.id === model?.id && createElement('span', { 'aria-hidden': true }, '✓'),
-                  item.source === 'magpie' && createElement(MagpieModelTag, {}),
+                  item.source === 'magpie' && createElement(MagpieModelTag, { providerId: item.magpieProviderId }),
                 )
               }),
             )),

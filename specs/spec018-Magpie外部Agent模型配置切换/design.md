@@ -117,6 +117,12 @@ The existing subscription slot understands the tagged snapshot response and reta
 
 The Magpie usage popover labels aggregate totals, current-session totals, and route status separately. It displays unavailable states instead of attributing aggregate usage to the current session or guessing a route.
 
+### 5.1 Provider labels in ordinary model menus
+
+After exact catalog recognition, the Host sets the optional transient `CodingNsCliModel.magpieProviderId` from the provider segment of the resolved Magpie ID. Reuse the existing provider-ID parser, which excludes `auto` and `group`; do not treat `owned_by` or an Agent alias prefix as the carrier. Set this field for existing matches and missing Codex additions even when Gateway metadata is unavailable. Keep the model display name separate from this field so the unique display-name matching contract still works on refresh.
+
+The shared React/imperative Magpie model tag renders this provider ID before the logo. External Agent menus, delegation menus, and the native DSH catalog bridge pass the optional field through. Native decoration replaces an existing tag when its provider changes, without rewriting DSH-owned model labels or adding duplicate tags. Provider text can shrink within the row, with the complete ID retained in its title and accessible label. Older Hosts continue to show only the logo. The field is catalog presentation data, not part of any session-setting or provider-routing payload.
+
 ## 6. Safety and compatibility
 
 - No Magpie configuration file, provider file, credential store, or Desktop profile is read or written.

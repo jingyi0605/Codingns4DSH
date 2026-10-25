@@ -144,6 +144,18 @@ Magpie exposes configured provider/model choices through its Agent catalog. Codi
 4. If Magpie is missing, unsupported, or its Codex catalog cannot be validated, the original Codex catalog is returned unchanged.
 5. Tests cover a Codex catalog containing only native fallback rows, exact Magpie additions, metadata and CLI-label fallback, and unchanged native selection fields.
 
+### R10: Keep provider identity visible in Magpie model choices
+
+**User story:** As a user choosing between the same model from different Magpie providers, I want to see the provider alongside the model name without changing my Magpie settings.
+
+#### Acceptance criteria
+
+1. Exact Magpie catalog matches expose a transient `magpieProviderId` independently of the model display name. It comes from the verified Magpie model ID, including after Command Code prefix normalization or a unique display-name alias match, not from `owned_by` or a native alias ID.
+2. External Agent, native DSH, and delegation model menus display that provider ID alongside the existing Magpie logo. Hosts without the optional field retain logo-only behavior.
+3. Provider IDs remain available when Gateway metadata is missing. Ordinary models remain unchanged; `auto/` and `group/` routes are not advertised as particular providers.
+4. Model IDs, model names, effort options, routing, and persisted session selection remain unchanged. Repeated catalog reads and DOM decoration do not accumulate provider text or duplicate badges.
+5. Source tests cover equal model names from different providers, normalization/aliases, Gateway failure, automatic routes, menu rendering, and unchanged selection payloads. Real browser visual verification remains a separate manual check.
+
 ## Success definition
 
 - The ordinary Agent model selector remains the only model-selection UI and path.

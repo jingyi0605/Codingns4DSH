@@ -382,6 +382,8 @@ test('Magpie metadata enriches exact model matches for DSH and every verified ex
     const model = enriched.groups[0]!.models[0]!
     assert.equal(model.source, 'magpie', adapterId)
     assert.equal(model.name, 'Magpie Model One', adapterId)
+    assert.equal(model.magpieProviderId, 'example-provider', adapterId)
+    assert.equal(model.id, modelId, 'provider display never changes selection IDs')
     assert.equal(model.contextWindow, 500000, adapterId)
     assert.equal(model.maxInputTokens, 500000, adapterId)
     assert.equal(model.maxOutputTokens, 128000, adapterId)
@@ -472,7 +474,7 @@ test('Codex catalog includes verified Magpie-only models missing from model/list
   assert.deepEqual(models[3]!.efforts, ['low', 'high', 'max'])
   assert.equal(models[4]!.name, 'WorkBuddy Model', 'CLI label remains available if Gateway metadata omits a row')
   assert.deepEqual(catalog.groups[0]!.models.at(-1), {
-    id: 'workbuddy/another-model', name: 'WorkBuddy Model', efforts: [], source: 'magpie',
+    id: 'workbuddy/another-model', name: 'WorkBuddy Model', efforts: [], source: 'magpie', magpieProviderId: 'workbuddy',
   })
   assert.equal(catalog.currentModel, 'gpt-5.4')
   assert.equal(catalog.currentEffort, 'high')
@@ -553,6 +555,7 @@ test('Magpie display-name aliases enrich every verified Agent catalog', async ()
     })
     const model = result.groups[0]!.models[0]!
     assert.equal(model.source, 'magpie', adapterId)
+    assert.equal(model.magpieProviderId, 'provider', 'aliases use the verified Magpie ID, not the native ID')
     assert.equal(model.contextWindow, 500000, adapterId)
     assert.deepEqual(model.efforts, ['low', 'high'], adapterId)
   }
@@ -603,7 +606,47 @@ test('Magpie 标记依赖准确的 Agent 目录匹配，不因 Gateway 元数据
     ] }], currentModel: null, currentEffort: null,
   })
   assert.deepEqual(catalog.groups[0]!.models.map((model) => model.source), ['magpie', undefined])
+  assert.equal(catalog.groups[0]!.models[0]!.magpieProviderId, 'example-provider', 'provider display survives Gateway failure')
+  assert.equal(catalog.groups[0]!.models[1]!.magpieProviderId, undefined)
   assert.deepEqual(catalog.groups[0]!.models[0]!.efforts, ['low', 'high'])
+})
+
+test('Magpie provider labels distinguish equal model names without guessing automatic routes or model owners', async () => {
+  const service = new MagpieUsageService({
+    readModels: async () => [
+      'Providers',
+      'tlp/shared-model    Shared Model',
+      'hl/shared-model    Shared Model',
+      'auto/shared-model    Automatic Model',
+      'group/shared-route    Routing Group',
+      "claude is shown every provider's models", 'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async () => Response.json({ data: [
+      { id: 'tlp/shared-model', display_name: 'Shared Model', owned_by: 'openai' },
+      { id: 'hl/shared-model', display_name: 'Shared Model', owned_by: 'openai' },
+      { id: 'auto/shared-model', display_name: 'Automatic Model', owned_by: 'openai' },
+      { id: 'group/shared-route', display_name: 'Routing Group', owned_by: 'openai' },
+    ] })) as typeof fetch,
+  })
+  const original = {
+    groups: [{ id: 'claude', name: 'Claude', models: [
+      { id: 'tlp/shared-model', name: 'Original TLP label', efforts: ['high'] },
+      { id: 'hl/shared-model', name: 'Original HL label', efforts: ['low'] },
+      { id: 'auto/shared-model', name: 'Automatic Model', efforts: [] },
+      { id: 'group/shared-route', name: 'Routing Group', efforts: [] },
+      { id: 'ordinary/shared-model', name: 'Ordinary Model', efforts: [] },
+    ] }], currentModel: 'tlp/shared-model', currentEffort: 'high',
+  }
+  const result = await service.enrichModelCatalog('claude-code', original)
+  const models = result.groups[0]!.models
+  assert.deepEqual(models.map((model) => model.magpieProviderId), ['tlp', 'hl', undefined, undefined, undefined])
+  assert.deepEqual(models.slice(0, 2).map((model) => model.name), ['Shared Model', 'Shared Model'])
+  assert.deepEqual(models.map((model) => model.id), original.groups[0]!.models.map((model) => model.id))
+  assert.equal(models[4], original.groups[0]!.models[4], 'ordinary models remain untouched')
+  assert.equal(result.currentModel, original.currentModel)
+  assert.equal(result.currentEffort, original.currentEffort)
+  const refreshed = await service.enrichModelCatalog('claude-code', result)
+  assert.deepEqual(refreshed, result, 'refreshing does not accumulate provider text in model names')
 })
 
 test('Magpie reasoning false clears stale levels, while missing fields retain Agent metadata', async () => {

@@ -271,9 +271,12 @@ export class MagpieUsageService {
         const id = resolveCatalogModelId(agent, model.id, agentCatalog, model.name)
         if (id === null) return model
         const record = metadata?.get(id)
-        const enriched = record === undefined
+        const metadataModel = record === undefined
           ? model.source === 'magpie' ? model : { ...model, source: 'magpie' as const }
           : mergeMagpieModelMetadata(model, record)
+        const providerId = providerFromModel(id)
+        const enriched = providerId === null || metadataModel.magpieProviderId === providerId
+          ? metadataModel : { ...metadataModel, magpieProviderId: providerId }
         if (enriched === model) return model
         groupChanged = true
         return enriched
@@ -289,11 +292,13 @@ export class MagpieUsageService {
         .filter((id) => !existingModelIds.has(id))
         .map((id): CodingNsCliModel => {
           const record = metadata?.get(id)
+          const providerId = providerFromModel(id)
           const model: CodingNsCliModel = {
             id,
             name: record?.name ?? agentCatalog.displayNames.get(id) ?? id,
             efforts: record?.efforts ?? [],
             source: 'magpie',
+            ...(providerId === null ? {} : { magpieProviderId: providerId }),
           }
           return record === undefined ? model : mergeMagpieModelMetadata(model, record)
         })
