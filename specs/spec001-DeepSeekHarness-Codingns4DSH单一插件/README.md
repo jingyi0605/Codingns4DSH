@@ -16,6 +16,10 @@
 2. `design.md`：Host/Client、H5、Desktop、HostScope 和 Transport 的协作方式。
 3. `tasks.md`：已完成证据和未完成任务；只有有验证证据才能标记 `DONE`。
 
+## 子 Spec
+
+- [Spec001.1：Codingns4DSH 插件版本升级与免重启激活](../spec001.1-Codingns4DSH插件版本升级与免重启激活/README.md)：设置页检查 npm 版本并显示精确 GitHub Tag 更新说明；包替换必须由 DSH 管理，只有 Host 与 Client 都报告目标版本已激活时才能称为免重启更新。
+
 ## 外部依赖
 
 - DSH `0.1.6-alpha.2` 的 `ClientTransportHooks`、`installConnection()`、`loadBundle()` 和 connection generation；后续版本必须维护兼容矩阵。
