@@ -939,7 +939,10 @@ export function parseMagpieModelMetadata(value: unknown): ReadonlyMap<string, Ma
     const capabilities = readStringList(record.capabilities, 64, 128)
     const metadata: MagpieModelMetadata = {
       id,
-      ...optionalText(record.display_name ?? record.magpie_label ?? record.name, 200, 'name'),
+      // magpie_label 带渠道后缀（`Kimi-K3 · WorkBuddy`），display_name 只是裸模型名
+      // （`Kimi-K3`）。同一个模型会在多个渠道同时提供，只用裸名会让列表里出现一串
+      // 无法区分的同名条目，也会把配置里写的渠道名覆盖掉，所以渠道标签优先。
+      ...optionalText(record.magpie_label ?? record.display_name ?? record.name, 200, 'name'),
       ...optionalText(record.description, 2_000, 'description'),
       ...optionalPositiveLimit(record.context_window ?? record.context_length, 'contextWindow'),
       ...optionalPositiveLimit(record.max_input_tokens, 'maxInputTokens'),

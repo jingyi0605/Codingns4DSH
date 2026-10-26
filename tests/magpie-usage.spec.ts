@@ -2247,3 +2247,44 @@ test('查看请求模态框在读取失败时给出重试，没有可绑定会�
   t.after(() => unboundView.dispose())
   assert.equal(findTestElement(unboundView.render(), (element) => element.type === 'button' && element.props?.className === 'codingns4dsh-magpie-route-requests'), null, 'a session without a Magpie binding cannot scope requests')
 })
+
+test('渠道重复的模型优先使用 magpie_label 而不是裸 display_name', async () => {
+  // 同一模型会同时挂在多个渠道下（workbuddy / trae-cn / …），display_name 是裸模型名，
+  // 只取它会让列表里出现一串无法区分的同名条目。
+  const service = new MagpieUsageService({
+    readModels: async () => [
+      'Routing groups', 'workbuddy/kimi-k3', 'trae-cn/kimi-k3',
+      "claude is shown every provider's models · magpie visible claude", 'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async () => Response.json({ data: [
+      { id: 'workbuddy/kimi-k3', display_name: 'Kimi-K3', magpie_label: 'Kimi-K3 · WorkBuddy' },
+      { id: 'trae-cn/kimi-k3', display_name: 'Kimi-K3', magpie_label: 'Kimi-K3 · Trae CN' },
+    ] })) as typeof fetch,
+  })
+
+  const metadata = await service.readModelMetadata('claude-code', 'workbuddy/kimi-k3')
+  assert.equal(metadata?.name, 'Kimi-K3 · WorkBuddy')
+
+  const catalog = await service.enrichModelCatalog('claude-code', {
+    groups: [{ id: 'claude', name: 'Claude', models: [
+      { id: 'workbuddy/kimi-k3', name: 'placeholder', efforts: [] },
+      { id: 'trae-cn/kimi-k3', name: 'placeholder', efforts: [] },
+    ] }], currentModel: null, currentEffort: null,
+  })
+  assert.deepEqual(catalog.groups[0]!.models.map((model) => model.name), ['Kimi-K3 · WorkBuddy', 'Kimi-K3 · Trae CN'])
+})
+
+test('缺少 magpie_label 时回退到 display_name', async () => {
+  const service = new MagpieUsageService({
+    readModels: async () => [
+      'Routing groups', 'workbuddy/kimi-k3',
+      "claude is shown every provider's models · magpie visible claude", 'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async () => Response.json({ data: [
+      { id: 'workbuddy/kimi-k3', display_name: 'Kimi-K3' },
+    ] })) as typeof fetch,
+  })
+
+  const metadata = await service.readModelMetadata('claude-code', 'workbuddy/kimi-k3')
+  assert.equal(metadata?.name, 'Kimi-K3')
+})
