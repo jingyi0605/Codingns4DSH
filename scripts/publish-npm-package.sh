@@ -222,7 +222,13 @@ run_checks_and_build() {
   pnpm run typecheck
   echo "==> Running full tests (counts and progress only; tests rebuild the package)"
   # Scope the reporter to packaging and preserve any existing Node options.
-  NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--test-reporter=\"$ROOT_DIR/scripts/test-progress-reporter.mjs\"" pnpm test
+  # 打包用的报告器只输出数量，失败时再提示如何查看被隐藏的用例名。
+  if ! NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--test-reporter=\"$ROOT_DIR/scripts/test-progress-reporter.mjs\"" pnpm test; then
+    echo "" >&2
+    echo "完整测试未通过：上面的统计行只显示数量，不含失败或取消的用例名。" >&2
+    echo "请直接运行 pnpm test（默认报告）定位具体用例，修复后重新打包。" >&2
+    exit 1
+  fi
 }
 
 create_tarball() {
@@ -375,6 +381,10 @@ execute_flow() {
 }
 
 main() {
+  # 后续所有步骤（读取 package.json、pnpm 构建与测试、npm pack）都以仓库根目录为基准，
+  # 避免从其他目录调用脚本时读到别的 package.json 或打包到错误的目录。
+  cd "$ROOT_DIR"
+
   PACKAGE_NAME="$(read_package_field name)"
   PACKAGE_VERSION="$(read_package_field version)"
 
