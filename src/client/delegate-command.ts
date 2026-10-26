@@ -330,7 +330,7 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
   let popupMode: 'adapter' | 'model' = 'adapter'
   let popupAdapter: DelegateAdapterOption | undefined
   let popupOptions: readonly DelegateAdapterOption[] = []
-  let popupModels: readonly { id: string; label: string; detail?: string; magpie?: boolean }[] = []
+  let popupModels: readonly { id: string; label: string; detail?: string; magpie?: boolean; magpieProviderId?: string }[] = []
   let popupEditor: HTMLElement | undefined
   let popupToken: { start: number; end: number; draftRev: number } | undefined
   let popupQuery = ''
@@ -418,7 +418,7 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
     return popup
   }
 
-  const render = (title: string, rows: readonly { id: string; label: string; detail?: string; iconId?: string; magpie?: boolean; onClick: () => void }[]): void => {
+  const render = (title: string, rows: readonly { id: string; label: string; detail?: string; iconId?: string; magpie?: boolean; magpieProviderId?: string; onClick: () => void }[]): void => {
     if (popup === undefined) return
     popup.replaceChildren()
     const heading = document.createElement('div')
@@ -456,7 +456,7 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
       text.textContent = row.label
       Object.assign(text.style, { minWidth: '0', overflowWrap: 'anywhere', flex: '1 1 auto' })
       button.append(text)
-      if (row.magpie === true) text.after(createMagpieModelTagNode(document, row.id))
+      if (row.magpie === true) text.after(createMagpieModelTagNode(document, row.id, row.magpieProviderId))
       if (row.detail) {
         const detail = document.createElement('span')
         detail.textContent = row.detail
@@ -498,6 +498,7 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
         label: model.name || model.id,
         ...(details.length === 0 ? {} : { detail: details.join(' · ') }),
         ...(model.source === 'magpie' ? { magpie: true } : {}),
+        ...(model.magpieProviderId === undefined ? {} : { magpieProviderId: model.magpieProviderId }),
       }
     }))
     render(t('delegate.selectModel', { name: adapter.label }), popupModels

@@ -430,6 +430,8 @@ test('external Agent 模型列表只为 Host 确认的 Magpie 模型显示来源
     id: 'codex', name: 'Codex', models: [
       { id: 'auto/gpt-6.1-sol', name: 'GPT-6.1 Sol-Auto', efforts: ['low', 'high'], source: 'magpie' },
       { id: 'codex/gpt-6.1-sol', name: 'GPT-6.1 Sol', efforts: ['low', 'high'] },
+      { id: 'tlp/gpt-6.1-sol', name: 'GPT-6.1 Sol', efforts: ['low', 'high'], source: 'magpie', magpieProviderId: 'tlp' },
+      { id: 'hl/gpt-6.1-sol', name: 'GPT-6.1 Sol', efforts: ['low', 'high'], source: 'magpie', magpieProviderId: 'hl' },
     ],
   }]
   const probe = createProbe('codex', { modelGroups: groups, modelId: 'auto/gpt-6.1-sol' })
@@ -447,6 +449,15 @@ test('external Agent 模型列表只为 Host 确认的 Magpie 模型显示来源
     assert.match(magpieMarkup, /margin-inline-start:auto/u, 'the external logo occupies the trailing column')
     assert.ok(magpieMarkup.indexOf('aria-hidden="true">✓') < magpieMarkup.indexOf('data-codingns-magpie-model-tag'), 'the external checkmark stays before the logo')
     assert.doesNotMatch(renderToStaticMarkup(ordinaryRow), /data-codingns-magpie-model-tag/u)
+    const providerRow = modelOptions(tree).find((element) => element.key === 'codex:tlp/gpt-6.1-sol')!
+    assert.match(renderToStaticMarkup(providerRow), />tlp<\/span><img/u)
+    const otherProviderRow = modelOptions(tree).find((element) => element.key === 'codex:hl/gpt-6.1-sol')!
+    assert.match(renderToStaticMarkup(otherProviderRow), />hl<\/span><img/u, 'equal model names retain distinct provider tags')
+    providerRow.props.onClick()
+    await flush()
+    const update = probe.calls.filter((call) => call.endpoint === 'cli/session/set').at(-1)!
+    assert.equal(update.payload.modelId, 'tlp/gpt-6.1-sol', 'provider display does not change model selection')
+    assert.equal(update.payload.magpieProviderId, undefined, 'provider display is not persisted in session state')
   } finally { renderer.dispose(); probe.dispose() }
 })
 

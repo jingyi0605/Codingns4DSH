@@ -90,6 +90,8 @@ export interface CodingNsCliModel {
   readonly efforts: readonly string[]
   /** Transient Host catalog marker; never persisted as session model provenance. */
   readonly source?: 'magpie'
+  /** Provider ID from the verified Magpie catalog; not the model owner or a resolved auto route. */
+  readonly magpieProviderId?: string
   /** Provider-declared context capacity and token limits; absent means unknown. */
   readonly contextWindow?: number
   readonly maxInputTokens?: number
