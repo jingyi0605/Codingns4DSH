@@ -12,6 +12,7 @@ interface FakeHandle {
   closing?: Promise<void>
   subscribers?: Set<string>
   close(): Promise<void>
+  flush(): Promise<void>
   read?(): Promise<void>
   append?(): Promise<void>
   subscribe?(): () => void
@@ -27,12 +28,18 @@ interface FakeFixture {
   handles: Map<string, FakeHandle>
   closeOrder: string[]
   lockOwners: Set<string>
+  writers: Map<string, FakeHandle>
+  persisted: unknown[]
+  emit(id: string, event: unknown): void
+  flushSession(id: string): Promise<void>
 }
 
 function fixture(options: { readonly pendingRead?: Promise<void> } = {}): FakeFixture {
   const handles = new Map<string, FakeHandle>()
   const closeOrder: string[] = []
   const lockOwners = new Set<string>()
+  const writers = new Map<string, FakeHandle>()
+  const persisted: unknown[] = []
   const persistence: FakePersistence = {
     async open(id, access) {
       if (access === 'write' && lockOwners.has(id)) throw new Error(`write lock held: ${id}`)
@@ -44,9 +51,14 @@ function fixture(options: { readonly pendingRead?: Promise<void> } = {}): FakeFi
         closed: false,
         async close() {
           if (handle.closed) return
+          await handle.flush()
           handle.closed = true
           lockOwners.delete(id)
+          if (writers.get(id) === handle) writers.delete(id)
           closeOrder.push(id)
+        },
+        async flush() {
+          persisted.push(...handle.buffered.splice(0))
         },
         async read() {
           await options.pendingRead
@@ -54,12 +66,17 @@ function fixture(options: { readonly pendingRead?: Promise<void> } = {}): FakeFi
         async append() {},
         subscribe() { return () => {} },
       }
+      if (access === 'write') writers.set(id, handle)
       handles.set(`${id}:${access}:${handles.size}`, handle)
       return handle
     },
-    async flushAll() {},
+    async flushAll() { await Promise.all([...writers.values()].map(handle => handle.flush())) },
   }
-  return { persistence, handles, closeOrder, lockOwners }
+  return {
+    persistence, handles, closeOrder, lockOwners, writers, persisted,
+    emit(id, event) { writers.get(id)?.buffered.push(event) },
+    async flushSession(id) { await writers.get(id)?.flush() },
+  }
 }
 
 function controller(
@@ -136,7 +153,8 @@ test('buffered writes, active reads, and active iterators are never evicted', as
   releaseRead?.()
   await read
   await tracker.sweep()
-  assert.deepEqual(fake.closeOrder.slice().sort(), ['active-read', 'buffered'])
+  assert.deepEqual(fake.closeOrder, ['active-read'])
+  assert.equal(write.closed, false)
 
   const iteratorHandle = await fake.persistence.open('iterator', 'read')
   let releaseNext: ((value: IteratorResult<unknown>) => void) | undefined
@@ -180,7 +198,7 @@ test('flushAll is a barrier against concurrent eviction', async () => {
   const originalFlushAll = fake.persistence.flushAll
   fake.persistence.flushAll = async () => { await flushGate; await originalFlushAll() }
   const tracker = controller(fake.persistence, () => clock, { idleTtlMs: 100, maxOpenHandles: 1 })
-  await fake.persistence.open('barrier', 'write')
+  await fake.persistence.open('barrier', 'read')
   clock = 100
   const flushing = fake.persistence.flushAll()
   await Promise.resolve()
@@ -193,16 +211,61 @@ test('flushAll is a barrier against concurrent eviction', async () => {
   await tracker.dispose()
 })
 
-test('eviction closes the existing handle and releases its write lock', async () => {
+test('TTL and cap eviction preserve write ownership until the owner explicitly closes', async () => {
   let clock = 0
   const fake = fixture()
   const tracker = controller(fake.persistence, () => clock, { idleTtlMs: 10_000, maxOpenHandles: 1 })
-  await fake.persistence.open('locked', 'write')
+  const owner = await fake.persistence.open('locked', 'write')
+  await fake.persistence.open('second-writer', 'write')
   await fake.persistence.open('other', 'read')
+  clock = 10_001
   await tracker.sweep()
 
+  assert.deepEqual(fake.closeOrder, ['other'])
+  assert.equal(fake.lockOwners.has('locked'), true)
+  assert.equal(fake.lockOwners.has('second-writer'), true)
+  assert.equal(tracker.getDiagnostics().openHandles, 2)
+  await assert.rejects(() => fake.persistence.open('locked', 'write'), /write lock held/)
+  await tracker.dispose()
+  assert.equal(owner.closed, false)
+  await owner.close()
   assert.equal(fake.lockOwners.has('locked'), false)
   await assert.doesNotReject(() => fake.persistence.open('locked', 'write'))
+})
+
+test('backend-routed messages and completion persist after TTL and cap sweeps', async () => {
+  let clock = 0
+  const fake = fixture()
+  const tracker = controller(fake.persistence, () => clock, { idleTtlMs: 100, maxOpenHandles: 1 })
+  const owner = await fake.persistence.open('live', 'write')
+  fake.emit('live', { type: 'user/message', seq: 0 })
+  await fake.flushSession('live')
+  clock = 101
+  await fake.persistence.open('cold-reader', 'read')
+  await tracker.sweep()
+
+  // DSH routes live events and flushes directly to the backend writer, not its proxy.
+  fake.emit('live', { type: 'assistant/message', seq: 1 })
+  fake.emit('live', { type: 'turn/end', seq: 2, reason: { kind: 'completed' } })
+  await fake.flushSession('live')
+  await fake.persistence.flushAll()
+  assert.equal(fake.writers.has('live'), true)
+  assert.deepEqual(fake.persisted, [
+    { type: 'user/message', seq: 0 },
+    { type: 'assistant/message', seq: 1 },
+    { type: 'turn/end', seq: 2, reason: { kind: 'completed' } },
+  ])
+  await tracker.dispose()
+  await owner.close()
+})
+
+test('write-only handles do not schedule an eviction timer, even above the cap', async (t) => {
+  const timer = t.mock.method(globalThis, 'setTimeout')
+  const fake = fixture()
+  const tracker = controller(fake.persistence, () => 0, { idleTtlMs: 100, maxOpenHandles: 1 })
+  await fake.persistence.open('first-writer', 'write')
+  await fake.persistence.open('second-writer', 'write')
+  assert.equal(timer.mock.callCount(), 0)
   await tracker.dispose()
 })
 

@@ -55,8 +55,10 @@ const SUBSCRIBER_FIELDS = ['activeIterators', 'activeSubscribers', 'listeners', 
  * Install a process-local safety net around the DSH persistence service.
  *
  * The upstream JSONL implementation owns the actual close semantics. This adapter
- * only tracks public use and calls that existing close method when a handle is safe
- * to release, which keeps it usable with multiple DSH minor versions.
+ * only evicts idle read handles. Write handles remain owned by DSH until their
+ * caller closes them: backend-routed session events bypass this proxy, and closing
+ * a writer removes its live persistence route even when its buffer is empty.
+ * The handle cap is therefore best-effort when DSH owns more writers than the cap.
  */
 export function installSessionHandleEviction(
   value: unknown,
@@ -220,10 +222,10 @@ export function installSessionHandleEviction(
   }
 
   const isSafeToEvict = (record: TrackedHandle): boolean => {
+    if (record.access !== 'read') return false
     if (flushAllDepth > 0 || record.evicting || record.closed) return false
     if (record.activeCalls > 0 || record.activeIterators > 0 || record.activeSubscriptions > 0) return false
     if (readProperty(record.target, 'closing') !== undefined) return false
-    if (record.access === 'write' && bufferedLength(record.target) > 0) return false
     return !hasExternalActivity(record.target)
   }
 
@@ -264,7 +266,9 @@ export function installSessionHandleEviction(
 
   function scheduleSweep(): void {
     if (disposed || records.size === 0 || timer !== undefined) return
-    const oldest = Math.min(...[...records.values()].map((record) => record.lastUsedAt))
+    const readers = [...records.values()].filter((record) => record.access === 'read')
+    if (readers.length === 0) return
+    const oldest = Math.min(...readers.map((record) => record.lastUsedAt))
     const delay = records.size > maxOpenHandles
       ? 1
       : Math.max(1, Math.min(idleTtlMs, idleTtlMs - Math.max(0, now() - oldest)))
@@ -367,11 +371,6 @@ function readClose(target: UnknownObject): ((...args: unknown[]) => unknown) | u
   if (typeof close === 'function') return close as (...args: unknown[]) => unknown
   const dispose = readProperty(target, Symbol.asyncDispose)
   return typeof dispose === 'function' ? dispose as (...args: unknown[]) => unknown : undefined
-}
-
-function bufferedLength(target: UnknownObject): number {
-  const buffered = readProperty(target, 'buffered')
-  return Array.isArray(buffered) ? buffered.length : 0
 }
 
 function hasExternalActivity(target: UnknownObject): boolean {
