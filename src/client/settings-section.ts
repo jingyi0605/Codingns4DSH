@@ -29,7 +29,7 @@ import {
   dshThemeColor,
 } from './theme.js'
 import { useCodingNsTranslator } from './locale.js'
-import { CODINGNS_VERSION, DSH_COMPATIBILITY, isLegacyDshVersion } from '../shared/contracts/version.js'
+import { CODINGNS_VERSION, DSH_COMPATIBILITY, DSH_TESTED_VERSION, isDshVersionNewerThanTested, isLegacyDshVersion } from '../shared/contracts/version.js'
 import type { CodingNsSettingsSnapshot, CodingNsSettingsStore } from '../dsh-capabilities/settings-store.js'
 import { useMagpieInstallRequirement } from './feature-requirement.js'
 import type { SettingsNotice } from './features/types.js'
@@ -89,6 +89,10 @@ export function CodingNsSettingsSection({ settings, registry, services, restartS
       style: { ...dshSettingsToastStyle, borderColor: toast.kind === 'error' ? dshThemeColor.error : toast.kind === 'success' ? dshThemeColor.success : dshThemeColor.border },
     }, toast.message),
     createElement(CodingNsSettingsUpdate, { services }),
+    isDshVersionNewerThanTested(services.dshVersion) ? createElement('div', {
+      role: 'status',
+      style: { padding: '10px 12px', border: `1px solid ${dshThemeColor.warning}`, borderRadius: 6, background: dshThemeColor.surfaceSubtle },
+    }, t('settings.untestedDshWarning', { version: services.dshVersion, tested: DSH_TESTED_VERSION })) : null,
     // 标题交给 DSH 设置页自己的导航项；这里只保留一句作用域说明，避免同一页出现两级标题。
     createElement('header', { style: dshSettingsHeaderStyle },
       createElement('p', { style: dshSettingsSubtitleStyle }, t('settings.subtitle')),
@@ -107,6 +111,7 @@ export function CodingNsSettingsSection({ settings, registry, services, restartS
       createElement('summary', { style: { cursor: 'pointer', color: dshThemeColor.labelSecondary, listStylePosition: 'inside' } }, t('settings.version', { version: CODINGNS_VERSION })),
       createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, alignItems: 'center', maxWidth: 'min(100%, 560px)', marginBottom: 8, padding: '8px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 6, background: dshThemeColor.surfaceSubtle } },
         createElement('div', undefined, t('settings.compatibility', { range: DSH_COMPATIBILITY })),
+        createElement('div', undefined, t('settings.testedDshVersion', { version: DSH_TESTED_VERSION })),
         createElement('a', { href: CODINGNS_GITHUB_URL, target: '_blank', rel: 'noreferrer', style: { color: dshThemeColor.accent, overflowWrap: 'anywhere' } }, CODINGNS_GITHUB_URL),
       ),
     ),

@@ -9,6 +9,7 @@ const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u
 const profileRoot = fileURLToPath(new URL('../', import.meta.url))
 const manifest = JSON.parse(await readFile(join(profileRoot, 'package.json'), 'utf8'))
 const compatibility = manifest.engines?.dsh
+const { dshTestedVersion } = JSON.parse(await readFile(join(profileRoot, 'version.json'), 'utf8'))
 const detected = detectRuntimeDshVersion()
 
 // PATH 上的 `dsh` 只能证明机器上装了某个 DSH，不能证明它就是本次安装所使用的
@@ -22,9 +23,10 @@ if (detected === undefined) {
 
 if (detected.source === 'path') {
   const verdict = isCompatible(detected.version, compatibility) ? '在' : '不在'
+  const tested = isNewerThanTested(detected.version, dshTestedVersion)
   console.warn(
     `DSH Profile 安装检查：PATH 上的 dsh ${detected.version} ${verdict} Profile 支持范围 ${String(compatibility)} 内，` +
-      '但它未必是本次安装所使用的运行时，已跳过阻断',
+      `但它未必是本次安装所使用的运行时，已跳过阻断${tested ? `；高于已验证版本 ${dshTestedVersion}，兼容性尚未验证` : ''}`,
   )
   process.exit(0)
 }
@@ -34,6 +36,16 @@ if (!isCompatible(detected.version, compatibility)) {
     `DSH Profile 安装失败：当前 DSH ${detected.version} 不在 Profile 支持范围 ${String(compatibility)} 内` +
       `（版本来源：${detected.source}）`,
   )
+}
+
+if (isNewerThanTested(detected.version, dshTestedVersion)) {
+  console.warn(`codingns4dsh: DSH ${detected.version} is newer than the latest tested version (${dshTestedVersion}); compatibility is unverified. Installation and operation remain enabled.`)
+}
+
+function isNewerThanTested(version, testedVersion) {
+  const actual = parseVersion(version)
+  const tested = parseVersion(testedVersion)
+  return actual !== undefined && tested !== undefined && compareVersions(actual, tested) > 0
 }
 
 console.log(
@@ -154,6 +166,7 @@ function compareVersions(left, right) {
     if (leftPart === rightPart) continue
     const leftNumber = /^\d+$/u.test(leftPart)
     const rightNumber = /^\d+$/u.test(rightPart)
+    if (leftNumber && rightNumber && leftPart.length !== rightPart.length) return leftPart.length - rightPart.length
     if (leftNumber && !rightNumber) return -1
     if (!leftNumber && rightNumber) return 1
     return leftPart < rightPart ? -1 : 1

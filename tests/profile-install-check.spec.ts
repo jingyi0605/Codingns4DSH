@@ -21,11 +21,15 @@ function escapeRegExp(value: string): string {
  * 必须隔离：仓库内的 profile/ 能沿 node_modules 向上解析到 devDependency
  * 的 @deepseek-ai/dsh，那会命中 module 分支，掩盖 PATH 回退路径的真实行为。
  */
-function makeSandbox() {
+function makeSandbox(kind: 'profile' | 'package' = 'profile') {
   const root = mkdtempSync(join(tmpdir(), 'codingns-profile-'))
   mkdirSync(join(root, 'scripts'), { recursive: true })
-  writeFileSync(join(root, 'package.json'), readFileSync(sourceManifest, 'utf8'))
-  writeFileSync(join(root, 'scripts', 'check-dsh-install.mjs'), readFileSync(sourceScript, 'utf8'))
+  const prefix = kind === 'profile' ? '../profile/' : '../'
+  writeFileSync(join(root, 'package.json'), readFileSync(new URL(`${prefix}package.json`, import.meta.url), 'utf8'))
+  writeFileSync(join(root, 'version.json'), readFileSync(new URL(`${prefix}version.json`, import.meta.url), 'utf8'))
+  writeFileSync(join(root, 'scripts', 'check-dsh-install.mjs'), readFileSync(
+    kind === 'profile' ? sourceScript : new URL('../scripts/check-dsh-install.mjs', import.meta.url), 'utf8',
+  ))
   return root
 }
 
@@ -81,7 +85,40 @@ test('Profile 安装检查接受当前测试 DSH 版本的兼容范围', () => {
   const result = runSandbox(sandbox, { env: { ...scrubbedEnv(), DSH_RUNTIME_VERSION: SUPPORTED_DSH_VERSION, PATH: '' } })
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
   assert.match(result.stdout, new RegExp(`DSH ${escapeRegExp(SUPPORTED_DSH_VERSION)}（来源 env）`, 'u'))
+  assert.doesNotMatch(result.stderr, /newer than the latest tested/u)
 })
+
+for (const kind of ['profile', 'package'] as const) {
+  test(`${kind} install check warns without blocking newer prerelease, stable, or major versions`, () => {
+    const sandbox = makeSandbox(kind)
+    cleanups.push(sandbox)
+    for (const version of ['0.2.1-rc.4', '0.2.1-rc.10', '0.2.1', '0.3.0-alpha.1', '1.0.0']) {
+      const result = runSandbox(sandbox, { env: { ...scrubbedEnv(), DSH_RUNTIME_VERSION: version } })
+      assert.equal(result.status, 0, `${version}\n${result.stdout}\n${result.stderr}`)
+      assert.match(result.stderr, /newer than the latest tested version/u)
+      assert.ok(result.stderr.includes(SUPPORTED_DSH_VERSION))
+      assert.match(result.stderr, /Installation and operation remain enabled/u)
+    }
+    const old = runSandbox(sandbox, { env: { ...scrubbedEnv(), DSH_RUNTIME_VERSION: '0.2.0-rc.1' } })
+    assert.notEqual(old.status, 0)
+  })
+
+  test(`${kind} install check warns for a newer runtime resolved from module or resources`, () => {
+    const sandbox = makeSandbox(kind)
+    const resources = makeFakeResources('0.3.0-alpha.1')
+    cleanups.push(sandbox, resources)
+    const runtime = runSandbox(sandbox, { env: scrubbedEnv(), resourcesPath: resources })
+    assert.equal(runtime.status, 0, `${runtime.stdout}\n${runtime.stderr}`)
+    assert.match(runtime.stderr, /newer than the latest tested/u)
+    const packageDir = join(sandbox, 'node_modules', '@deepseek-ai', 'dsh')
+    mkdirSync(packageDir, { recursive: true })
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({ name: '@deepseek-ai/dsh', version: '0.3.0-alpha.1' }))
+    const module = runSandbox(sandbox, { env: scrubbedEnv() })
+    assert.equal(module.status, 0, `${module.stdout}\n${module.stderr}`)
+    assert.match(module.stderr, /newer than the latest tested/u)
+    assert.match(module.stdout, /来源 module/u)
+  })
+}
 
 test('Profile 安装检查接受范围内更早的 0.2 世代版本', () => {
   // 兼容范围覆盖 rc.2：已发布的旧环境不能因为插件升级而被拒绝安装。
@@ -124,6 +161,20 @@ test('PATH 上的兼容 dsh 仍只作为提示，不能证明当前运行时兼�
   assert.match(result.stderr, new RegExp(`PATH 上的 dsh ${escapeRegExp(SUPPORTED_DSH_VERSION)} 在`, 'u'))
   assert.match(result.stderr, /已跳过阻断/u)
   assert.doesNotMatch(result.stdout, /安装期版本检查通过/u)
+})
+
+test('PATH 上的新版本给出未验证提示，但不阻断 Profile 或 package 安装', () => {
+  for (const kind of ['profile', 'package'] as const) {
+    const sandbox = makeSandbox(kind)
+    cleanups.push(sandbox)
+    const result = runSandbox(sandbox, {
+      env: scrubbedEnv(),
+      commandResult: { status: 0, stdout: '0.3.0-alpha.1\n', stderr: '' },
+    })
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.match(result.stderr, /高于已验证版本/u)
+    assert.match(result.stderr, /已跳过阻断/u)
+  }
 })
 
 test('PATH 版本探测超时不阻断安装，保留运行期再次校验提示', () => {

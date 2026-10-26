@@ -9,6 +9,8 @@ import {
   CODINGNS_DSH_VERSION_GLOBAL,
   CODINGNS_DSH_ERROR_CODES,
   CodingNsDshError,
+  DSH_TESTED_VERSION,
+  isDshVersionNewerThanTested,
 } from '../shared/index.js'
 
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u
@@ -38,6 +40,9 @@ export async function detectRuntimeDshVersion(): Promise<string> {
     const version = await probe()
     if (version === undefined || !VERSION_PATTERN.test(version)) continue
     assertSupportedDshVersion(version)
+    if (isDshVersionNewerThanTested(version)) {
+      console.warn(`codingns4dsh: DSH ${version} is newer than the latest tested version (${DSH_TESTED_VERSION}); compatibility is unverified. Plugin installation and operation remain enabled.`)
+    }
     return version
   }
   throw new CodingNsDshError(

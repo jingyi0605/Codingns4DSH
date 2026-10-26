@@ -9,6 +9,7 @@ const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u
 const root = fileURLToPath(new URL('../', import.meta.url))
 const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'))
 const compatibility = manifest.engines?.dsh
+const { dshTestedVersion } = JSON.parse(await readFile(join(root, 'version.json'), 'utf8'))
 const detected = detectRuntimeDshVersion()
 
 // 这个脚本既可以作为 npm 包安装期的门禁运行，也可以手工执行。
@@ -25,9 +26,10 @@ if (detected === undefined) {
 
 if (detected.source === 'path') {
   const verdict = isCompatible(detected.version, compatibility) ? '在' : '不在'
+  const tested = isNewerThanTested(detected.version, dshTestedVersion)
   console.warn(
     `codingns4dsh: PATH 上的 dsh ${detected.version} ${verdict}插件支持范围 ${String(compatibility)} 内，` +
-      '但它未必是本次安装所使用的运行时，已跳过阻断',
+      `但它未必是本次安装所使用的运行时，已跳过阻断${tested ? `；高于已验证版本 ${dshTestedVersion}，兼容性尚未验证` : ''}`,
   )
   process.exit(0)
 }
@@ -37,6 +39,16 @@ if (typeof compatibility !== 'string' || !isCompatible(detected.version, compati
     `codingns4dsh 安装失败：当前 DSH ${detected.version} 不在插件支持范围 ${String(compatibility)} 内` +
       `（版本来源：${detected.source}）`,
   )
+}
+
+if (isNewerThanTested(detected.version, dshTestedVersion)) {
+  console.warn(`codingns4dsh: DSH ${detected.version} is newer than the latest tested version (${dshTestedVersion}); compatibility is unverified. Installation and operation remain enabled.`)
+}
+
+function isNewerThanTested(version, testedVersion) {
+  const actual = parseVersion(version)
+  const tested = parseVersion(testedVersion)
+  return actual !== undefined && tested !== undefined && compareVersions(actual, tested) > 0
 }
 
 console.log(
@@ -161,6 +173,7 @@ function compareVersions(left, right) {
     if (leftPart === rightPart) continue
     const leftNumber = /^\d+$/u.test(leftPart)
     const rightNumber = /^\d+$/u.test(rightPart)
+    if (leftNumber && rightNumber && leftPart.length !== rightPart.length) return leftPart.length - rightPart.length
     if (leftNumber && !rightNumber) return -1
     if (!leftNumber && rightNumber) return 1
     return leftPart < rightPart ? -1 : 1

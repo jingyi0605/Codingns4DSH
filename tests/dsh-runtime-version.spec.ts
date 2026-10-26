@@ -56,3 +56,20 @@ test('Host 版本环境变量优先于 Desktop Runtime 参数', async () => {
     await rm(runtimeRoot, { recursive: true, force: true })
   }
 })
+
+test('Host warns for a newer DSH version without rejecting activation', async () => {
+  const originalVersion = process.env.DSH_RUNTIME_VERSION
+  const originalWarn = console.warn
+  const warnings: string[] = []
+  try {
+    process.env.DSH_RUNTIME_VERSION = '0.3.0-alpha.1'
+    console.warn = (...values: unknown[]) => { warnings.push(values.join(' ')) }
+    assert.equal(await detectRuntimeDshVersion(), '0.3.0-alpha.1')
+    assert.ok(warnings.some(value => value.includes('newer than the latest tested version')))
+    assert.ok(warnings.some(value => value.includes(SUPPORTED_DSH_VERSION)))
+  } finally {
+    console.warn = originalWarn
+    if (originalVersion === undefined) delete process.env.DSH_RUNTIME_VERSION
+    else process.env.DSH_RUNTIME_VERSION = originalVersion
+  }
+})
