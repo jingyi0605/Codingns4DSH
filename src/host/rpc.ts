@@ -56,7 +56,7 @@ function invokeConnectionRpcHandler(
  */
 export function createCodingNsRpcHandler(
   table: CodingNsRpcTable,
-  options: { readonly connection?: unknown } = {},
+  options: { readonly connection?: unknown; readonly featuresReady?: Promise<void> } = {},
 ): CodingNsConnectionRpcHandler {
   // `peer` 是 DSH 0.2 Connection 注入的调用方作用域；0.1 carrier 没有该参数，
   // 因此保留可选形态，让同一处理器可被旧版 HTTP 回退入口复用。
@@ -69,12 +69,17 @@ export function createCodingNsRpcHandler(
       && !isCodingNsOwnerPeer(options.connection, peer)) {
       return failure('CODINGNS_RPC_FORBIDDEN', 'Magpie 安装探测只允许 Host 所有者调用')
     }
-    const target = table.resolve(endpoint)
-    if (target === null) {
-      debugWarn('codingns4dsh: host rpc endpoint not found', { endpoint })
-      return failure('CODINGNS_RPC_NOT_FOUND', `未知 Codingns4DSH RPC: ${endpoint}`)
-    }
     try {
+      let target = table.resolve(endpoint)
+      // The transport can accept requests before the initial feature reconciliation registers RPCs.
+      if (target === null && options.featuresReady !== undefined) {
+        await waitForFeatureStartup(options.featuresReady, signal)
+        target = table.resolve(endpoint)
+      }
+      if (target === null) {
+        debugWarn('codingns4dsh: host rpc endpoint not found', { endpoint })
+        return failure('CODINGNS_RPC_NOT_FOUND', `未知 Codingns4DSH RPC: ${endpoint}`)
+      }
       const value = await target.handler(target.action, payload, { signal, peer, localRequest })
       debugInfo('codingns4dsh: host rpc success', { endpoint })
       return success(value)
@@ -104,8 +109,23 @@ export function createCodingNsRpcHandler(
   }
 }
 
+async function waitForFeatureStartup(ready: Promise<void>, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted()
+  let onAbort = (): void => undefined
+  const aborted = new Promise<never>((_resolve, reject) => {
+    onAbort = () => reject(signal.reason)
+    signal.addEventListener('abort', onAbort, { once: true })
+  })
+  try {
+    await Promise.race([ready, aborted])
+    signal.throwIfAborted()
+  } finally {
+    signal.removeEventListener('abort', onAbort)
+  }
+}
+
 /** 在当前 Connection 上挂载 Codingns4DSH RPC 主处理器；注销由调用方的 effect 负责。 */
-export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable, settingsProvider?: DshHostSettingsProvider): void {
+export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable, settingsProvider?: DshHostSettingsProvider, featuresReady?: Promise<void>): void {
   // 连接服务的 rpc.handle 内部会把路由注册延迟到另一个 effect；该 effect 的 owner
   // 不携带本插件的 webServer 注入，在部分 DSH 版本中会直接失败。因此这里捕获已经
   // 注入的服务实例，挂载同协议的前缀路由，避免把 RPC 请求落到 SPA fallback。
@@ -126,7 +146,7 @@ export function registerCodingNsRpc(ctx: Context, table: CodingNsRpcTable, setti
             return await target.handler(target.action, { force: true }) as MagpieInstallDetection
           },
         }))
-      const handler = createCodingNsRpcHandler(table, { connection })
+      const handler = createCodingNsRpcHandler(table, { connection, ...(featuresReady === undefined ? {} : { featuresReady }) })
       // DSH 0.1.7 的 connection.rpc.handle() 会在当前插件 Fiber 中再次读取
       // webServer；该 Fiber 没有 webServer 注入时会直接抛错。这里使用当前
       // Host 已明确注入的 webServer 注册插件自有前缀，避免 Host RPC 装配中断。

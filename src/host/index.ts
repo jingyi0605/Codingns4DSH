@@ -264,9 +264,11 @@ export async function apply(ctx?: Context): Promise<void> {
     registry.validate()
     debugInfo('codingns4dsh: host feature registry ready', { features: registry.descriptors().map((item) => item.name) })
     const restartStates = captureRestartFeatureStates(registry.descriptors(), settings.get(), dshVersion)
+    let markFeaturesReady!: () => void
+    const featuresReady = new Promise<void>(resolve => { markFeaturesReady = resolve })
 
     try {
-      registerCodingNsRpc(hostCtx, services.rpc, services.settingsProvider)
+      registerCodingNsRpc(hostCtx, services.rpc, services.settingsProvider, featuresReady)
       debugInfo('codingns4dsh: host RPC registration requested')
     } catch (error) {
       console.error('codingns4dsh: host RPC registration failed', error)
@@ -307,12 +309,14 @@ export async function apply(ctx?: Context): Promise<void> {
           .catch((error: unknown) => {
             console.error('codingns4dsh: 功能模块状态同步失败', error)
           })
+          .finally(markFeaturesReady)
       }
       sync()
       const unwatch = settings.watch(sync)
       // 原生 Host HMR 会销毁上一代 Fiber，必须连同功能资源一起收回。
       return async () => {
         unwatch()
+        markFeaturesReady()
         await registry.reconcile([])
       }
     }, 'codingns4dsh: 功能模块启停同步')
