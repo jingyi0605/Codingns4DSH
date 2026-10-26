@@ -296,7 +296,7 @@ test('pre-step holds a failed user message until retry, direct send, or cancella
     let attempts = 0
     const translation = { ...createTranslation(), async translateInputDetailed(_adapter: string, text: string) {
       attempts++
-      return attempts === 1 ? { translated: text, failed: true } : { translated: 'Please review this code' }
+      return attempts === 1 ? { translated: text, failed: true, failure: { code: 'invalid-response', retryable: false } } : { translated: 'Please review this code' }
     } }
     const harness = createHarness({ translation }) as Harness & { start(): Promise<void> }
     await harness.start()
@@ -324,7 +324,10 @@ test('pre-step holds a failed user message until retry, direct send, or cancella
         assert.equal(result.kind, 'enter')
         assert.equal(entered, true)
         assert.equal(result.messages[0].source.codingnsTranslationInput.original, '请检查这段代码')
-        if (choice === 'send') assert.deepEqual(result.messages[0].content, original.content)
+        if (choice === 'send') {
+          assert.deepEqual(result.messages[0].content, original.content)
+          assert.deepEqual(result.messages[0].source.codingnsTranslationInput.failure, { code: 'invalid-response', retryable: false })
+        }
         else assert.equal(result.messages[0].content[0].text, 'Please review this code')
       }
       assert.equal(attempts, choice === 'retry' ? 2 : 1)
@@ -337,7 +340,7 @@ test('external agents receive only the chosen input and do not translate it a se
     let attempts = 0
     const executions: Record<string, unknown>[] = []
     const translation = { ...createTranslation(), async translateInputDetailed(_adapter: string, text: string) {
-      return ++attempts === 1 ? { translated: text, failed: true } : { translated: 'Review the code' }
+      return ++attempts === 1 ? { translated: text, failed: true, failure: { code: 'invalid-response', retryable: false } } : { translated: 'Review the code' }
     } }
     const harness = createHarness({ translation, adapterId: 'codex', translationEnabled: true, executions }) as Harness & { start(): Promise<void> }
     await harness.start()
@@ -354,6 +357,8 @@ test('external agents receive only the chosen input and do not translate it a se
       if (choice === 'cancel') assert.equal(decision.kind, 'reject')
       else {
         assert.deepEqual(decision.messages[0].content, original.content, 'external history retains the original')
+        assert.deepEqual(decision.messages[0].source.codingnsTranslationInput.failure,
+          choice === 'send' ? { code: 'invalid-response', retryable: false } : undefined)
         for await (const _chunk of harness.llmListener({ sessionId: 'native-session', messages: decision.messages }, async function* () {})) {}
         assert.equal(executions.length, 1)
         assert.equal(executions[0]!.prompt, choice === 'retry' ? 'Review the code' : '检查代码')
@@ -649,6 +654,50 @@ test('DSH 原生会话默认关闭且会话未单独开启时逐块直通', asyn
   ])
   assert.deepEqual(harness.requests, [])
   await harness.features.disable('cliAdapters')
+})
+
+for (const kind of ['assistant', 'reasoning'] as const) {
+  test(`native ${kind} retains failure diagnostics and usage through stream serialization`, async t => {
+    const failure = { code: 'invalid-response', retryable: false } as const
+    const translation = createTranslation()
+    translation.translateOutput = async (_adapter, _kind, original) => ({
+      original, translated: original, targetLanguage: 'zh', bilingual: false, failed: true, failure,
+      durationMs: 2010, totalTokens: 1273,
+    })
+    const harness = createHarness({ translation }) as Harness & { start(): Promise<void> }
+    await harness.start()
+    t.after(() => harness.features.disable('cliAdapters'))
+    const chunks: any[] = []
+    const channel = kind === 'assistant' ? 'text' : 'reasoning'
+    for await (const chunk of harness.llmListener({ sessionId: 'native-session', messages: [] }, async function* () {
+      yield { type: `${channel}-delta`, index: 1, text: 'Hello' }
+      yield { type: 'block-end', index: 1, block: { type: channel, text: 'Hello' } }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    })) chunks.push(chunk)
+    const saved = JSON.parse(JSON.stringify(chunks))
+    const end = saved.find((chunk: any) => chunk.type === 'block-end')
+    assert.deepEqual(end.codingnsTranslation.failure, failure)
+    assert.deepEqual(end.block.codingnsTranslation.failure, failure)
+    assert.equal(end.codingnsTranslation.totalTokens, 1273)
+    assert.equal(end.block.text, 'Hello')
+    assert.equal(saved.filter((chunk: any) => chunk.type === 'finish').length, 1)
+  })
+}
+
+test('native translation exceptions retain a classified failure without raw provider details', async t => {
+  const translation = createTranslation()
+  translation.translateOutput = async () => { throw new Error('connection lost: private-provider-detail') }
+  const harness = createHarness({ translation }) as Harness & { start(): Promise<void> }
+  await harness.start()
+  t.after(() => harness.features.disable('cliAdapters'))
+  const chunks: any[] = []
+  for await (const chunk of harness.llmListener({ sessionId: 'native-session', messages: [] }, async function* () {
+    yield { type: 'text-delta', index: 1, text: 'Hello' }
+    yield { type: 'block-end', index: 1, block: { type: 'text', text: 'Hello' } }
+    yield { type: 'finish', reason: { kind: 'stop' } }
+  })) chunks.push(chunk)
+  assert.deepEqual(chunks.find(chunk => chunk.type === 'block-end').codingnsTranslation.failure, { code: 'network', retryable: true })
+  assert.equal(JSON.stringify(chunks).includes('private-provider-detail'), false)
 })
 
 test('原生会话显式开启时，输入和输出均覆盖默认关闭，并调用真实翻译服务', async () => {

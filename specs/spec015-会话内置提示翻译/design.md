@@ -6,6 +6,10 @@ Attachment metadata owns file identity. A shared formatter selects fixed prose b
 
 The existing translator owns language/model selection, placeholder validation, usage, and fallback. An optional internal protection context supplies known literals and permits prose only inside recognized host prompt wrappers. Ordinary user HTML/XML remains protected as before.
 
+Input audit records and native/external output projections retain the translator's structured failure category and retryability alongside duration and reported token usage. Unexpected translation exceptions use the existing failure classifier. Only known categories and a boolean retryability value cross the history/UI boundary; raw provider errors and responses are not copied into diagnostics. Failure does not erase provider-reported consumption.
+
+Translation details show a localized explanation of the recorded category. Older or malformed records without a recognized category explicitly report that failure details were not saved; they are not assigned an inferred cause. This does not recover diagnostics missing from existing history or distinguish individual validation checks within the existing `invalid-response` category.
+
 Recognize complete path spans before merging known literals, so a working-directory prefix cannot split a longer path. Match identifier literals at token boundaries to avoid protecting fragments of ordinary words.
 
 Unquoted paths stop at Chinese prose punctuation (`，。；：！？、`) so adjacent instructions remain translatable. Chinese letters and full-width parentheses remain valid path content. Paths whose names contain those punctuation delimiters must be quoted, enclosed in Markdown code, or supplied as known literals; those explicit forms retain the full path, including spaces and punctuation.

@@ -152,6 +152,19 @@ export interface SessionTranslationFailure {
   readonly retryable: boolean
 }
 
+/** Retain known diagnostics without copying raw provider errors into history or UI. */
+export function readSessionTranslationDiagnostics(value: unknown): Pick<SessionTranslationRecord, 'failure'> {
+  const failure = asRecord(asRecord(value)?.failure)
+  if (typeof failure?.retryable !== 'boolean') return {}
+  switch (failure.code) {
+    case 'timeout': case 'cancelled': case 'rate-limit': case 'network':
+    case 'unavailable': case 'invalid-response': case 'configuration': case 'provider':
+      return { failure: { code: failure.code, retryable: failure.retryable } }
+    default:
+      return {}
+  }
+}
+
 export interface SessionTranslationMetrics {
   /** Elapsed translation time, including model selection and fallback attempts. */
   readonly durationMs?: number
@@ -210,6 +223,8 @@ export interface SessionTranslationInputRecord extends SessionTranslationMetrics
   readonly model?: SessionTranslationModel
   /** 翻译失败并回退原文；前端显示警告状态。 */
   readonly failed?: boolean
+  /** Structured failure details; absent in older translation records. */
+  readonly failure?: SessionTranslationFailure
 }
 
 /**
@@ -236,6 +251,7 @@ export function readNativeTranslationRecord(source: unknown): SessionTranslation
     ...(candidate.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
     ...(candidate.failed === true ? { failed: true } : {}),
     ...(model === undefined ? {} : { model }),
+    ...readSessionTranslationDiagnostics(candidate),
     ...readSessionTranslationMetrics(candidate),
   }
 }
@@ -255,6 +271,7 @@ export function toSessionTranslationRecord(
     ...(record.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
     ...(record.failed === true ? { failed: true } : {}),
     ...(record.model === undefined ? {} : { model: record.model }),
+    ...readSessionTranslationDiagnostics(record),
     ...readSessionTranslationMetrics(record),
   }
 }

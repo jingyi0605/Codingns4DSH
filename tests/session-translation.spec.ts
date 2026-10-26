@@ -7,6 +7,7 @@ import {
   isSessionTranslationAdapter,
   normalizeSessionTranslationSettings,
   readNativeTranslationRecord,
+  readSessionTranslationDiagnostics,
   readSessionTranslationMetrics,
   supportsSessionTranslation,
   toSessionTranslationRecord,
@@ -167,6 +168,63 @@ test('translation metrics survive history serialization and external output proj
   const chunks = await projector.push({ type: 'finish', reason: 'stop' })
   for (const chunk of chunks.filter((chunk) => chunk.type !== 'finish')) {
     assert.deepEqual(readSessionTranslationMetrics(chunk.codingnsTranslation), metrics)
+  }
+})
+
+for (const kind of ['assistant', 'reasoning'] as const) {
+  test(`external ${kind} retains failure diagnostics and reported usage in serialized history`, async () => {
+    const failure = { code: 'invalid-response', retryable: false } as const
+    const translation = {
+      shouldTranslate: () => true,
+      translateOutput: async () => ({ original: 'Hello', translated: 'Hello', targetLanguage: 'zh', bilingual: false,
+        failed: true, failure, durationMs: 2010, totalTokens: 1273 }),
+    }
+    const projector = new CodingNsDshMessageProjector({
+      adapterId: 'codex', sessionId: 'translation-diagnostics', translationEnabled: true, translation: translation as never,
+    })
+    await projector.push({ type: kind === 'assistant' ? 'text-delta' : 'reasoning-delta', text: 'Hello' })
+    const chunks = JSON.parse(JSON.stringify(await projector.push({ type: 'finish', reason: 'stop' })))
+    for (const chunk of chunks.filter((chunk: any) => chunk.type !== 'finish')) {
+      assert.deepEqual(chunk.codingnsTranslation.failure, failure)
+      assert.equal(chunk.codingnsTranslation.failed, true)
+      assert.equal(chunk.codingnsTranslation.totalTokens, 1273)
+      assert.equal(chunk.codingnsTranslation.translated, 'Hello')
+    }
+    assert.deepEqual(chunks.find((chunk: any) => chunk.type === 'block-end').block.codingnsTranslation.failure, failure)
+    assert.equal(chunks.filter((chunk: any) => chunk.type === 'finish').length, 1)
+  })
+}
+
+test('external translation exceptions retain only a classified failure', async () => {
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'codex', sessionId: 'translation-exception', translationEnabled: true,
+    translation: { shouldTranslate: () => true, translateOutput: async () => { throw new Error('connection lost: private-provider-detail') } } as never,
+  })
+  await projector.push({ type: 'text-delta', text: 'Hello' })
+  const chunks = await projector.push({ type: 'finish', reason: 'stop' })
+  const saved = JSON.parse(JSON.stringify(chunks))
+  assert.deepEqual(saved[0].codingnsTranslation.failure, { code: 'network', retryable: true })
+  assert.equal(JSON.stringify(saved).includes('private-provider-detail'), false)
+})
+
+test('translation diagnostics survive input history and discard unknown fields and malformed failures', () => {
+  const failure = { code: 'invalid-response', retryable: false } as const
+  const record = { original: 'Hello', translated: 'Hello', targetLanguage: 'zh', failed: true,
+    failure: { ...failure, message: 'private-provider-detail' }, totalTokens: 1273 }
+  const saved = JSON.parse(JSON.stringify({ codingnsTranslationInput: record }))
+  const input = readNativeTranslationRecord(saved)!
+  assert.deepEqual(input.failure, failure)
+  const details = toSessionTranslationRecord(input)
+  assert.deepEqual(details.failure, failure)
+  assert.equal(details.totalTokens, 1273)
+  assert.equal(JSON.stringify(details).includes('private-provider-detail'), false)
+  for (const invalid of [undefined, null, 'network', [], { code: 'unknown', retryable: true },
+    { code: 'network' }, { code: 'network', retryable: 'true' }]) {
+    assert.deepEqual(readSessionTranslationDiagnostics({ failure: invalid }), {})
+  }
+  for (const code of ['timeout', 'cancelled', 'rate-limit', 'network', 'unavailable', 'invalid-response', 'configuration', 'provider']) {
+    assert.deepEqual(readSessionTranslationDiagnostics({ failure: { code, retryable: true, message: 'private-provider-detail' } }),
+      { failure: { code, retryable: true } })
   }
 })
 

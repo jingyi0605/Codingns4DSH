@@ -15,7 +15,8 @@ import {
 import type { CodingNsDshExternalToolMarker } from './dsh-tool-history.js'
 import type { SessionTranslationService } from '../features/session-translation-service.js'
 import type { SessionTranslationRecord } from '../../shared/contracts/session-translation.js'
-import { readSessionTranslationMetrics } from '../../shared/contracts/session-translation.js'
+import { readSessionTranslationDiagnostics, readSessionTranslationMetrics } from '../../shared/contracts/session-translation.js'
+import { translationFailure } from '../features/session-translation-runtime.js'
 
 export interface CodingNsDshMessageProjectorOptions {
   readonly adapterId: string
@@ -295,7 +296,7 @@ export class CodingNsDshMessageProjector {
     let translation: SessionTranslationRecord | null | undefined
     try {
       translation = await this.options.translation?.translateOutput(this.options.adapterId, channel === 'reasoning' ? 'reasoning' : 'assistant', original, this.options.signal, this.options.translationEnabled)
-    } catch {
+    } catch (error) {
       // 翻译服务是旁路能力；异常时保留 Provider 原文并正常结束当前 block。
       const failedRecord = {
         original,
@@ -304,6 +305,7 @@ export class CodingNsDshMessageProjector {
         outputKind: channel === 'reasoning' ? 'reasoning' as const : 'assistant' as const,
         bilingual: false,
         failed: true,
+        failure: translationFailure(error, this.options.signal),
       }
       return [
         { type: 'block-start', index, blockType: channel, codingnsTranslation: failedRecord },
@@ -320,6 +322,7 @@ export class CodingNsDshMessageProjector {
       bilingual: translation.bilingual,
       ...(translation.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
       ...(translation.model === undefined ? {} : { model: translation.model }),
+      ...readSessionTranslationDiagnostics(translation),
       ...readSessionTranslationMetrics(translation),
       ...(translation.failed === true ? { failed: true } : {}),
     }

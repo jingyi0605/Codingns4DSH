@@ -178,3 +178,61 @@ pwsh.exe -NoLogo -NoProfile -File "$env:USERPROFILE/.config/codingns4dsh/stage0-
 ```
 
 `environment.json`, `verification.json`, `verification-attempt1.json`, `built-tests.log`, `launcher.pid`, and the saved RPC/verifier scripts are under `C:/Users/Administrator/.config/codingns4dsh/stage0-path-prose/`. `stdout.log` contains the private browser authentication URL and must not be shared. All configuration, sessions and credentials remain local, outside tracked source. Browser rendering/click behavior was not tested; HTTP/RPC and real provider verification do not establish UI acceptance. No commit, merge, push or release was performed.
+
+## 2026-10-26 translation failure diagnostics
+
+- [x] DONE: Preserve structured translation failures through native/external projections, input audit history, and client readers; show the saved failure category in translation details. Observable result: a failed translation retains its category, retryability, duration, and reported tokens after serialization, and the popup shows an English/Chinese explanation rather than only a generic failed status. Depends on the existing `SessionTranslationFailure` contract, classifier, projector, and popup. Read Requirements 5/6/8, Design / Data ownership, and the translation/native/chat tests first. Change `src/shared/contracts/session-translation.ts`, `src/host/cli-adapters/{feature,dsh-message-projector}.ts`, `src/client/{session-translation-chat,locales/panels}.ts`, the three corresponding translation test suites, and this spec. Exclude changes to translation validation, retry policy, token accounting, provider requests, raw-error logging, history migration, build output, running installations, commits, and publishing. Verify failing-first regressions, affected source suites, TypeScript, version/capability/i18n checks, and `git diff --check`.
+
+Branch: `fix/translation-failure-diagnostics`, created from local `main` at `436e1e0`.
+
+Failing-first evidence: all eight focused regressions failed before implementation: external/native reply and reasoning serialization dropped `failure`, exception fallbacks lacked a classified reason, client history dropped diagnostics, and the popup lacked a saved/unknown explanation. The same eight regressions pass after implementation.
+
+Final source verification: **301/301 tests passed across 20 files**, zero failures or skips. Coverage includes English/Chinese explanations for every existing failure category, old records without diagnostics, sanitized history readers, input send/retry/cancel, native/external reply and reasoning projections, exception classification, and retained reported usage. Local log: `data/logs/translation-failure-diagnostics-20261026-035027.log`.
+
+```powershell
+$tests = @(Get-ChildItem -LiteralPath 'tests' -File | Where-Object { $_.Name -like 'session-translation*.spec.ts' -or $_.Name -like 'interaction-translation*.spec.ts' } | Sort-Object Name | ForEach-Object { 'tests/' + $_.Name })
+$tests += @('tests/session-prompt-translation.spec.ts', 'tests/dsh-message-projector.spec.ts', 'tests/cli-adapters-turn-status.spec.ts', 'tests/attachment-prompt-language.spec.ts')
+node --import ./tests/register-source-loader.mjs --test --test-concurrency=1 @tests
+node ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit
+node scripts/check-version-sync.mjs
+node scripts/check-capability-retirement.mjs
+node scripts/check-client-i18n.mjs
+git diff --check
+```
+
+TypeScript, version, capability and whitespace checks pass. Localization reports zero blocking violations and 201 nonblocking warnings. Direct Node commands avoid the previously documented pnpm 11 automatic dependency synchronization; no dependency files changed.
+
+An expanded 22-file source run, also including `cli-adapters-rpc.spec.ts` and `cli-adapters-stream.spec.ts`, passed 368/375 tests. The seven failures are six Claude mock-process/permission-argument assertions and a Codex MCP assertion expecting a POSIX executable path on Windows. Those two test files and the Claude/standard-stream/Codex drivers are byte-for-byte unchanged from `main` (`git diff --exit-code main -- ...` passed). A clean-main comparison command was rejected by execution policy before process creation; no baseline test or temporary worktree was created, and baseline execution remains unverified. These fixtures were not changed for this diagnostic fix. React server-rendering tests emit the existing `useLayoutEffect` warnings.
+
+No bundle build, live provider call, application/profile change, installation, browser/Stage0 test, commit, push or release was performed. Installed-runtime/browser acceptance remains unperformed. Existing records without failure details cannot be repaired by this change.
+
+## 2026-10-26 isolated Stage0 diagnostic verification
+
+- [x] DONE: Configure a separate Stage0 and verify saved translation failure details in the actual runtime and browser. Observable result: native reply and reasoning retain `invalid-response`, retryability, original text, duration, and reported usage; the English details popup shows the explanation and usage before and after reload. Depends on the completed diagnostic fix, installed DSH `0.2.1-rc.3`, and the user's follow-up authorization for Stage0 setup/builds. Read this spec, `scripts/run-dsh-stage0.sh`, `scripts/stage0-runtime.mjs`, and `dsh-stage0.patch.yml` first. Change only local isolated profile/snapshot/fixture/verifier files and this task evidence. Exclude Desktop and existing Stage0 configuration, credentials, original sessions, upstream provider calls, production source changes, commits, and publishing. Verify a snapshot build, focused built-output tests, persisted runtime events, browser interactions/reload, source hashes, and existing listener identities.
+
+An existing Stage0 and compiler watcher already owned the repository output. To avoid replacing their bundles, copied the current tracked working files (including the uncommitted fix) to a separate snapshot under `C:/Users/Administrator/.config/codingns4dsh/stage0-translation-diagnostics-20261026/workspace`. Only its dependencies are junction-linked to the repository. Built that snapshot successfully using pnpm `10.7.1`; the repository build output was not rebuilt for this verification. SHA256 checks confirm that all **704 source files** in the built snapshot match both the recorded source hashes and the current branch.
+
+The new runtime uses Home `C:/Users/Administrator/.dsh-stage0-translation-diagnostics-20261026`, profile `stage0`, a separate plugin state directory, loopback **127.0.0.1:17895**, telemetry off, and watch mode off. No credentials were copied. Existing listeners on 17890 (PID 3004) and 17891 (PID 10512) remain unchanged. The new server is left running for inspection; no existing process was stopped.
+
+Verification results:
+
+- Snapshot `pnpm run build`: passed. Exact output is local `build.log`; existing build warnings remain in that log.
+- Built-output tests: **64/64 passed**, zero failures/skips, using the command below in the snapshot. These load built modules, not the in-memory source loader.
+- Native runtime persistence: **2/2 passed**, reply and reasoning, in session `session-stage0-synthetic-diagnostics-46c67bee-a14c-43a7-8cbf-4e048a1f6f63`. Both records preserve `failure: { code: 'invalid-response', retryable: false }`, duration, model, original text, and **1273 synthetic reported tokens per translation**. The turn completes and makes zero tool calls.
+- Isolated headless Chrome: **4/4 passed**, reply/reasoning details before and after reload. Each shows the English validation-failure explanation, model, original/fallback text, and `1273 tok`; neither raw fixture responses nor the unknown-details fallback appear. No browser page errors occurred. Screenshots were saved, and the reply/reasoning layouts were visually inspected.
+- Isolation/source-hash checks and `git diff --check`: passed.
+
+```powershell
+# Run from the isolated snapshot, not the repository:
+node --import ./tests/register-css-loader.mjs --test --test-concurrency=1 tests/session-translation-native.spec.ts tests/session-translation.spec.ts tests/session-translation-chat.spec.ts
+# Verify the running isolated server (creates a new synthetic session):
+$root = Join-Path $HOME '.config/codingns4dsh/stage0-translation-diagnostics-20261026'
+node (Join-Path $root 'verify-rpc.mjs')
+node (Join-Path $root 'verify-browser.mjs')
+```
+
+The fixture is a clearly named local LLM adapter, not an upstream service. Its translator returns an invalid response shape with synthetic usage to exercise the real validation and history/UI paths; **paid provider requests and real billed tokens are zero**. Initial harness attempts lacked the fixture's bundle `insert` operation and therefore returned `NO_ADAPTER`; that local fixture configuration was corrected before successful acceptance. Browser setup also required explicit Workspace membership for RPC-created sessions; the verifier now creates them with `workspaceId`. No product code was changed during Stage0 setup.
+
+Local evidence and reproducibility instructions are in the directory above: `README.md`, `environment.json`, `source-hashes.json`, `build.log`, `built-tests.log`, `rpc-verification.json`, `browser-verification.json`, `isolation-verification.json`, the verification scripts, and four `browser-*.png` screenshots. Startup logs contain private authentication URLs and must not be shared. `start.ps1` refuses an occupied port; the local README documents authenticated inspection, restart, and narrowly scoped shutdown.
+
+This follow-up establishes native synthetic-provider runtime and English browser acceptance, not the cause of the original session's missing historical diagnostic. Real upstream providers, live external CLI agents, input-failure recovery, successful retry, Chinese browser rendering, and legacy-record browser behavior were not exercised here; their applicable source-test coverage remains separate. The earlier 301-test source results and seven expanded-suite fixture failures are unchanged. No full-suite run, Desktop installation, commit, push, or release was performed.

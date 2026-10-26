@@ -7,3 +7,4 @@
 5. Respect session/global switches and existing exclusions for assistant and subagent sessions. Cache only successful context translations with bounded storage and settings/model invalidation; cancellation and translation recovery remain effective.
 6. Explicitly truncated translation streams must not be reported as successful. Missing or damaged protected literals invalidate translation.
 7. Verify source behavior with fake DSH contexts, actual prompt-assembly code where available, all supported target languages, path edge cases, failures, and lifecycle cleanup. No server or Desktop operation is needed.
+8. Preserve structured translation failure categories and retryability through input audit records, native/external output history, and client readers. Translation details show a localized category explanation or explicitly state that no failure details were saved. Keep reported token usage on failure and do not expose raw provider errors or responses.
