@@ -11,7 +11,7 @@
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.1-rc.5`** · DSH **`>=0.2.0-rc.2 <=0.2.1-rc.3`**（已验证 `0.2.1-rc.3`）· Node **`>= 22.19`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.1-rc.5`** · DSH 最低版本 **`0.2.0-rc.2`**（已验证 `0.2.1-rc.3`；更新版本仅告警，不阻止安装或运行）· Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965** · **[微信群 / QQ 群二维码](#交流群)**
 
@@ -239,7 +239,7 @@ DSH 原生会话的翻译默认关闭，可在会话模型选择菜单中开启�
 
 ## 安装
 
-**环境要求**：DSH `>=0.2.0-rc.2 <=0.2.1-rc.3`（已验证 `0.2.1-rc.3`）、Node.js `>=22.19`，并安装 pnpm。macOS/Linux 的持久终端还需要 tmux。
+**环境要求**：DSH `>=0.2.0-rc.2`（已验证 `0.2.1-rc.3`；更高版本会显示未验证警告，但不阻止安装或运行）、Node.js `>=22.19`，并安装 pnpm。macOS/Linux 的持久终端还需要 tmux。
 
 ### 使用内置 Web 配置
 
@@ -322,7 +322,7 @@ pnpm typecheck
 
 功能设计与实现细节见 [Spec 文档](specs/)、[开发记录](docs/开发记录/)和[开发规范](docs/开发规范/)。[形象包目录](assets/assistant-avatar-catalog.md)与[截图清单](assets/screenshots/README.md)也可单独查阅。
 
-[Spec007.4: External Agent Team collaboration and management](specs/spec007.4-外部Agent团队协作与管理/README.md) adds native DSH Team tools for eligible external collaborators and Leads from DSH `0.2.1-alpha.2` through `0.2.1-rc.3`. Headless reference acceptance covers native/external and mixed Codex/Claude workflows on alpha.2 and alpha.3; rc.2 compatibility is covered by repository regressions and Stage0 HTTP checks. Ordinary external sessions support DSH `>=0.2.0-rc.2 <=0.2.1-rc.3`. See the Spec for adapter eligibility, recovery evidence, and validation limits.
+[Spec007.4: External Agent Team collaboration and management](specs/spec007.4-外部Agent团队协作与管理/README.md) adds native DSH Team tools for eligible external collaborators and Leads from DSH `0.2.1-alpha.2` onward when structural capability probes succeed. Headless reference acceptance covers native/external and mixed Codex/Claude workflows on alpha.2 and alpha.3; rc.2 compatibility is covered by repository regressions and Stage0 HTTP checks. Ordinary external sessions require DSH `>=0.2.0-rc.2`; newer hosts are enabled but remain unverified until tested. See the Spec for adapter eligibility, recovery evidence, and validation limits.
 
 ---
 
