@@ -24,14 +24,11 @@ for (const [name, version] of dshDependencies) {
   if (importer?.[1]?.trim() !== expected) failures.push(`pnpm-lock importer 中 ${name} 为 ${importer?.[1]?.trim() ?? '缺失'}，必须为 ${expected}`)
 }
 
-// 允许声明上下界；声明上界时必须覆盖当前测试版本，否则门禁会把已安装的
-// 运行时判为范围外。
+// Installation and activation share a minimum-only host requirement.
 if (manifest.engines?.dsh !== compatibility) failures.push(`engines.dsh 与 version.json.dshCompatibility 不一致：${String(manifest.engines?.dsh)} != ${compatibility}`)
 if (manifest.peerDependencies?.['@deepseek-ai/dsh'] !== compatibility) failures.push(`peerDependencies.@deepseek-ai/dsh 与 version.json.dshCompatibility 不一致：${String(manifest.peerDependencies?.['@deepseek-ai/dsh'])} != ${compatibility}`)
 
-// Desktop runtime 校验按「兼容范围」而非「精确等于测试版本」：
-// rc.2 到当前测试版本 alpha.1 都可用，范围外版本必须明确拒绝。
-// 若这里用精确比较，就会出现「安装期放行、矩阵检查拒绝」的自相矛盾。
+// Newer runtime fixtures remain accepted while reporting unverified compatibility.
 const runtimeRoot = process.argv[2] ?? process.env.DSH_DESKTOP_RUNTIME_ROOT
 if (runtimeRoot) {
   // 桌面 runtime 根的布局随发行方式不同：有的是 node_modules 平铺，有的只有
@@ -61,6 +58,8 @@ if (runtimeRoot) {
     }
     if (!isVersionInRange(declared, compatibility)) {
       failures.push(`Desktop runtime 的 DSH 版本 ${declared} 不在插件兼容范围 ${compatibility} 内（来源：${candidate.label}）`)
+    } else if (compareVersion(parseVersion(declared), parseVersion(expected)) > 0) {
+      console.warn(`DSH ${declared} is newer than the latest tested version (${expected}); compatibility is unverified. Installation and operation remain enabled.`)
     }
     const mismatches = (document.sharedPackages ?? [])
       .filter((item) => typeof item?.name === 'string' && item.name.startsWith('@deepseek-ai/dsh') && !isVersionInRange(item.version, compatibility))
@@ -81,16 +80,14 @@ function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 }
 
-/** 与 src/dsh-capabilities/registry.ts 同构的范围判定；声明上界时同时校验上限。 */
+/** Minimum-only compatibility check for the installable DSH runtime. */
 function isVersionInRange(version, range) {
-  const match = /^>=([^ ]+)(?: <=([^ ]+))?$/u.exec(range)
+  const match = /^>=([^ ]+)$/u.exec(range)
   const actual = parseVersion(version)
   const minimum = parseVersion(match?.[1] ?? '')
   if (match === null || actual === undefined || minimum === undefined) return false
   if (compareVersion(actual, minimum) < 0) return false
-  if (match[2] === undefined) return true
-  const maximum = parseVersion(match[2])
-  return maximum !== undefined && compareVersion(actual, maximum) <= 0
+  return true
 }
 
 function parseVersion(value) {

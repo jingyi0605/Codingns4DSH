@@ -54,7 +54,7 @@ for (const line of matrix.split('\n')) {
 
 // 规则 2：事实上已失效 —— 路由版本上界低于插件兼容下界，Registry 永远不会选中它。
 // 这条不依赖任何人工标记，因此每次提升兼容下界都会自动产出待清理清单。
-const compatibility = /^>=([^ ]+)(?: <=([^ ]+))?$/u.exec(version.dshCompatibility ?? '')
+const compatibility = /^>=([^ ]+)$/u.exec(version.dshCompatibility ?? '')
 const compatibilityFloor = compatibility?.[1]
 const routes = parseMatrixRoutes(matrix)
 const retiredRoutes = compatibilityFloor === undefined

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import test from 'node:test'
 import semver from 'semver'
+import { evaluatePluginCompatibility } from '@deepseek-ai/dsh-app-boot'
 import {
   CODINGNS_SETTINGS_ENTRY_IDS,
   SUPPORTED_DSH_COMPATIBILITY,
@@ -86,6 +87,14 @@ test('installed framework versions satisfy the actual pinned DSH peer requiremen
     }
   }
   assert.ok(checked > 0, 'the compatibility check must inspect installed framework requirements')
+})
+
+test('DSH native manifest validation enforces only the minimum, including future prereleases', () => {
+  assert.ok(evaluatePluginCompatibility(manifest, {}, '0.2.0-rc.1'))
+  for (const version of ['0.2.0-rc.2', '0.2.1-rc.4', '0.2.1-rc.10', '0.2.1', '0.3.0-alpha.1', '1.0.0']) {
+    assert.equal(evaluatePluginCompatibility(manifest, {}, version), undefined, version)
+    assert.ok(semver.satisfies(version, manifest.peerDependencies['@deepseek-ai/dsh'], { includePrerelease: true }), version)
+  }
 })
 
 test('根 Bundle 导出名称与 scoped package 名称一致', async () => {

@@ -54,12 +54,12 @@
     "./package.json": "./package.json"
   },
   "engines": {
-    "dsh": ">=0.2.0-rc.2 <=0.2.1-rc.3",
+    "dsh": ">=0.2.0-rc.2",
     "node": ">=22.19.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "~4.0.4 || ~4.0.5-alpha.1",
-    "@deepseek-ai/dsh": ">=0.2.0-rc.2 <=0.2.1-rc.3",
+    "@deepseek-ai/dsh": ">=0.2.0-rc.2",
     "l2d": "2.1.1"
   },
   "peerDependenciesMeta": {

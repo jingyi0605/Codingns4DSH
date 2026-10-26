@@ -15,11 +15,14 @@ test('published DSH boot accepts the plugin and profile on every declared releas
   }
 })
 
-test('published DSH boot enforces engines.dsh even when a peer range would allow the host', () => {
-  for (const version of ['0.2.0-rc.1', '0.2.1', '0.3.0']) {
+test('published DSH boot enforces the minimum and accepts newer versions', () => {
+  for (const version of ['0.2.0-rc.1']) {
     const issue = evaluatePluginCompatibility({ ...manifest, peerDependencies: { '@deepseek-ai/dsh': '*' } }, {}, version)
     assert.deepEqual(issue?.requirements, { 'engines.dsh': manifest.engines.dsh })
     assert.equal(issue?.exempted, false)
+  }
+  for (const version of ['0.2.1', '0.3.0-alpha.1', '0.3.0', '1.0.0']) {
+    assert.equal(evaluatePluginCompatibility({ ...manifest, peerDependencies: { '@deepseek-ai/dsh': '*' } }, {}, version), undefined)
   }
   assert.equal(evaluatePluginCompatibility({ ...manifest,
     peerDependencies: { '@deepseek-ai/dsh': '0.0.0' },

@@ -39,7 +39,7 @@ type ShimGlobal = typeof globalThis & {
 
 /**
  * 在当前 JavaScript Realm 安装 shim。生产页面通过启动页脚本安装，测试和
- * H5 宿主可以直接调用这个函数。版本不在插件兼容范围内时不写入任何全局状态。
+ * H5 hosts can call this directly. Versions below the plugin minimum do not install globals.
  */
 export function installDshPeerHostPrebootShim(options: { readonly dshVersion: string }): DshPeerHostPrebootShimApi {
   assertSupportedDshVersion(options.dshVersion)

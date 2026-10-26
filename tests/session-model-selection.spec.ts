@@ -14,14 +14,14 @@ import { FeatureRegistry } from '../src/features/registry.js'
 import { createCodingNsNativeSessionBridge } from '../src/host/native-session-bridge.js'
 import { Context, getTraceable, symbols } from '@deepseek-ai/cordis'
 
-test('external selection capability rejects unverified versions and missing native accessors', () => {
+test('external selection capability probes newer hosts and still requires native accessors', () => {
   const context = { sessionController: { agents: { selectionFor() {} } } }
-  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2', '0.2.1']) {
+  for (const version of ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2']) {
     const profile = createDshCapabilityRegistry(version, 'host', context).getProfile(context)
     assert.equal(profile.capabilities.get('session.external-model-selection')?.status, 'unavailable')
     assert.ok(profile.diagnostics.some(value => value.capability === 'session.external-model-selection' && value.code === 'CAPABILITY_VERSION_UNSUPPORTED'))
   }
-  for (const version of ['0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3']) {
+  for (const version of ['0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.3.0-alpha.1', '1.0.0']) {
     const supported = createDshCapabilityRegistry(version, 'host', context).getProfile(context)
     assert.equal(supported.capabilities.get('session.external-model-selection')?.status, 'ready')
   }

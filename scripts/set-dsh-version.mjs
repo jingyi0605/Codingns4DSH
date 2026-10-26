@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 const nextVersion = process.argv[2]?.trim()
 const requestedCompatibility = process.argv[3]?.trim()
 const semver = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u
-const compatibilityPattern = /^>=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?: <=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)?$/u
+const compatibilityPattern = /^>=\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/u
 
 /**
  * 上游在某个 DSH 版本中删除、且本仓库无任何 import 的包。
@@ -19,7 +19,7 @@ const UPSTREAM_REMOVED_DSH_PACKAGES = {
 }
 if (!nextVersion || !semver.test(nextVersion)) throw new Error('用法: pnpm run version:set-dsh 0.2.1-alpha.1 [兼容范围]')
 if (requestedCompatibility !== undefined && !compatibilityPattern.test(requestedCompatibility)) {
-  throw new Error('DSH 兼容范围必须形如 ">=0.2.0-rc.2" 或 ">=0.2.0-rc.2 <=0.2.1-alpha.1"')
+  throw new Error('DSH compatibility must declare only a minimum, for example ">=0.2.0-rc.2"; newer hosts receive warnings.')
 }
 
 const root = fileURLToPath(new URL('../', import.meta.url))

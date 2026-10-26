@@ -69,7 +69,7 @@ test('FeatureRegistry 根据能力要求阻止、禁用或允许降级', async (
   assert.equal(registry.getSnapshot('optional').state, 'disabled')
 })
 
-test('能力矩阵覆盖插件当前测试的四个 DSH 版本', () => {
+test('capability matrix contains minimum-gated routes and historical compatibility routes', () => {
   const settingsRoutes = DSH_CAPABILITY_MATRIX.filter((route) => route.capability === 'settings.store')
   assert.ok(settingsRoutes.some((route) => route.supportedDsh.includes('0.1.5-rc.3')))
   assert.ok(settingsRoutes.some((route) => route.supportedDsh.includes('0.1.7-rc.2')))
@@ -77,10 +77,19 @@ test('能力矩阵覆盖插件当前测试的四个 DSH 版本', () => {
   assert.ok(settingsRoutes.every((route) => route.consumers.length > 0))
 })
 
-test('助理模型和根 Agent 矩阵与插件支持范围一致', () => {
-  for (const capability of ['llm.text', 'assistant.agent']) {
-    const entry = DSH_CAPABILITY_MATRIX.find((route) => route.capability === capability)
-    assert.equal(entry?.supportedDsh, SUPPORTED_DSH_COMPATIBILITY)
+test('newer hosts retain shared capabilities when structural probes succeed', () => {
+  const context = {
+    settings: { describe() {}, mutate() {}, configure() {} },
+    agents: { create() {} },
+    tools: { register() {}, restrict() {}, guard() {}, presentAs() {} },
+    systemPrompt: { section() {}, suppressRuntimeContext() {} },
+    on() {},
+  }
+  for (const version of ['0.2.1-rc.4', '0.3.0-alpha.1', '1.0.0']) {
+    const profile = createDshCapabilityRegistry(version, 'host', context).getProfile(context)
+    assert.equal(profile.capabilities.get('assistant.agent')?.status, 'ready', version)
+    assert.equal(profile.capabilities.get('assistant.agent')?.routeId, 'assistant-agent-021', version)
+    assert.equal(profile.capabilities.get('settings.store')?.status, 'ready', version)
   }
 })
 
@@ -231,7 +240,7 @@ test('0.2 世代 Host fixture 按服务形状解析到 020 路由', () => {
     ['web.index-tap', 'index-tap-020'],
   ] as const
   // alpha.3 changes peer admission; the other service routes remain stable.
-  for (const dshVersion of ['0.2.0-rc.2', SUPPORTED_DSH_VERSION]) {
+  for (const dshVersion of ['0.2.0-rc.2', SUPPORTED_DSH_VERSION, '0.2.1-rc.4', '0.3.0-alpha.1', '1.0.0']) {
     const fixture = dshVersion === '0.2.0-rc.2' ? context : { ...context, connection: {
       ...context.connection, operator: undefined, browserPeer: {}, createPeer() {},
     } }
@@ -452,8 +461,7 @@ test('必需能力缺失只影响该模块，同一轮同步里其余模块照�
 })
 
 test('0.2 代能力路由复用兼容范围常量，不写裸版本字面量', () => {
-  // 0.2 代路由全部走 DSH_COMPATIBILITY：写裸字面量会让 check-version-sync 的
-  // 上界推断与真实范围脱节，升级时出现「矩阵看着改了、门禁算的还是旧值」。
+  // Core 0.2 adapters share the minimum range; version-family variants retain their own floors.
   const modernRoutes = DSH_CAPABILITY_MATRIX.filter((route) => route.supportedDsh === SUPPORTED_DSH_COMPATIBILITY)
   assert.ok(modernRoutes.length > 0)
   // introducedIn 由 supportedDsh 的下界推导，因此跟随兼容范围下界（0.2.0-rc.2），

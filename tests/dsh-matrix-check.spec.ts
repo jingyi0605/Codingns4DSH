@@ -11,11 +11,7 @@ const root = fileURLToPath(new URL('..', import.meta.url))
 const matrixScript = fileURLToPath(new URL('../scripts/check-dsh-matrix.mjs', import.meta.url))
 
 /**
- * `check:dsh-matrix` 的 Desktop runtime 分支必须按「兼容范围」判定，而不是
- * 「精确等于测试版本」。
- *
- * 背景：插件的 `engines.dsh` 声明覆盖 rc.2 到当前验证的 alpha.2，桌面端只要
- * 落在这个范围内就应通过；越过 alpha.2 的预发布版本必须重新验证后再放行。
+ * Runtime fixtures must enforce only the minimum; newer hosts receive warnings.
  */
 const cleanups = []
 test.after(() => {
@@ -45,14 +41,14 @@ test('Desktop runtime 等于当前测试版本时通过', () => {
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
 })
 
-test('Desktop runtime 超过当前验证版本时被拒绝', () => {
+test('newer runtime fixtures warn without failing the dependency matrix', () => {
   const result = runMatrix(makeRuntimeRoot('0.2.1'))
-  assert.notEqual(result.status, 0)
-  assert.match(result.stderr, /不在插件兼容范围/u)
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+  assert.match(result.stderr, /newer than the latest tested/u)
   assert.match(result.stderr, /0\.2\.1/u)
 })
 
-test('Desktop runtime 超出兼容范围下界时被拒绝', () => {
+test('Desktop runtime 低于最低支持版本时被拒绝', () => {
   const result = runMatrix(makeRuntimeRoot('0.1.7-rc.2'))
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /不在插件兼容范围/u)

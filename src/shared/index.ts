@@ -144,6 +144,7 @@ export {
   isDshVersionAtLeast,
   isLegacyDshVersion,
   isDshVersionCompatible,
+  isDshVersionNewerThanTested,
   minimumSupportedDshVersion,
 } from './contracts/version.js'
 export type {

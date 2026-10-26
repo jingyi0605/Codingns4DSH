@@ -5,12 +5,10 @@ export const DSH_VERSION = '0.2.1-rc.3' as const
 export const DSH_TESTED_VERSION = DSH_VERSION
 
 /**
- * Supported hosts retain the 0.2.0-rc.2 floor and include 0.2.1-rc.2.
- * Capability adapters preserve earlier subagent, peer and message contracts.
- * Keep an explicit upper bound: a later prerelease requires verification before
- * either installation checks or runtime capability selection may accept it.
+ * Only the minimum version blocks installation and activation.
+ * Hosts newer than DSH_TESTED_VERSION receive an advisory warning.
  */
-export const DSH_COMPATIBILITY = '>=0.2.0-rc.2 <=0.2.1-rc.3' as const
+export const DSH_COMPATIBILITY = '>=0.2.0-rc.2' as const
 
 /**
  * 兼容范围下界，即插件仍然接受的最低 DSH 版本。
@@ -45,16 +43,16 @@ interface ParsedVersion {
   readonly prerelease: readonly string[]
 }
 
-/** 判断宿主版本是否落在当前插件声明的 DSH 兼容范围内；范围省略上界时不校验上限。 */
+/** Accept any valid host version at or above the supported minimum. */
 export function isDshVersionCompatible(version: string): boolean {
-  const match = /^>=([^ ]+)(?: <=([^ ]+))?$/u.exec(DSH_COMPATIBILITY)
+  return isDshVersionAtLeast(version, minimumSupportedDshVersion())
+}
+
+/** Newer hosts stay enabled; this predicate controls advisory notices only. */
+export function isDshVersionNewerThanTested(version: string): boolean {
   const actual = parseVersion(version)
-  const minimum = parseVersion(match?.[1] ?? '')
-  if (match === null || !actual || !minimum) return version === DSH_VERSION
-  if (match[2] === undefined) return compareVersions(actual, minimum) >= 0
-  const maximum = parseVersion(match[2])
-  if (maximum === undefined) return version === DSH_VERSION
-  return compareVersions(actual, minimum) >= 0 && compareVersions(actual, maximum) <= 0
+  const tested = parseVersion(DSH_TESTED_VERSION)
+  return actual !== undefined && tested !== undefined && compareVersions(actual, tested) > 0
 }
 
 /** 判断 DSH 版本是否达到某个功能模块要求的最低版本。 */

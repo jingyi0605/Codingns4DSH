@@ -55,7 +55,7 @@ export class CodingNsDshError extends Error {
   }
 }
 
-/** 启动期严格检查 DSH 兼容范围，不对未知版本静默降级。 */
+/** Enforce the DSH minimum version without rejecting newer hosts. */
 export function assertSupportedDshVersion(version: string): void {
   if (!isDshVersionCompatible(version)) {
     throw new CodingNsDshError(
