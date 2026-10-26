@@ -103,6 +103,18 @@ for (const version of [3, 4]) {
   })
 }
 
+/**
+ * 这些用例只验证 Grok 驱动与投影行为。真实 Magpie 探测会在 `features.start` 里
+ * 拉起宿主命令（本机约 1.9 秒），既拖慢每个时间线用例，又让带超时的用例在机器
+ * 繁忙时被判为超时取消，导致完整测试以非零退出。
+ */
+const magpieNotInstalled = {
+  async detect() {
+    const platform = process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux'
+    return { installed: false, platform, source: null, command: null, version: null, reason: null, checkedAt: 'test' }
+  },
+} as never
+
 async function createTimeline(driver: GrokBuildDriver, options: {
   canInject?: boolean
   inject?: () => boolean
@@ -138,7 +150,7 @@ async function createTimeline(driver: GrokBuildDriver, options: {
       subscribe() { return () => {} },
     },
   })
-  features.register(createCliAdaptersFeature({ registry }))
+  features.register(createCliAdaptersFeature({ registry, magpieDetection: magpieNotInstalled }))
   await features.start('cliAdapters')
   await table.resolve('cli/session/set')?.handler('session/set', { sessionId: turn.sessionId, adapterId: 'grok' })
   return {
@@ -251,7 +263,7 @@ test('Grok separates the exported 16-model-call, 82-tool timeline and settles ag
   } finally { await timeline.dispose() }
 })
 
-test('Grok retains single-step fallback when DSH cannot inject continuation', { timeout: 3_000 }, async () => {
+test('Grok retains single-step fallback when DSH cannot inject continuation', { timeout: 5_000 }, async () => {
   const replay = createReplay((request, connection) => {
     if (request.method !== 'session/prompt') return
     connection.update({ sessionUpdate: 'agent_message_chunk', text: 'Before.' }, { streamStartMs: 1 })
