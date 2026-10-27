@@ -709,6 +709,44 @@ test('原生会话桥接把即时 usage 写入非 surface assistant/attempt', ()
   })
 })
 
+test('原生会话桥接在当前步骤登记流式图片引用以供即时授权读取', () => {
+  const events: Array<Record<string, any>> = [
+    { type: 'turn/start', seq: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+  ]
+  const session = {
+    snapshotEvents() { return [...events] },
+    append(type: string, data: unknown) {
+      const event = { type, seq: events.length, data }
+      events.push(event)
+      return event
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'sessions'
+        ? { get(id: string) { return id === 'native-image-reference' ? session : undefined }, list() { return [session] } }
+        : undefined
+    },
+  } as never)
+  const attachment = { attachmentId: `sha256:${'a'.repeat(64)}`, mediaType: 'image/png' as const, bytes: 10, width: 2, height: 2 }
+
+  assert.equal(bridge.registerImageReference?.('native-image-reference', attachment), true)
+  assert.deepEqual(events.at(-1), {
+    type: 'assistant/attempt',
+    seq: 2,
+    data: {
+      turn: 1,
+      step: 1,
+      stream: [{
+        type: 'chunk',
+        time: events.at(-1)?.data?.stream?.[0]?.time,
+        chunk: { type: 'block-end', index: 0, block: { type: 'image', attachment } },
+      }],
+    },
+  })
+})
+
 test('原生会话桥接把 Codex 压缩活动写成标准 compaction 生命周期', () => {
   const events: Array<Record<string, any>> = [
     { type: 'turn/start', seq: 0, data: { turn: 1 } },

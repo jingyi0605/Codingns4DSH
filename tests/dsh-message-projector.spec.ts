@@ -4,6 +4,7 @@ import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapter
 
 test('图片产物先登记为 DSH 附件，再投影成原生 image block', async () => {
   const admitted: unknown[] = []
+  const references: unknown[] = []
   const projector = new CodingNsDshMessageProjector({
     adapterId: 'grok',
     sessionId: 'image-session',
@@ -19,12 +20,19 @@ test('图片产物先登记为 DSH 附件，再投影成原生 image block', asy
           name: '1.jpg',
         }
       },
+      registerImageReference: (sessionId, attachment) => {
+        references.push({ sessionId, attachment })
+        return true
+      },
     },
   })
 
   const chunks = await projector.push({ type: 'image-artifact', path: '/private/provider/images/1.jpg' })
 
   assert.deepEqual(admitted, [{ type: 'image-artifact', path: '/private/provider/images/1.jpg' }])
+  assert.deepEqual(references, [{ sessionId: 'image-session', attachment: {
+    attachmentId: 'sha256:image', mediaType: 'image/jpeg', bytes: 3, width: 1, height: 1, name: '1.jpg',
+  } }])
   assert.deepEqual(chunks, [
     { type: 'block-start', index: 2, blockType: 'image' },
     { type: 'block-end', index: 2, block: { type: 'image', attachment: {
