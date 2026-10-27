@@ -16,6 +16,7 @@ import { createDesktopAssistantFeature } from '../desktop-assistant/feature.js'
 import { createSessionTitleOptimizationFeature } from './session-title-optimization.js'
 import { createSessionTranslationFeature } from './session-translation.js'
 import { createPluginUpdateFeature } from './plugin-update.js'
+import { createWorkspaceMcpHostFeature } from './workspace-mcp.js'
 import type { CodingNsHostServices } from './types.js'
 
 export interface HostFeatureOptions {
@@ -35,6 +36,7 @@ export function createHostFeatures(options: HostFeatureOptions = {}): readonly F
     createDebugFeature(),
     createHostStatusFeature(),
     createPluginUpdateFeature(),
+    createWorkspaceMcpHostFeature(),
     createGitManagementFeature(),
     createFileManagementFeature(),
     createQuickAppsFeature(),
@@ -57,6 +59,7 @@ export { createSessionTranslationFeature } from './session-translation.js'
 export { createTerminalProcessFeature } from './terminal-process.js'
 export { createDebugFeature } from './debug.js'
 export { createHostStatusFeature } from './host-status.js'
+export { createWorkspaceMcpHostFeature } from './workspace-mcp.js'
 export { createGitManagementFeature } from './git-management.js'
 export { createFileManagementFeature } from './file-management.js'
 export { createPeerHostFeature, toPeerHostClientRecord } from './peer-host.js'

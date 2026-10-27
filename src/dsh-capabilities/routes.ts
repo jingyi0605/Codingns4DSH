@@ -6,6 +6,9 @@ import { createTerminalSharingBridge, supportsTerminalSharing } from './client/t
 import { createInteractionPresentationBridge, supportsInteractionPresentation } from './client/interaction-presentation-adapter.js'
 import { supportsLegacyMessagePresentation, supportsFactoryMessagePresentation, createLegacyMessagePresentation, createFactoryMessagePresentation } from './client/message-presentation-adapter.js'
 import { createSessionModelSelectionAdapter, supportsSessionModelSelection } from './host/session-model-selection-adapter.js'
+import { createWorkspaceSessionControlAdapter, supportsWorkspaceSessionControl } from './host/workspace-session-control-adapter.js'
+import { createWorkspacePendingQuestionsAdapter, supportsWorkspacePendingQuestions } from './host/workspace-pending-questions-adapter.js'
+import { createWorkspaceApprovalAdapter, supportsWorkspaceApproval } from './host/workspace-approval-adapter.js'
 import { createSessionPromptAdapter, supportsSessionPromptAssembly } from './host/session-prompt-adapter.js'
 import { supportsQuickAppOrigins } from './host/quick-app-origin-adapter.js'
 import { supportsQuickAppProxy, createQuickAppProxy } from './host/quick-app-proxy-adapter.js'
@@ -62,6 +65,12 @@ export function createDshCapabilityRegistry(
       detect: ctx => hasMethods(read(ctx, 'sessionController'), ['create']), create: ctx => read(ctx, 'sessionController') })
     add({ id: 'session-activation-021', capability: 'session.activation', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: ctx => hasMethods(read(ctx, 'sessionController'), ['create', 'resolveAgent']), create: ctx => read(ctx, 'sessionController') })
+    add({ id: 'workspace-session-control-020', capability: 'workspace.session-control', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
+      detect: supportsWorkspaceSessionControl, create: createWorkspaceSessionControlAdapter })
+    add({ id: 'workspace-pending-questions-020', capability: 'workspace.pending-questions', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
+      detect: supportsWorkspacePendingQuestions, create: createWorkspacePendingQuestionsAdapter })
+    add({ id: 'workspace-approval-020', capability: 'workspace.approval', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
+      detect: supportsWorkspaceApproval, create: createWorkspaceApprovalAdapter })
     for (const capability of ['connection.peer', 'connection.uplink'] as const) {
       add({ id: `${capability}-021`, capability, supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 40, status: 'supported', introducedIn: '0.2.1-alpha.3',
         detect: ctx => hasMethods(read(ctx, 'connection'), ['admit', 'createPeer']) && read(ctx, 'connection.browserPeer') !== undefined,

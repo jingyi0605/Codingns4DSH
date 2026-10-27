@@ -390,6 +390,16 @@ function parseSettingsMutation(value: unknown): { ops: CodingNsSettingsOperation
     throw new TypeError('expectedRevision 必须是非负整数')
   }
   const ops = value.ops.map(parseSettingsOp)
+  if ((process.env.CODINGNS_WORKSPACE_MCP_API_KEY?.trim() ?? '') === '') {
+    const enablesWorkspaceMcp = ops.some((operation) => operation.op === 'set'
+      && operation.path.length === 2 && operation.path[0] === 'modules' && operation.path[1] === 'workspaceMcp'
+      && operation.value === true)
+    const resultsInWorkspaceMcpEnabled = ops.some((operation) => operation.op === 'set' && operation.path.length === 1 && operation.path[0] === 'modules'
+        && isRecord(operation.value) && operation.value.workspaceMcp === true)
+    if (enablesWorkspaceMcp || resultsInWorkspaceMcpEnabled) {
+      throw new CodingNsRpcError('WORKSPACE_MCP_API_KEY_REQUIRED', 'Set CODINGNS_WORKSPACE_MCP_API_KEY in the Host environment before enabling Workspace MCP.')
+    }
+  }
   return expectedRevisionValue === undefined ? { ops } : { ops, expectedRevision: expectedRevisionValue }
 }
 
@@ -404,6 +414,10 @@ function parseSettingsOp(value: unknown): CodingNsSettingsOperation {
   if (!isAllowedSettingsPath(path)) throw new CodingNsRpcError('CODINGNS_SETTINGS_FIELD_FORBIDDEN', `禁止修改设置字段: ${path.join('.')}`)
   if (value.op === 'unset') return { op: 'unset', path }
   if (!('value' in value)) throw new TypeError('set 操作缺少 value')
+  if (path.length === 2 && path[0] === 'modules' && path[1] === 'workspaceMcp'
+    && value.value === true && (process.env.CODINGNS_WORKSPACE_MCP_API_KEY?.trim() ?? '') === '') {
+    throw new CodingNsRpcError('WORKSPACE_MCP_API_KEY_REQUIRED', 'Set CODINGNS_WORKSPACE_MCP_API_KEY in the Host environment before enabling Workspace MCP.')
+  }
   if (path[0] === 'assistant' && path[1] === 'profile') validateAssistantProfile(value.value)
   if (path[0] === 'assistant' && path[1] === 'model') validateAssistantModel(value.value)
   if (path.length === 1 && path[0] === 'assistant' && isRecord(value.value)) {
@@ -459,7 +473,7 @@ function operationsToPatch(operations: readonly CodingNsSettingsOperation[]): Re
 
 function isAllowedSettingsPath(path: readonly string[]): boolean {
   if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage', 'subscriptionReports', 'sessionTranslation', 'gitManagement', 'assistant'].includes(path[0] ?? '')
-  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'magpieManagement', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'quickApps', 'mobileAccess', 'peerHost', 'globalVoiceAssistant', 'sessionTranslation'].includes(path[1] ?? '')
+  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'magpieManagement', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'quickApps', 'mobileAccess', 'peerHost', 'globalVoiceAssistant', 'sessionTranslation', 'workspaceMcp'].includes(path[1] ?? '')
   if (path[0] === 'workspaceSessionEnhancement') {
     return path.length === 2 && [
       'showAdapterLogo', 'showArchivedSessions', 'showWorkspaceHiding', 'hiddenWorkspaceIds',
