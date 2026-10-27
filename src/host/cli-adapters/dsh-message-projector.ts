@@ -361,6 +361,7 @@ export class CodingNsDshMessageProjector {
   ): Promise<readonly CodingNsDshStreamChunk[]> {
     const attachment = await this.options.nativeSessions?.admitImageArtifact?.(event)
     if (attachment === null || attachment === undefined) return []
+    this.options.nativeSessions?.registerImageReference?.(this.options.sessionId, attachment)
     const closed = [
       ...(await this.closeMessageBlock('reasoning')),
       ...(await this.closeMessageBlock('text')),

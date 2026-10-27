@@ -202,6 +202,8 @@ export interface CodingNsNativeSessionBridge {
   askQuestions?(sessionId: string, request: CodingNsNativeQuestionRequest): Promise<CodingNsAgentQuestionResponse | null>
   /** 将 Host 上的 Provider 图片转成 DSH 持久化附件；失败时返回 null 让投影层降级。 */
   admitImageArtifact?(artifact: CodingNsAgentImageArtifact): Promise<CodingNsNativeImageAttachmentRef | null>
+  /** Register a streamed image before message settlement so DSH can authorize its Session-scoped read. */
+  registerImageReference?(sessionId: string, attachment: CodingNsNativeImageAttachmentRef): boolean
   /** 从 DSH 原生侧栏归档会话；控制器不可用时返回 false。 */
   archive?(sessionId: string): Promise<boolean>
   /** 恢复 DSH 原生侧栏中的归档会话；控制器不可用时返回 false。 */
@@ -454,6 +456,31 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
       return false
     }
   }
+  const registerNativeImageReference = (sessionId: string, attachment: CodingNsNativeImageAttachmentRef): boolean => {
+    const session = appendableSession(store?.get(sessionId))
+    const position = session === null ? null : activeStep(session)
+    if (session === null || sessionFormat(session) === 'unsupported' || position === null) return false
+    try {
+      // DSH authorizes image reads only after finding the ref in a Session event.
+      // The streamed assistant message is not durable until its step settles.
+      session.append('assistant/attempt', {
+        turn: position.turn,
+        step: position.step,
+        stream: [{
+          type: 'chunk',
+          time: Date.now(),
+          chunk: {
+            type: 'block-end',
+            index: 0,
+            block: { type: 'image', attachment },
+          },
+        }],
+      })
+      return true
+    } catch {
+      return false
+    }
+  }
   const appendNativeCompactionEvent = (sessionId: string, event: CodingNsNativeCompactionEvent): boolean => {
     const session = appendableSession(store?.get(sessionId))
     if (session === null || sessionFormat(session) === 'unsupported') return false
@@ -672,6 +699,9 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     },
     appendUsageSample(sessionId, usage) {
       return appendNativeUsageSample(sessionId, usage)
+    },
+    registerImageReference(sessionId, attachment) {
+      return registerNativeImageReference(sessionId, attachment)
     },
     appendCompactionEvent(sessionId, event) {
       return appendNativeCompactionEvent(sessionId, event)
