@@ -202,6 +202,13 @@ export interface MagpieQuota {
   readonly resets?: MagpieQuotaReset | null
   /** 账号点数余额（Codex 的 credits）；与窗口额度相互独立。 */
   readonly credits?: string | null
+  /** Codex account policy settings read from authenticated Magpie Web. */
+  readonly autoReset?: {
+    readonly week: boolean
+    readonly expiring: boolean
+  }
+  /** Whether this account may spend credits after a quota window is exhausted. */
+  readonly useCredits?: boolean
 }
 
 /** 一个账号可用的重置卡。 */

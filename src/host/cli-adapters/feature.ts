@@ -485,7 +485,7 @@ export function createCliAdaptersFeature(options: {
         }
         switch (action) {
           case 'usage/dashboard': {
-            const dashboard = await magpieUsage.readDashboard(readMagpieDashboardPeriod(payload), signal)
+            const dashboard = await magpieUsage.readDashboard(readMagpieDashboardPeriod(payload), signal, asRecord(payload)?.force === true)
             return attachMagpieSessionNames(dashboard, await magpieSessionNameBindings(sessionStore, nativeSessions, signal, context.services.dshContext))
           }
           case 'usage/dashboard/stream': {
@@ -504,6 +504,10 @@ export function createCliAdaptersFeature(options: {
               sessionMetrics: readMagpieSessionMetrics(sessionStore, nativeSessions, request.sessionId, request.sessionIds),
             }
           }
+          case 'usage/account/update':
+            return magpieUsage.updateAccountPolicy(payload, signal)
+          case 'usage/reset':
+            return magpieUsage.resetCodexAccount(payload, signal)
           case 'management/snapshot':
             return magpieManagement.readSnapshot(signal)
           case 'management/provider/update':

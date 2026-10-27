@@ -174,6 +174,8 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const [resetPending, setResetPending] = useState(false)
   const [resetResult, setResetResult] = useState<CliSubscriptionResetOutcome | null>(null)
   const [resetError, setResetError] = useState<string | null>(null)
+  const [resetTargetUser, setResetTargetUser] = useState<string | null>(null)
+  const [magpiePolicyPending, setMagpiePolicyPending] = useState<string | null>(null)
   const sessionRef = useRef<string | undefined>(undefined)
   const routeKeyRef = useRef<string | null>(null)
   // Agent-native session bindings are written by Host during a turn. Refresh
@@ -393,22 +395,28 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     setResetOpen(false)
     setResetResult(null)
     setResetError(null)
+    setResetTargetUser(null)
   }
 
   const confirmReset = (): void => {
-    if (resetPending || adapterId === null) return
+    if (resetPending) return
     setResetPending(true)
     setResetError(null)
     void (async () => {
       try {
-        const result = await callCliRpc<CliSubscriptionResetResult>(props.rpc, 'subscription/reset', {
-          sessionId: props.sessionId?.trim() ?? '',
-          adapterId,
-          ...(providerId === null ? {} : { providerId }),
-        })
+        const result = resetTargetUser === null
+          ? adapterId === null
+            ? null
+            : await callCliRpc<CliSubscriptionResetResult>(props.rpc, 'subscription/reset', {
+                sessionId: props.sessionId?.trim() ?? '',
+                adapterId,
+                ...(providerId === null ? {} : { providerId }),
+              })
+          : await callCliRpc<CliSubscriptionResetResult>(props.rpc, 'magpie/usage/reset', { user: resetTargetUser })
+        if (result === null) throw new Error(t('usage.resetFailed'))
         setResetResult(result.outcome)
         // 重置改变了窗口与次数，必须绕过进程内缓存重新读取。
-        invalidateSubscriptionUsageCache(subscriptionUsageCache, adapterId, providerId)
+        if (adapterId !== null) invalidateSubscriptionUsageCache(subscriptionUsageCache, adapterId, providerId)
         await refreshRef.current?.()
       } catch (error) {
         setResetError(error instanceof Error ? error.message : '')
@@ -416,6 +424,24 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         setResetPending(false)
       }
     })()
+  }
+
+  const requestMagpieReset = (user: string): void => {
+    setOpen(false)
+    setResetResult(null)
+    setResetError(null)
+    setResetTargetUser(user)
+    setResetOpen(true)
+  }
+
+  const updateMagpiePolicy = (user: string, policy: 'week' | 'expiring' | 'credits', enabled: boolean): void => {
+    const key = `${user}:${policy}`
+    if (magpiePolicyPending !== null) return
+    setMagpiePolicyPending(key)
+    void callCliRpc(props.rpc, 'magpie/usage/account/update', { user, policy, enabled })
+      .then(() => refreshRef.current?.())
+      .catch(() => undefined)
+      .finally(() => setMagpiePolicyPending(null))
   }
 
   useDismissOnOutsidePointer(rootRef, open, () => setOpen(false), { portal: magpieRequestsDialogRef })
@@ -426,6 +452,9 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     const magpie = snapshot.magpie
     const readout = resolveMagpieTriggerReadout(magpie)
     const label = t('usage.magpieUsageLabel')
+    const resetCount = resetTargetUser === null ? 0 : magpie.quotas
+      .find((quota) => quota.provider === 'codex' && quota.user?.toLocaleLowerCase() === resetTargetUser.toLocaleLowerCase())
+      ?.resets?.count ?? 0
     return createElement('div', { ref: rootRef, style: subscriptionRootStyle },
       createElement('button', {
         type: 'button',
@@ -448,6 +477,9 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         rpc: props.rpc,
         usage: magpie,
         t,
+        onPolicyChange: updateMagpiePolicy,
+        policyPending: magpiePolicyPending,
+        onResetRequest: requestMagpieReset,
         tab: magpieTab,
         onTabChange: setMagpieTab,
         expandedGroups: expandedQuotaGroups,
@@ -455,6 +487,17 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         placement: magpiePlacement,
         popoverRef: magpiePopoverRef,
         requestsDialogRef: magpieRequestsDialogRef,
+      }),
+      resetOpen && resetTargetUser !== null && createElement(ResetConfirmDialog, {
+        count: resetCount,
+        pending: resetPending,
+        result: resetResult,
+        error: resetError,
+        t,
+        onCancel: closeResetDialog,
+        onConfirm: confirmReset,
+        onClose: closeResetDialog,
+        dialogRef: resetDialogRef,
       }),
     )
   }
@@ -499,6 +542,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
           setOpen(false)
           setResetResult(null)
           setResetError(null)
+          setResetTargetUser(null)
           setResetOpen(true)
         },
       }
@@ -565,10 +609,13 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   )
 }
 
-function MagpieUsagePopover({ rpc, usage, t, tab = 'usage', onTabChange = () => {}, expandedGroups = [], onToggleGroup = () => {}, placement = { left: 0, width: 400 }, popoverRef, requestsDialogRef }: {
+function MagpieUsagePopover({ rpc, usage, t, onPolicyChange = () => {}, policyPending = null, onResetRequest = () => {}, tab = 'usage', onTabChange = () => {}, expandedGroups = [], onToggleGroup = () => {}, placement = { left: 0, width: 400 }, popoverRef, requestsDialogRef }: {
   readonly rpc: CodingNsRpcClient
   readonly usage: MagpieUsageSnapshot
   readonly t: CodingNsTranslator
+  readonly onPolicyChange?: (user: string, policy: 'week' | 'expiring' | 'credits', enabled: boolean) => void
+  readonly policyPending?: string | null
+  readonly onResetRequest?: (user: string) => void
   readonly tab?: 'usage' | 'route'
   readonly onTabChange?: (tab: 'usage' | 'route') => void
   readonly expandedGroups?: readonly string[]
@@ -638,7 +685,7 @@ function MagpieUsagePopover({ rpc, usage, t, tab = 'usage', onTabChange = () => 
       'aria-labelledby': `codingns4dsh-magpie-tab-${tab}`,
       style: magpieTabPanelStyle,
     },
-      tab === 'usage' ? MagpieUsagePanel({ usage, aggregateRows, sessionRows, t })
+      tab === 'usage' ? MagpieUsagePanel({ usage, aggregateRows, sessionRows, t, onPolicyChange, policyPending, onResetRequest })
         : MagpieRoutePanel({ rpc, usage, quotas, t, expandedGroups, onToggleGroup,
           ...(requestsDialogRef === undefined ? {} : { requestsDialogRef }),
         }),
@@ -646,12 +693,19 @@ function MagpieUsagePopover({ rpc, usage, t, tab = 'usage', onTabChange = () => 
   )
 }
 
-function MagpieUsagePanel({ usage, aggregateRows, sessionRows, t }: {
+function MagpieUsagePanel({ usage, aggregateRows, sessionRows, t, onPolicyChange = () => {}, policyPending = null, onResetRequest = () => {} }: {
   readonly usage: MagpieUsageSnapshot
   readonly aggregateRows: readonly (readonly [string, string | null])[]
   readonly sessionRows: readonly (readonly [string, string | null])[]
   readonly t: CodingNsTranslator
+  readonly onPolicyChange?: (user: string, policy: 'week' | 'expiring' | 'credits', enabled: boolean) => void
+  readonly policyPending?: string | null
+  readonly onResetRequest?: (user: string) => void
 }): ReactElement {
+  const policyQuotas = [...(usage.quotas ?? []), ...(usage.providerAccounts ?? [])]
+    .filter((quota) => quota.provider === 'codex' && quota.user !== null
+      && (quota.autoReset !== undefined || quota.useCredits !== undefined || quota.resets !== undefined))
+    .filter((quota, index, rows) => rows.findIndex((item) => item.user?.toLocaleLowerCase() === quota.user?.toLocaleLowerCase()) === index)
   return createElement('div', undefined,
     createElement('section', { style: magpieUsageSectionStyle },
       createElement('strong', { style: magpieSectionTitleStyle }, t('usage.magpieAggregateTitle')),
@@ -671,6 +725,76 @@ function MagpieUsagePanel({ usage, aggregateRows, sessionRows, t }: {
       usage.session === null
         ? createElement('div', { style: magpieMutedTextStyle }, usage.sessionId === null ? t('usage.magpieSessionIdUnavailable') : t('usage.magpieSessionNoUsage'))
         : createMagpieRows(sessionRows),
+    ),
+    policyQuotas.length > 0 && createElement('section', { style: magpieUsageSectionStyle },
+      createElement('strong', { style: magpieSectionTitleStyle }, t('usage.magpieAccountPolicies')),
+      ...policyQuotas.map((quota, index) => createMagpieAccountPolicyCard(quota, t, index, onPolicyChange, policyPending, onResetRequest)),
+    ),
+  )
+}
+
+function createMagpieAccountPolicyCard(
+  quota: MagpieQuota,
+  t: CodingNsTranslator,
+  index: number,
+  onPolicyChange: (user: string, policy: 'week' | 'expiring' | 'credits', enabled: boolean) => void,
+  policyPending: string | null,
+  onResetRequest: (user: string) => void,
+): ReactElement {
+  const user = quota.user ?? ''
+  const resetCount = quota.resets?.count
+  return createElement('div', {
+    key: `codex-policy:${user}:${index}`,
+    style: magpieAccountPolicyCardStyle,
+  },
+    createElement('div', { style: magpieAccountPolicyHeadingStyle },
+      createElement('strong', { title: user }, user),
+      resetCount !== null && resetCount !== undefined && createElement('span', { style: magpieHeaderMutedStyle }, t('usage.magpieResetCount', { count: resetCount })),
+    ),
+    quota.autoReset !== undefined && createElement(MagpiePolicySwitch, {
+      label: t('usage.magpieResetWhenWeek'),
+      checked: quota.autoReset.week,
+      pending: policyPending === `${user}:week`,
+      onChange: (enabled: boolean) => onPolicyChange(user, 'week', enabled),
+    }),
+    quota.autoReset !== undefined && createElement(MagpiePolicySwitch, {
+      label: t('usage.magpieResetBeforeExpiry'),
+      checked: quota.autoReset.expiring,
+      pending: policyPending === `${user}:expiring`,
+      onChange: (enabled: boolean) => onPolicyChange(user, 'expiring', enabled),
+    }),
+    quota.useCredits !== undefined && createElement(MagpiePolicySwitch, {
+      label: t('usage.magpieUseCredits'),
+      checked: quota.useCredits,
+      pending: policyPending === `${user}:credits`,
+      onChange: (enabled: boolean) => onPolicyChange(user, 'credits', enabled),
+    }),
+    resetCount !== null && resetCount !== undefined && createElement('button', {
+      type: 'button',
+      disabled: resetCount <= 0,
+      onClick: () => onResetRequest(user),
+      style: dshSettingsButtonStyle,
+    }, t('usage.magpieUseReset')),
+  )
+}
+
+function MagpiePolicySwitch({ label, checked, pending, onChange }: {
+  readonly label: string
+  readonly checked: boolean
+  readonly pending: boolean
+  readonly onChange: (value: boolean) => void
+}): ReactElement {
+  return createElement('button', {
+    type: 'button',
+    role: 'switch',
+    'aria-checked': checked,
+    disabled: pending,
+    onClick: () => onChange(!checked),
+    style: magpiePolicySwitchStyle,
+  },
+    createElement('span', undefined, label),
+    createElement('span', { style: { ...magpiePolicySwitchTrackStyle, ...(checked ? magpiePolicySwitchOnStyle : {}) } },
+      createElement('span', { style: { ...magpiePolicySwitchThumbStyle, ...(checked ? magpiePolicySwitchThumbOnStyle : {}) } }),
     ),
   )
 }
@@ -1928,6 +2052,13 @@ const magpieTabActiveStyle = { background: dshThemeColor.menuBackground, color: 
 const magpieTabPanelStyle = { minHeight: 0 }
 const magpieSectionStyle = { display: 'grid', gap: 8, paddingTop: 11, marginTop: 10, borderTop: `1px solid ${dshThemeColor.border}` }
 const magpieUsageSectionStyle = { display: 'grid', gap: 5, paddingTop: 8, marginTop: 7, borderTop: `1px solid ${dshThemeColor.border}` }
+const magpieAccountPolicyCardStyle = { display: 'grid', gap: 5, marginTop: 7, padding: '8px 9px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 9, background: dshThemeColor.surfaceSubtle }
+const magpieAccountPolicyHeadingStyle = { display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8, minWidth: 0, fontSize: uiFontSize(12) }
+const magpiePolicySwitchStyle = { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, width: '100%', padding: '2px 0', border: 0, background: 'transparent', color: dshThemeColor.labelSecondary, fontFamily: 'inherit', fontSize: uiFontSize(11), lineHeight: '15px', textAlign: 'left' as const, cursor: 'pointer' }
+const magpiePolicySwitchTrackStyle = { display: 'inline-flex', alignItems: 'center', flex: 'none', width: 28, height: 16, padding: 2, boxSizing: 'border-box' as const, borderRadius: 999, background: dshThemeColor.border, transition: 'background .15s ease' }
+const magpiePolicySwitchOnStyle = { background: dshThemeColor.accent }
+const magpiePolicySwitchThumbStyle = { width: 12, height: 12, borderRadius: '50%', background: dshThemeColor.menuBackground, transition: 'transform .15s ease' }
+const magpiePolicySwitchThumbOnStyle = { transform: 'translateX(12px)' }
 const magpieStatsGridStyle = { display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 6, paddingTop: 0 }
 const magpieStatStyle = { display: 'grid', alignContent: 'space-between', gap: 1, minWidth: 0, minHeight: 40, boxSizing: 'border-box' as const, padding: '5px 7px', borderRadius: 8, background: dshThemeColor.surfaceSubtle }
 const magpieStatLabelStyle = { minWidth: 0, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(10), lineHeight: '13px', overflowWrap: 'anywhere' as const }

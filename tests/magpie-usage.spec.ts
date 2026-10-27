@@ -322,6 +322,97 @@ test('Magpie /v1/magpie/quotas 只保留安全的提供商配额字段', () => {
   assert.equal(parseMagpieQuotas({ data: [{ provider: 'workbuddy', name: 'WorkBuddy', windows: 'invalid' }] }), null)
 })
 
+test('Codex Magpie quotas merge reset-card policies from Web settings', async () => {
+  const service = createWebUsageService({
+    fetch: (async (url) => {
+      const path = new URL(String(url)).pathname
+      if (path === '/api/settings') return Response.json({
+        codexAutoReset: ['account@example.com'],
+        codexAutoResetOnly: { 'account@example.com': 'expiring' },
+        codexNoCredits: ['held@example.com'],
+      })
+      if (path === '/api/usage/quotas') return Response.json({ data: [
+        {
+          provider: 'codex', name: 'Codex', user: 'account@example.com',
+          windows: [{ name: '5 hours', used: 100, remaining: 0 }],
+          resets: { count: 2, until: '2026-11-01T00:00:00Z', each: [] },
+        },
+        {
+          provider: 'codex', name: 'Codex', user: 'held@example.com',
+          windows: [{ name: '7 days', used: 20, remaining: 80 }],
+          resets: { count: 1, until: '2026-11-02T00:00:00Z', each: [] },
+        },
+      ] })
+      return Response.json(usageReply([{ agent: 'codex', id: 'codex-session', input: 2, output: 1 }]))
+    }) as typeof fetch,
+  })
+
+  const result = await service.read({
+    adapterId: 'codex', modelId: 'codex/gpt-5', providerSessionId: 'codex-session',
+  })
+  assert.deepEqual(result?.quotas.map((quota) => ({
+    user: quota.user,
+    resetCount: quota.resets?.count,
+    autoReset: quota.autoReset,
+    useCredits: quota.useCredits,
+  })), [
+    { user: 'account@example.com', resetCount: 2, autoReset: { week: false, expiring: true }, useCredits: true },
+    { user: 'held@example.com', resetCount: 1, autoReset: { week: false, expiring: false }, useCredits: false },
+  ])
+})
+
+test('Magpie Codex policy writes and reset use fixed authenticated Web API routes', async () => {
+  const calls: Array<{ path: string; method?: string; body?: unknown }> = []
+  let settings: Record<string, unknown> = {
+    codexAutoReset: [],
+    codexAutoResetOnly: {},
+    codexNoCredits: [],
+  }
+  const service = createWebUsageService({
+    webApi: {
+      async requestJson(path, options = {}) {
+        calls.push({ path, method: options.method, body: options.body })
+        if (path === '/api/settings/codex-auto-reset') {
+          const body = options.body as { user: string; on: boolean; when: 'week' | 'expiring' }
+          const users = new Set(settings.codexAutoReset as string[])
+          const only = { ...(settings.codexAutoResetOnly as Record<string, string>) }
+          if (body.on) users.add(body.user.toLocaleLowerCase())
+          else users.delete(body.user.toLocaleLowerCase())
+          if (body.on && body.when === 'expiring') only[body.user.toLocaleLowerCase()] = 'expiring'
+          else delete only[body.user.toLocaleLowerCase()]
+          settings = { ...settings, codexAutoReset: [...users], codexAutoResetOnly: only }
+          return settings
+        }
+        if (path === '/api/settings/codex-credits') {
+          const body = options.body as { user: string; on: boolean }
+          settings = {
+            ...settings,
+            codexNoCredits: body.on
+              ? (settings.codexNoCredits as string[]).filter((user) => user !== body.user.toLocaleLowerCase())
+              : [...(settings.codexNoCredits as string[]), body.user.toLocaleLowerCase()],
+          }
+          return settings
+        }
+        if (path === '/api/usage/codex-reset') return { code: 'reset' }
+        throw new Error(`unexpected path ${path}`)
+      },
+    },
+  })
+
+  assert.deepEqual(await service.updateAccountPolicy({ user: 'account@example.com', policy: 'expiring', enabled: true }), {
+    user: 'account@example.com', policy: 'expiring', enabled: true,
+  })
+  assert.deepEqual(await service.updateAccountPolicy({ user: 'account@example.com', policy: 'credits', enabled: false }), {
+    user: 'account@example.com', policy: 'credits', enabled: false,
+  })
+  assert.deepEqual(await service.resetCodexAccount({ user: 'account@example.com' }), { outcome: 'reset' })
+  assert.deepEqual(calls.map(({ path, method, body }) => [path, method, body]), [
+    ['/api/settings/codex-auto-reset', 'POST', { user: 'account@example.com', on: true, when: 'expiring' }],
+    ['/api/settings/codex-credits', 'POST', { user: 'account@example.com', on: false }],
+    ['/api/usage/codex-reset', 'POST', { user: 'account@example.com' }],
+  ])
+})
+
 test('数量窗口的 remaining 是剩余量而不是百分比', () => {
   // 实测上游：Magpie 的 `used` 永远是 0–100 百分比，而带 amount/limit 的窗口
   // 其 `remaining` 是数量（322.25 / 2400），不能当成百分比读。
@@ -1123,6 +1214,7 @@ test('Codex 仅使用 Codex 目录与精确匹配的 Codex 会话', async () => 
     'http://127.0.0.1:3430/api/usage?period=today',
     'http://127.0.0.1:3430/api/usage?period=all',
     'http://127.0.0.1:3430/api/usage/quotas',
+    'http://127.0.0.1:3430/api/settings',
   ])
   assert.equal(result?.agent, 'codex')
   assert.equal(result?.session?.id, 'codex-thread-7')

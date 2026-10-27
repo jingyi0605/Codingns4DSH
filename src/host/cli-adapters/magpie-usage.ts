@@ -7,6 +7,7 @@ import type {
   CodingNsCliSessionConfig,
 } from '../../shared/contracts/cli-adapter.js'
 import type {
+  CliSubscriptionResetOutcome,
   MagpieQuota,
   MagpieQuotaCheckin,
   MagpieQuotaWindow,
@@ -175,6 +176,14 @@ export interface MagpieContextRequestOptions {
   readonly days?: number
 }
 
+export type MagpieAccountPolicy = 'week' | 'expiring' | 'credits'
+
+export interface MagpieAccountPolicyMutationResult {
+  readonly user: string
+  readonly policy: MagpieAccountPolicy
+  readonly enabled: boolean
+}
+
 /** Reads usage from the authenticated local Magpie Web API and exact-matches session identity. */
 export class MagpieUsageService {
   private readonly readModels: NonNullable<MagpieUsageServiceOptions['readModels']>
@@ -318,6 +327,31 @@ export class MagpieUsageService {
     return changed ? { ...resolvedCatalog, groups } : resolvedCatalog
   }
 
+  async updateAccountPolicy(input: unknown, signal?: AbortSignal): Promise<MagpieAccountPolicyMutationResult> {
+    const update = readMagpieAccountPolicyUpdate(input)
+    const path = update.policy === 'credits' ? '/api/settings/codex-credits' : '/api/settings/codex-auto-reset'
+    const body = update.policy === 'credits'
+      ? { user: update.user, on: update.enabled }
+      : { user: update.user, on: update.enabled, when: update.policy }
+    const result = await this.requestWebJson(path, { method: 'POST', body }, signal)
+    if (!result.ok) throw new Error('Magpie account policy update failed')
+    const settings = parseMagpieAccountPolicies(result.value)
+    if (settings === null || !magpieAccountPolicyMatches(settings, update)) {
+      throw new Error('Magpie account policy update could not be verified')
+    }
+    return update
+  }
+
+  async resetCodexAccount(input: unknown, signal?: AbortSignal): Promise<{ readonly outcome: CliSubscriptionResetOutcome }> {
+    const user = readMagpieAccountUser(input)
+    const result = await this.requestWebJson('/api/usage/codex-reset', {
+      method: 'POST',
+      body: { user },
+    }, signal)
+    if (!result.ok) throw new Error('Magpie Codex reset failed')
+    return { outcome: normalizeMagpieResetOutcome(result.value) }
+  }
+
   /** Return an exact, CLI-confirmed Magpie model record for trusted Host use. */
   async readModelMetadata(adapterId: CodingNsCliAdapterId, modelId: string, signal?: AbortSignal): Promise<MagpieModelMetadata | null> {
     signal?.throwIfAborted()
@@ -342,16 +376,16 @@ export class MagpieUsageService {
   }
 
   /** Read bounded, graph-ready usage and quota data through authenticated Magpie Web. */
-  async readDashboard(period: MagpieDashboardPeriod, signal?: AbortSignal): Promise<MagpieUsageDashboard> {
+  async readDashboard(period: MagpieDashboardPeriod, signal?: AbortSignal, force = false): Promise<MagpieUsageDashboard> {
     signal?.throwIfAborted()
     const cached = this.dashboardCache.get(period)
-    if (cached !== undefined) {
+    if (!force && cached !== undefined) {
       if (this.now() - cached.loadedAt >= MAGPIE_DASHBOARD_CACHE_TTL_MS) {
         void this.refreshDashboard(period).catch(() => undefined)
       }
       return cached.dashboard
     }
-    return this.refreshDashboard(period, signal)
+    return this.refreshDashboard(period, signal, force)
   }
 
   /** Stream cumulative dashboard snapshots as each independent Web API part is ready. */
@@ -371,18 +405,20 @@ export class MagpieUsageService {
     if (latest !== undefined) this.dashboardCache.set(period, { dashboard: latest, loadedAt: this.now() })
   }
 
-  private async refreshDashboard(period: MagpieDashboardPeriod, signal?: AbortSignal): Promise<MagpieUsageDashboard> {
+  private async refreshDashboard(period: MagpieDashboardPeriod, signal?: AbortSignal, force = false): Promise<MagpieUsageDashboard> {
     const pending = this.dashboardRefreshes.get(period)
-    if (pending !== undefined) return awaitWithSignal(pending, signal)
-    const request = (async (): Promise<MagpieUsageDashboard> => {
+    if (!force && pending !== undefined) return awaitWithSignal(pending, signal)
+    let request: Promise<MagpieUsageDashboard> | null = null
+    const task = (async (): Promise<MagpieUsageDashboard> => {
       let latest: MagpieUsageDashboard | undefined
       for await (const chunk of this.readDashboardNetwork(period, signal)) latest = chunk.dashboard
       if (latest === undefined) throw new Error('Magpie dashboard returned no snapshot')
-      this.dashboardCache.set(period, { dashboard: latest, loadedAt: this.now() })
+      if (request !== null && this.dashboardRefreshes.get(period) === request) this.dashboardCache.set(period, { dashboard: latest, loadedAt: this.now() })
       return latest
     })().finally(() => {
-      if (this.dashboardRefreshes.get(period) === request) this.dashboardRefreshes.delete(period)
+      if (request !== null && this.dashboardRefreshes.get(period) === request) this.dashboardRefreshes.delete(period)
     })
+    request = task
     this.dashboardRefreshes.set(period, request)
     return awaitWithSignal(request, signal)
   }
@@ -392,19 +428,22 @@ export class MagpieUsageService {
     let dashboard = emptyMagpieDashboard(period, capturedAt)
     let quotas: readonly MagpieDashboardQuota[] | null = null
     let logoLoad: Promise<readonly MagpieDashboardQuota[]> | undefined
+    let settingsRead = false
     const results = new Map<MagpieDashboardStreamPart, Promise<{ readonly part: MagpieDashboardStreamPart; readonly value: unknown; readonly ok: boolean }>>([
       ['usage', this.timedDashboardRead('usage', () => this.readWebJson(`/api/usage?period=${magpieWebPeriod(period)}`, signal))],
       ['quotas', this.timedDashboardRead('quotas', () => this.readWebJson('/api/usage/quotas', signal))],
+      ['settings', this.timedDashboardRead('settings', () => this.readWebJson('/api/settings', signal))],
       ['history', this.timedDashboardRead('history', () => this.readWebJson('/api/usage/quotas/history?days=30', signal))],
     ])
     const completed = new Map<MagpieDashboardStreamPart, boolean>()
+    let policies: MagpieAccountPolicies | null = null
     while (results.size > 0) {
       const result = await Promise.race(results.values())
       results.delete(result.part)
       const response = asRecord(result.value)
       const partOk = result.ok && response?.ok === true
       const partValue = partOk ? response.value : undefined
-      completed.set(result.part, partOk)
+      if (result.part !== 'settings') completed.set(result.part, partOk)
       if (result.part === 'usage') {
         const parsed = partOk ? parseMagpieDashboardUsage(partValue) : null
         dashboard = {
@@ -420,9 +459,18 @@ export class MagpieUsageService {
           sessionCount: parsed?.sessionCount ?? null,
         }
       } else if (result.part === 'quotas') {
-        quotas = partOk ? parseMagpieQuotaCards(partValue) : null
+        const parsedQuotas = partOk ? parseMagpieQuotaCards(partValue) : null
+        quotas = parsedQuotas === null ? null : applyMagpieDashboardAccountPolicies(parsedQuotas, policies)
         dashboard = { ...dashboard, quotaStatus: quotas === null ? 'unavailable' : 'available', quotas: quotas ?? [] }
-        if (quotas !== null) logoLoad = this.timedDashboardRead('quota-logos', () => this.attachQuotaLogos(quotas!, signal)).then((result) => result.value)
+        if (quotas !== null && settingsRead) logoLoad = this.timedDashboardRead('quota-logos', () => this.attachQuotaLogos(quotas!, signal)).then((logoResult) => logoResult.value)
+      } else if (result.part === 'settings') {
+        settingsRead = true
+        policies = partOk ? parseMagpieAccountPolicies(partValue) : null
+        if (quotas !== null && policies !== null) {
+          quotas = applyMagpieDashboardAccountPolicies(quotas, policies)
+          dashboard = { ...dashboard, quotas }
+        }
+        if (quotas !== null) logoLoad = this.timedDashboardRead('quota-logos', () => this.attachQuotaLogos(quotas!, signal)).then((logoResult) => logoResult.value)
       } else {
         const parsed = partOk ? parseMagpieQuotaHistory(partValue) : null
         dashboard = { ...dashboard, quotaHistoryStatus: parsed === null ? 'unavailable' : 'available', quotaHistory: parsed ?? [] }
@@ -603,10 +651,11 @@ export class MagpieUsageService {
     allowPendingSession: boolean,
   ): Promise<MagpieUsageSnapshot | null> {
     const capturedAt = new Date(this.now()).toISOString()
-    const [usageResult, sessionResult, quotaResult] = await Promise.all([
+    const [usageResult, sessionResult, quotaResult, settingsResult] = await Promise.all([
       this.readWebJson('/api/usage?period=today', signal),
       this.readWebJson('/api/usage?period=all', signal),
       this.readWebJson('/api/usage/quotas', signal),
+      agent === 'codex' ? this.readWebJson('/api/settings', signal) : Promise.resolve({ ok: false as const }),
     ])
     const aggregate = usageResult.ok ? readTotals(usageResult.value) : null
     const primarySession = sessionResult.ok && magpieSessionId !== null
@@ -647,7 +696,9 @@ export class MagpieUsageService {
           : !canReadRoute || !routeHistoryValid
             ? 'unavailable' as const
             : 'no-route' as const
-    const allQuotas = quotaResult.ok ? parseMagpieQuotas(quotaResult.value) : null
+    const allQuotas = quotaResult.ok
+      ? applyMagpieAccountPolicies(parseMagpieQuotas(quotaResult.value), settingsResult.ok ? settingsResult.value : null)
+      : null
     const routeProviders = [...new Set([
       providerFromRoute(route),
       ...routeHistory.map((record) => record.provider),
@@ -847,6 +898,23 @@ export class MagpieUsageService {
     if (this.webApi === undefined) return { ok: false }
     try {
       return { ok: true, value: await this.webApi.requestJson(path, signal === undefined ? {} : { signal }) }
+    } catch {
+      signal?.throwIfAborted()
+      return { ok: false }
+    }
+  }
+
+  private async requestWebJson(
+    path: string,
+    options: { readonly method: 'POST'; readonly body: unknown },
+    signal?: AbortSignal,
+  ): Promise<{ readonly ok: true; readonly value: unknown } | { readonly ok: false }> {
+    if (this.webApi === undefined) return { ok: false }
+    try {
+      return {
+        ok: true,
+        value: await this.webApi.requestJson(path, signal === undefined ? options : { ...options, signal }),
+      }
     } catch {
       signal?.throwIfAborted()
       return { ok: false }
@@ -1533,6 +1601,120 @@ export function parseMagpieQuotas(value: unknown): readonly MagpieQuota[] | null
     })
   }
   return quotas
+}
+
+interface MagpieAccountPolicies {
+  readonly autoResetUsers: ReadonlySet<string>
+  readonly autoResetOnly: ReadonlyMap<string, 'week' | 'expiring'>
+  readonly noCreditsUsers: ReadonlySet<string>
+}
+
+function parseMagpieAccountPolicies(value: unknown): MagpieAccountPolicies | null {
+  const root = asRecord(value)
+  if (root === null) return null
+  const autoResetUsers = readLowercaseSet(root.codexAutoReset, 500)
+  const noCreditsUsers = readLowercaseSet(root.codexNoCredits, 500)
+  const autoResetOnly = new Map<string, 'week' | 'expiring'>()
+  const only = asRecord(root.codexAutoResetOnly)
+  if (only !== null) {
+    for (const [user, value] of Object.entries(only).slice(0, 500)) {
+      if (value === 'week' || value === 'expiring') autoResetOnly.set(user.toLocaleLowerCase(), value)
+    }
+  }
+  if (autoResetUsers === null || noCreditsUsers === null) return null
+  return { autoResetUsers, autoResetOnly, noCreditsUsers }
+}
+
+function applyMagpieAccountPolicies<T extends MagpieQuota | MagpieDashboardQuota>(
+  quotas: readonly T[] | null,
+  settingsValue: unknown,
+): readonly T[] | null {
+  if (quotas === null) return null
+  const settings = parseMagpieAccountPolicies(settingsValue)
+  if (settings === null) return quotas
+  return quotas.map((quota) => {
+    if (quota.provider.toLocaleLowerCase() !== 'codex' || quota.user === null) return quota
+    const user = quota.user.toLocaleLowerCase()
+    const enabled = settings.autoResetUsers.has(user)
+    const only = settings.autoResetOnly.get(user)
+    return {
+      ...quota,
+      autoReset: {
+        week: enabled && only !== 'expiring',
+        expiring: enabled && only !== 'week',
+      },
+      useCredits: !settings.noCreditsUsers.has(user),
+    }
+  })
+}
+
+function applyMagpieDashboardAccountPolicies(
+  quotas: readonly MagpieDashboardQuota[],
+  settings: MagpieAccountPolicies | null,
+): readonly MagpieDashboardQuota[] {
+  return quotas.map((quota) => {
+    if (quota.provider.toLocaleLowerCase() !== 'codex' || quota.user === null) return quota
+    if (settings === null) return { ...quota, policyStatus: 'unavailable' }
+    const user = quota.user.toLocaleLowerCase()
+    const enabled = settings.autoResetUsers.has(user)
+    const only = settings.autoResetOnly.get(user)
+    return {
+      ...quota,
+      autoReset: {
+        week: enabled && only !== 'expiring',
+        expiring: enabled && only !== 'week',
+      },
+      useCredits: !settings.noCreditsUsers.has(user),
+      policyStatus: 'available',
+    }
+  })
+}
+
+function readLowercaseSet(value: unknown, maxItems: number): ReadonlySet<string> | null {
+  if (value === undefined) return new Set()
+  if (!Array.isArray(value) || value.length > maxItems) return null
+  const values = value.filter((item): item is string => typeof item === 'string' && item.trim() !== '')
+  return values.length === value.length
+    ? new Set(values.map((item) => item.trim().toLocaleLowerCase()))
+    : null
+}
+
+function readMagpieAccountUser(value: unknown): string {
+  const record = asRecord(value)
+  const user = typeof record?.user === 'string' ? record.user.trim() : ''
+  if (user === '' || user.length > 180) throw new TypeError('Magpie account user is invalid')
+  return user
+}
+
+function readMagpieAccountPolicyUpdate(value: unknown): MagpieAccountPolicyMutationResult {
+  const record = asRecord(value)
+  const user = readMagpieAccountUser(value)
+  const policy = record?.policy
+  if (policy !== 'week' && policy !== 'expiring' && policy !== 'credits') {
+    throw new TypeError('Magpie account policy is invalid')
+  }
+  if (typeof record?.enabled !== 'boolean') throw new TypeError('Magpie account policy state is invalid')
+  return { user, policy, enabled: record.enabled }
+}
+
+function magpieAccountPolicyMatches(settings: MagpieAccountPolicies, update: MagpieAccountPolicyMutationResult): boolean {
+  const user = update.user.toLocaleLowerCase()
+  if (update.policy === 'credits') return settings.noCreditsUsers.has(user) !== update.enabled
+  const enabled = settings.autoResetUsers.has(user)
+  const only = settings.autoResetOnly.get(user)
+  const current = update.policy === 'week'
+    ? enabled && only !== 'expiring'
+    : enabled && only !== 'week'
+  return current === update.enabled
+}
+
+function normalizeMagpieResetOutcome(value: unknown): CliSubscriptionResetOutcome {
+  const record = asRecord(value)
+  const outcome = record?.code ?? record?.outcome
+  if (outcome === 'reset' || outcome === 'alreadyRedeemed' || outcome === 'nothingToReset' || outcome === 'noCredit') {
+    return outcome
+  }
+  throw new Error('Magpie returned an unknown reset result')
 }
 
 /** Normalize the live aggregate and per-dimension usage response. */
