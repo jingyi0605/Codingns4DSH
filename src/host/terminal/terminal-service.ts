@@ -474,6 +474,32 @@ export class CodingNsTerminalService {
     })
   }
 
+  async readOutput(identity: TerminalRecordIdentity, maxBytes: number): Promise<{ readonly text: string; readonly truncated: boolean }> {
+    if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 64 * 1024) {
+      throw new TypeError('终端读取长度超出允许范围')
+    }
+    const record = this.requireAvailable(identity)
+    if (identity.dshSessionId !== undefined && record.dshSessionId !== identity.dshSessionId) {
+      throw new TerminalServiceError('TERMINAL_UNAVAILABLE', '终端不属于指定 DSH Session')
+    }
+    const resident = this.residents.get(identityKey(identity))
+    let output: string | undefined
+    try { output = await this.runtimes.captureHistory(record, RESIDENT_HISTORY_LINES) }
+    catch {
+      if (resident !== undefined) output = resident.replay
+    }
+    if (output === undefined || output === '' && resident?.replay !== '') output = resident?.replay ?? output
+    if (output === undefined) {
+      const error = new TerminalServiceError('TERMINAL_OUTPUT_UNAVAILABLE', '终端运行时不支持读取输出历史')
+      throw error
+    }
+    const bytes = Buffer.from(output, 'utf8')
+    if (bytes.byteLength <= maxBytes) return { text: output, truncated: false }
+    let start = bytes.byteLength - maxBytes
+    while (start < bytes.byteLength && (bytes[start]! & 0xc0) === 0x80) start += 1
+    return { text: bytes.subarray(start).toString('utf8'), truncated: true }
+  }
+
   async resize(identity: TerminalRecordIdentity, attachmentId: string, cols: number, rows: number): Promise<void> {
     validateSize(cols, rows)
     const controller = await this.waitForController(identity, attachmentId)
@@ -726,6 +752,7 @@ export class CodingNsTerminalService {
     return {
       id: record.terminalId,
       title: record.title,
+      ...(record.dshSessionId === undefined ? {} : { dshSessionId: record.dshSessionId }),
       shell: shellInfo(record),
       cwd: record.cwd,
       cols: record.cols,
@@ -1009,6 +1036,7 @@ export type TerminalServiceErrorCode =
   | 'TERMINAL_UNAVAILABLE'
   | 'TERMINAL_CONTROL_UNAVAILABLE'
   | 'TERMINAL_RUNTIME_LOST'
+  | 'TERMINAL_OUTPUT_UNAVAILABLE'
 
 export class TerminalServiceError extends Error {
   constructor(readonly code: TerminalServiceErrorCode, message: string) {

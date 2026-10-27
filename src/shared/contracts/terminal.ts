@@ -85,6 +85,8 @@ export interface CodingNsTerminalShell {
 export interface CodingNsWebTerminalInfo {
   readonly id: string
   readonly title: string
+  /** Owning DSH Session, when one was recorded by the Host launch request. */
+  readonly dshSessionId?: string
   /** 浏览器 wire 不暴露 Host 内部 profileId。 */
   readonly shell: CodingNsTerminalShellOption
   readonly cwd: string

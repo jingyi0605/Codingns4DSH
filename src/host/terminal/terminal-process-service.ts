@@ -7,7 +7,7 @@ import type {
   TerminalProcessLaunchRequest,
   TerminalProcessLaunchResult,
 } from '../../shared/contracts/terminal-process.js'
-import type { TerminalOwnerScope } from '../../shared/contracts/terminal.js'
+import type { CodingNsWebTerminalInfo, TerminalOwnerScope } from '../../shared/contracts/terminal.js'
 import { CodingNsTerminalService } from './terminal-service.js'
 import { TerminalProcessStore, validateProfile } from './terminal-process-store.js'
 
@@ -32,6 +32,58 @@ export class TerminalProcessService {
   async initialize(): Promise<void> { await this.store.load() }
 
   listProfiles(workspaceId?: string): readonly TerminalLaunchProfile[] { return this.store.listProfiles(workspaceId) }
+
+  listWorkspaceTerminals(workspaceId: string): readonly CodingNsWebTerminalInfo[] {
+    if (this.options.resolveWorkspaceRoot(workspaceId) === null) throw new Error('工作区不可用')
+    const runningIds = new Set(this.store.listInstances(workspaceId)
+      .filter((instance) => instance.state === 'running')
+      .map((instance) => instance.terminalId))
+    return this.options.terminalService.listWorkspace(this.options.hostId, workspaceId)
+      .filter((terminal) => terminal.state === 'running' && runningIds.has(terminal.id))
+  }
+
+  listWorkspaceTerminalsForSession(workspaceId: string, sessionId: string): readonly CodingNsWebTerminalInfo[] {
+    const instances = this.liveInstancesForSession(workspaceId, sessionId, true)
+    const terminals = new Map(this.options.terminalService.listWorkspace(this.options.hostId, workspaceId).map((terminal) => [terminal.id, terminal]))
+    return instances.flatMap((instance) => {
+      const info = terminals.get(instance.terminalId)
+      return info === undefined || info.state !== 'running' ? [] : [info]
+    })
+  }
+
+  async readSessionTerminalOutput(workspaceId: string, sessionId: string, terminalId: string, maxBytes = 16 * 1024): Promise<{ readonly text: string; readonly truncated: boolean }> {
+    const instance = this.requireLiveSessionInstance(workspaceId, sessionId, terminalId, true)
+    const identity = { hostId: this.options.hostId, workspaceId, dshSessionId: sessionId, terminalId: instance.terminalId }
+    return this.options.terminalService.readOutput(identity, maxBytes)
+  }
+
+  async writeSessionTerminalInput(workspaceId: string, sessionId: string, terminalId: string, data: string): Promise<void> {
+    if (typeof data !== 'string' || data.length === 0 || Buffer.byteLength(data, 'utf8') > 16 * 1024) {
+      throw new TypeError('终端输入必须为 1 到 16384 UTF-8 字节')
+    }
+    const instance = this.requireLiveSessionInstance(workspaceId, sessionId, terminalId, true)
+    const identity = { hostId: this.options.hostId, workspaceId, dshSessionId: sessionId, terminalId: instance.terminalId }
+    await this.options.terminalService.writeInitialInput(identity, data)
+  }
+
+  async readTerminalOutput(workspaceId: string, terminalId: string, maxBytes = 16 * 1024, dshSessionId?: string): Promise<{ readonly text: string; readonly truncated: boolean }> {
+    this.requireLiveAuthorizedInstance(workspaceId, terminalId)
+    const record = this.options.terminalService.getRecord({ hostId: this.options.hostId, workspaceId, terminalId })
+    if (dshSessionId !== undefined && record?.dshSessionId !== dshSessionId) throw new Error('终端不属于指定 DSH Session')
+    const identity = { hostId: this.options.hostId, workspaceId, ...(record?.dshSessionId === undefined ? {} : { dshSessionId: record.dshSessionId }), terminalId }
+    return this.options.terminalService.readOutput(identity, maxBytes)
+  }
+
+  async writeTerminalInput(workspaceId: string, terminalId: string, data: string, dshSessionId?: string): Promise<void> {
+    if (typeof data !== 'string' || data.length === 0 || Buffer.byteLength(data, 'utf8') > 16 * 1024) {
+      throw new TypeError('终端输入必须为 1 到 16384 UTF-8 字节')
+    }
+    this.requireLiveAuthorizedInstance(workspaceId, terminalId)
+    const record = this.options.terminalService.getRecord({ hostId: this.options.hostId, workspaceId, terminalId })
+    if (dshSessionId !== undefined && record?.dshSessionId !== dshSessionId) throw new Error('终端不属于指定 DSH Session')
+    const identity = { hostId: this.options.hostId, workspaceId, ...(record?.dshSessionId === undefined ? {} : { dshSessionId: record.dshSessionId }), terminalId }
+    await this.options.terminalService.writeInitialInput(identity, data)
+  }
 
   async createProfile(input: TerminalLaunchProfileInput): Promise<TerminalLaunchProfile> {
     const current = this.store.getProfile(input.workspaceId, input.id)
@@ -67,6 +119,27 @@ export class TerminalProcessService {
 
   getInstance(instanceId: string): TerminalProcessInstance | undefined { return this.store.getInstance(instanceId) }
   listInstances(workspaceId?: string): readonly TerminalProcessInstance[] { return this.store.listInstances(workspaceId) }
+
+  async readInstanceOutput(instanceId: string, maxBytes = 16 * 1024): Promise<{ readonly text: string; readonly truncated: boolean }> {
+    const instance = this.requireLiveAuthorizedProcessInstance(instanceId)
+    return this.options.terminalService.readOutput({
+      hostId: this.options.hostId,
+      workspaceId: instance.workspaceId,
+      terminalId: instance.terminalId,
+    }, maxBytes)
+  }
+
+  async writeInstanceInput(instanceId: string, data: string): Promise<void> {
+    if (typeof data !== 'string' || data.length === 0 || Buffer.byteLength(data, 'utf8') > 16 * 1024) {
+      throw new TypeError('终端输入必须为 1 到 16384 UTF-8 字节')
+    }
+    const instance = this.requireLiveAuthorizedProcessInstance(instanceId)
+    await this.options.terminalService.writeInitialInput({
+      hostId: this.options.hostId,
+      workspaceId: instance.workspaceId,
+      terminalId: instance.terminalId,
+    }, data)
+  }
 
   async launch(request: TerminalProcessLaunchRequest): Promise<TerminalProcessLaunchResult> {
     const profile = this.store.getProfile(request.workspaceId, request.profileId)
@@ -192,6 +265,38 @@ export class TerminalProcessService {
     const escaped = relative(root, cwd)
     if (escaped === '..' || escaped.startsWith(`..${sep}`) || isAbsolute(escaped)) throw new Error('终端启动项工作目录越出 Workspace')
     return cwd
+  }
+
+  private requireLiveAuthorizedProcessInstance(instanceId: string): TerminalProcessInstance {
+    const instance = this.store.getInstance(instanceId)
+    if (instance === undefined || instance.state !== 'running'
+      || this.options.resolveWorkspaceRoot(instance.workspaceId) === null) {
+      throw new Error('终端实例不存在、未运行或工作区不可用')
+    }
+    return instance
+  }
+
+  private requireLiveAuthorizedInstance(workspaceId: string, terminalId: string): TerminalProcessInstance {
+    if (this.options.resolveWorkspaceRoot(workspaceId) === null) throw new Error('工作区不可用')
+    const matches = this.store.listInstances(workspaceId).filter((instance) => instance.terminalId === terminalId && instance.state === 'running')
+    if (matches.length !== 1) throw new Error('终端进程实例不存在、未运行或不唯一')
+    return matches[0]!
+  }
+
+  private liveInstancesForSession(workspaceId: string, sessionId: string, requireRecordedOwner = false): readonly TerminalProcessInstance[] {
+    if (this.options.resolveWorkspaceRoot(workspaceId) === null) throw new Error('工作区不可用')
+    return this.store.listInstances(workspaceId).filter((instance) => {
+      if (instance.state !== 'running') return false
+      const record = this.options.terminalService.getRecord({ hostId: this.options.hostId, workspaceId, terminalId: instance.terminalId })
+      if (record?.state !== 'running') return false
+      return requireRecordedOwner ? record.dshSessionId === sessionId : record.dshSessionId === undefined || record.dshSessionId === sessionId
+    })
+  }
+
+  private requireLiveSessionInstance(workspaceId: string, sessionId: string, terminalId: string, requireRecordedOwner = false): TerminalProcessInstance {
+    const matches = this.liveInstancesForSession(workspaceId, sessionId, requireRecordedOwner).filter((instance) => instance.terminalId === terminalId)
+    if (matches.length !== 1) throw new Error('终端实例不存在、未运行或不属于该会话')
+    return matches[0]!
   }
 }
 
