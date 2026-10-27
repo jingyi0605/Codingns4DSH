@@ -7,7 +7,15 @@ import { CLAUDE_CATALOG, CLAUDE_EFFORT_LEVELS, enrichEfforts, fillProviderEffort
 import { terminateChildProcess } from './process-utils.js'
 import { spawnClaudeProcess } from './claude-process.js'
 
-const DEFAULT_TIMEOUT_MS = 8_000
+/**
+ * 模型发现的超时。
+ *
+ * 两条探测并发跑：CLI initialize 与网关 `/v1/models`。CLI 那一路是唯一带渠道名
+ * （`模型 · 渠道`）和上下文标记（`[1m]`）的来源；它一旦超时，目录就只剩网关裸名，
+ * 同一个模型挂在多个渠道下时，菜单里会出现一串无法区分的同名条目。
+ * 实测 Windows 上 `claude` 冷启动到 initialize 回报需要 4.8~9.3 秒，8 秒会随机踩线。
+ */
+const DEFAULT_TIMEOUT_MS = 15_000
 const INITIALIZE_REQUEST_ID = 'codingns-model-discovery'
 const DEFAULT_MODEL_ID = 'provider-default'
 const ALIAS_ENV_KEYS = ['ANTHROPIC_DEFAULT_SONNET_MODEL', 'ANTHROPIC_DEFAULT_OPUS_MODEL', 'ANTHROPIC_DEFAULT_HAIKU_MODEL'] as const
@@ -149,10 +157,13 @@ async function readGatewayModels(url: string, env: Record<string, string | undef
     const raw = Array.isArray(body.data) ? body.data : Array.isArray(body.models) ? body.models : []
     const models = raw.flatMap((item): CodingNsCliModel[] => {
       if (!item || typeof item !== 'object') return []
-      const object = item as { id?: unknown; value?: unknown; name?: unknown; display_name?: unknown }
+      const object = item as { id?: unknown; value?: unknown; name?: unknown; display_name?: unknown; magpie_label?: unknown }
       const value = object.id ?? object.value
       if (typeof value !== 'string' || !value.trim()) return []
-      const name = object.display_name ?? object.name
+      // `magpie_label` 带渠道后缀（`Kimi-K3 · WorkBuddy`），`display_name` 只是裸模型名
+      // （`Kimi-K3`）。同一个模型常常同时挂在多个渠道下，只用裸名会让菜单出现一串无法
+      // 区分的同名条目，用户也就无从确认自己选的是哪个渠道。缺失时逐级回退，兼容性不变。
+      const name = object.magpie_label ?? object.display_name ?? object.name
       return [{ id: value.trim(), name: typeof name === 'string' && name.trim() ? name.trim() : value.trim(), efforts: [] }]
     })
     if (models.length === 0) throw new Error('CLAUDE_MODEL_CATALOG_RESPONSE_EMPTY')

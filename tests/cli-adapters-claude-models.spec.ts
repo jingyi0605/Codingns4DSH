@@ -291,3 +291,38 @@ test('--help 探测异常时不清空目录，也不下发 --effort', async () =
     rmSync(root, { recursive: true, force: true })
   }
 })
+
+test('网关 /v1/models 返回的模型优先使用 magpie_label 的渠道后缀', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codingns-claude-gateway-label-'))
+  const configDir = join(root, '.claude')
+  mkdirSync(configDir, { recursive: true })
+  // 网关必须显式配置，否则不会走 /v1/models 发现路径。
+  writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://gateway.example/v1' } }), 'utf8')
+  const initialize = JSON.stringify({ type: 'control_response', response: {
+    subtype: 'success', request_id: 'codingns-model-discovery', response: { models: [
+      { value: 'default', displayName: 'Default', supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max'] },
+    ] },
+  } }) + '\n'
+  try {
+    const driver = new ClaudeCodeDriver({
+      binaries: ['fake-claude'],
+      claudeConfigDir: configDir,
+      spawnSync: ((command: string, args: string[]) => args[0] === '--version'
+        ? { status: 0, stdout: 'claude 1.0.0', stderr: '' }
+        : { status: 1, stdout: '', stderr: '' }) as never,
+      spawn: (() => fakeClaudeProcess(initialize)) as never,
+      // 同一个模型在两个渠道下各有一份：display_name 完全相同，只有 magpie_label 能区分。
+      fetch: (async () => new Response(JSON.stringify({ data: [
+        { id: 'hub-example/deepseek-flash', display_name: 'DeepSeek V4.1 Flash', magpie_label: 'DeepSeek V4.1 Flash · 能量庄园' },
+        { id: 'custom/deepseek-flash', display_name: 'DeepSeek V4.1 Flash', magpie_label: 'DeepSeek V4.1 Flash · 能量庄园-测试' },
+        { id: 'plain-relay', display_name: 'Plain Relay' },
+      ] }), { status: 200 })) as typeof fetch,
+    })
+    const models = (await driver.listModels()).groups[0]?.models ?? []
+    assert.equal(models.find((model) => model.id === 'custom/deepseek-flash')?.name, 'DeepSeek V4.1 Flash · 能量庄园-测试', '网关条目应带上渠道名')
+    assert.equal(models.find((model) => model.id === 'hub-example/deepseek-flash')?.name, 'DeepSeek V4.1 Flash · 能量庄园')
+    assert.equal(models.find((model) => model.id === 'plain-relay')?.name, 'Plain Relay', '缺少 magpie_label 时回退 display_name')
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
