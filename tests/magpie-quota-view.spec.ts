@@ -285,6 +285,80 @@ test('按积分计量的账号显示剩余 / 上限，而不是被当成百分�
   assert.match(markup, /codingns-magpie-quota-balance-value"/u, 'credits render as a plain value, not as money')
 })
 
+test('Codex dashboard cards show policies and reset counts, and reset only after confirmation', async () => {
+  const codex: MagpieDashboardQuota = {
+    ...quota('codex'),
+    name: 'Codex',
+    user: 'account@example.com',
+    resets: { count: 2, until: null, each: [], byWindow: false, fiveHour: null, weekly: null },
+    autoReset: { week: false, expiring: true },
+    useCredits: true,
+    policyStatus: 'available',
+  }
+  const rpcCalls: Array<{ endpoint: string; payload: unknown }> = []
+  const rpc = { async call(_channel: string, endpoint: string, payload: unknown) {
+    rpcCalls.push({ endpoint, payload })
+    if (endpoint === 'magpie/usage/dashboard') return { ok: true as const, value: {
+      ...dashboard([codex]), availabilityIssue: null,
+    } }
+    if (endpoint === 'magpie/usage/account/update') return { ok: true as const, value: payload }
+    if (endpoint === 'magpie/usage/reset') return { ok: true as const, value: { outcome: 'reset' } }
+    return { ok: true as const, value: null }
+  } }
+  const renderer = createHookRenderer(MagpieManagementPage, {
+    rpc,
+    locale,
+    initialPageTab: 'usage' as const,
+    initialUsageTab: 'quotas' as const,
+  })
+  const elements = (node: unknown): any[] => Array.isArray(node)
+    ? node.flatMap(elements)
+    : node !== null && typeof node === 'object' && 'props' in node
+      ? [node, ...elements((node as { props: { children?: unknown } }).props.children)]
+      : []
+  const render = () => renderer.render() as never
+  render()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  let tree = render()
+  assert.match(renderToStaticMarkup(tree), /2 张重置卡/u)
+  assert.match(renderToStaticMarkup(tree), /周额度用尽时自动使用重置卡/u)
+  assert.match(renderToStaticMarkup(tree), /重置卡到期前自动使用/u)
+  assert.match(renderToStaticMarkup(tree), /额度用尽后使用点数/u)
+
+  const quotaPage = elements(tree).find((element) => typeof element.type === 'function' && element.type.name === 'QuotasPage')
+  assert.ok(quotaPage)
+  quotaPage.props.onPolicyChange('account@example.com', 'credits', false)
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  tree = render()
+  assert.deepEqual(rpcCalls.find((call) => call.endpoint === 'magpie/usage/account/update')?.payload, {
+    user: 'account@example.com', policy: 'credits', enabled: false,
+  })
+
+  const refreshedQuotaPage = elements(tree).find((element) => typeof element.type === 'function' && element.type.name === 'QuotasPage')
+  assert.ok(refreshedQuotaPage)
+  refreshedQuotaPage.props.onResetRequest(codex)
+  tree = render()
+  const dialog = elements(tree).find((element) => typeof element.type === 'function' && element.type.name === 'MagpieQuotaResetDialog')
+  assert.ok(dialog, 'requesting a reset opens an account-specific confirmation dialog')
+  assert.equal(rpcCalls.some((call) => call.endpoint === 'magpie/usage/reset'), false)
+  await dialog.props.onConfirm()
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(rpcCalls.filter((call) => call.endpoint === 'magpie/usage/reset').length, 1)
+  renderer.dispose()
+})
+
+test('Codex reset action stays unavailable when the reported card count is unknown or zero', () => {
+  for (const count of [null, 0]) {
+    const codex = {
+      ...quota('codex'), name: 'Codex', user: 'account@example.com',
+      resets: { count, until: null, each: [], byWindow: false, fiveHour: null, weekly: null },
+    } as MagpieDashboardQuota
+    const markup = renderToStaticMarkup(createElement(QuotasPage, { dashboard: dashboard([codex]), loading: false, t }))
+    if (count === null) assert.doesNotMatch(markup, /使用一张重置卡/u)
+    else assert.match(markup, /codingns-magpie-codex-reset-button[^>]*disabled/u)
+  }
+})
+
 test('所有账号默认展开，多账号卡片不再藏起后几个账号', () => {
   const multi = [
     { ...quota('workbuddy'), user: 'a@example.com' },

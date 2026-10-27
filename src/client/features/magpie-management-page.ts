@@ -22,6 +22,7 @@ import type {
   MagpieUpdateNotes,
   MagpieUpdateStatus,
 } from '../../shared/contracts/magpie-management.js'
+import type { CliSubscriptionResetOutcome } from '../../shared/contracts/subscription.js'
 import {
   CODINGNS_SUBSCRIPTION_REPORTS_FIELD,
   DEFAULT_SUBSCRIPTION_REPORT_SETTINGS,
@@ -174,6 +175,12 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
   const [dashboardLoading, setDashboardLoading] = useState(true)
   const [dashboardError, setDashboardError] = useState(false)
   const [dashboardIssue, setDashboardIssue] = useState<MagpieDashboardAvailabilityIssue | null>(null)
+  const [quotaPolicyPending, setQuotaPolicyPending] = useState<string | null>(null)
+  const [quotaPolicyFailed, setQuotaPolicyFailed] = useState(false)
+  const [quotaResetTarget, setQuotaResetTarget] = useState<{ readonly user: string; readonly account: string; readonly count: number } | null>(null)
+  const [quotaResetPending, setQuotaResetPending] = useState(false)
+  const [quotaResetResult, setQuotaResetResult] = useState<CliSubscriptionResetOutcome | null>(null)
+  const [quotaResetFailed, setQuotaResetFailed] = useState(false)
   const [chartMetric, setChartMetric] = useState<ChartMetric>('calls')
   const [sessionSearch, setSessionSearch] = useState('')
   const [selectedSession, setSelectedSession] = useState<MagpieUsageSession | null>(null)
@@ -197,14 +204,14 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
   const requestSequence = useRef(0)
   const managementSequence = useRef(0)
 
-  const loadDashboard = useCallback(async (signal: AbortSignal): Promise<void> => {
+  const loadDashboard = useCallback(async (signal: AbortSignal, force = false): Promise<void> => {
     const sequence = dashboardSequence.current + 1
     dashboardSequence.current = sequence
     setDashboardLoading(true)
     setDashboardError(false)
     setDashboardIssue(null)
     try {
-      const next = await callMagpieRpc<MagpieUsageDashboard | null>(rpc, 'usage/dashboard', { period }, signal)
+      const next = await callMagpieRpc<MagpieUsageDashboard | null>(rpc, 'usage/dashboard', { period, ...(force ? { force: true } : {}) }, signal)
       if (signal.aborted || sequence !== dashboardSequence.current) return
       setDashboard(next)
       const issue = next?.availabilityIssue ?? (next === null ? 'host-rpc-outdated' : null)
@@ -219,6 +226,43 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
       if (!signal.aborted && sequence === dashboardSequence.current) setDashboardLoading(false)
     }
   }, [period, rpc])
+
+  const updateQuotaPolicy = useCallback(async (user: string, policy: 'week' | 'expiring' | 'credits', enabled: boolean): Promise<void> => {
+    if (quotaPolicyPending !== null) return
+    setQuotaPolicyPending(`${user}:${policy}`)
+    setQuotaPolicyFailed(false)
+    try {
+      await callMagpieRpc(rpc, 'usage/account/update', { user, policy, enabled })
+      await loadDashboard(new AbortController().signal, true)
+    } catch {
+      setQuotaPolicyFailed(true)
+    } finally {
+      setQuotaPolicyPending(null)
+    }
+  }, [loadDashboard, quotaPolicyPending, rpc])
+
+  const closeQuotaReset = (): void => {
+    if (quotaResetPending) return
+    setQuotaResetTarget(null)
+    setQuotaResetResult(null)
+    setQuotaResetFailed(false)
+  }
+
+  const confirmQuotaReset = async (): Promise<void> => {
+    const target = quotaResetTarget
+    if (target === null || quotaResetPending) return
+    setQuotaResetPending(true)
+    setQuotaResetFailed(false)
+    try {
+      const result = await callMagpieRpc<{ readonly outcome: CliSubscriptionResetOutcome }>(rpc, 'usage/reset', { user: target.user })
+      setQuotaResetResult(result.outcome)
+      await loadDashboard(new AbortController().signal, true)
+    } catch {
+      setQuotaResetFailed(true)
+    } finally {
+      setQuotaResetPending(false)
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController()
@@ -553,8 +597,29 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
                   ? createElement(SessionsPage, { dashboard, sessions: filteredSessions, search: sessionSearch, onSearch: setSessionSearch, onOpenSession: openSession, t })
                   : section === 'requests'
                     ? createElement(RequestsPage, { page: requestPage, loading: requestLoading, error: requestError, selectedSession, offset: requestOffset, onOffsetChange: setRequestOffset, onClearSession: clearSession, t })
-                    : createElement(QuotasPage, { dashboard, loading: dashboardLoading, quotaView, t }),
+                    : createElement(QuotasPage, {
+                      dashboard, loading: dashboardLoading, quotaView, t,
+                      policyPending: quotaPolicyPending,
+                      policyFailed: quotaPolicyFailed,
+                      onPolicyChange: updateQuotaPolicy,
+                      onResetRequest: (quota) => {
+                        if (quota.user === null || quota.resets?.count === null || quota.resets?.count === undefined || quota.resets.count <= 0) return
+                        setQuotaResetTarget({ user: quota.user, account: quota.alias ?? quota.name, count: quota.resets.count })
+                        setQuotaResetResult(null)
+                        setQuotaResetFailed(false)
+                      },
+                    }),
     ),
+    quotaResetTarget !== null && createElement(MagpieQuotaResetDialog, {
+      target: quotaResetTarget,
+      pending: quotaResetPending,
+      result: quotaResetResult,
+      failed: quotaResetFailed,
+      t,
+      onCancel: closeQuotaReset,
+      onConfirm: confirmQuotaReset,
+      onClose: closeQuotaReset,
+    }),
   )
 }
 
@@ -1133,12 +1198,16 @@ function QuotaViewIcon(): ReactElement {
   )
 }
 
-export function QuotasPage({ dashboard, loading, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTINGS.quotaView, t }: {
+export function QuotasPage({ dashboard, loading, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTINGS.quotaView, t, policyPending = null, policyFailed = false, onPolicyChange = () => undefined, onResetRequest = () => undefined }: {
   readonly dashboard: MagpieUsageDashboard | null
   readonly loading: boolean
   /** 额度卡的显示口径；省略时按默认（剩余）渲染，保持既有调用方的读法。 */
   readonly quotaView?: SubscriptionQuotaView
   readonly t: (key: string, params?: Record<string, string | number>) => string
+  readonly policyPending?: string | null
+  readonly policyFailed?: boolean
+  readonly onPolicyChange?: (user: string, policy: 'week' | 'expiring' | 'credits', enabled: boolean) => void
+  readonly onResetRequest?: (quota: MagpieDashboardQuota) => void
 }): ReactElement {
   const quotaUnavailable = dashboard?.quotaStatus !== 'available'
   const quotas = dashboard?.quotas ?? []
@@ -1148,7 +1217,9 @@ export function QuotasPage({ dashboard, loading, quotaView = DEFAULT_SUBSCRIPTIO
       ? createElement(EmptyState, { message: t(dashboard === null && loading ? 'magpie.loading' : 'magpie.quotaUnavailable'), loading: dashboard === null && loading })
       : quotas.length === 0
         ? createElement(EmptyState, { message: t('magpie.noQuotas') })
-        : createElement('div', { className: 'codingns-magpie-quota-grid' }, ...groupQuotaRowsByProvider(quotas).map((group) => createElement(QuotaGroupCard, { key: group.provider, group, quotaView, t }))),
+        : createElement('div', { className: 'codingns-magpie-quota-grid' }, ...groupQuotaRowsByProvider(quotas).map((group) => createElement(QuotaGroupCard, {
+          key: group.provider, group, quotaView, t, policyPending, policyFailed, onPolicyChange, onResetRequest,
+        }))),
     createElement('section', { className: 'codingns-magpie-panel codingns-magpie-history-panel' },
       createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('div', undefined,
         createElement('h2', undefined, t('magpie.quotaHistory')),
@@ -1249,10 +1320,14 @@ function ProgressSection({ title, rows, t, onOpen, header, limit = 8 }: {
  * 同一厂商的多个账号（如 WorkBuddy 的 4 个）共用一张卡，避免每个账号各占一张卡导致
  * 同类账号被拆散在网格各处；单账号厂商的读法与改造前一致。
  */
-function QuotaGroupCard({ group, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTINGS.quotaView, t }: {
+function QuotaGroupCard({ group, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTINGS.quotaView, t, policyPending, policyFailed, onPolicyChange, onResetRequest }: {
   readonly group: ReturnType<typeof groupQuotaRowsByProvider<MagpieDashboardQuota>>[number]
   readonly quotaView?: SubscriptionQuotaView
   readonly t: (key: string, params?: Record<string, string | number>) => string
+  readonly policyPending: string | null
+  readonly policyFailed: boolean
+  readonly onPolicyChange: (user: string, policy: 'week' | 'expiring' | 'credits', enabled: boolean) => void
+  readonly onResetRequest: (quota: MagpieDashboardQuota) => void
 }): ReactElement {
   const first = group.accounts[0]!
   // 默认展开：只有用户主动收起后才是折叠态。
@@ -1284,6 +1359,10 @@ function QuotaGroupCard({ group, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTING
       quota,
       quotaView,
       t,
+      policyPending,
+      policyFailed,
+      onPolicyChange,
+      onResetRequest,
       // 单账号时不重复显示账号段头，保持与改造前一致的读法。
       showHeading: multi,
     })),
@@ -1297,11 +1376,15 @@ function QuotaGroupCard({ group, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTING
  * Sub2api 的钱包余额、按积分计量的 WorkBuddy）单独显示余额行，与 Magpie 原生卡片
  * 一致——过去这些账号只剩一条空进度条，余额被完全藏起来。
  */
-function QuotaAccountSection({ quota, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTINGS.quotaView, t, showHeading }: {
+function QuotaAccountSection({ quota, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SETTINGS.quotaView, t, showHeading, policyPending, policyFailed, onPolicyChange, onResetRequest }: {
   readonly quota: MagpieDashboardQuota
   readonly quotaView?: SubscriptionQuotaView
   readonly t: (key: string, params?: Record<string, string | number>) => string
   readonly showHeading: boolean
+  readonly policyPending: string | null
+  readonly policyFailed: boolean
+  readonly onPolicyChange: (user: string, policy: 'week' | 'expiring' | 'credits', enabled: boolean) => void
+  readonly onResetRequest: (quota: MagpieDashboardQuota) => void
 }): ReactElement {
   // `daily` 现在带 `since`，按日点位于 `days` 里。
   const dailyValues = quota.daily.days.map((point) => point.used).filter((value): value is number => value !== null)
@@ -1315,6 +1398,9 @@ function QuotaAccountSection({ quota, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SE
       quota.plan !== null && createElement('small', undefined, quota.plan),
     ),
     !showHeading && quota.user !== null && createElement('div', { className: 'codingns-magpie-quota-account' }, t('magpie.account', { account: quota.user })),
+    quota.provider.toLocaleLowerCase() === 'codex' && createElement(MagpieQuotaControls, {
+      quota, t, policyPending, policyFailed, onPolicyChange, onResetRequest,
+    }),
     balance !== null && createElement('div', { className: 'codingns-magpie-quota-balance' },
       createElement('span', { className: 'codingns-magpie-quota-balance-label' }, t('magpie.balance')),
       createElement('strong', { className: balance.money ? 'codingns-magpie-quota-balance-value is-money' : 'codingns-magpie-quota-balance-value', title: balance.raw }, balance.text),
@@ -1351,6 +1437,106 @@ function QuotaAccountSection({ quota, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SE
     quota.daily.days.length > 1 && createElement('div', { className: 'codingns-magpie-daily-chart' },
       createElement(Sparkline, { values: dailyValues }),
       createElement('small', undefined, t('magpie.dailyUsage')),
+    ),
+  )
+}
+
+function MagpieQuotaControls({ quota, t, policyPending, policyFailed, onPolicyChange, onResetRequest }: {
+  readonly quota: MagpieDashboardQuota
+  readonly t: (key: string, params?: Record<string, string | number>) => string
+  readonly policyPending: string | null
+  readonly policyFailed: boolean
+  readonly onPolicyChange: (user: string, policy: 'week' | 'expiring' | 'credits', enabled: boolean) => void
+  readonly onResetRequest: (quota: MagpieDashboardQuota) => void
+}): ReactElement {
+  const user = quota.user
+  const resetCount = quota.resets?.count
+  const policyUnavailable = user === null || quota.policyStatus === 'unavailable'
+    || quota.autoReset === undefined || quota.useCredits === undefined
+  return createElement('div', { className: 'codingns-magpie-codex-controls' },
+    createElement('div', { className: 'codingns-magpie-codex-reset-count' },
+      createElement('span', undefined, t('usage.magpieResetCountLabel')),
+      createElement('strong', undefined, resetCount === null || resetCount === undefined ? '—' : t('usage.magpieResetCount', { count: resetCount })),
+    ),
+    policyUnavailable
+      ? createElement('div', { className: 'codingns-magpie-codex-unavailable', role: 'status' }, t('magpie.codexPolicyUnavailable'))
+      : quota.autoReset !== undefined && createElement(MagpieQuotaPolicySwitch, {
+        label: t('usage.magpieResetWhenWeek'), checked: quota.autoReset.week,
+        pending: policyPending === `${user}:week`, disabled: policyPending !== null,
+        onChange: (enabled) => onPolicyChange(user, 'week', enabled),
+      }),
+    !policyUnavailable && quota.autoReset !== undefined && createElement(MagpieQuotaPolicySwitch, {
+      label: t('usage.magpieResetBeforeExpiry'), checked: quota.autoReset.expiring,
+      pending: policyPending === `${user}:expiring`, disabled: policyPending !== null,
+      onChange: (enabled) => onPolicyChange(user, 'expiring', enabled),
+    }),
+    !policyUnavailable && quota.useCredits !== undefined && createElement(MagpieQuotaPolicySwitch, {
+      label: t('usage.magpieUseCredits'), checked: quota.useCredits,
+      pending: policyPending === `${user}:credits`, disabled: policyPending !== null,
+      onChange: (enabled) => onPolicyChange(user, 'credits', enabled),
+    }),
+    policyFailed && createElement('div', { className: 'codingns-magpie-codex-error', role: 'alert' }, t('magpie.codexPolicyFailed')),
+    user !== null && resetCount !== null && resetCount !== undefined && createElement('button', {
+      type: 'button',
+      className: 'codingns-magpie-codex-reset-button',
+      disabled: resetCount <= 0,
+      onClick: () => onResetRequest(quota),
+    }, t('usage.magpieUseReset')),
+  )
+}
+
+function MagpieQuotaPolicySwitch({ label, checked, pending, disabled, onChange }: {
+  readonly label: string
+  readonly checked: boolean
+  readonly pending: boolean
+  readonly disabled: boolean
+  readonly onChange: (enabled: boolean) => void
+}): ReactElement {
+  return createElement('button', {
+    type: 'button', role: 'switch', 'aria-checked': checked, disabled,
+    'aria-busy': pending,
+    className: 'codingns-magpie-codex-policy',
+    onClick: () => onChange(!checked),
+  },
+    createElement('span', undefined, label),
+    createElement('span', { className: `codingns-magpie-codex-switch${checked ? ' is-on' : ''}` }, createElement('span')),
+  )
+}
+
+function MagpieQuotaResetDialog({ target, pending, result, failed, t, onCancel, onConfirm, onClose }: {
+  readonly target: { readonly user: string; readonly account: string; readonly count: number }
+  readonly pending: boolean
+  readonly result: CliSubscriptionResetOutcome | null
+  readonly failed: boolean
+  readonly t: (key: string, params?: Record<string, string | number>) => string
+  readonly onCancel: () => void
+  readonly onConfirm: () => void
+  readonly onClose: () => void
+}): ReactElement {
+  const finished = result !== null || failed
+  const outcomeKeys: Record<CliSubscriptionResetOutcome, string> = {
+    reset: 'usage.resetOutcomeReset',
+    alreadyRedeemed: 'usage.resetOutcomeAlreadyRedeemed',
+    nothingToReset: 'usage.resetOutcomeNothingToReset',
+    noCredit: 'usage.resetOutcomeNoCredit',
+  }
+  const outcomeMessage = result === null ? null : t(outcomeKeys[result])
+  return createElement('div', {
+    className: 'codingns-magpie-codex-reset-overlay', role: 'presentation',
+    onMouseDown: (event: { target: unknown; currentTarget: unknown }) => { if (event.target === event.currentTarget && !pending) onCancel() },
+  },
+    createElement('div', { className: 'codingns-magpie-codex-reset-dialog', role: 'dialog', 'aria-modal': true, 'aria-label': t('usage.resetDialogTitle') },
+      createElement('strong', undefined, t('usage.resetDialogTitle')),
+      createElement('span', undefined, t('magpie.resetDialogAccount', { account: target.account })),
+      createElement('span', { className: failed ? 'is-error' : result === 'reset' || result === 'alreadyRedeemed' ? 'is-success' : '' },
+        pending ? t('usage.resetDialogPending') : failed ? t('magpie.codexResetFailed') : outcomeMessage ?? t('magpie.resetDialogBody', { count: target.count }),
+      ),
+      createElement('div', { className: 'codingns-magpie-codex-reset-actions' },
+        finished
+          ? createElement('button', { type: 'button', onClick: onClose }, t('usage.resetDialogClose'))
+          : createElement('button', { type: 'button', disabled: pending, onClick: onCancel }, t('usage.resetDialogCancel')),
+        !finished && createElement('button', { type: 'button', disabled: pending, onClick: onConfirm }, t('usage.resetDialogConfirm')),
+      ),
     ),
   )
 }
@@ -1408,7 +1594,7 @@ function SearchIcon(): ReactElement {
   )
 }
 
-export async function callMagpieRpc<T>(rpc: CodingNsRpcClient, action: 'usage/dashboard' | 'usage/requests' | 'management/snapshot' | 'management/provider/update' | 'management/group/update' | 'management/account/update' | 'update/status' | 'update/notes' | 'update/check' | 'update/install', payload: unknown, signal?: AbortSignal): Promise<T> {
+export async function callMagpieRpc<T>(rpc: CodingNsRpcClient, action: 'usage/dashboard' | 'usage/requests' | 'usage/account/update' | 'usage/reset' | 'management/snapshot' | 'management/provider/update' | 'management/group/update' | 'management/account/update' | 'update/status' | 'update/notes' | 'update/check' | 'update/install', payload: unknown, signal?: AbortSignal): Promise<T> {
   const result = await callCodingNsRpcResult(rpc, `magpie/${action}`, payload, signal)
   if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
   return result.value as T
@@ -1653,6 +1839,13 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-quota-balance-label{flex:0 0 auto;color:var(--mp-muted);font-size:${uiFontSize(13)}}
 .codingns-magpie-quota-balance-value{min-width:0;overflow:hidden;color:var(--mp-ink);font-size:${uiFontSize(15)};font-weight:600;font-variant-numeric:tabular-nums;text-overflow:ellipsis;white-space:nowrap}
 .codingns-magpie-quota-balance-value.is-money{font-size:${uiFontSize(17)};letter-spacing:-.01em}
+.codingns-magpie-codex-controls{display:grid;gap:2px;margin:9px 0 10px;padding:8px 10px;border-top:.5px solid var(--mp-line);border-bottom:.5px solid var(--mp-line);background:color-mix(in srgb,var(--mp-layer) 45%,transparent)}
+.codingns-magpie-codex-reset-count{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0;padding:2px 0 5px;color:var(--mp-muted);font-size:${uiFontSize(12)}}.codingns-magpie-codex-reset-count strong{color:var(--mp-ink);font-size:${uiFontSize(13)};font-variant-numeric:tabular-nums}
+.codingns-magpie-codex-policy{display:flex;align-items:center;justify-content:space-between;gap:12px;width:100%;min-width:0;min-height:32px;padding:4px 0;border:0;background:transparent;color:var(--mp-muted);font:inherit;font-size:${uiFontSize(12)};text-align:left;cursor:pointer}.codingns-magpie-codex-policy>span:first-child{min-width:0;line-height:1.4;overflow-wrap:anywhere}.codingns-magpie-codex-policy:disabled{opacity:.58;cursor:wait}.codingns-magpie-codex-policy:focus-visible,.codingns-magpie-codex-reset-button:focus-visible{outline:2px solid color-mix(in srgb,var(--mp-accent) 60%,transparent);outline-offset:2px}
+.codingns-magpie-codex-switch{display:grid;place-items:center;flex:0 0 34px;width:34px;height:20px;padding:2px;border-radius:999px;background:var(--mp-line-strong);transition:background .15s}.codingns-magpie-codex-switch>span{justify-self:start;width:16px;height:16px;border-radius:50%;background:var(--mp-surface);box-shadow:0 1px 2px rgba(0,0,0,.18);transition:transform .15s}.codingns-magpie-codex-switch.is-on{background:var(--mp-accent)}.codingns-magpie-codex-switch.is-on>span{transform:translateX(14px)}
+.codingns-magpie-codex-unavailable,.codingns-magpie-codex-error{padding:5px 0;color:var(--mp-caption);font-size:${uiFontSize(12)}}.codingns-magpie-codex-error{color:var(--dsw-alias-state-error-primary,#c54b4b)}
+.codingns-magpie-codex-reset-button{justify-self:start;min-height:27px;margin-top:4px;padding:0 9px;border:.5px solid var(--mp-line-strong);border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--mp-ink);font:inherit;font-size:${uiFontSize(12)};cursor:pointer}.codingns-magpie-codex-reset-button:hover:not(:disabled){border-color:var(--mp-accent);color:var(--mp-accent)}.codingns-magpie-codex-reset-button:disabled{opacity:.45;cursor:not-allowed}
+.codingns-magpie-codex-reset-overlay{position:absolute;inset:0;z-index:30;display:flex;align-items:center;justify-content:center;overflow:auto;padding:20px;background:color-mix(in srgb,var(--mp-surface) 70%,rgba(0,0,0,.3));backdrop-filter:blur(2px)}.codingns-magpie-codex-reset-dialog{display:grid;gap:10px;width:min(420px,100%);padding:16px;border:.5px solid var(--mp-line-strong);border-radius:var(--mp-radius);background:var(--mp-surface);box-shadow:var(--dsw-elevation-prominent,0 16px 44px rgba(0,0,0,.2));font-size:${uiFontSize(13)};line-height:1.5}.codingns-magpie-codex-reset-dialog>strong{font-size:${uiFontSize(14)}}.codingns-magpie-codex-reset-dialog>span{color:var(--mp-muted);overflow-wrap:anywhere}.codingns-magpie-codex-reset-dialog>span.is-error{color:var(--dsw-alias-state-error-primary,#c54b4b)}.codingns-magpie-codex-reset-dialog>span.is-success{color:var(--dsw-alias-state-success-primary,#3f9d6b)}.codingns-magpie-codex-reset-actions{display:flex;justify-content:flex-end;gap:8px;padding-top:3px}.codingns-magpie-codex-reset-actions button{min-height:30px;padding:0 11px;border:.5px solid var(--mp-line-strong);border-radius:var(--dsw-radius-sm,6px);background:transparent;color:var(--mp-ink);font:inherit;font-size:${uiFontSize(12)};cursor:pointer}.codingns-magpie-codex-reset-actions button:last-child{border-color:var(--mp-accent);background:var(--mp-accent);color:var(--dsw-alias-label-primary-foreground,#fff)}.codingns-magpie-codex-reset-actions button:disabled{opacity:.5;cursor:wait}
 .codingns-magpie-quota-window{padding:11px 0;border-top:.5px solid var(--mp-line)}.codingns-magpie-quota-window-head,.codingns-magpie-quota-foot,.codingns-magpie-history-line-head{display:flex;align-items:center;justify-content:space-between;gap:9px}.codingns-magpie-quota-window-head{font-size:${uiFontSize(13)};font-weight:500}.codingns-magpie-quota-window-head span{color:var(--mp-muted);font-variant-numeric:tabular-nums}.quota-track{height:6px}.quota-track span{background:linear-gradient(90deg,var(--mp-accent),color-mix(in srgb,var(--mp-accent) 55%,transparent))}.codingns-magpie-quota-foot{color:var(--mp-caption);font-size:${uiFontSize(12)}}
 .codingns-magpie-daily-chart{display:grid;grid-template-columns:1fr auto;align-items:center;gap:9px;margin-top:4px;padding-top:10px;border-top:.5px solid var(--mp-line);color:var(--mp-muted);font-size:${uiFontSize(12)}}.codingns-magpie-sparkline{width:100%;height:30px;overflow:visible}.codingns-magpie-sparkline polyline{stroke:var(--mp-accent);stroke-width:2;vector-effect:non-scaling-stroke}
 .codingns-magpie-history-panel{padding:17px;margin-top:14px}.codingns-magpie-history-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.codingns-magpie-history-card{padding:12px;border:1px solid var(--mp-line);border-radius:9px;background:var(--mp-card)}.codingns-magpie-history-card>strong,.codingns-magpie-history-card>small{display:block}.codingns-magpie-history-card>strong{font-size:${uiFontSize(13)};font-weight:600}.codingns-magpie-history-card>small{margin-top:3px;color:var(--mp-caption);font-size:${uiFontSize(12)}}.codingns-magpie-history-line{margin-top:10px}.codingns-magpie-history-line-head{font-size:${uiFontSize(12)}}.codingns-magpie-history-line-head span:last-child{font-variant-numeric:tabular-nums;font-weight:650}

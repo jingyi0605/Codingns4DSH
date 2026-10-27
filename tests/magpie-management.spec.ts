@@ -106,6 +106,14 @@ test('Magpie quota cards and history preserve nullable windows and exact observe
 
   assert.equal(cards?.[0]?.windows[0]?.remainingPercent, 55)
   assert.equal(cards?.[0]?.icon, 'example-provider-color')
+  const codex = parseMagpieQuotaCards({ data: [{
+    provider: 'codex', name: 'Codex', user: 'account@example.test', windows: [],
+    resets: { count: 3, until: '2026-11-01T00:00:00Z', each: [{ window: 'weekly', until: '2026-11-01T00:00:00Z' }] },
+    credits: '8.49',
+  }] })?.[0]
+  assert.equal(codex?.resets?.count, 3, 'dashboard quota cards keep reported reset cards')
+  assert.equal(codex?.resets?.each[0]?.window, 'weekly')
+  assert.equal(codex?.credits, '8.49')
   // `daily` carries the window it covers: `since` is the day Magpie starts counting from.
   assert.deepEqual(cards?.[0]?.daily, { since: null, days: [{ day: '2026-10-22', used: 12 }] })
   assert.equal(history?.[0]?.lines[0]?.points[0]?.left, 55)
@@ -136,8 +144,47 @@ test('Magpie dashboard endpoint failures stay independent and expose history ava
   assert.deepEqual(urls, [
     '/api/usage?period=30d',
     '/api/usage/quotas',
+    '/api/settings',
     '/api/usage/quotas/history?days=30',
   ])
+})
+
+test('Codex dashboard settings failure does not hide quota data or claim a disabled policy', async () => {
+  const service = new MagpieUsageService({ webApi: { async requestJson(path) {
+    if (path.startsWith('/api/usage?')) return { calls: 1, series: [] }
+    if (path === '/api/usage/quotas') return { data: [{
+      provider: 'codex', name: 'Codex', user: 'account@example.test', windows: [],
+      resets: { count: 2, until: null, each: [], byWindow: false },
+    }] }
+    if (path === '/api/settings') throw new Error('settings unavailable')
+    if (path.includes('/quotas/history')) return []
+    throw new Error(`unexpected route ${path}`)
+  } } })
+
+  const dashboard = await service.readDashboard('today')
+  assert.equal(dashboard.quotaStatus, 'available')
+  assert.equal(dashboard.quotas[0]?.resets?.count, 2)
+  assert.equal(dashboard.quotas[0]?.policyStatus, 'unavailable')
+  assert.equal(dashboard.quotas[0]?.autoReset, undefined)
+  assert.equal(dashboard.quotas[0]?.useCredits, undefined)
+})
+
+test('Codex dashboard keeps reset-card metadata when quota rows omit account identity', async () => {
+  const service = new MagpieUsageService({ webApi: { async requestJson(path) {
+    if (path.startsWith('/api/usage?')) return { calls: 1, series: [] }
+    if (path === '/api/usage/quotas') return { data: [{
+      provider: 'codex', name: 'Codex', windows: [],
+      resets: { count: 4, until: null, each: [], byWindow: false },
+    }] }
+    if (path === '/api/settings') return { codexAutoReset: [], codexNoCredits: [] }
+    if (path.includes('/quotas/history')) return []
+    throw new Error(`unexpected route ${path}`)
+  } } })
+
+  const dashboard = await service.readDashboard('today')
+  assert.equal(dashboard.quotas[0]?.resets?.count, 4)
+  assert.equal(dashboard.quotas[0]?.autoReset, undefined)
+  assert.equal(dashboard.quotas[0]?.useCredits, undefined)
 })
 
 test('Magpie dashboard streams each API part and measures the slowest part independently', async () => {
@@ -150,6 +197,7 @@ test('Magpie dashboard streams each API part and measures the slowest part indep
         await delay(path.includes('/history') ? 25 : path.includes('/quotas') ? 12 : 3)
         if (path.includes('/usage?')) return { calls: 4, input: 10, output: 7, series: [] }
         if (path === '/api/usage/quotas') return { data: [{ provider: 'workbuddy', name: 'WorkBuddy', icon: 'workbuddy-color', windows: [] }] }
+        if (path === '/api/settings') return { codexAutoReset: [], codexNoCredits: [] }
         if (path.includes('/history')) return []
         throw new Error(`unexpected route ${path}`)
       },
@@ -169,7 +217,7 @@ test('Magpie dashboard streams each API part and measures the slowest part indep
   assert.ok(chunks.findIndex(chunk => chunk.part === 'complete') < chunks.findIndex(chunk => chunk.part === 'logos'), 'the loading cycle ends before slow optional logos finish')
   assert.equal(chunks.at(-1)?.part, 'logos')
   assert.equal(chunks.find(chunk => chunk.part === 'logos')?.dashboard.quotas[0]?.logoDataUrl, 'data:image/svg+xml;base64,PHN2Zy8+')
-  assert.deepEqual(timings.map(timing => timing.part).sort(), ['history', 'quota-logos', 'quotas', 'usage'])
+  assert.deepEqual(timings.map(timing => timing.part).sort(), ['history', 'quota-logos', 'quotas', 'settings', 'usage'])
   assert.equal([...timings].sort((left, right) => right.elapsedMs - left.elapsedMs)[0]?.part, 'quota-logos', 'the controlled fixture identifies logo hydration as the longest stage')
 })
 
@@ -182,6 +230,7 @@ test('Magpie dashboard serves a fresh cache immediately and refreshes an expired
       reads += 1
       if (path.includes('/usage?')) return { calls: reads, series: [] }
       if (path === '/api/usage/quotas') return []
+      if (path === '/api/settings') return { codexAutoReset: [], codexNoCredits: [] }
       if (path.includes('/history')) return []
       throw new Error(`unexpected route ${path}`)
     } },
@@ -190,14 +239,32 @@ test('Magpie dashboard serves a fresh cache immediately and refreshes an expired
   now += 1_000
   const fresh = await service.readDashboard('today')
   assert.equal(fresh, initial)
-  assert.equal(reads, 3, 'a fresh cache avoids all API requests')
+  assert.equal(reads, 4, 'a fresh cache avoids all API requests')
 
   now += 16_000
   const stale = await service.readDashboard('today')
   assert.equal(stale, initial, 'expired data is returned before its refresh completes')
   await new Promise(resolve => setTimeout(resolve, 0))
-  assert.equal(reads, 6, 'the stale cache refresh starts in the background')
+  assert.equal(reads, 8, 'the stale cache refresh starts in the background')
   assert.notEqual(await service.readDashboard('today'), initial, 'the refreshed snapshot replaces the stale cache')
+})
+
+test('Magpie dashboard forced reads bypass a fresh cache after a Codex account mutation', async () => {
+  let reads = 0
+  const service = new MagpieUsageService({ webApi: { async requestJson(path) {
+    if (path.startsWith('/api/usage?')) return { calls: ++reads, series: [] }
+    if (path === '/api/usage/quotas') return []
+    if (path === '/api/settings') return { codexAutoReset: [], codexNoCredits: [] }
+    if (path.includes('/quotas/history')) return []
+    throw new Error(`unexpected route ${path}`)
+  } } })
+
+  const cached = await service.readDashboard('today')
+  assert.equal((await service.readDashboard('today')).aggregate?.calls, 1)
+  const refreshed = await service.readDashboard('today', undefined, true)
+  assert.equal(refreshed.aggregate?.calls, 2)
+  assert.notEqual(refreshed, cached)
+  assert.equal(reads, 2)
 })
 
 test('Magpie quota icons are fetched through the Host Web API and attached as data URLs', async () => {
@@ -207,6 +274,7 @@ test('Magpie quota icons are fetched through the Host Web API and attached as da
       async requestJson(path) {
         if (path.includes('/usage?')) return { calls: 1, series: [] }
         if (path === '/api/usage/quotas') return { data: [{ provider: 'workbuddy', name: 'WorkBuddy', icon: 'workbuddy-color', windows: [] }] }
+        if (path === '/api/settings') return { codexAutoReset: [], codexNoCredits: [] }
         if (path.includes('/quotas/history')) return []
         throw new Error(`unexpected route ${path}`)
       },

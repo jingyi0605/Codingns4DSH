@@ -1,3 +1,5 @@
+import type { MagpieQuota } from './subscription.js'
+
 export type MagpieDashboardPeriod = 'today' | 'week' | 'month' | 'all'
 
 export type MagpieDashboardAvailabilityIssue =
@@ -81,11 +83,24 @@ export interface MagpieDashboardQuota {
   readonly balance: string | null
   readonly readAt: string | null
   readonly windows: readonly MagpieDashboardQuotaWindow[]
+  /** Codex reset-card availability; absent means Magpie did not report it. */
+  readonly resets?: MagpieQuota['resets']
+  /** Codex credit balance, separate from quota windows. */
+  readonly credits?: string | null
   /** 按日消耗；`since` 是统计起点，上游不提供时为 null。 */
   readonly daily: {
     readonly since: string | null
     readonly days: readonly { readonly day: string; readonly used: number | null }[]
   }
+  /** Codex account reset policy from authenticated Magpie Web settings. */
+  readonly autoReset?: {
+    readonly week: boolean
+    readonly expiring: boolean
+  }
+  /** Whether the authenticated settings endpoint returned usable policy data. */
+  readonly policyStatus?: 'available' | 'unavailable'
+  /** Whether this account may spend credits after a quota window is exhausted. */
+  readonly useCredits?: boolean
   /** 上游读取失败的安全原因摘要（如 `Unauthorized`）；成功时为 null。 */
   readonly error?: string | null
   /** 签到信息与每日消耗；仅部分厂商提供。 */
@@ -138,7 +153,7 @@ export interface MagpieUsageDashboard {
 }
 
 /** A progressively rendered dashboard snapshot. The snapshot is cumulative. */
-export type MagpieDashboardStreamPart = 'cache' | 'usage' | 'quotas' | 'history' | 'logos' | 'complete' | 'sessions'
+export type MagpieDashboardStreamPart = 'cache' | 'usage' | 'quotas' | 'settings' | 'history' | 'logos' | 'complete' | 'sessions'
 
 export interface MagpieDashboardStreamChunk {
   readonly part: MagpieDashboardStreamPart
