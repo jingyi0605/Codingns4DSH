@@ -37,6 +37,7 @@ import { commandEnvironment, resolveCommandPath, runAsyncCommand, WINDOWS, withC
 import { parseMagpieWebProviders } from './magpie-management.js'
 import { parseMagpieContextResponse } from './magpie-context.js'
 import type { MagpieWebService } from './magpie-web.js'
+import { claudeModelDisplayName } from './model-catalog.js'
 
 const MAGPIE_CATALOG_TTL_MS = 60_000
 const MAGPIE_MODEL_METADATA_TTL_MS = 60_000
@@ -280,9 +281,11 @@ export class MagpieUsageService {
         const id = resolveCatalogModelId(agent, model.id, agentCatalog, model.name)
         if (id === null) return model
         const record = metadata?.get(id)
-        const metadataModel = record === undefined
+        const mergedModel = record === undefined
           ? model.source === 'magpie' ? model : { ...model, source: 'magpie' as const }
           : mergeMagpieModelMetadata(model, record)
+        const name = agent === 'claude' ? claudeModelDisplayName(model.id, mergedModel.name) : mergedModel.name
+        const metadataModel = name === mergedModel.name ? mergedModel : { ...mergedModel, name }
         const providerId = providerFromModel(id)
         const enriched = providerId === null || metadataModel.magpieProviderId === providerId
           ? metadataModel : { ...metadataModel, magpieProviderId: providerId }
@@ -1012,7 +1015,7 @@ export function parseMagpieModelMetadata(value: unknown): ReadonlyMap<string, Ma
     const capabilities = readStringList(record.capabilities, 64, 128)
     const metadata: MagpieModelMetadata = {
       id,
-      ...optionalText(record.display_name ?? record.magpie_label ?? record.name, 200, 'name'),
+      ...optionalText(record.magpie_label ?? record.display_name ?? record.name, 200, 'name'),
       ...optionalText(record.description, 2_000, 'description'),
       ...optionalPositiveLimit(record.context_window ?? record.context_length, 'contextWindow'),
       ...optionalPositiveLimit(record.max_input_tokens, 'maxInputTokens'),

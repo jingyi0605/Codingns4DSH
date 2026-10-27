@@ -56,6 +56,11 @@ export function resolveGeminiEfforts(modelId: string): readonly string[] {
  */
 export const CLAUDE_EFFORT_LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'] as const
 
+/** Keep Claude's selectable context variant visible even when the upstream label omits it. */
+export function claudeModelDisplayName(modelId: string, name: string): string {
+  return modelId.endsWith('[1m]') && !name.includes('[1m]') ? `${name} [1m]` : name
+}
+
 export const CLAUDE_CATALOG = staticCatalog('claude', 'Claude', [
   { id: 'provider-default', name: '跟随 Claude 默认模型', efforts: CLAUDE_EFFORT_LEVELS },
   { id: 'sonnet', efforts: CLAUDE_EFFORT_LEVELS },

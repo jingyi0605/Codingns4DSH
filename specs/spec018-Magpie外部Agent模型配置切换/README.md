@@ -16,3 +16,5 @@ Magpie already integrates its configured provider/model choices into each Agent.
 - Official Magpie reference: https://github.com/yetone/magpie/blob/main/docs/reference.md
 
 For model metadata and usage, the Host checks exact membership in the mapped Magpie Agent catalog and reads only bounded, sanitized fields from the local Gateway. Missing or unlinked data preserves the Agent's existing metadata and ordinary provider usage. CodingNS never starts Magpie, performs inference, or writes Magpie/Agent configuration.
+
+Claude model labels retain provider-qualified Gateway names and display `[1m]` context variants separately after discovery and metadata enrichment. The conversation menu pins default/shortcut aliases (including CLI-discovered Fable) first, then sorts by provider, model name, and ordinary before `[1m]`. Tasks 7.1 and 7.2 record source/compiled regressions, Stage0 verification, and user acceptance of the final label/ordering behavior. Stage0 is shut down after acceptance; release-package checks remain pending.

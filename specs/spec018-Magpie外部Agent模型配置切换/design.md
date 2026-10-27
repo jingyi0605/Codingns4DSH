@@ -123,6 +123,16 @@ After exact catalog recognition, the Host sets the optional transient `CodingNsC
 
 The shared React/imperative Magpie model tag renders this provider ID before the logo. External Agent menus, delegation menus, and the native DSH catalog bridge pass the optional field through. Native decoration replaces an existing tag when its provider changes, without rewriting DSH-owned model labels or adding duplicate tags. Provider text can shrink within the row, with the complete ID retained in its title and accessible label. Older Hosts continue to show only the logo. The field is catalog presentation data, not part of any session-setting or provider-routing payload.
 
+### 5.2 Claude context variants and metadata label precedence
+
+The metadata parser prefers `magpie_label`, then `display_name`, then `name`, matching Claude Gateway discovery. This prevents later enrichment from replacing a provider-qualified label with the bare model name.
+
+The shared Host catalog helper `claudeModelDisplayName` appends `[1m]` only when the exact Claude selection ID ends in that suffix and the chosen label does not already contain it. Claude discovery applies it while merging CLI, Gateway, and configured rows; Magpie enrichment reapplies it after choosing the metadata label. This preserves the distinction even when Gateway metadata is unavailable or a metadata label omits the context marker. Ordinary and long-context selection IDs remain separate; metadata matching may strip Claude's documented `[1m]` suffix but must never rewrite the selection ID. Other adapters' names receive no Claude context decoration.
+
+Tests exercise the complete discovery/enrichment path with fake CLI/Gateway responses, repeat enrichment, and verify that the existing menu renders the distinct labels and sends each original ID through `cli/session/set`. No Client label-rewriting branch or new selector is introduced.
+
+The Claude conversation menu sorts a copy of each group's models before the existing search-ranking step. Keep `provider-default`, `sonnet`, `opus`, `haiku`, and CLI-discovered `fable` first; pinning is presentation-only and does not add Fable to the static fallback catalog. Compare the remaining provider IDs first, then model names without the ` · provider` and `[1m]` decorations using an English natural numeric collator that ignores case and punctuation, then ordinary/long-context variants, and finally exact IDs for ties. Do not mutate the shared catalog, reorder other adapters, change group membership, or change the existing search relevance ranking or selected-model lookup.
+
 ## 6. Safety and compatibility
 
 - No Magpie configuration file, provider file, credential store, or Desktop profile is read or written.
