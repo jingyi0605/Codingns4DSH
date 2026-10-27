@@ -15,6 +15,7 @@ import { validateAssistantPrompt, validateAssistantPrompts } from '../shared/ass
 import { validateAssistantModel, validateAssistantProfile } from '../shared/assistant-lifecycle.js'
 import { supportsSessionTranslation } from '../shared/contracts/session-translation.js'
 import { isPeerHostRequestCancellation, PeerHostNativeStreamError } from './modules/peer-host/peer-host-request-errors.js'
+import { FileWorkspaceMcpApiKeyStore } from './workspace-mcp/api-key-store.js'
 
 /** 0.2 Connection handler 的 Peer 参数；旧版 handler 仍可通过可选参数调用。 */
 /** CodingNS 自有的 Connection RPC 结果契约，避免绑定 DSH 具体导出名称。 */
@@ -313,6 +314,7 @@ const CODINGNS_RPC_ENDPOINTS = [
   'git/status', 'git/models', 'git/generate-message', 'git/init', 'git/diff', 'git/stage', 'git/unstage', 'git/discard', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/switch', 'git/fetch', 'git/pull', 'git/push', 'git/undo',
   'fileManagement/session-changes', 'fileManagement/read', 'fileManagement/download', 'fileManagement/write', 'fileManagement/create-file', 'fileManagement/create-directory', 'fileManagement/rename', 'fileManagement/copy', 'fileManagement/move', 'fileManagement/delete', 'fileManagement/git-ignore',
   'quickApps/list', 'quickApps/browse', 'quickApps/upsert', 'quickApps/reorder', 'quickApps/remove', 'quickApps/launch', 'quickApps/document', 'quickApps/close', 'quickApps/grant', 'quickApps/revoke', 'quickApps/remote',
+  'workspaceMcp/status', 'workspaceMcp/generate-key',
   'lanAccessDsh/addresses', 'lanAccessDsh/detect', 'lanAccessDsh/get', 'lanAccessDsh/settings/get', 'lanAccessDsh/settings/set', 'lanAccessDsh/login/get', 'lanAccessDsh/login/set', 'lanAccessDsh/login/session/open', 'lanAccessDsh/login/session/refresh', 'lanAccessDsh/start', 'lanAccessDsh/stop',
   'peerHost/list', 'peerHost/diagnostics', 'peerHost/create', 'peerHost/update', 'peerHost/remove', 'peerHost/enable', 'peerHost/disable', 'peerHost/check', 'peerHost/reconnect', 'peerHost/login', 'peerHost/logout', 'peerHost/status', 'peerHost/request', 'peerHost/wsEndpoint', 'peerHost/aggregate', 'peerHost/workspaceOrder', 'peerHost/credentialStatus', 'peerHost/workspaceCandidates', 'peerHost/setWorkspaceVisibility', 'peerHost/replaceVisibleWorkspaces', 'peerHost/native', 'peerHost/nativeLocal', 'peerHost/nativeStream', 'peerHost/nativeStreamOpen', 'peerHost/nativeStreamNext', 'peerHost/nativeStreamClose',
   'cli/catalog', 'cli/catalog/refresh', 'cli/models', 'cli/translation/models', 'cli/skills', 'cli/adapter/set', 'cli/session/get', 'cli/session/set', 'cli/session/list', 'cli/session/adapter-map', 'cli/session/archive', 'cli/session/steer', 'cli/session/follow-up', 'cli/session/interrupt', 'cli/subscription', 'cli/subscription/reset', 'cli/team/status', 'cli/team/members', 'cli/team/tasks', 'cli/team/task', 'cli/team/spawn', 'cli/team/message', 'cli/team/task/create', 'cli/team/task/update', 'cli/team/wait', 'cli/team/interrupt',
@@ -331,6 +333,8 @@ const CODINGNS_RPC_ENDPOINTS = [
 export interface CodingNsSettingsRpcOptions {
   /** 返回当前本机 Magpie 探测结果；缺省时由内部探测服务给出。 */
   readonly detectMagpie?: () => Promise<MagpieInstallDetection>
+  /** Workspace MCP secrets remain outside client-readable settings. */
+  readonly workspaceMcpApiKeyConfigured?: () => Promise<boolean>
 }
 
 /** 创建远程设置处理器；只允许 Codingns4DSH 自己的 namespace 和路径编辑。 */
@@ -345,6 +349,7 @@ export function createCodingNsSettingsRpcHandler(
       if (!provider.writable) throw new CodingNsRpcError('CODINGNS_SETTINGS_READ_ONLY', 'Host 设置提供器当前只读')
       const input = parseSettingsMutation(payload)
       await assertMagpieInstalled(input.ops, detectMagpie)
+      await assertWorkspaceMcpKeyConfigured(input.ops, options.workspaceMcpApiKeyConfigured)
       if (typeof provider.mutate === 'function') {
         await provider.mutate(resolveCodingNsSettingsNamespace(provider), input.ops, input.expectedRevision)
       } else if (typeof provider.update === 'function') {
@@ -390,16 +395,6 @@ function parseSettingsMutation(value: unknown): { ops: CodingNsSettingsOperation
     throw new TypeError('expectedRevision 必须是非负整数')
   }
   const ops = value.ops.map(parseSettingsOp)
-  if ((process.env.CODINGNS_WORKSPACE_MCP_API_KEY?.trim() ?? '') === '') {
-    const enablesWorkspaceMcp = ops.some((operation) => operation.op === 'set'
-      && operation.path.length === 2 && operation.path[0] === 'modules' && operation.path[1] === 'workspaceMcp'
-      && operation.value === true)
-    const resultsInWorkspaceMcpEnabled = ops.some((operation) => operation.op === 'set' && operation.path.length === 1 && operation.path[0] === 'modules'
-        && isRecord(operation.value) && operation.value.workspaceMcp === true)
-    if (enablesWorkspaceMcp || resultsInWorkspaceMcpEnabled) {
-      throw new CodingNsRpcError('WORKSPACE_MCP_API_KEY_REQUIRED', 'Set CODINGNS_WORKSPACE_MCP_API_KEY in the Host environment before enabling Workspace MCP.')
-    }
-  }
   return expectedRevisionValue === undefined ? { ops } : { ops, expectedRevision: expectedRevisionValue }
 }
 
@@ -414,10 +409,6 @@ function parseSettingsOp(value: unknown): CodingNsSettingsOperation {
   if (!isAllowedSettingsPath(path)) throw new CodingNsRpcError('CODINGNS_SETTINGS_FIELD_FORBIDDEN', `禁止修改设置字段: ${path.join('.')}`)
   if (value.op === 'unset') return { op: 'unset', path }
   if (!('value' in value)) throw new TypeError('set 操作缺少 value')
-  if (path.length === 2 && path[0] === 'modules' && path[1] === 'workspaceMcp'
-    && value.value === true && (process.env.CODINGNS_WORKSPACE_MCP_API_KEY?.trim() ?? '') === '') {
-    throw new CodingNsRpcError('WORKSPACE_MCP_API_KEY_REQUIRED', 'Set CODINGNS_WORKSPACE_MCP_API_KEY in the Host environment before enabling Workspace MCP.')
-  }
   if (path[0] === 'assistant' && path[1] === 'profile') validateAssistantProfile(value.value)
   if (path[0] === 'assistant' && path[1] === 'model') validateAssistantModel(value.value)
   if (path.length === 1 && path[0] === 'assistant' && isRecord(value.value)) {
@@ -432,6 +423,32 @@ function parseSettingsOp(value: unknown): CodingNsSettingsOperation {
   }
   if (path.length === 1 && path[0] === 'assistant' && isRecord(value.value) && 'prompts' in value.value) validateAssistantPrompts(value.value.prompts)
   return { op: 'set', path, value: value.value }
+}
+
+async function assertWorkspaceMcpKeyConfigured(
+  operations: readonly CodingNsSettingsOperation[],
+  configured: (() => Promise<boolean>) | undefined,
+): Promise<void> {
+  const enabling = operations.some((operation) => operation.op === 'set'
+    && operation.value === true
+    && operation.path.length === 2
+    && operation.path[0] === 'modules'
+    && operation.path[1] === 'workspaceMcp')
+    || operations.some((operation) => operation.op === 'set'
+      && operation.path.length === 1
+      && operation.path[0] === 'modules'
+      && isRecord(operation.value)
+      && operation.value.workspaceMcp === true)
+  if (!enabling) return
+  let hasKey: boolean
+  try {
+    hasKey = configured === undefined
+      ? (await new FileWorkspaceMcpApiKeyStore().read()) !== null || (process.env.CODINGNS_WORKSPACE_MCP_API_KEY?.trim() ?? '') !== ''
+      : await configured()
+  } catch {
+    throw new CodingNsRpcError('WORKSPACE_MCP_KEY_STORE_UNAVAILABLE', 'Workspace MCP key storage could not be read.')
+  }
+  if (!hasKey) throw new CodingNsRpcError('WORKSPACE_MCP_API_KEY_REQUIRED', 'Generate an API key in the Workspace MCP settings before enabling the module.')
 }
 
 /** Magpie 管理模块的稳定启用键；设置页与 Host 共用这一个名字。 */

@@ -37,11 +37,11 @@ Workspace MCP feature (Host)
 | Workspace visibility and root resolution | Host workspace registry | Resolve server-side; caller cannot substitute an arbitrary filesystem root |
 | Questions and permission decisions | DSH native interaction/approval services | Observe and respond only to exact pending request IDs; never forge approvals |
 | Terminal runtime and profiles | Existing terminal services | Read/write only through authorized, live terminal instances |
-| MCP connection credential and pending calls | Workspace MCP feature | Scope, revoke, bound, and dispose with feature lifetime |
+| MCP connection credential and pending calls | Workspace MCP feature and Host-private key store | Generate, rotate, revoke, bound, and dispose with feature lifetime |
 
 ## 4. Tool surface
 
-Tool names and schemas are implemented as fixed MCP tools; do not expose generic `rpc(namespace, action, payload)`. The listener binds only to `127.0.0.1` and remains inactive unless `CODINGNS_WORKSPACE_MCP_API_KEY` is present. The key is supplied by Host process configuration and is never stored in DSH settings or returned to the browser.
+Tool names and schemas are implemented as fixed MCP tools; do not expose generic `rpc(namespace, action, payload)`. The listener binds only to `127.0.0.1` and remains inactive unless the module is enabled and a Host-private generated API key exists. The key is stored in a separate owner-only file, never in the DSH settings document or normal settings/status responses. It is returned to the browser only once in the owner-authorized generate/rotate response.
 
 Candidate operations:
 
@@ -58,7 +58,7 @@ Native session create/list/prompt/model selection must use the supported DSH 0.2
 
 ## 5. Trust and authorization model
 
-1. Establish caller scope from the configured `CODINGNS_WORKSPACE_MCP_API_KEY`; compare bearer credentials in constant time. Never accept caller identity, role, session ownership, or workspace root as authoritative payload fields.
+1. Establish caller scope from the generated Host-private API key; compare bearer credentials in constant time. Never accept caller identity, role, session ownership, or workspace root as authoritative payload fields.
 2. The key authorizes only a loopback MCP client; workspace IDs must still resolve through DSH's live Workspace Registry. Terminal writes and approval requests remain separate, explicit tools.
 3. Revalidate credential and target ownership immediately before each read or mutation, including after any awaited user interaction.
 4. Keep the MCP listener local by default unless a separately designed authenticated remote transport is approved. Do not expose unauthenticated LAN/network listeners.
@@ -89,6 +89,6 @@ Native session create/list/prompt/model selection must use the supported DSH 0.2
 
 ## 9. Open decisions before implementation
 
-- External MCP clients must configure the Host URL and the same API key in their own MCP client configuration. The Host process owner provisions and rotates the key by changing `CODINGNS_WORKSPACE_MCP_API_KEY` and restarting that Host.
+- External MCP clients must configure the Host URL and the generated API key in their own MCP client configuration. The Host owner generates or rotates the key from the Workspace MCP module settings; rotation revokes the previous key. `CODINGNS_WORKSPACE_MCP_API_KEY` remains a backward-compatible fallback only.
 - The API key grants access to every live DSH workspace visible to this local Host. Per-workspace key scopes are not implemented; do not expose this listener to non-loopback interfaces.
 - DSH 0.2.1+ is required for the session-controller create/list/prompt/model-selection route used by this feature.

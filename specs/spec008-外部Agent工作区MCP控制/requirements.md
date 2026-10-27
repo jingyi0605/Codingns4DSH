@@ -17,7 +17,7 @@ Add a Host feature module that exposes an explicit, authenticated MCP interface 
 - Inspect/request permissions through the existing DSH approval path; expose decisions and pending state without granting the external Agent authority to approve itself.
 - Read bounded terminal output and submit terminal input through the existing terminal process service.
 - Provide an MCP-compatible transport and lifecycle controlled by a Host feature module.
-- Require a Host-configured API key before exposing any MCP transport; anonymous access is forbidden.
+- Require a random API key generated from module settings and persisted in a Host-private credential file before exposing any MCP transport; anonymous access is forbidden.
 - Define authentication, authorization, input validation, audit/diagnostic, cancellation, and cleanup requirements.
 
 ### Out of Scope
@@ -63,7 +63,7 @@ Add a Host feature module that exposes an explicit, authenticated MCP interface 
 
 1. WHEN enabled THEN the feature SHALL expose a documented MCP tool catalog with fixed schemas and stable tool names; arbitrary RPC/method dispatch is forbidden.
 2. The transport SHALL use an explicit authenticated local or otherwise policy-approved endpoint; authentication SHALL be connection/session scoped, revocable, and independent of caller-supplied DSH session IDs.
-   The initial implementation SHALL accept the API key only from Host process configuration, bind to loopback, and keep the key out of DSH settings, browser RPC responses, and logs.
+   The Host SHALL bind to loopback and keep the API key out of the general DSH settings document, normal browser RPC responses, and logs. An owner-authorized generate/rotate action MAY return the new key once to the settings UI. A Host environment key is accepted only as a legacy fallback.
 3. WHEN credentials rotate, the module stops, or the Host unloads THEN existing credentials SHALL be revoked, pending requests settled, listeners/transports closed, and owned resources released.
 4. MCP request sizes, response sizes, wait durations, concurrent calls, and terminal output SHALL be bounded.
 5. A missing optional DSH capability SHALL disable only affected tools or operations with a clear diagnostic.

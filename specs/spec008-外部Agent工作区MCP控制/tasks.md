@@ -6,7 +6,7 @@ Status: Draft
 
 - [x] 1.1 Decide target MCP consumers and transport deployment
   - State: DONE
-  - Work: Use a loopback HTTP MCP endpoint. External clients provide `CODINGNS_WORKSPACE_MCP_API_KEY` as their Bearer credential; Host process owners provision/rotate it in the Host environment.
+  - Work: Use a loopback HTTP MCP endpoint. External clients provide the generated Host-private Bearer key; the module settings generate, persist, and rotate it while enabling the listener.
   - Read: `requirements.md`; `design.md` §§4–5; `src/host/cli-bridge/`.
   - Files: `design.md` and, if needed, a dated investigation report under `docs/调查报告/`.
   - Excludes: Operating Desktop or changing dsh-web.
@@ -24,7 +24,7 @@ Status: Draft
 
 - [x] 1.3 Finalize access and approval model
   - State: DONE
-  - Work: Require a non-empty Host environment API key, loopback-only binding, live workspace validation, explicit terminal-write tools, and native human-mediated approval. No anonymous mode or browser-visible secret storage.
+  - Work: Require a generated Host-private API key, loopback-only binding, live workspace validation, explicit terminal-write tools, and native human-mediated approval. Key generation is owner-authorized and returns the secret only once; no anonymous mode or general settings-document secret storage.
   - Read: `requirements.md` §§2–4; `design.md` §§5–6; existing approval/terminal contracts.
   - Files: `requirements.md`, `design.md`.
   - Excludes: External caller self-approval or broad arbitrary shell execution.
@@ -70,6 +70,10 @@ Status: Draft
   - Verify: Focused suite, typecheck, version/capability checks, full test suite.
 
 ## Verification record
+
+- [x] Key management follow-up: generate/rotate a random bearer key from module settings, store it in a Host-private owner-only file, and enable the listener without environment setup.
+  - State: DONE
+  - Verify: 77 focused Host MCP, transport, capability, settings, and Host reload tests pass; `pnpm run typecheck`, `pnpm run version:check`, `pnpm run capability:check`, `pnpm run i18n:check`, and `git diff --check` pass.
 
 - Focused Workspace MCP transport, tool, and capability tests pass after final lifecycle changes: 45 passed, 0 failed, using the in-memory source loader.
 - `pnpm run typecheck`, `pnpm run version:check`, and `pnpm run capability:check` pass after final changes.

@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
 import { createCodingNsSettingsRpcHandler } from '../src/host/rpc.ts'
 import {
@@ -6,6 +9,8 @@ import {
   createWorkspaceMcpToolHandlers,
 } from '../src/host/workspace-mcp/tools.ts'
 import { createWorkspaceMcpHostFeature } from '../src/host/features/workspace-mcp.ts'
+import { FileWorkspaceMcpApiKeyStore, generateWorkspaceMcpApiKey, isWorkspaceMcpApiKey } from '../data/build/dist/host/workspace-mcp/api-key-store.js'
+import { CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
 
 type ContextFixture = {
   get(name: string): unknown
@@ -60,6 +65,7 @@ test('Workspace MCP Host feature follows the setting key and is opt-in by defaul
   assert.equal(feature.descriptor.name, 'workspaceMcp')
   assert.equal(feature.descriptor.enabledByDefault, false)
   assert.equal(feature.descriptor.runtime, 'host')
+  assert.equal(feature.descriptor.ui?.alwaysEnabled, true)
 })
 
 test('workspace list exposes metadata only and session list limits results to registered sessionIds', async () => {
@@ -331,24 +337,108 @@ test('workspace root becoming blank invalidates current MCP access', async () =>
   await handlers.dispose()
 })
 
-test('settings mutation blocks enabling Workspace MCP without a Host API key', async () => {
-  const previous = process.env.CODINGNS_WORKSPACE_MCP_API_KEY
-  delete process.env.CODINGNS_WORKSPACE_MCP_API_KEY
+test('settings mutation blocks enabling Workspace MCP without a generated Host key', async () => {
   const provider = {
     writable: true,
     describe: () => [{ ns: 'codingns', revision: 1, value: {} }],
     get: () => ({}),
     mutate: async () => assert.fail('missing-key setting mutation must be rejected before persistence'),
   }
-  const handler = createCodingNsSettingsRpcHandler(provider as never)
+  const handler = createCodingNsSettingsRpcHandler(provider as never, { workspaceMcpApiKeyConfigured: async () => false })
+  await assert.rejects(handler('set', {
+    ops: [{ op: 'set', path: ['modules', 'workspaceMcp'], value: true }],
+  }), (error: unknown) => (error as { code?: string }).code === 'WORKSPACE_MCP_API_KEY_REQUIRED')
+})
+
+test('Workspace MCP keys have 256 bits of entropy and a fixed credential-safe encoding', () => {
+  const first = generateWorkspaceMcpApiKey()
+  const second = generateWorkspaceMcpApiKey()
+  assert.match(first, /^[A-Za-z0-9_-]{43}$/u)
+  assert.equal(isWorkspaceMcpApiKey(first), true)
+  assert.notEqual(first, second)
+  assert.equal(isWorkspaceMcpApiKey('short'), false)
+})
+
+test('Workspace MCP key file uses owner-only permissions and contains no settings data', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'codingns-workspace-mcp-key-'))
+  const path = join(directory, 'private', 'api-key')
+  const store = new FileWorkspaceMcpApiKeyStore(path)
+  const key = generateWorkspaceMcpApiKey()
   try {
-    await assert.rejects(handler('set', {
-      ops: [{ op: 'set', path: ['modules', 'workspaceMcp'], value: true }],
-    }), (error: unknown) => (error as { code?: string }).code === 'WORKSPACE_MCP_API_KEY_REQUIRED')
+    await store.write(key)
+    assert.equal(await store.read(), key)
+    assert.equal((await readFile(path, 'utf8')).trim(), key)
+    assert.equal((await stat(path)).mode & 0o777, 0o600)
+    assert.equal((await stat(join(directory, 'private'))).mode & 0o777, 0o700)
+    await store.clear()
+    assert.equal(await store.read(), null)
   } finally {
-    if (previous === undefined) delete process.env.CODINGNS_WORKSPACE_MCP_API_KEY
-    else process.env.CODINGNS_WORKSPACE_MCP_API_KEY = previous
+    await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('Workspace MCP control RPC persists a key, enables the listener and returns the key only on generation', async () => {
+  let key: string | null = null
+  let config = { modules: {} as Record<string, boolean> }
+  let revision = 1
+  const keyStore = {
+    async read() { return key },
+    async write(next: string) { key = next },
+    async clear() { key = null },
+  }
+  const settings = {
+    get: () => config as never,
+    watch: () => () => undefined,
+    async update(patch: { modules: Record<string, boolean> }) { config = patch; revision += 1 },
+  }
+  const table = new CodingNsRpcTable()
+  const resources: Array<() => void | Promise<void>> = []
+  let owner = false
+  const feature = createWorkspaceMcpHostFeature({ apiKeyStore: keyStore, isOwner: () => owner })
+  await feature.start({
+    services: {
+      rpc: table,
+      settings,
+      settingsProvider: {
+        writable: true,
+        describe: () => [{ ns: 'codingns', revision, value: config }],
+        get: () => config,
+        mutate: async (_namespace: string, ops: readonly { op: string; path: readonly string[]; value?: unknown }[]) => {
+          for (const operation of ops) if (operation.op === 'set') {
+            if (operation.path.length === 2 && operation.path[0] === 'modules') config.modules[operation.path[1]!] = operation.value === true
+          }
+          revision += 1
+        },
+      } as never,
+    } as never,
+    resources: { add: (dispose: () => void | Promise<void>) => { resources.push(dispose) } },
+  } as never)
+  await new Promise((resolve) => setImmediate(resolve))
+  const target = table.resolve('workspaceMcp/generate-key')
+  assert.ok(target)
+  await assert.rejects(target.handler(target.action, {}, { peer: undefined }), (error: unknown) => (error as { code?: string }).code === 'CODINGNS_RPC_FORBIDDEN')
+  assert.equal(key, null)
+  owner = true
+  const generated = await target.handler(target.action, {}, { peer: undefined }) as { apiKey: string; enabled: boolean; listening: boolean; url: string | null }
+  assert.equal(isWorkspaceMcpApiKey(generated.apiKey), true)
+  assert.equal(key, generated.apiKey)
+  assert.equal(config.modules.workspaceMcp, true)
+  assert.equal(generated.enabled, true)
+  assert.equal(generated.listening, true)
+  assert.match(generated.url ?? '', /^http:\/\/127\.0\.0\.1:\d+\/mcp$/u)
+  const statusTarget = table.resolve('workspaceMcp/status')!
+  const status = await statusTarget.handler(statusTarget.action, {}) as Record<string, unknown>
+  assert.equal(status.apiKeyConfigured, true)
+  assert.equal('apiKey' in status, false)
+  assert.equal(JSON.stringify(await createCodingNsSettingsRpcHandler({
+    writable: true, describe: () => [{ ns: 'codingns', revision, value: config }], get: () => config,
+  } as never)('get', {})).includes(generated.apiKey), false)
+  const rotated = await target.handler(target.action, {}, { peer: undefined }) as { apiKey: string; enabled: boolean; listening: boolean }
+  assert.notEqual(rotated.apiKey, generated.apiKey)
+  assert.equal(key, rotated.apiKey)
+  assert.equal(rotated.enabled, true)
+  assert.equal(rotated.listening, true)
+  for (const dispose of resources.reverse()) await dispose()
 })
 
 test('terminal listing, snapshot read and write are scoped to managed workspace instances', async () => {
