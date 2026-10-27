@@ -36,6 +36,28 @@ interface WorkspaceMcpStatus {
   readonly reason: string | null
 }
 
+interface WorkspaceMcpCapabilityDescription {
+  readonly name: string
+  readonly permissionKey: string
+  readonly descriptionKey: string
+  readonly parametersKey: string
+  readonly remarksKey: string
+}
+
+const WORKSPACE_MCP_CAPABILITIES: readonly WorkspaceMcpCapabilityDescription[] = [
+  { name: 'workspace_list', permissionKey: 'workspaceMcp.capability.workspaceList.permission', descriptionKey: 'workspaceMcp.capability.workspaceList.description', parametersKey: 'workspaceMcp.capability.workspaceList.parameters', remarksKey: 'workspaceMcp.capability.workspaceList.remarks' },
+  { name: 'session_list', permissionKey: 'workspaceMcp.capability.sessionList.permission', descriptionKey: 'workspaceMcp.capability.sessionList.description', parametersKey: 'workspaceMcp.capability.sessionList.parameters', remarksKey: 'workspaceMcp.capability.sessionList.remarks' },
+  { name: 'session_create', permissionKey: 'workspaceMcp.capability.sessionCreate.permission', descriptionKey: 'workspaceMcp.capability.sessionCreate.description', parametersKey: 'workspaceMcp.capability.sessionCreate.parameters', remarksKey: 'workspaceMcp.capability.sessionCreate.remarks' },
+  { name: 'session_continue', permissionKey: 'workspaceMcp.capability.sessionContinue.permission', descriptionKey: 'workspaceMcp.capability.sessionContinue.description', parametersKey: 'workspaceMcp.capability.sessionContinue.parameters', remarksKey: 'workspaceMcp.capability.sessionContinue.remarks' },
+  { name: 'session_questions', permissionKey: 'workspaceMcp.capability.sessionQuestions.permission', descriptionKey: 'workspaceMcp.capability.sessionQuestions.description', parametersKey: 'workspaceMcp.capability.sessionQuestions.parameters', remarksKey: 'workspaceMcp.capability.sessionQuestions.remarks' },
+  { name: 'session_answer', permissionKey: 'workspaceMcp.capability.sessionAnswer.permission', descriptionKey: 'workspaceMcp.capability.sessionAnswer.description', parametersKey: 'workspaceMcp.capability.sessionAnswer.parameters', remarksKey: 'workspaceMcp.capability.sessionAnswer.remarks' },
+  { name: 'session_request_permission', permissionKey: 'workspaceMcp.capability.sessionRequestPermission.permission', descriptionKey: 'workspaceMcp.capability.sessionRequestPermission.description', parametersKey: 'workspaceMcp.capability.sessionRequestPermission.parameters', remarksKey: 'workspaceMcp.capability.sessionRequestPermission.remarks' },
+  { name: 'session_permission_status', permissionKey: 'workspaceMcp.capability.sessionPermissionStatus.permission', descriptionKey: 'workspaceMcp.capability.sessionPermissionStatus.description', parametersKey: 'workspaceMcp.capability.sessionPermissionStatus.parameters', remarksKey: 'workspaceMcp.capability.sessionPermissionStatus.remarks' },
+  { name: 'terminal_list', permissionKey: 'workspaceMcp.capability.terminalList.permission', descriptionKey: 'workspaceMcp.capability.terminalList.description', parametersKey: 'workspaceMcp.capability.terminalList.parameters', remarksKey: 'workspaceMcp.capability.terminalList.remarks' },
+  { name: 'terminal_read', permissionKey: 'workspaceMcp.capability.terminalRead.permission', descriptionKey: 'workspaceMcp.capability.terminalRead.description', parametersKey: 'workspaceMcp.capability.terminalRead.parameters', remarksKey: 'workspaceMcp.capability.terminalRead.remarks' },
+  { name: 'terminal_write', permissionKey: 'workspaceMcp.capability.terminalWrite.permission', descriptionKey: 'workspaceMcp.capability.terminalWrite.description', parametersKey: 'workspaceMcp.capability.terminalWrite.parameters', remarksKey: 'workspaceMcp.capability.terminalWrite.remarks' },
+]
+
 const REASON_KEYS: Readonly<Record<string, string>> = {
   'api-key-missing': 'workspaceMcp.reason.keyMissing',
   'api-key-not-configured': 'workspaceMcp.reason.keyMissing',
@@ -54,6 +76,7 @@ function WorkspaceMcpPanel({ services, enabled, notify }: FeaturePanelProps): Re
   const [refreshCount, setRefreshCount] = useState(0)
   const [busy, setBusy] = useState(false)
   const [generatedKey, setGeneratedKey] = useState<string | null>(null)
+  const [capabilitiesOpen, setCapabilitiesOpen] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -74,6 +97,15 @@ function WorkspaceMcpPanel({ services, enabled, notify }: FeaturePanelProps): Re
     })
     return () => { active = false }
   }, [services.rpc, enabled, refreshCount])
+
+  useEffect(() => {
+    if (!capabilitiesOpen) return
+    const closeOnEscape = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setCapabilitiesOpen(false)
+    }
+    globalThis.addEventListener('keydown', closeOnEscape)
+    return () => globalThis.removeEventListener('keydown', closeOnEscape)
+  }, [capabilitiesOpen])
 
   const reasonKey = status?.reason === null || status?.reason === undefined
     ? null
@@ -110,6 +142,27 @@ function WorkspaceMcpPanel({ services, enabled, notify }: FeaturePanelProps): Re
     }
   }
 
+  const installPrompt = t('workspaceMcp.installPromptText')
+  const copyInstallPrompt = async (): Promise<void> => {
+    try {
+      await navigator.clipboard.writeText(installPrompt)
+      notify({ kind: 'success', message: t('workspaceMcp.installPromptCopied') })
+    } catch {
+      notify({ kind: 'error', message: t('workspaceMcp.copyFailed') })
+    }
+  }
+
+  const compactButtonStyle = {
+    ...dshSettingsButtonStyle,
+    flex: '1 1 0',
+    minWidth: 0,
+    minHeight: 32,
+    padding: '6px 9px',
+    fontSize: uiFontSize(12),
+    lineHeight: 1.25,
+    whiteSpace: 'normal' as const,
+  }
+
   return createElement('div', {
     style: { display: 'flex', flexDirection: 'column', gap: 12 },
   },
@@ -117,10 +170,23 @@ function WorkspaceMcpPanel({ services, enabled, notify }: FeaturePanelProps): Re
       createElement('strong', { style: { display: 'block', marginBottom: 4 } }, t('workspaceMcp.setupTitle')),
       createElement('span', undefined, t('workspaceMcp.setupInstruction')),
     ),
-    createElement('button', {
-      type: 'button', disabled: busy || loading,
-      onClick: () => void generateKey(), style: dshSettingsPrimaryButtonStyle,
-    }, busy ? t('workspaceMcp.generating') : t(status?.apiKeyConfigured ? 'workspaceMcp.rotateKey' : 'workspaceMcp.generateKey')),
+    createElement('div', { style: { display: 'flex', flexWrap: 'nowrap', gap: 8, minWidth: 0 } },
+      createElement('button', {
+        type: 'button',
+        style: compactButtonStyle,
+        onClick: () => setCapabilitiesOpen(true),
+      }, t('workspaceMcp.capabilityDescription')),
+      createElement('button', {
+        type: 'button', disabled: busy || loading,
+        onClick: () => void generateKey(), style: compactButtonStyle,
+      }, busy ? t('workspaceMcp.generating') : t(status?.apiKeyConfigured ? 'workspaceMcp.rotateKey' : 'workspaceMcp.generateKey')),
+      createElement('button', {
+        type: 'button',
+        disabled: loading || busy,
+        onClick: () => setRefreshCount((count) => count + 1),
+        style: compactButtonStyle,
+      }, t('workspaceMcp.refresh')),
+    ),
     generatedKey === null ? null : createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' } },
       createElement('input', {
         type: 'text', readOnly: true, value: generatedKey, autoComplete: 'off', spellCheck: false,
@@ -143,15 +209,177 @@ function WorkspaceMcpPanel({ services, enabled, notify }: FeaturePanelProps): Re
       ) : null,
       reasonKey !== null && status !== null && !loading ? createElement('span', { style: { color: dshThemeColor.labelSecondary } }, t(reasonKey)) : null,
     ),
-    createElement('div', { style: { display: 'flex', justifyContent: 'flex-end' } },
+    createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 12, borderTop: `1px solid ${dshThemeColor.border}` } },
+      createElement('strong', { style: { fontSize: uiFontSize(13) } }, t('workspaceMcp.installPromptTitle')),
+      createElement('span', { style: { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: 1.5 } }, t('workspaceMcp.installPromptHint')),
+      createElement('pre', {
+        style: {
+          margin: 0,
+          padding: 10,
+          maxHeight: 112,
+          overflow: 'auto',
+          whiteSpace: 'pre-wrap',
+          overflowWrap: 'anywhere',
+          border: `1px solid ${dshThemeColor.border}`,
+          borderRadius: 6,
+          color: dshThemeColor.labelSecondary,
+          background: dshThemeColor.pageBackground,
+          fontSize: uiFontSize(11),
+          lineHeight: 1.45,
+        },
+      }, installPrompt),
       createElement('button', {
         type: 'button',
-        disabled: loading,
-        onClick: () => setRefreshCount((count) => count + 1),
-        style: dshSettingsButtonStyle,
-      }, t('workspaceMcp.refresh')),
+        onClick: () => void copyInstallPrompt(),
+        style: { ...dshSettingsButtonStyle, alignSelf: 'flex-end', minHeight: 32, padding: '6px 10px', fontSize: uiFontSize(12) },
+      }, t('workspaceMcp.copyInstallPrompt')),
+    ),
+    capabilitiesOpen ? createWorkspaceMcpCapabilitiesModal(t, () => setCapabilitiesOpen(false)) : null,
+  )
+}
+
+function createWorkspaceMcpCapabilitiesModal(
+  t: ReturnType<typeof useCodingNsTranslator>,
+  onClose: () => void,
+): ReactElement {
+  return createElement('div', {
+    role: 'presentation',
+    onClick: onClose,
+    style: {
+      position: 'fixed',
+      inset: 0,
+      zIndex: 2000,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      padding: 16,
+      background: 'rgba(0, 0, 0, 0.62)',
+      boxSizing: 'border-box',
+    },
+    'data-workspace-mcp-capabilities': true,
+  },
+    createElement('div', {
+      role: 'dialog',
+      'aria-modal': true,
+      'aria-labelledby': 'codingns-workspace-mcp-capability-title',
+      onClick: (event: { stopPropagation(): void }) => event.stopPropagation(),
+      style: {
+        display: 'flex',
+        flexDirection: 'column',
+        width: 'min(960px, 100%)',
+        maxHeight: 'min(820px, calc(100dvh - 32px))',
+        overflow: 'hidden',
+        border: `1px solid ${dshThemeColor.border}`,
+        borderRadius: 12,
+        background: dshThemeColor.menuBackground,
+        color: dshThemeColor.labelPrimary,
+        boxShadow: '0 20px 70px rgba(0, 0, 0, 0.45)',
+      },
+    },
+      createElement('div', {
+        style: {
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 16,
+          padding: '18px 20px 14px',
+          borderBottom: `1px solid ${dshThemeColor.border}`,
+        },
+      },
+        createElement('div', { style: { minWidth: 0 } },
+          createElement('h2', {
+            id: 'codingns-workspace-mcp-capability-title',
+            style: { margin: 0, fontSize: uiFontSize(18), lineHeight: 1.3 },
+          }, t('workspaceMcp.capabilityTitle')),
+          createElement('p', {
+            style: { margin: '6px 0 0', color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: 1.5 },
+          }, t('workspaceMcp.capabilitySubtitle')),
+        ),
+        createElement('button', {
+          type: 'button',
+          'aria-label': t('workspaceMcp.closeCapabilities'),
+          onClick: onClose,
+          style: { ...dshSettingsButtonStyle, minWidth: 36, padding: '8px 10px', fontSize: uiFontSize(18), lineHeight: 1 },
+        }, '×'),
+      ),
+      createElement('div', {
+        style: {
+          padding: 14,
+          overflowY: 'auto',
+          overflowX: 'auto',
+          overscrollBehavior: 'contain',
+        },
+      },
+        createElement('table', {
+          style: {
+            width: '100%',
+            minWidth: 900,
+            borderCollapse: 'collapse',
+            tableLayout: 'fixed',
+            fontSize: uiFontSize(13),
+            lineHeight: 1.5,
+          },
+        },
+          createElement('colgroup', undefined,
+            createElement('col', { style: { width: 170 } }),
+            createElement('col', { style: { width: 190 } }),
+            createElement('col', { style: { width: 230 } }),
+            createElement('col', { style: { width: 185 } }),
+            createElement('col', { style: { width: 235 } }),
+          ),
+          createElement('thead', undefined,
+            createElement('tr', undefined,
+              ...[
+                'workspaceMcp.capabilityName',
+                'workspaceMcp.capabilityPermission',
+                'workspaceMcp.capabilityDescriptionField',
+                'workspaceMcp.capabilityParameters',
+                'workspaceMcp.capabilityRemarks',
+              ].map((key) => createElement('th', {
+                key,
+                scope: 'col',
+                style: {
+                  padding: '10px 12px',
+                  textAlign: 'left',
+                  verticalAlign: 'top',
+                  color: dshThemeColor.labelSecondary,
+                  fontSize: uiFontSize(12),
+                  fontWeight: 650,
+                  borderBottom: `1px solid ${dshThemeColor.border}`,
+                  background: dshThemeColor.pageBackground,
+                },
+              }, t(key))),
+            ),
+          ),
+          createElement('tbody', undefined,
+            ...WORKSPACE_MCP_CAPABILITIES.map((capability, index) => createElement('tr', {
+              key: capability.name,
+              style: { background: index % 2 === 0 ? 'rgba(255, 255, 255, 0.025)' : 'transparent' },
+            },
+              createElement('td', { style: capabilityCellStyle }, createElement('code', { style: { overflowWrap: 'anywhere' } }, capability.name)),
+              createElement('td', { style: capabilityCellStyle }, t(capability.permissionKey)),
+              createElement('td', { style: capabilityCellStyle }, t(capability.descriptionKey)),
+              createElement('td', { style: capabilityCellStyle }, createElement('code', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, t(capability.parametersKey))),
+              createElement('td', { style: capabilityCellStyle }, t(capability.remarksKey)),
+            )),
+          ),
+        ),
+      ),
+      createElement('div', {
+        style: { display: 'flex', justifyContent: 'flex-end', padding: '12px 20px 16px', borderTop: `1px solid ${dshThemeColor.border}` },
+      },
+        createElement('button', { type: 'button', onClick: onClose, style: dshSettingsPrimaryButtonStyle }, t('workspaceMcp.closeCapabilities')),
+      ),
     ),
   )
+}
+
+const capabilityCellStyle = {
+  padding: '11px 12px',
+  textAlign: 'left' as const,
+  verticalAlign: 'top' as const,
+  overflowWrap: 'anywhere' as const,
+  borderBottom: `1px solid ${dshThemeColor.border}`,
 }
 
 function normalizeStatus(value: unknown): WorkspaceMcpStatus | null {
