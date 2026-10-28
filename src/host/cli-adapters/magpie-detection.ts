@@ -47,7 +47,7 @@ export interface MagpieDetectionServiceOptions {
   readonly runVersion?: (command: string, platform: NodeJS.Platform) => Promise<MagpieCliRunResult | null>
   /** 登录 Shell 解析出的 PATH 文本；缺省读取进程共享的已解析结果，测试可固定为空。 */
   readonly pathEntries?: () => string
-  /** 用户在本会话里手动指定的入口；指定后只探测该入口，不再自动查找。 */
+  /** Explicit or restored Host-local entry; only this command is probed until reset. */
   readonly customCommand?: string
   /** 只用于“包装脚本 + 同目录 exe”这类常见布局的目录枚举，测试可替换。 */
   readonly listDirectory?: (directory: string) => Promise<readonly string[]>
@@ -221,8 +221,8 @@ export function normalizeCustomCommand(commandPath: string | undefined): string 
   const value = commandPath.trim()
   if (value === '' || value.length > 4096) return null
   if (!/^(?:[A-Za-z]:[\\/]|\\\\|\/)/u.test(value)) return null
-  // 空白与 shell 元字符都可能把“路径”拆成多个参数或触发展开。
-  if (/[\u0000-\u001f\u007f]|["'`$;&|<>\s]/u.test(value)) return null
+  // Spaces belong to the literal executable path; reject controls, shell syntax and appended flags.
+  if (/[\u0000-\u001f\u007f]|["'`$;&|<>]|\s+-/u.test(value)) return null
   return value
 }
 

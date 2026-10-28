@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { MagpieInstallDetection } from '../shared/contracts/magpie-management.js'
+import type { MagpieDetectionRequest, MagpieInstallDetection } from '../shared/contracts/magpie-management.js'
 import { callCodingNsRpcResult } from './rpc-call.js'
 import type { CodingNsClientServices } from './features/types.js'
 
@@ -19,7 +19,7 @@ export interface FeatureRequirement {
   /** 探测失败的安全原因；不包含 Host 异常原文。 */
   readonly failure: 'host-rpc-outdated' | 'host-request-failed' | null
   /** 用户主动重新检测；面板里的“检测/重新检测”按钮使用它。 */
-  readonly recheck: (options?: { readonly commandPath?: string; readonly force?: boolean }) => void
+  readonly recheck: (options?: MagpieDetectionRequest & { readonly force?: boolean }) => void
 }
 
 /**
@@ -38,7 +38,7 @@ export function useMagpieInstallRequirement(services: Pick<CodingNsClientService
   const [detection, setDetection] = useState<MagpieInstallDetection | null>(null)
   const [failure, setFailure] = useState<FeatureRequirement['failure']>(null)
   const [state, setState] = useState<FeatureRequirementState>('checking')
-  const [request, setRequest] = useState<{ readonly commandPath?: string; readonly force?: boolean; readonly nonce: number } | null>(null)
+  const [request, setRequest] = useState<(MagpieDetectionRequest & { readonly force?: boolean; readonly nonce: number }) | null>(null)
   // Settings cards are re-expanded often; a confirmed install stays valid until the user re-detects.
   const confirmedMissing = useRef(false)
 
@@ -51,7 +51,7 @@ export function useMagpieInstallRequirement(services: Pick<CodingNsClientService
       return
     }
     let active = true
-    void readMagpieDetection(services, request?.commandPath, request?.force === true)
+    void readMagpieDetection(services, request?.commandPath, request?.force === true, request?.resetCommand === true)
       .then((result) => {
         if (!active) return
         setDetection(result.detection)
@@ -69,7 +69,7 @@ export function useMagpieInstallRequirement(services: Pick<CodingNsClientService
     return () => { active = false }
   }, [services, request])
 
-  const recheck = useMemo(() => (options: { readonly commandPath?: string; readonly force?: boolean } = {}): void => {
+  const recheck = useMemo(() => (options: MagpieDetectionRequest & { readonly force?: boolean } = {}): void => {
     setState('checking')
     setRequest((current) => ({ ...options, nonce: (current?.nonce ?? 0) + 1 }))
   }, [])
@@ -82,10 +82,12 @@ export async function readMagpieDetection(
   services: Pick<CodingNsClientServices, 'rpc'>,
   commandPath?: string,
   force = false,
+  resetCommand = false,
 ): Promise<{ readonly state: FeatureRequirementState; readonly detection: MagpieInstallDetection | null; readonly failure: FeatureRequirement['failure'] }> {
   const result = await callCodingNsRpcResult(services.rpc, MAGPIE_DETECTION_ENDPOINT, {
     ...(commandPath === undefined || commandPath.trim() === '' ? {} : { commandPath }),
     ...(force ? { force: true } : {}),
+    ...(resetCommand ? { resetCommand: true } : {}),
   })
   if (!result.ok) {
     const code = result.error.code

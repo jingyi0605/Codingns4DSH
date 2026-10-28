@@ -130,6 +130,15 @@ function MagpieInstallPanel({ services, enabled, requirement: cardRequirement }:
         'aria-expanded': showCustom,
         onClick: () => setShowCustom(value => !value),
       }, t('magpie.install.customToggle')),
+      createElement('button', {
+        type: 'button',
+        style: dshSettingsButtonStyle,
+        disabled: requirement.state === 'checking',
+        onClick: () => {
+          setCustomPath('')
+          requirement.recheck({ resetCommand: true, force: true })
+        },
+      }, t('magpie.install.customReset')),
       createElement('span', { style: { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(11) } },
         t('magpie.install.checkedAt', { time: detection === null ? '--' : formatCheckedAt(detection.checkedAt) })),
     ),
@@ -142,6 +151,7 @@ function MagpieInstallPanel({ services, enabled, requirement: cardRequirement }:
           value: customPath,
           spellCheck: false,
           autoComplete: 'off',
+          disabled: requirement.state === 'checking',
           placeholder: t('magpie.install.customPlaceholder'),
           style: dshSettingsFieldStyle,
           onChange: (event: { currentTarget: { value: string } }) => setCustomPath(event.currentTarget.value),

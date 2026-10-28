@@ -51,7 +51,7 @@ Add an opt-in Magpie feature toggle to CodingNS settings. When enabled, add a na
 2. When enabled, a native “Magpie Management” sidebar row appears immediately below “Plugins”; when disabled, both its row and main page are removed.
 3. Selecting the row opens the dashboard as a flat main-panel page, with a return-to-conversation action and responsive desktop and narrow-screen layouts; it is not a modal or fixed overlay.
 4. Disabling the feature removes its native panel registrations, and the Host rejects dashboard RPC calls while the module setting is off.
-5. The settings card and installation panel share one detection result. A successful manual executable path unlocks the enable switch and is reused for Host enablement validation and Web startup for the current Host feature lifetime; it is not persisted across Host restarts. Enablement revalidates the executable rather than trusting a cached success. Failed custom probes do not replace a working selection, and an enabled module can still be disabled when detection fails.
+5. The settings card and installation panel share one detection result. A successful manual executable path unlocks the enable switch and is saved in the owning Host's local state for reuse by enablement validation and Web startup across Host restarts. Only the path is persisted, never the detection result; startup and enablement revalidate the executable. Failed custom probes or failed storage writes do not replace a working selection. An explicit restore-automatic-detection action clears the saved path even if automatic discovery finds nothing. An enabled module can still be disabled when detection fails. The saved path is not part of exported settings and is not synchronized to PeerHosts.
 
 ### R2: Period usage dashboard
 

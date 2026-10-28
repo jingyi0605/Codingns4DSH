@@ -351,8 +351,9 @@ export const en: Record<string, string> = {
   'magpie.install.customToggle': 'Specify the Magpie path',
   'magpie.install.customLabel': 'Absolute path to the Magpie executable',
   'magpie.install.customPlaceholder': '/opt/homebrew/bin/magpie or C:\\Users\\you\\.local\\bin\\magpie.exe',
-  'magpie.install.customHelp': 'Only an absolute path to a file is accepted; arguments are not allowed. The path is used for this session only.',
+  'magpie.install.customHelp': 'Use an unquoted absolute file path without arguments. A working path is saved on this Host and revalidated after restarting DSH.',
   'magpie.install.customApply': 'Detect this path',
+  'magpie.install.customReset': 'Restore automatic detection',
   'magpie.install.disabledNote': 'Magpie management stays off until a working Magpie CLI is detected.',
 }
 
@@ -708,7 +709,8 @@ export const zh: Record<string, string> = {
   'magpie.install.customToggle': '手动指定 Magpie 路径',
   'magpie.install.customLabel': 'Magpie 可执行文件的绝对路径',
   'magpie.install.customPlaceholder': '/opt/homebrew/bin/magpie 或 C:\\Users\\你\\.local\\bin\\magpie.exe',
-  'magpie.install.customHelp': '只接受文件绝对路径，不允许附加参数；该路径只在本次会话生效。',
+  'magpie.install.customHelp': '请输入不带引号和参数的文件绝对路径。检测成功后保存在当前 Host，重启 DSH 后会重新校验。',
   'magpie.install.customApply': '检测此路径',
+  'magpie.install.customReset': '恢复自动检测',
   'magpie.install.disabledNote': '检测到可用的 Magpie CLI 前，Magpie 管理保持关闭。',
 }
