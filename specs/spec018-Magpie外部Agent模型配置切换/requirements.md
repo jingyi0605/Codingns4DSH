@@ -153,8 +153,21 @@ Magpie exposes configured provider/model choices through its Agent catalog. Codi
 1. Exact Magpie catalog matches expose a transient `magpieProviderId` independently of the model display name. It comes from the verified Magpie model ID, including after Command Code prefix normalization or a unique display-name alias match, not from `owned_by` or a native alias ID.
 2. External Agent, native DSH, and delegation model menus display that provider ID alongside the existing Magpie logo. Hosts without the optional field retain logo-only behavior.
 3. Provider IDs remain available when Gateway metadata is missing. Ordinary models remain unchanged; `auto/` and `group/` routes are not advertised as particular providers.
-4. Model IDs, model names, effort options, routing, and persisted session selection remain unchanged. Repeated catalog reads and DOM decoration do not accumulate provider text or duplicate badges.
+4. Model IDs, effort options, routing, and persisted session selection remain unchanged. Model labels preserve the provider/context distinctions required by R11. Repeated catalog reads and DOM decoration do not accumulate provider text or duplicate badges.
 5. Source tests cover equal model names from different providers, normalization/aliases, Gateway failure, automatic routes, menu rendering, and unchanged selection payloads. Real browser visual verification remains a separate manual check.
+
+### R11: Preserve Claude provider and context distinctions after metadata enrichment
+
+**User story:** As a Claude Code user, I want ordinary and `[1m]` variants, and same-name models from different providers, to remain distinguishable in the ordinary model menu.
+
+#### Acceptance criteria
+
+1. Magpie metadata prefers the provider-qualified `magpie_label` over the bare `display_name`, retaining the existing display-name/name fallbacks when the preferred field is absent.
+2. Claude discovery and Magpie enrichment display `[1m]` exactly once for selection IDs ending in `[1m]`, even when CLI/Gateway labels omit it. Existing labels containing the marker are not duplicated.
+3. Preserve both ordinary and `[1m]` IDs and different provider IDs; do not deduplicate by display name or rewrite the selected ID, effort, or session payload.
+4. Missing Gateway metadata preserves the discovered labels and context distinction. Repeated enrichment does not accumulate markers or provider suffixes.
+5. Source tests cover discovery followed by enrichment, unavailable metadata, repeated enrichment, and menu rendering/selection. Real Stage0/browser acceptance is recorded separately and is not implied by source tests.
+6. The Claude conversation model menu pins `provider-default`, `sonnet`, `opus`, `haiku`, and the CLI-discovered `fable` alias first in that order, then sorts within each existing group by provider ID, model display name (natural numeric, case/punctuation-insensitive comparison), and ordinary before `[1m]`. Provider/context decorations do not split a model's variants apart. Sorting is presentation-only: other adapters, cached Host catalogs, search ranking, IDs, and selection payloads remain unchanged; pinning does not introduce a new static fallback model.
 
 ## Success definition
 

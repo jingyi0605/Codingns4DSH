@@ -63,6 +63,67 @@ function createProbe(adapterId = 'dsh', options: {
 let nextSessionId = 0
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
 
+test('Claude menu pins Fable and sorts providers, names and context variants without mutating other Agent catalogs', async () => {
+  const models = [
+    { id: 'tlp/sonnet', name: 'Claude Sonnet 5.5 · tlp', efforts: [], magpieProviderId: 'tlp' },
+    { id: 'hl/gpt-12', name: 'GPT-12 · hl', efforts: [], magpieProviderId: 'hl' },
+    { id: 'hl/sonnet[1m]', name: 'Claude Sonnet 5.5 [1m] · hl', efforts: [], magpieProviderId: 'hl' },
+    { id: 'haiku', name: 'haiku', efforts: [] },
+    { id: 'tlp/gpt-6', name: 'GPT-6 · tlp', efforts: [], magpieProviderId: 'tlp' },
+    { id: 'hl/opus', name: 'claude-opus-5-5 · hl', efforts: [], magpieProviderId: 'hl' },
+    { id: 'opus', name: 'opus', efforts: [] },
+    { id: 'hl/gpt-6', name: 'GPT-6 · hl', efforts: [], magpieProviderId: 'hl' },
+    { id: 'hl/sonnet', name: 'Claude Sonnet 5.5 · hl', efforts: [], magpieProviderId: 'hl' },
+    { id: 'fable', name: 'Fable', efforts: [] },
+    { id: 'sonnet', name: 'sonnet', efforts: [] },
+    { id: 'provider-default', name: 'Default', efforts: [] },
+  ]
+  const originalIds = models.map((model) => model.id)
+  Object.freeze(models)
+  for (const adapterId of ['claude-code', 'codex']) {
+    const probe = createProbe(adapterId, { modelGroups: [{ id: 'models', name: 'Models', models }], modelId: 'sonnet' })
+    const slot = probe.registered.get('codingns4dsh-model')!
+    const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
+    try {
+      const tree = await openModelPane(renderer)
+      const actual = modelOptions(tree).map((element) => element.key)
+      const expected = adapterId === 'claude-code' ? [
+        'provider-default', 'sonnet', 'opus', 'haiku', 'fable',
+        'hl/opus', 'hl/sonnet', 'hl/sonnet[1m]', 'hl/gpt-6', 'hl/gpt-12', 'tlp/sonnet', 'tlp/gpt-6',
+      ] : originalIds
+      assert.deepEqual(actual, expected.map((id) => `models:${id}`))
+      assert.deepEqual(models.map((model) => model.id), originalIds, 'sorting must not mutate the cached Host catalog')
+    } finally { renderer.dispose(); probe.dispose() }
+  }
+})
+
+test('Claude model menu keeps context variants distinct and submits their exact IDs', async () => {
+  const models = [
+    { id: 'hl/claude-sonnet-5-5', name: 'Claude Sonnet 5.5 · hl', efforts: ['high'], source: 'magpie' as const, magpieProviderId: 'hl' },
+    { id: 'hl/claude-sonnet-5-5[1m]', name: 'Claude Sonnet 5.5 · hl [1m]', efforts: ['high'], source: 'magpie' as const, magpieProviderId: 'hl' },
+    { id: 'tlp/claude-sonnet-5-5', name: 'Claude Sonnet 5.5 · tlp', efforts: ['high'], source: 'magpie' as const, magpieProviderId: 'tlp' },
+  ]
+  for (const selected of models) {
+    const probe = createProbe('claude-code', {
+      modelGroups: [{ id: 'claude', name: 'Claude', models }], modelId: 'sonnet',
+    })
+    const slot = probe.registered.get('codingns4dsh-model')!
+    const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
+    try {
+      const tree = await openModelPane(renderer)
+      const options = modelOptions(tree)
+      assert.equal(options.length, 3)
+      for (const model of models) {
+        const option = options.find((element) => element.key === `claude:${model.id}`)!
+        assert.ok(renderToStaticMarkup(option).includes(model.name))
+      }
+      options.find((element) => element.key === `claude:${selected.id}`)!.props.onClick()
+      await flush()
+      assert.ok(probe.calls.some((call) => call.endpoint === 'cli/session/set' && call.payload.modelId === selected.id))
+    } finally { renderer.dispose(); probe.dispose() }
+  }
+})
+
 test('Agent catalog failures remain visible and a retry restores the external Agents', async () => {
   const probe = createProbe()
   const call = probe.rpc.call

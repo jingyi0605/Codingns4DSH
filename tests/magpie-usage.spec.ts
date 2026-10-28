@@ -301,6 +301,19 @@ test('Magpie /v1/models 解析上下文、token 限制、模态、推理等级�
   assert.deepEqual(noReasoning?.get('provider/model')?.efforts, [])
 })
 
+test('Magpie metadata prefers provider-qualified labels over bare display names', () => {
+  const metadata = parseMagpieModelMetadata({ data: [
+    { id: 'hl/claude-sonnet-5-5', display_name: 'Claude Sonnet 5.5', magpie_label: 'Claude Sonnet 5.5 · hl' },
+    { id: 'tlp/claude-sonnet-5-5', display_name: 'Claude Sonnet 5.5', magpie_label: 'Claude Sonnet 5.5 · tlp' },
+    { id: 'plain/display', display_name: 'Display label', name: 'Fallback label' },
+    { id: 'plain/name', name: 'Fallback label' },
+  ] })
+  assert.equal(metadata?.get('hl/claude-sonnet-5-5')?.name, 'Claude Sonnet 5.5 · hl')
+  assert.equal(metadata?.get('tlp/claude-sonnet-5-5')?.name, 'Claude Sonnet 5.5 · tlp')
+  assert.equal(metadata?.get('plain/display')?.name, 'Display label')
+  assert.equal(metadata?.get('plain/name')?.name, 'Fallback label')
+})
+
 test('Magpie /v1/magpie/quotas 只保留安全的提供商配额字段', () => {
   const quotas = parseMagpieQuotas({ data: [{
     provider: 'workbuddy', name: 'WorkBuddy', kind: 'subscription', user: 'account@example.com', plan: 'Free',

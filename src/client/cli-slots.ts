@@ -40,6 +40,23 @@ import { MagpieModelTag } from './magpie-model-tag.js'
 import { ConversationTranslationSettings } from './conversation-translation-settings.js'
 import { settingsIconButtonStyle } from './settings-controls.js'
 
+const claudeModelAliases = ['provider-default', 'sonnet', 'opus', 'haiku', 'fable']
+const claudeModelCollator = new Intl.Collator('en', { numeric: true, sensitivity: 'base', ignorePunctuation: true })
+
+function compareClaudeModelOptions(left: CodingNsCliModel, right: CodingNsCliModel): number {
+  const aliasRank = (id: string): number => {
+    const index = claudeModelAliases.indexOf(id)
+    return index < 0 ? claudeModelAliases.length : index
+  }
+  // Compare the model name separately from provider/context decorations so variants stay adjacent.
+  const baseName = (model: CodingNsCliModel): string => model.name.replace(/\[1m\]/gu, '').split(' · ')[0]!.trim()
+  return aliasRank(left.id) - aliasRank(right.id)
+    || claudeModelCollator.compare(left.magpieProviderId ?? '', right.magpieProviderId ?? '')
+    || claudeModelCollator.compare(baseName(left), baseName(right))
+    || Number(left.id.endsWith('[1m]')) - Number(right.id.endsWith('[1m]'))
+    || left.id.localeCompare(right.id, 'en')
+}
+
 interface SessionSnapshot {
   readonly sessionId?: string
   readonly modelSelection?: unknown
@@ -745,7 +762,9 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       translationEnabled: next,
     })
   }
-  const modelGroups = catalog?.groups ?? []
+  const modelGroups = selection.adapterId === 'claude-code'
+    ? (catalog?.groups ?? []).map((group) => ({ ...group, models: [...group.models].sort(compareClaudeModelOptions) }))
+    : catalog?.groups ?? []
   // 搜索只在模型较多时启用；过滤按 Provider 分组进行，空分组直接隐藏，
   // 与内置模型选择器的 rankByName 分组结果一致。
   const modelQueryText = showModelSearch ? modelQuery.trim() : ''

@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { ClaudeCodeDriver } from '../data/build/dist/host/cli-adapters/claude-driver.js'
+import { MagpieUsageService } from '../src/host/cli-adapters/magpie-usage.js'
 
 function fakeClaudeProcess(output: string, code = 0): unknown {
   const child = new EventEmitter() as EventEmitter & {
@@ -27,6 +28,73 @@ function fakeClaudeProcess(output: string, code = 0): unknown {
   child.kill = () => true
   return child
 }
+
+test('Claude model discovery and Magpie enrichment retain provider and [1m] distinctions', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codingns-claude-model-labels-'))
+  const configDir = join(root, '.claude')
+  mkdirSync(configDir, { recursive: true })
+  writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: {
+    ANTHROPIC_BASE_URL: 'https://gateway.example/v1',
+    ANTHROPIC_MODEL: 'hl/claude-opus-5-5[1m]',
+  } }), 'utf8')
+  const gatewayModels = [
+    { id: 'hl/claude-sonnet-5-5', display_name: 'Claude Sonnet 5.5', magpie_label: 'Claude Sonnet 5.5 · hl' },
+    { id: 'tlp/claude-sonnet-5-5', display_name: 'Claude Sonnet 5.5', magpie_label: 'Claude Sonnet 5.5 · tlp' },
+    { id: 'hl/claude-opus-5-5', display_name: 'Claude Opus 5.5', magpie_label: 'Claude Opus 5.5 · hl' },
+  ]
+  const initialize = JSON.stringify({ type: 'control_response', response: {
+    subtype: 'success', request_id: 'codingns-model-discovery', response: { models: [
+      { value: 'hl/claude-sonnet-5-5[1m]', displayName: 'Claude Sonnet 5.5 · hl', supportedEffortLevels: ['high'] },
+      { value: 'tlp/claude-sonnet-5-5[1m]', displayName: 'Claude Sonnet 5.5 [1m] · tlp', supportedEffortLevels: ['high'] },
+    ] },
+  } }) + '\n'
+  const cliCatalog = [
+    'Routing groups',
+    ...gatewayModels.map((model) => `${model.id}    ${model.display_name}`),
+    "claude is shown every provider's models · magpie visible claude",
+    'http://127.0.0.1:3425/v1',
+  ].join('\n')
+  try {
+    for (const metadataAvailable of [true, false]) {
+      const driver = new ClaudeCodeDriver({
+        binaries: ['fake-claude'], claudeConfigDir: configDir,
+        spawnSync: ((_command: string, args: string[]) => args[0] === '--version'
+          ? { status: 0, stdout: 'claude 1.0.0', stderr: '' }
+          : { status: 1, stdout: '', stderr: '' }) as never,
+        spawn: (() => fakeClaudeProcess(initialize)) as never,
+        fetch: (async () => Response.json({ data: gatewayModels })) as typeof fetch,
+      })
+      const discovered = await driver.listModels()
+      const originalIds = discovered.groups.flatMap((group) => group.models.map((model) => model.id))
+      const service = new MagpieUsageService({
+        readModels: async () => cliCatalog,
+        fetch: (async () => {
+          if (!metadataAvailable) throw new Error('gateway unavailable')
+          return Response.json({ data: gatewayModels })
+        }) as typeof fetch,
+      })
+      const catalog = await service.enrichModelCatalog('claude-code', discovered)
+      const models = catalog.groups.flatMap((group) => group.models)
+      const find = (id: string) => models.find((model) => model.id === id)!
+      assert.deepEqual(models.map((model) => model.id), originalIds, 'enrichment must not merge selection IDs')
+      assert.equal(find('hl/claude-sonnet-5-5').name, 'Claude Sonnet 5.5 · hl')
+      assert.equal(find('tlp/claude-sonnet-5-5').name, 'Claude Sonnet 5.5 · tlp')
+      for (const provider of ['hl', 'tlp']) {
+        const long = find(`${provider}/claude-sonnet-5-5[1m]`)
+        assert.equal(long.name.match(/\[1m\]/gu)?.length, 1, 'the context marker must appear exactly once')
+        assert.ok(long.name.includes(`· ${provider}`), 'provider labels must survive metadata enrichment')
+        assert.equal(long.magpieProviderId, provider)
+        assert.deepEqual(long.efforts, ['high'])
+        assert.notEqual(long.name, find(`${provider}/claude-sonnet-5-5`).name)
+      }
+      assert.ok(find('hl/claude-opus-5-5[1m]').name.includes('[1m]'), 'configured long-context choices stay distinct')
+      const repeated = await service.enrichModelCatalog('claude-code', catalog)
+      assert.deepEqual(repeated, catalog, 'refresh must not accumulate context markers or provider labels')
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
 
 test('Claude Code 通过 initialize、网关和 settings.json 合并真实模型', async () => {
   const root = mkdtempSync(join(tmpdir(), 'codingns-claude-models-'))

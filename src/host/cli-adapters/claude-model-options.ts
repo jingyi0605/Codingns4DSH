@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { CodingNsCliModel, CodingNsCliModelCatalog } from '../../shared/contracts/cli-adapter.js'
-import { CLAUDE_CATALOG, CLAUDE_EFFORT_LEVELS, enrichEfforts, fillProviderEfforts } from './model-catalog.js'
+import { CLAUDE_CATALOG, CLAUDE_EFFORT_LEVELS, claudeModelDisplayName, enrichEfforts, fillProviderEfforts } from './model-catalog.js'
 import { terminateChildProcess } from './process-utils.js'
 import { spawnClaudeProcess } from './claude-process.js'
 
@@ -93,7 +93,8 @@ function mergeModels(models: readonly CodingNsCliModel[]): CodingNsCliModel[] {
   for (const model of models) {
     if (!model.id || seen.has(model.id)) continue
     seen.add(model.id)
-    result.push(model)
+    const name = claudeModelDisplayName(model.id, model.name)
+    result.push(name === model.name ? model : { ...model, name })
   }
   return result
 }
