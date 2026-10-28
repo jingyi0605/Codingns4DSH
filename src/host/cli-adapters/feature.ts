@@ -31,6 +31,7 @@ import { MagpieUpdateService } from './magpie-update.js'
 import type { MagpieDashboardPeriod, MagpieDashboardStreamChunk, MagpieSessionMetrics, MagpieUsageDashboard } from '../../shared/contracts/magpie-management.js'
 import type { MagpieUsageSnapshot } from '../../shared/contracts/subscription.js'
 import { MagpieInstallDetectionService, normalizeCustomCommand, type MagpieDetectionServiceOptions } from './magpie-detection.js'
+import { FileMagpieCommandStore, type MagpieCommandStore } from './magpie-command-store.js'
 import type { MagpieDetectionRequest } from '../../shared/contracts/magpie-management.js'
 import { createMagpieSessionRouting } from './magpie-session-routing.js'
 import { normalizeSubagentBridgeSettings, normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
@@ -92,6 +93,7 @@ export function createCliAdaptersFeature(options: {
   /** 本机 Magpie 安装探测；测试可注入固定的平台与命令结果。 */
   magpieDetection?: MagpieInstallDetectionService
   magpieDetectionOptions?: MagpieDetectionServiceOptions
+  magpieCommandStore?: MagpieCommandStore
 } = {}): FeatureModule<CodingNsHostServices> {
   return {
     descriptor: {
@@ -118,8 +120,18 @@ export function createCliAdaptersFeature(options: {
         return new ProviderSubscriptionService({ commandCode: new CommandCodeSubscriptionService({ timeoutMs }), timeoutMs })
       }
       let subscriptions: Pick<ProviderSubscriptionService, 'read' | 'reset'> = options.subscriptions ?? buildSubscriptions(context.services.settings?.get())
-      let magpieDetection = options.magpieDetection ?? new MagpieInstallDetectionService(options.magpieDetectionOptions)
+      const magpieCommandStore = options.magpieCommandStore ?? new FileMagpieCommandStore()
+      let savedMagpieCommand: string | null = null
+      try { savedMagpieCommand = await magpieCommandStore.read() } catch {
+        console.warn('codingns4dsh: Could not read the saved Magpie executable path')
+      }
+      const automaticMagpieDetection = (): MagpieInstallDetectionService => options.magpieDetection
+        ?? new MagpieInstallDetectionService(options.magpieDetectionOptions)
+      let magpieDetection = savedMagpieCommand === null ? automaticMagpieDetection()
+        : new MagpieInstallDetectionService({ ...options.magpieDetectionOptions, customCommand: savedMagpieCommand })
       let magpieDetectionRequest = 0
+      // Serialize persistence and selection so a delayed write cannot overtake a reset.
+      let magpieSelectionWrites: Promise<void> = Promise.resolve()
       // 最近一次可用的 Magpie 入口；探测会随用户指定的路径变化而重建，Web 服务总是读最新值。
       let magpieCommand: string | null = null
       let magpieVersion: string | null = null
@@ -456,21 +468,32 @@ export function createCliAdaptersFeature(options: {
           const requestId = ++magpieDetectionRequest
           const request = readMagpieDetectionRequest(payload)
           const force = readMagpieDetectionForce(payload)
-          // Only a successful custom probe replaces the Host-session selection.
+          // Only a successful custom probe replaces the saved Host-local selection.
           const customCommand = normalizeCustomCommand(request.commandPath)
-          const detectionService = customCommand === null
+          const resetCommand = request.resetCommand === true
+          const detectionService = resetCommand ? automaticMagpieDetection() : customCommand === null
             ? magpieDetection
             : new MagpieInstallDetectionService({ ...options.magpieDetectionOptions, customCommand })
-          const detection = await detectionService.detect(customCommand === null ? {} : { commandPath: customCommand }, { force: force || customCommand !== null })
-          if (requestId !== magpieDetectionRequest || lifetime.signal.aborted) return detection
-          const usable = MagpieInstallDetectionService.isUsable(detection)
-          if (usable || customCommand === null) {
-            if (usable && customCommand !== null) magpieDetection = detectionService
-            magpieInstalled = usable
-            magpieCommand = usable ? detection.command : null
-            magpieVersion = usable ? detection.version : null
-            scheduleMagpieWebSync(context.services.settings?.get().modules.magpieManagement === true && usable)
-          }
+          const detection = await detectionService.detect(resetCommand || customCommand === null ? {} : { commandPath: customCommand }, { force: force || resetCommand || customCommand !== null })
+          const selection = magpieSelectionWrites.then(async () => {
+            if (requestId !== magpieDetectionRequest || lifetime.signal.aborted) return
+            const usable = MagpieInstallDetectionService.isUsable(detection)
+            if (resetCommand || (usable && customCommand !== null)) {
+              try { await magpieCommandStore.write(resetCommand ? null : customCommand) } catch {
+                throw new CodingNsRpcError('CODINGNS_MAGPIE_PATH_STORAGE_FAILED', 'Could not save the Magpie executable path')
+              }
+            }
+            if (lifetime.signal.aborted) return
+            if (usable || customCommand === null || resetCommand) {
+              if (resetCommand || (usable && customCommand !== null)) magpieDetection = detectionService
+              magpieInstalled = usable
+              magpieCommand = usable ? detection.command : null
+              magpieVersion = usable ? detection.version : null
+              scheduleMagpieWebSync(context.services.settings?.get().modules.magpieManagement === true && usable)
+            }
+          })
+          magpieSelectionWrites = selection.catch(() => undefined)
+          await selection
           return detection
         }
         if (action === 'context') {
@@ -849,6 +872,7 @@ export function createCliAdaptersFeature(options: {
         sessionStore.dispose()
         // Close native interaction cards before unloading their provider transports.
         lifetime.abort()
+        await magpieSelectionWrites
         updates.dispose()
         magpieUpdates.dispose()
         await management.dispose()
@@ -2288,9 +2312,10 @@ async function* streamMagpieDashboard(
   }
 }
 
-/** 探测载荷只接受可选入口路径；其余字段一律忽略，避免把参数带进命令行。 */
+/** 探测载荷只接受入口路径或显式重置；其余字段忽略，避免把参数带进命令行。 */
 function readMagpieDetectionRequest(payload: unknown): MagpieDetectionRequest {
   const record = asRecord(payload)
+  if (record?.resetCommand === true) return { resetCommand: true }
   if (record === null || typeof record.commandPath !== 'string') return {}
   const commandPath = record.commandPath.trim()
   return commandPath === '' ? {} : { commandPath }

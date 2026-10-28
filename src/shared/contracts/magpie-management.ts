@@ -537,6 +537,8 @@ export type MagpieDetectionFailure = 'launch' | 'timeout' | 'version'
  * 变成任意命令执行入口。
  */
 export interface MagpieDetectionRequest {
-  /** 用户手动填写的入口绝对路径；为空或缺省时只做自动探测。 */
+  /** Absolute executable path; omitted requests reuse the saved Host-local selection. */
   readonly commandPath?: string
+  /** Explicitly forget the saved path and return to automatic detection. */
+  readonly resetCommand?: boolean
 }

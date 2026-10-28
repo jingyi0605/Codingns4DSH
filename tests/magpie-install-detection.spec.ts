@@ -13,6 +13,7 @@ import { CodingNsRpcTable } from '../src/host/rpc-table.js'
 import { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler, registerCodingNsRpc } from '../src/host/rpc.js'
 import { MagpieWebService } from '../src/host/cli-adapters/magpie-web.js'
 import { MagpieUpdateService } from '../src/host/cli-adapters/magpie-update.js'
+import type { MagpieCommandStore } from '../src/host/cli-adapters/magpie-command-store.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
 import type { MagpieInstallDetection } from '../src/shared/contracts/magpie-management.js'
 import { magpieManagementFeature } from '../src/client/features/magpie-management.js'
@@ -49,6 +50,11 @@ const WINDOWS_ENVIRONMENT = {
 
 /** 宿主登录 Shell 的 PATH 是真实环境；测试固定为空，避免本机安装影响结论。 */
 const emptyPath = (): string => ''
+
+function memoryCommandStore(): MagpieCommandStore {
+  let command: string | null = null
+  return { read: async () => command, write: async (value) => { command = value } }
+}
 
 function serviceFor(fixture: Fixture): MagpieInstallDetectionService {
   const files = new Set((fixture.files ?? []).map(path => fixture.platform === 'win32' ? path.toLowerCase() : path))
@@ -226,10 +232,15 @@ test('a custom absolute path overrides automatic lookup while invalid input fall
 test('custom command normalization accepts only absolute file paths', () => {
   assert.equal(normalizeCustomCommand(' /usr/local/bin/magpie '), '/usr/local/bin/magpie')
   assert.equal(normalizeCustomCommand('C:\\Users\\dev\\npm\\magpie.cmd'), 'C:\\Users\\dev\\npm\\magpie.cmd')
+  assert.equal(normalizeCustomCommand(' D:\\Program Files\\magpie\\magpie-windows-amd64.exe '), 'D:\\Program Files\\magpie\\magpie-windows-amd64.exe')
+  assert.equal(normalizeCustomCommand('/Users/dev/My Tools/magpie'), '/Users/dev/My Tools/magpie')
   assert.equal(normalizeCustomCommand('\\\\server\\share\\magpie.exe'), '\\\\server\\share\\magpie.exe')
   assert.equal(normalizeCustomCommand('magpie'), null)
   assert.equal(normalizeCustomCommand('/usr/local/bin/magpie --flag'), null)
   assert.equal(normalizeCustomCommand('/usr/local/bin/magpie; whoami'), null)
+  assert.equal(normalizeCustomCommand('"D:\\Program Files\\magpie\\magpie.exe"'), null)
+  assert.equal(normalizeCustomCommand('D:\\Program Files\\magpie\\magpie.exe --version'), null)
+  assert.equal(normalizeCustomCommand('/Users/dev/My\tTools/magpie'), null)
   assert.equal(normalizeCustomCommand('/usr/local/bin/magpie\n--flag'), null)
   assert.equal(normalizeCustomCommand('   '), null)
   assert.equal(normalizeCustomCommand(''), null)
@@ -286,6 +297,7 @@ test('Magpie detection is a Host RPC available before the module is enabled', as
   registry.register(createCliAdaptersFeature({
     registry: new CodingNsCliAdapterRegistry([]),
     magpieDetection: detection,
+    magpieCommandStore: memoryCommandStore(),
     // Host 的安装探测在启用后仍会重新探测；测试固定为同一个替身，避免读取真实登录 Shell。
     magpieDetectionOptions: { platform: 'darwin', environment: { HOME: '/Users/dev' }, pathEntries: emptyPath },
   }))
@@ -328,12 +340,13 @@ test('Magpie detection RPC is owner-only on the Connection channel and closed on
 })
 
 test('a successful manual path is shared by Host detection, the real settings gate, and Web startup', async (t) => {
-  const command = 'C:\\Users\\dev\\Desktop\\magpie-windows-amd64.exe'
+  const command = 'D:\\Program Files\\magpie\\magpie-windows-amd64.exe'
   const slowCommand = 'C:\\tools\\slow-magpie.exe'
   let finishSlow: (() => void) | undefined
   const calls: string[] = []
   const starts: (string | null)[] = []
   let runnable = true
+  const commandStore = memoryCommandStore()
   // Intercept the default Web service before it can start a real child or make API reads.
   t.mock.method(MagpieWebService.prototype, 'start', async function (this: MagpieWebService) {
     starts.push((this as unknown as { startupCommand: () => string | null }).startupCommand())
@@ -354,6 +367,7 @@ test('a successful manual path is shared by Host detection, the real settings ga
   } as never)
   registry.register(createCliAdaptersFeature({
     registry: new CodingNsCliAdapterRegistry([]),
+    magpieCommandStore: commandStore,
     magpieDetectionOptions: {
       platform: 'win32', environment: WINDOWS_ENVIRONMENT, pathEntries: emptyPath,
       resolvePath: async () => null, listDirectory: async () => [],
@@ -394,6 +408,7 @@ test('a successful manual path is shared by Host detection, the real settings ga
   const detected = await probe.handler(probe.action, { commandPath: command, force: true }) as MagpieInstallDetection
   assert.equal(detected.command, command)
   assert.equal(detected.version, '0.1.1358')
+  assert.equal(await commandStore.read(), command)
   assert.ok(finishSlow)
   finishSlow()
   await olderProbe
@@ -408,6 +423,7 @@ test('a successful manual path is shared by Host detection, the real settings ga
 
   const invalid = await probe.handler(probe.action, { commandPath: 'C:\\missing\\magpie.exe', force: true }) as MagpieInstallDetection
   assert.equal(invalid.installed, false)
+  assert.equal(await commandStore.read(), command, 'failed probes do not overwrite the saved path')
   assert.equal((await probe.handler(probe.action, {}) as MagpieInstallDetection).command, command,
     'a failed custom probe does not replace the previously working path')
 
@@ -422,6 +438,7 @@ test('a successful manual path is shared by Host detection, the real settings ga
   const startsBeforeDisposal = starts.length
   finishSlow()
   await disposedProbe
+  assert.equal(await commandStore.read(), command, 'late probes cannot overwrite the saved path after disposal')
   assert.equal(starts.length, startsBeforeDisposal, 'a late probe cannot restart a disposed feature')
   await assert.rejects(toggle(true), { code: 'CODINGNS_MAGPIE_NOT_INSTALLED' })
 })
@@ -481,10 +498,11 @@ test('the Magpie card and its panel share manual detection state and keep disabl
   await new Promise(resolve => setImmediate(resolve))
   assert.deepEqual(writes, [[{ op: 'set', path: ['modules', 'magpieManagement'], value: true }]])
 
-  buttonIn(panel.render(), 'magpie.install.recheck').props.onClick()
+  buttonIn(panel.render(), 'magpie.install.customReset').props.onClick()
   card.render()
   await new Promise(resolve => setImmediate(resolve))
   output = card.render({ ...entry.props, snapshot: { ...snapshot, value: { ...snapshot.value, modules: { magpieManagement: true } } } })
+  assert.deepEqual(calls.at(-1), { force: true, resetCommand: true })
   assert.equal(switchIn(output).props.disabled, false, 'an enabled module can still be disabled when detection fails')
   switchIn(output).props.onChange(false)
   await new Promise(resolve => setImmediate(resolve))
