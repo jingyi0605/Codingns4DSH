@@ -37,21 +37,45 @@ export function createSessionModelSelectionAdapter(controller: unknown): Session
     install(resolve) {
       const original = owner.selectionFor
       const ownDescriptor = Object.getOwnPropertyDescriptor(owner, 'selectionFor')
+      const restores = new WeakMap<SelectionRef, () => void>()
+      const references = new Set<WeakRef<SelectionRef>>()
+      const installed = Symbol('CodingNS model selection accessor')
       const selectionFor: SelectionOwner['selectionFor'] = function (this: SelectionOwner, agent) {
         const selection = original.call(this, agent)
-        const external = resolve(agent.id)
-        if (external === undefined) return selection
-        // The native reference and its setters remain owned by DSH. Returning a
-        // view avoids overwriting pending native choices or the global default.
-        return new Proxy(selection, {
-          get(target, key, receiver) {
-            return key === 'current' ? external : Reflect.get(target, key, receiver)
+        if (restores.has(selection)) return selection
+        const sessionId = agent.id
+        const descriptor = Object.getOwnPropertyDescriptor(selection, 'current')!
+        let nativeValue = descriptor.value as SessionModelSelection
+        // DSH listeners retain this object. A Proxy return value cannot change
+        // their reads; wrap the native getter without overwriting its choices.
+        const get = () => resolve(sessionId)
+          ?? (descriptor.get ? descriptor.get.call(selection) as SessionModelSelection : nativeValue)
+        Object.defineProperty(selection, 'current', {
+          configurable: descriptor.configurable === true,
+          enumerable: descriptor.enumerable === true,
+          get,
+          set(next: SessionModelSelection) {
+            if (descriptor.set) descriptor.set.call(selection, next)
+            else nativeValue = next
           },
         })
+        restores.set(selection, () => {
+          if (Object.getOwnPropertyDescriptor(selection, 'current')?.get !== get) return
+          Object.defineProperty(selection, 'current', 'value' in descriptor ? { ...descriptor, value: nativeValue } : descriptor)
+        })
+        references.add(new WeakRef(selection))
+        return selection
       }
+      // Cordis returns fresh method proxies, but preserves function properties.
+      Object.defineProperty(selectionFor, installed, { value: true })
       owner.selectionFor = selectionFor
       return () => {
-        if (owner.selectionFor !== selectionFor) return
+        for (const reference of references) {
+          const selection = reference.deref()
+          if (selection !== undefined) restores.get(selection)?.()
+        }
+        references.clear()
+        if (Reflect.get(owner.selectionFor, installed) !== true) return
         if (ownDescriptor !== undefined) Object.defineProperty(owner, 'selectionFor', ownDescriptor)
         else Reflect.deleteProperty(owner, 'selectionFor')
       }
