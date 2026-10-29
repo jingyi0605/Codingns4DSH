@@ -1,6 +1,13 @@
 import { ASSISTANT_IMAGE_MEDIA_TYPES, readAssistantAttachmentUploads, readAssistantAttachments,
   type AssistantAttachmentUpload, type AssistantAttachment } from '../../shared/assistant-attachments.js'
-import type { AssistantManagementTool } from '../../host/features/assistant-management-tools.js'
+
+interface AssistantAttachmentTool {
+  readonly name: string
+  readonly description: string
+  readonly parameters: Record<string, unknown>
+  readonly output: { readonly schema: Record<string, unknown>; render(args: unknown, value: unknown): readonly { type: 'text'; text: string }[] }
+  execute(args: unknown, execution: { callId: string; signal: AbortSignal }): Promise<unknown>
+}
 
 /** 原生附件服务的最小兼容面；浏览器始终上传字节，引用只由该服务生成。 */
 export interface AssistantAttachmentStore {
@@ -31,7 +38,7 @@ export async function admitAssistantAttachments(store: AssistantAttachmentStore 
 }
 
 /** 文件工具只能读取本助理已经收到的附件，不能读取用户随意给出的 Host 路径。 */
-export function createAssistantAttachmentTool(store: AssistantAttachmentStore, allowed: ReadonlyMap<string, AssistantAttachment>): AssistantManagementTool {
+export function createAssistantAttachmentTool(store: AssistantAttachmentStore, allowed: ReadonlyMap<string, AssistantAttachment>): AssistantAttachmentTool {
   return {
     name: 'assistant_read_attachment', description: '读取用户发送给本助理的文本附件。仅接受附件标识，不接受文件路径；二进制文档请用户提供文本或图片版本。',
     parameters: { type: 'object', properties: { attachmentId: { type: 'string', description: '用户附件的 attachmentId' } }, required: ['attachmentId'], additionalProperties: false },

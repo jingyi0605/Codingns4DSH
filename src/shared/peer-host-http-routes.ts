@@ -5,8 +5,6 @@
 export const PEER_HOST_HTTP_PROXY_RULES = [
   { prefix: '/api/codingns/quickApps/remote', methods: ['POST'], exact: true },
   { prefix: '/api/codingns/host/status', methods: ['POST'] },
-  // 仅开放只读的会话通知事实源，不放行助理配置、派发或审批动作。
-  { prefix: '/api/codingns/assistant/notifications/source', methods: ['POST'] },
   { prefix: '/api/codingns/peerHost/nativeLocal', methods: ['POST'] },
   { prefix: '/api/codingns/peerHost/native', methods: ['POST'] },
   { prefix: '/api/codingns/peerHost/nativeStream', methods: ['POST'] },

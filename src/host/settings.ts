@@ -2,12 +2,11 @@ import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-settings'
 import z from '@deepseek-ai/schemastery'
 import type { DshHostSettingsProvider, DshHostSettingsScope } from '../dsh-capabilities/host/config-forms-adapter.js'
+import type { CodingNsSettingsOperation } from '../dsh-capabilities/settings-store.js'
 import {
   CODINGNS_SETTINGS_NAMESPACE,
   isCodingNsSettingsEntryId,
   DEFAULT_CODINGNS_SETTINGS,
-  DEFAULT_ASSISTANT_SETTINGS,
-  DEFAULT_ASSISTANT_VOICE_SETTINGS,
   MOBILE_VIEWPORT_MAX_PX_LIMITS,
   SIDEBAR_GESTURE_DISTANCE_PERCENT_LIMITS,
   SUBSCRIPTION_USAGE_REFRESH_INTERVAL_MINS_LIMITS,
@@ -21,11 +20,6 @@ import {
 import { DEFAULT_SESSION_TRANSLATION_SETTINGS } from '../shared/contracts/session-translation.js'
 import { DEFAULT_GIT_MANAGEMENT_SETTINGS, MAX_GIT_COMMIT_PROMPT_CHARS } from '../shared/contracts/git.js'
 import { debugInfo } from '../shared/debug.js'
-import { ASSISTANT_AVATAR_FLOATING_MINI_SIZE, ASSISTANT_AVATAR_FLOATING_STANDARD_SIZE, DEFAULT_ASSISTANT_APPEARANCE } from '../shared/assistant-avatar.js'
-import { ASSISTANT_PROMPT_MAX_CHARS, DEFAULT_ASSISTANT_PROMPTS } from '../shared/assistant-prompts.js'
-import { ASSISTANT_TTS_PARAMETER_LIMITS as ttsLimits, DEFAULT_ASSISTANT_TTS_PARAMETERS, DEFAULT_ASSISTANT_TTS_SETTINGS } from '../shared/assistant-tts.js'
-import { ASSISTANT_PERSONALITY_MAX_CHARS } from '../shared/assistant-lifecycle.js'
-import { DEFAULT_ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS, DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS } from '../shared/assistant-notifications.js'
 
 /**
  * DSH 设置服务使用的 Codingns4DSH namespace schema。
@@ -96,78 +90,6 @@ export const CodingNsSettingsSchema = z.object({
     translationModels: z.union([z.array(z.object({ provider: z.string().min(1).max(200), model: z.string().min(1).max(200) })), z.const(undefined)]),
     translationRules: z.union([z.array(z.string()), z.const(undefined)]),
   }).default({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationModels: undefined, translationRules: undefined }),
-  assistant: z.object({
-    notifications: z.object({
-      enabled: z.boolean().default(true), completed: z.boolean().default(true),
-      error: z.boolean().default(true), question: z.boolean().default(true), approval: z.boolean().default(true), autoClose: z.boolean().default(false),
-      autoCloseSeconds: z.union([z.const(15), z.const(30), z.const(45), z.const(60)]).default(DEFAULT_ASSISTANT_NOTIFICATION_AUTO_CLOSE_SECONDS),
-    }).default({ ...DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS }),
-    profile: z.union([z.object({
-      name: z.string().min(1).max(80), initialized: z.boolean(),
-      personality: z.union([z.string().max(ASSISTANT_PERSONALITY_MAX_CHARS), z.const(undefined)]),
-      createdAt: z.union([z.number().min(0), z.const(null)]),
-    }), z.const(undefined)]),
-    model: z.union([z.object({ provider: z.string().min(1).max(200), model: z.string().min(1).max(200) }), z.const(undefined)]),
-    managedWorkspaceIds: z.array(z.string().min(1).max(512)).default(DEFAULT_ASSISTANT_SETTINGS.managedWorkspaceIds),
-    prompts: z.object({
-      index: z.string().max(ASSISTANT_PROMPT_MAX_CHARS).default(DEFAULT_ASSISTANT_PROMPTS.index),
-      chat: z.string().max(ASSISTANT_PROMPT_MAX_CHARS).default(DEFAULT_ASSISTANT_PROMPTS.chat),
-    }).default(DEFAULT_ASSISTANT_PROMPTS),
-    appearance: z.object({
-      floatingEnabled: z.boolean().default(false),
-      dialogEnabled: z.boolean().default(true),
-      floatingSize: z.number().min(ASSISTANT_AVATAR_FLOATING_MINI_SIZE).max(320).default(ASSISTANT_AVATAR_FLOATING_STANDARD_SIZE),
-      dialogSize: z.number().min(120).max(480).default(240),
-      selectedId: z.string().max(80).default('codingns-default'),
-      thirdPartyConsent: z.union([z.object({ version: z.string().min(1).max(80), acceptedAt: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER) }), z.const(undefined)]),
-      engineConsent: z.union([z.object({ version: z.string().min(1).max(80), acceptedAt: z.number().step(1).min(1).max(Number.MAX_SAFE_INTEGER) }), z.const(undefined)]),
-      models: z.array(z.object({
-        id: z.string().min(1).max(80), name: z.string().min(1).max(80),
-        renderer: z.string().min(1).max(80), source: z.string().max(2048),
-        spriteVersion: z.union([z.const(1), z.const(2)]),
-        // 包字段由共享契约严格校验；schema 保留 JSON，不静默剥掉双展示与状态映射。
-        package: z.union([z.any(), z.const(undefined)]),
-        surfaces: z.union([z.any(), z.const(undefined)]),
-        stateSources: z.union([z.any(), z.const(undefined)]),
-        motionGroups: z.union([z.any(), z.const(undefined)]),
-        // 情绪映射同样由共享形象契约校验；闭合 schema 必须保留可选资源字段。
-        reactionSources: z.union([z.any(), z.const(undefined)]),
-        reactionMotionGroups: z.union([z.any(), z.const(undefined)]),
-        reactionExpressions: z.union([z.any(), z.const(undefined)]),
-        live2d: z.union([z.any(), z.const(undefined)]),
-      })).default([...DEFAULT_ASSISTANT_APPEARANCE.models]),
-    }).default({ ...DEFAULT_ASSISTANT_APPEARANCE, models: [...DEFAULT_ASSISTANT_APPEARANCE.models] }),
-    tts: z.object({
-      backend: z.union([z.const('browser'), z.const('moss-onnx')]).default('browser'),
-      selectedId: z.string().max(80).default(DEFAULT_ASSISTANT_TTS_SETTINGS.selectedId),
-      parameters: z.object({
-        rate: z.number().min(ttsLimits.rate.min).max(ttsLimits.rate.max).default(1),
-        volume: z.number().min(ttsLimits.volume.min).max(ttsLimits.volume.max).default(1),
-        segmentPauseMs: z.number().step(1).min(ttsLimits.segmentPauseMs.min).max(ttsLimits.segmentPauseMs.max).default(0),
-        chunkTokens: z.number().step(1).min(ttsLimits.chunkTokens.min).max(ttsLimits.chunkTokens.max).default(75),
-        seed: z.union([z.number().step(1).min(ttsLimits.seed.min).max(ttsLimits.seed.max), z.const(null)]).default(null),
-      }).default({ ...DEFAULT_ASSISTANT_TTS_PARAMETERS }),
-      voices: z.array(z.object({
-        id: z.string().min(1).max(80), name: z.string().min(1).max(80), language: z.string().max(16),
-        gender: z.union([z.const('male'), z.const('female'), z.const('unknown')]),
-        kind: z.const('reference'), reference: z.string().max(80), source: z.string().max(2048), license: z.string().max(160),
-      })).max(50).default([]),
-    }).default({ backend: 'browser', selectedId: DEFAULT_ASSISTANT_TTS_SETTINGS.selectedId, voices: [], parameters: { ...DEFAULT_ASSISTANT_TTS_PARAMETERS } }),
-    voice: z.object({
-      initialized: z.boolean().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.initialized),
-      provider: z.union([z.const('dsh-speech-to-text'), z.const('sherpa-onnx')])
-        .default(DEFAULT_ASSISTANT_VOICE_SETTINGS.provider),
-      modelId: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.modelId ?? ''),
-      asrEncoder: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.asrEncoder),
-      asrDecoder: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.asrDecoder),
-      asrJoiner: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.asrJoiner),
-      asrTokens: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.asrTokens),
-      vadModel: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.vadModel),
-      ttsModel: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.ttsModel),
-      ttsTokens: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.ttsTokens),
-      ttsLexicon: z.string().default(DEFAULT_ASSISTANT_VOICE_SETTINGS.ttsLexicon),
-    }).default(DEFAULT_ASSISTANT_VOICE_SETTINGS),
-  }).default({ managedWorkspaceIds: DEFAULT_ASSISTANT_SETTINGS.managedWorkspaceIds, voice: DEFAULT_ASSISTANT_SETTINGS.voice }),
   // 会话索引是 Host 摘要数据，不能让它进入浏览器状态或模型上下文。
   cliSessions: z.array(z.any()).default(DEFAULT_CODINGNS_SETTINGS.cliSessions ?? []),
   lanAccessDsh: z.object({
@@ -323,6 +245,52 @@ export function registerCodingNsSettings(
   return createConfigSettingsScope(ctx, settings, readRuntimeConfig)
 }
 
+export interface LegacyAssistantSettingsCleanupResult {
+  readonly status: 'cleaned' | 'unchanged' | 'skipped'
+  readonly reason?: 'missing' | 'readonly' | 'unsupported'
+}
+
+/**
+ * Remove only the donor-owned assistant configuration left by older releases.
+ *
+ * This touches the CodingNS settings document only. Conversation files, voice
+ * models, avatar packages, and other assistant data remain available to the
+ * standalone package's explicit migration flow.
+ */
+export async function cleanupLegacyAssistantSettings(
+  provider: DshHostSettingsProvider,
+): Promise<LegacyAssistantSettingsCleanupResult> {
+  const descriptor = findConfigSettingsDescriptor(provider)
+  if (descriptor === undefined) return { status: 'skipped', reason: 'missing' }
+  if (descriptor.writable === false) return { status: 'skipped', reason: 'readonly' }
+
+  const current = asRecord(descriptor.value)
+  const modules = asRecord(current?.modules)
+  const hasAssistant = current !== undefined && Object.prototype.hasOwnProperty.call(current, 'assistant')
+  const hasAssistantModule = modules !== undefined
+    && Object.prototype.hasOwnProperty.call(modules, 'globalVoiceAssistant')
+  if (!hasAssistant && !hasAssistantModule) return { status: 'unchanged' }
+
+  const namespace = descriptor.ns
+  if (typeof provider.mutate === 'function') {
+    const operations: CodingNsSettingsOperation[] = []
+    if (hasAssistant) operations.push({ op: 'unset', path: ['assistant'] })
+    if (hasAssistantModule) operations.push({ op: 'unset', path: ['modules', 'globalVoiceAssistant'] })
+    await provider.mutate(namespace, operations, descriptor.revision)
+    return { status: 'cleaned' }
+  }
+
+  if (typeof provider.replace === 'function' && current !== undefined) {
+    const next = structuredClone(current)
+    delete next.assistant
+    if (asRecord(next.modules) !== undefined) delete next.modules.globalVoiceAssistant
+    await provider.replace(namespace, next, descriptor.revision)
+    return { status: 'cleaned' }
+  }
+
+  return { status: 'skipped', reason: 'unsupported' }
+}
+
 /** 将 DSH 0.1.7 SettingsForms 适配成 Host 业务沿用的 SettingsScope。 */
 function createConfigSettingsScope(
   ctx: Context,
@@ -409,4 +377,10 @@ function resolveConfigSettingsNamespace(settings: Pick<DshHostSettingsProvider, 
 
 function isCodingNsSettingsNamespace(namespace: unknown): namespace is string {
   return isCodingNsSettingsEntryId(namespace)
+}
+
+function asRecord(value: unknown): Record<string, any> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, any>
+    : undefined
 }

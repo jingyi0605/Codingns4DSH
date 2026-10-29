@@ -19,7 +19,6 @@ export type DshCapabilityId =
   | 'session.external-model-selection'
   | 'session.prompt-assembly'
   | 'session.working-directory'
-  | 'assistant.agent'
   | 'connection.rpc'
   | 'connection.peer'
   | 'connection.attachment'

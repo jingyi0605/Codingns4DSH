@@ -10,9 +10,6 @@ import { debugInfo, debugWarn } from '../shared/debug.js'
 import { CodingNsRpcError, type CodingNsRpcHandler, type CodingNsRpcTable } from './rpc-table.js'
 import type { DshHostSettingsProvider } from '../dsh-capabilities/host/config-forms-adapter.js'
 import type { CodingNsSettingsOperation } from '../dsh-capabilities/settings-store.js'
-import { validateAssistantAppearance } from '../shared/assistant-avatar.js'
-import { validateAssistantPrompt, validateAssistantPrompts } from '../shared/assistant-prompts.js'
-import { validateAssistantModel, validateAssistantProfile } from '../shared/assistant-lifecycle.js'
 import { supportsSessionTranslation } from '../shared/contracts/session-translation.js'
 import { isPeerHostRequestCancellation, PeerHostNativeStreamError } from './modules/peer-host/peer-host-request-errors.js'
 import { FileWorkspaceMcpApiKeyStore } from './workspace-mcp/api-key-store.js'
@@ -293,17 +290,6 @@ const CODINGNS_RPC_ENDPOINTS = [
   'auth/snapshot', 'auth/login', 'auth/logout', 'auth/devices', 'auth/bind', 'auth/unbind', 'auth/signalingTicket', 'auth/dsh/device/list', 'auth/dsh/device/start', 'auth/dsh/device/stop', 'auth/dsh/device/status', 'auth/dsh/relayTicket',
   'host/status',
   'update/runtime', 'update/check', 'update/status',
-  'avatar/discover', 'avatar/install', 'avatar/list', 'avatar/remove',
-  'assistant/index', 'assistant/index/rebuild', 'assistant/index/configure', 'assistant/index/cancel', 'assistant/status', 'assistant/debug', 'assistant/preview', 'assistant/summary', 'assistant/turn',
-  'assistant/chat/models', 'assistant/chat/start', 'assistant/chat/read', 'assistant/chat/cancel',
-  'assistant/lifecycle/read', 'assistant/lifecycle/configure', 'assistant/lifecycle/reset', 'assistant/configuration/capabilities',
-  'assistant/notifications/read', 'assistant/notifications/read-session', 'assistant/notifications/ack', 'assistant/notifications/clear-all', 'assistant/notifications/target', 'assistant/notifications/source',
-  'assistant/conversation/start', 'assistant/conversation/read', 'assistant/conversation/cancel', 'assistant/conversation/preview', 'assistant/conversation/clear', 'assistant/conversation/compress',
-  'assistant/voice/capabilities', 'assistant/voice/models', 'assistant/voice/model/verify', 'assistant/voice/setup', 'assistant/voice/setup-progress', 'assistant/voice/start', 'assistant/voice/stop', 'assistant/voice/heartbeat', 'assistant/voice/interrupt', 'assistant/voice/register-client', 'assistant/voice/unregister-client', 'assistant/voice/event', 'assistant/voice/text',
-  'assistant/voice/chat/start', 'assistant/voice/chat/read', 'assistant/voice/chat/cancel', 'assistant/voice/chat/clear',
-  'assistant/voice/diagnostics',
-  'assistant/voice/initialization', 'assistant/voice/initialize',
-  'assistant/tts/catalog', 'assistant/tts/setup', 'assistant/tts/select', 'assistant/tts/configure', 'assistant/tts/import', 'assistant/tts/remove',
   'settings/get', 'settings/set',
   'terminal/status',
   'terminalProcess/profile/list', 'terminalProcess/profile/create', 'terminalProcess/profile/delete',
@@ -315,6 +301,7 @@ const CODINGNS_RPC_ENDPOINTS = [
   'fileManagement/session-changes', 'fileManagement/read', 'fileManagement/download', 'fileManagement/write', 'fileManagement/create-file', 'fileManagement/create-directory', 'fileManagement/rename', 'fileManagement/copy', 'fileManagement/move', 'fileManagement/delete', 'fileManagement/git-ignore',
   'quickApps/list', 'quickApps/browse', 'quickApps/upsert', 'quickApps/reorder', 'quickApps/remove', 'quickApps/launch', 'quickApps/document', 'quickApps/close', 'quickApps/grant', 'quickApps/revoke', 'quickApps/remote',
   'workspaceMcp/status', 'workspaceMcp/generate-key',
+  'credentials/list', 'credentials/save', 'credentials/delete', 'credentials/master-password/status', 'credentials/master-password/set',
   'lanAccessDsh/addresses', 'lanAccessDsh/detect', 'lanAccessDsh/get', 'lanAccessDsh/settings/get', 'lanAccessDsh/settings/set', 'lanAccessDsh/login/get', 'lanAccessDsh/login/set', 'lanAccessDsh/login/session/open', 'lanAccessDsh/login/session/refresh', 'lanAccessDsh/start', 'lanAccessDsh/stop',
   'peerHost/list', 'peerHost/diagnostics', 'peerHost/create', 'peerHost/update', 'peerHost/remove', 'peerHost/enable', 'peerHost/disable', 'peerHost/check', 'peerHost/reconnect', 'peerHost/login', 'peerHost/logout', 'peerHost/status', 'peerHost/request', 'peerHost/wsEndpoint', 'peerHost/aggregate', 'peerHost/workspaceOrder', 'peerHost/credentialStatus', 'peerHost/workspaceCandidates', 'peerHost/setWorkspaceVisibility', 'peerHost/replaceVisibleWorkspaces', 'peerHost/native', 'peerHost/nativeLocal', 'peerHost/nativeStream', 'peerHost/nativeStreamOpen', 'peerHost/nativeStreamNext', 'peerHost/nativeStreamClose',
   'cli/catalog', 'cli/catalog/refresh', 'cli/models', 'cli/translation/models', 'cli/skills', 'cli/adapter/set', 'cli/session/get', 'cli/session/set', 'cli/session/list', 'cli/session/adapter-map', 'cli/session/archive', 'cli/session/steer', 'cli/session/follow-up', 'cli/session/interrupt', 'cli/subscription', 'cli/subscription/reset', 'cli/team/status', 'cli/team/members', 'cli/team/tasks', 'cli/team/task', 'cli/team/spawn', 'cli/team/message', 'cli/team/task/create', 'cli/team/task/update', 'cli/team/wait', 'cli/team/interrupt',
@@ -409,19 +396,6 @@ function parseSettingsOp(value: unknown): CodingNsSettingsOperation {
   if (!isAllowedSettingsPath(path)) throw new CodingNsRpcError('CODINGNS_SETTINGS_FIELD_FORBIDDEN', `禁止修改设置字段: ${path.join('.')}`)
   if (value.op === 'unset') return { op: 'unset', path }
   if (!('value' in value)) throw new TypeError('set 操作缺少 value')
-  if (path[0] === 'assistant' && path[1] === 'profile') validateAssistantProfile(value.value)
-  if (path[0] === 'assistant' && path[1] === 'model') validateAssistantModel(value.value)
-  if (path.length === 1 && path[0] === 'assistant' && isRecord(value.value)) {
-    if ('profile' in value.value) validateAssistantProfile(value.value.profile)
-    if ('model' in value.value) validateAssistantModel(value.value.model)
-  }
-  if (path[0] === 'assistant' && path[1] === 'appearance') validateAssistantAppearance(value.value)
-  if (path.length === 1 && path[0] === 'assistant' && isRecord(value.value) && 'appearance' in value.value) validateAssistantAppearance(value.value.appearance)
-  if (path[0] === 'assistant' && path[1] === 'prompts') {
-    if (path.length === 3) validateAssistantPrompt(value.value)
-    else validateAssistantPrompts(value.value)
-  }
-  if (path.length === 1 && path[0] === 'assistant' && isRecord(value.value) && 'prompts' in value.value) validateAssistantPrompts(value.value.prompts)
   return { op: 'set', path, value: value.value }
 }
 
@@ -489,8 +463,8 @@ function operationsToPatch(operations: readonly CodingNsSettingsOperation[]): Re
 }
 
 function isAllowedSettingsPath(path: readonly string[]): boolean {
-  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage', 'subscriptionReports', 'sessionTranslation', 'gitManagement', 'assistant'].includes(path[0] ?? '')
-  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'magpieManagement', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'quickApps', 'mobileAccess', 'peerHost', 'globalVoiceAssistant', 'sessionTranslation', 'workspaceMcp', 'workspaceMcpLanAccess'].includes(path[1] ?? '')
+  if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage', 'subscriptionReports', 'sessionTranslation', 'gitManagement'].includes(path[0] ?? '')
+  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'magpieManagement', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'quickApps', 'mobileAccess', 'peerHost', 'sessionTranslation', 'workspaceMcp', 'workspaceMcpLanAccess', 'credentials'].includes(path[1] ?? '')
   if (path[0] === 'workspaceSessionEnhancement') {
     return path.length === 2 && [
       'showAdapterLogo', 'showArchivedSessions', 'showWorkspaceHiding', 'hiddenWorkspaceIds',
@@ -518,9 +492,6 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
     const fields = ['inputEnabled', 'reasoningEnabled', 'assistantEnabled']
     return (path.length === 2 && fields.includes(path[1] ?? ''))
       || (path.length === 4 && path[1] === 'adapterOptions' && supportsSessionTranslation(path[2] ?? '') && fields.includes(path[3] ?? ''))
-  }
-  if (path[0] === 'assistant') {
-    return (path.length === 2 && ['managedWorkspaceIds', 'appearance', 'prompts', 'profile', 'model'].includes(path[1] ?? '')) || (path.length === 3 && path[1] === 'prompts' && ['index', 'chat'].includes(path[2] ?? ''))
   }
   if (path[0] === 'subagentBridge') {
     return path.length === 2 && ['enabled', 'maxConcurrentSubagents'].includes(path[1] ?? '')

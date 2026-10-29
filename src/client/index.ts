@@ -45,7 +45,6 @@ import { createDshCapabilityRegistry } from '../dsh-capabilities/index.js'
 import { installFontScale } from './font-scale.js'
 import { installNativeSessionFileLinkRouting } from './session-file-links.js'
 import { TYPERT_REMOTE } from '../typert.remote-client.js'
-import { ASSISTANT_NOTIFICATION_TYPERT_REMOTE } from '../typert.notifications-client.js'
 import { createPeerHostScopedClient } from './peer-host-scoped-client.js'
 import { HostRouter } from './host-router.js'
 import { PeerHostSessionController } from './peer-host-session-controller.js'
@@ -112,18 +111,6 @@ export {
 } from './mobile-settings-modal-dom.js'
 export { CodingNsTerminalView, CodingNsWebTerminals, registerCodingNsTerminalUi } from './terminal/index.js'
 export { registerSubscriptionSlot, registerCommandCodeSubscriptionSlot, CommandCodeSubscriptionSlot } from './subscription-slot.js'
-export { AssistantAvatarSlot } from './avatar/slot.js'
-export { AssistantAvatarPortrait, useAssistantAvatarPortrait } from './avatar/portrait.js'
-export { registerAssistantAvatarRenderer } from './avatar/registry.js'
-export type { AssistantAvatarSlotProps } from './avatar/slot.js'
-export type { AssistantAvatarRenderer, AssistantAvatarRendererProps } from './avatar/registry.js'
-export type { AssistantAvatarLoadProgress } from './avatar/loading.js'
-export type { AssistantAvatarPreview } from './avatar/preview-store.js'
-export { captureAssistantAvatarPreview } from './avatar/preview-capture.js'
-export { AssistantAvatarManager, AssistantAvatarAdapterRegistry, getAssistantAvatarManager, registerAssistantAvatarAdapter } from './avatar/manager.js'
-export type { AssistantAppearanceUpdate } from './avatar/manager.js'
-export type { AssistantAvatarAdapter, AssistantAvatarAdapterContext } from '../shared/assistant-avatar-adapters.js'
-
 /** Client Runner 用于等待核心服务就绪的 Cordis 依赖声明。 */
 export const inject = ['slots', 'connection', 'remote', 'remote.workspace', 'remote.session', 'sidebarRight', 'sidebarRightTabs', 'layout', 'theme', 'locale', 'uiConversation'] as const
 
@@ -167,7 +154,6 @@ export function apply(ctx?: Context): void {
     const settings = createClientSettingsStore(settingsCtx, connection.rpc)
     debugInfo('codingns4dsh: client settings store ready')
     const disposeTerminalRemote = await ensureTerminalRemote(settingsCtx)
-    const disposeAssistantNotificationRemote = await ensureAssistantNotificationRemote(settingsCtx)
     // `remote` 是 Cordis 代理，读取嵌套命名空间必须在当前 Fiber 显式声明注入。
     // 独立注入避免把 DSH 0.1.7 自动提供的官方 `remote.terminal` 当成插件终端。
     let mountedTerminalRemote: TerminalRemote | undefined
@@ -262,7 +248,6 @@ export function apply(ctx?: Context): void {
         disposeTerminalUi()
         await disposeAccountBar.dispose()
         await disposeTerminalRemote()
-        await disposeAssistantNotificationRemote()
         await webTerminals.dispose()
         await settings.dispose?.()
       }
@@ -301,24 +286,6 @@ async function ensureTerminalRemote(ctx: Context): Promise<TypertDisposer> {
   return dispose
 }
 
-/** 挂载全局助理通知长连接；旧 Host 不支持时 Client 会回退到兼容读取路径。 */
-async function ensureAssistantNotificationRemote(ctx: Context): Promise<TypertDisposer> {
-  const remote = ctx.get('remote') as {
-    readonly $mount: (contribution: TypertRemoteContribution) => Promise<TypertDisposer>
-  }
-  try {
-    const dispose = await remote.$mount(ASSISTANT_NOTIFICATION_TYPERT_REMOTE)
-    debugInfo('codingns4dsh: client assistant notification remote mounted')
-    return dispose
-  } catch (error) {
-    // 旧 Host 或未启用全局助理时可能没有对应的 Remote 能力。通知 Store
-    // 本身已有 RPC 回退路径，Remote 挂载失败不应阻止设置页和其他模块启动。
-    debugWarn('codingns4dsh: client assistant notification remote unavailable; using RPC fallback', {
-      error: error instanceof Error ? error.message : String(error),
-    })
-    return async () => undefined
-  }
-}
 
 /** 读取跨 DSH 版本变化的可选服务；未声明时 Cordis 会抛出 without-inject。 */
 function readOptionalService<T>(ctx: Context, name: string): T | undefined {

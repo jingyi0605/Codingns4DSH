@@ -76,10 +76,6 @@ export function createDshCapabilityRegistry(
         detect: ctx => hasMethods(read(ctx, 'connection'), ['admit', 'createPeer']) && read(ctx, 'connection.browserPeer') !== undefined,
         create: ctx => read(ctx, 'connection') })
     }
-    // rc.2 已具备同一套根 Agent 与工具隔离接口；路由 ID 保持兼容，范围跟随插件支持声明。
-    add({ id: 'assistant-agent-021', capability: 'assistant.agent', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
-      detect: (ctx) => hasMethods(read(ctx, 'agents'), ['create']) && hasMethods(read(ctx, 'tools'), ['register', 'restrict', 'guard', 'presentAs']) && hasMethods(read(ctx, 'systemPrompt'), ['section', 'suppressRuntimeContext']) && typeof read(ctx, 'on') === 'function',
-      create: (ctx) => read(ctx, 'agents') })
     add({ id: 'settings-scope', capability: 'settings.store', supportedDsh: rangeLegacy, runtime, priority: 10, status: 'supported', introducedIn: '0.1.5-rc.3', detect: (ctx) => typeof (ctx as { settings?: { register?: unknown } }).settings?.register === 'function', create: (ctx) => (ctx as { settings: unknown }).settings })
     add({ id: 'config-settings', capability: 'settings.store', supportedDsh: rangeModern, runtime, priority: 20, status: 'supported', introducedIn: '0.1.7-rc.2', detect: (ctx) => typeof (ctx as { settings?: { describe?: unknown; mutate?: unknown } }).settings?.describe === 'function' && typeof (ctx as { settings?: { mutate?: unknown } }).settings?.mutate === 'function', create: (ctx) => (ctx as { settings: unknown }).settings })
     add({ id: 'connection-rpc', capability: 'connection.rpc', supportedDsh: rangeLegacy, runtime, priority: 10, status: 'supported', introducedIn: '0.1.5-rc.3', detect: (ctx) => (ctx as { connection?: unknown }).connection !== undefined, create: (ctx) => (ctx as { connection: unknown }).connection })

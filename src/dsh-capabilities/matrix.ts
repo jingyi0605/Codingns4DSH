@@ -34,14 +34,13 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('workspace.approval', 'workspace-approval-020', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/workspace-approval-adapter.ts', 'host/workspace-mcp/tools.ts']),
   route('conversation.message-presentation', 'message-presentation-020', 'client', '>=0.2.0-rc.2 <=0.2.1-alpha.2', 'supported', ['dsh-capabilities/client/message-presentation-adapter.ts', 'client/session-translation-chat.ts']),
   route('conversation.message-presentation', 'message-presentation-021', 'client', '>=0.2.1-alpha.3', 'supported', ['dsh-capabilities/client/message-presentation-adapter.ts', 'client/session-translation-chat.ts']),
-  route('connection.peer', 'connection.peer-021', 'host', '>=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/connection-peer-adapter.ts', 'host/rpc.ts', 'host/features/global-voice-rpc.ts', 'host/modules/peer-host/peer-host-native-dispatch.ts']),
+  route('connection.peer', 'connection.peer-021', 'host', '>=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/connection-peer-adapter.ts', 'host/rpc.ts', 'host/modules/peer-host/peer-host-native-dispatch.ts']),
   route('connection.uplink', 'connection.uplink-021', 'host', '>=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/native-dispatch-adapter.ts', 'host/modules/peer-host/peer-host-native-dispatch.ts']),
   route('session.title', 'session-title-020', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/session-title-adapter.ts', 'host/features/session-title-optimization.ts']),
   // alpha.2 起会话有可变的「当前目录」；旧版本没有该服务，终端回退到不可变的
   // `session.header.cwd`，因此能力缺失只影响「跟随当前目录」这一项增强。
   route('session.working-directory', 'session-working-directory-021', 'host', '>=0.2.1-alpha.2', 'supported', ['host/terminal/terminal-controller.ts', 'host/index.ts']),
-  route('llm.text', 'llm-text-021', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/assistant-llm-adapter.ts', 'host/features/assistant-text-chat.ts', 'dsh-capabilities/host/session-title-adapter.ts', 'host/features/session-title-optimization.ts', 'host/features/git-management.ts']),
-  route('assistant.agent', 'assistant-agent-021', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/assistant-agent-adapter.ts', 'host/features/global-voice-rpc.ts']),
+  route('llm.text', 'llm-text-021', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/assistant-llm-adapter.ts', 'dsh-capabilities/host/session-title-adapter.ts', 'host/features/session-title-optimization.ts', 'host/features/git-management.ts']),
   route('settings.store', 'legacy-settings-scope', 'host', '>=0.1.5-rc.3 <=0.1.6', 'supported', ['host/settings.ts', 'host/features/*']),
   route('settings.store', 'config-forms', 'host', '>=0.1.7-rc.2 <=0.1.7-rc.2', 'supported', ['host/settings.ts', 'client/settings-bridge.ts']),
   route('connection.rpc', 'legacy-rpc-handler', 'host', '>=0.1.5-rc.3 <=0.1.6', 'supported', ['host/rpc.ts']),

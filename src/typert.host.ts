@@ -137,18 +137,6 @@ export const TYPERT = {
   face: 'host',
   schemas: [],
   invocations: [
-    invocation('stream', [], unknownResult('assistant-notifications/stream'), {
-      service: 'assistantNotificationController',
-      namespace: 'codingnsAssistantNotifications',
-      cancellable: true,
-      stream: true,
-    }),
-    invocation('sourceStream', [json('request', 'request', 'codingns4dsh#assistant-notifications/source-request', z.unknown())], unknownResult('assistant-notifications/source-stream'), {
-      service: 'assistantNotificationController',
-      namespace: 'codingnsAssistantNotifications',
-      cancellable: true,
-      stream: true,
-    }),
     invocation('close', [agent(), idParameter()], voidResult('close'), { agentScoped: true }),
     invocation('create', [
       agent(),
@@ -218,18 +206,6 @@ export const TYPERT = {
         'environment', 'shells', 'list', 'create', 'retain',
         'follow', 'write', 'resize', 'rename', 'close',
       ].map((name) => ({ name, signature: `${name}(...)`, kind: 'method' })),
-      types: [],
-    }, {
-      description: 'codingns4dsh 全局助理通知事件流。',
-      summary: 'Codingns4DSH 通知 controller',
-      tags: [],
-      jsDoc: '/** 全局助理通知的快照与 revision 增量流。 */',
-      key: 'assistantNotificationController',
-      exportName: 'AssistantNotificationController',
-      members: [
-        { name: 'stream', signature: 'stream(...)', kind: 'method' },
-        { name: 'sourceStream', signature: 'sourceStream(...)', kind: 'method' },
-      ],
       types: [],
     }],
     events: [],

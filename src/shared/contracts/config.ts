@@ -1,10 +1,6 @@
 import type { FeatureDescriptor } from './feature.js'
 import type { CodingNsCliSessionRecord } from './cli-adapter.js'
 import { isDshVersionAtLeast } from './version.js'
-import type { AssistantAppearanceSettings } from '../assistant-avatar.js'
-import { DEFAULT_ASSISTANT_PROMPTS, type AssistantPromptSettings } from '../assistant-prompts.js'
-import type { AssistantTtsSettings } from '../assistant-tts.js'
-import { DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS, type AssistantNotificationSettings } from '../assistant-notifications.js'
 import { DEFAULT_SESSION_TRANSLATION_SETTINGS, type SessionTranslationSettings } from './session-translation.js'
 import { DEFAULT_GIT_MANAGEMENT_SETTINGS, type GitManagementSettings } from './git.js'
 
@@ -18,71 +14,12 @@ export interface CodingNsCliAdapterPreference {
   readonly translationEnabled?: boolean | undefined
 }
 
-/** 全局智能助理设置；默认空范围，必须由用户显式勾选工作区。 */
-export type AssistantVoiceProvider = 'dsh-speech-to-text' | 'sherpa-onnx'
-
-/** 全局语音助理初始化配置；模型目录由 Host 自动下载并写入。 */
-export interface AssistantVoiceSettings {
-  initialized: boolean
-  provider: AssistantVoiceProvider
-  /** 已安装的实时模型目录 ID；旧配置没有该字段时按空值兼容。 */
-  modelId?: string
-  asrEncoder: string
-  asrDecoder: string
-  asrJoiner: string
-  asrTokens: string
-  vadModel: string
-  ttsModel: string
-  ttsTokens: string
-  ttsLexicon: string
-}
-
-export const DEFAULT_ASSISTANT_VOICE_SETTINGS: AssistantVoiceSettings = {
-  initialized: false,
-  provider: 'dsh-speech-to-text',
-  modelId: '',
-  asrEncoder: '',
-  asrDecoder: '',
-  asrJoiner: '',
-  asrTokens: '',
-  vadModel: '',
-  ttsModel: '',
-  ttsTokens: '',
-  ttsLexicon: '',
-}
-
-export interface AssistantSettings {
-  /** 旧配置缺省全开；展示仍受模块、助理创建和形象开关约束。 */
-  notifications?: AssistantNotificationSettings
-  /** 只有显式 initialized=true 表示已创建；缺省或 false 时旧配置仅预填创建表单。 */
-  profile?: AssistantProfileSettings
-  /** 缺省跟随 DSH 默认模型；固定选择同时用于项目索引与正式对话。 */
-  model?: { readonly provider: string; readonly model: string }
-  /** 允许助理读取和派发的工作区 ID。 */
-  managedWorkspaceIds: string[]
-  /** 语音提供方与本地模型路径；未初始化时点击入口只打开模型选择页。 */
-  voice: AssistantVoiceSettings
-  /** 统一形象配置；旧设置缺失时由展示层补默认值。 */
-  appearance?: AssistantAppearanceSettings
-  /** 索引总结与对话前置提示词；旧配置使用默认口语化提示词。 */
-  prompts?: AssistantPromptSettings
-  /** 独立音色与输出后端；缺省保留浏览器播报以兼容旧配置。 */
-  tts?: AssistantTtsSettings
-}
-
 export interface AssistantProfileSettings {
   readonly name: string
   /** 角色性格与背景，旧档案缺省时不额外限定角色；不作为项目事实。 */
   readonly personality?: string
   readonly initialized: boolean
   readonly createdAt: number | null
-}
-
-export const DEFAULT_ASSISTANT_SETTINGS: AssistantSettings = {
-  notifications: DEFAULT_ASSISTANT_NOTIFICATION_SETTINGS,
-  managedWorkspaceIds: [],
-  voice: DEFAULT_ASSISTANT_VOICE_SETTINGS,
-  prompts: DEFAULT_ASSISTANT_PROMPTS,
 }
 
 /** Codingns4DSH 在 DSH 设置文档中持久化的用户选项。 */
@@ -107,8 +44,6 @@ export interface CodingNsSettings {
   subscriptionUsage: SubscriptionUsageSettings
   /** 订阅用量页面的显示选项；存在 Host，刷新页面或换设备后都保持一致。 */
   subscriptionReports?: SubscriptionReportSettings
-  /** 全局智能助理设置；不绑定当前页面会话。 */
-  assistant: AssistantSettings
   /**
    * 功能模块启用意图：模块名 -> 是否启用。
    *
@@ -574,7 +509,6 @@ export const CODINGNS_SUBSCRIPTION_USAGE_FIELD = 'subscriptionUsage'
 export const CODINGNS_SUBSCRIPTION_REPORTS_FIELD = 'subscriptionReports'
 export const CODINGNS_SESSION_TRANSLATION_FIELD = 'sessionTranslation'
 export const CODINGNS_GIT_MANAGEMENT_FIELD = 'gitManagement'
-export const CODINGNS_ASSISTANT_FIELD = 'assistant'
 export const CODINGNS_SUBAGENT_BRIDGE_FIELD = 'subagentBridge'
 export const DEFAULT_CODINGNS_CONTROL_BASE_URL = 'https://channel.codingns.com:1443'
 export const DEFAULT_CODINGNS_CONTROL_BASE_URLS = [DEFAULT_CODINGNS_CONTROL_BASE_URL]
@@ -627,7 +561,6 @@ export const DEFAULT_CODINGNS_SETTINGS: CodingNsSettings = {
   mobileAccess: DEFAULT_MOBILE_ACCESS_SETTINGS,
   subscriptionUsage: DEFAULT_SUBSCRIPTION_USAGE_SETTINGS,
   subscriptionReports: DEFAULT_SUBSCRIPTION_REPORT_SETTINGS,
-  assistant: DEFAULT_ASSISTANT_SETTINGS,
   lanAccessDsh: {
     autoStart: false,
     listenHost: '0.0.0.0',

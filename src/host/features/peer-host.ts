@@ -16,9 +16,6 @@ import {
 } from '../modules/peer-host/peer-host-store.js'
 import type { PeerHostRoute } from '../../shared/contracts/peer-host.js'
 import type { AggregateHostResult, PeerHostRecord, PeerHostClientRecord } from '../../shared/contracts/peer-host.js'
-import type { AssistantSessionMessage, AssistantWaitingKind } from '../../shared/contracts/assistant.js'
-import { appendAssistantSessionStream, readAssistantSessionMessages } from '../../shared/assistant-session-messages.js'
-import { assistantWorkspaceMatches } from '../../shared/assistant-lifecycle.js'
 import type { DshHostStatus } from '../../shared/contracts/host-status.js'
 import { createVirtualSessionId, createVirtualWorkspaceId, normalizePeerHostColor, parseVirtualSessionId, parseVirtualWorkspaceId, type HostScope } from '../../shared/contracts/peer-host.js'
 import type { AggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
@@ -42,10 +39,6 @@ import { callPeerCliRpc, callPeerNativeRpc, openPeerNativeStream, readNativeRpcE
 import { createAggregateHostSource } from '../modules/peer-host/peer-host-aggregate-service.js'
 import { encodeNativeResponseBytes, isDshNativeRemoteMethod, rewriteNativeRequestIds, rewriteNativeResponseIds, type VirtualIdResolver } from '../modules/peer-host/peer-host-native-protocol.js'
 import { resolveCodingNsDebugLevel } from '../../shared/debug.js'
-import { AssistantPeerNotifications, assistantPeerNotificationWorkspaceIds, assistantPeerNotificationCapabilityKey } from './assistant-peer-notifications.js'
-import { readAssistantNotificationFeed } from '../../shared/assistant-notification-feed.js'
-import type { AssistantNotificationFeedRequest } from '../../shared/assistant-notification-feed.js'
-import type { AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
 
 export interface PeerHostFeatureOptions {
   readonly stateDirectory?: string
@@ -157,24 +150,22 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
         }
         return (await store.get(record.id)) ?? record
       }
-      const buildSources = async (assistantWorkspaceIds?: readonly string[], signal?: AbortSignal): Promise<readonly AggregateHostSource[]> => {
+      const buildSources = async (signal?: AbortSignal): Promise<readonly AggregateHostSource[]> => {
         signal?.throwIfAborted()
         if (options.aggregateSources !== undefined) {
           const sources = await options.aggregateSources()
           signal?.throwIfAborted()
-          return assistantWorkspaceIds === undefined ? sources : sources.filter((source) => source.targetHostId !== null)
+          return sources
         }
-        const sources: AggregateHostSource[] = assistantWorkspaceIds === undefined ? [createAggregateHostSource({
+        const sources: AggregateHostSource[] = [createAggregateHostSource({
           hostId: localHostId,
           targetHostId: null,
           hostLabel: '当前 Host',
           source: localSummarySource,
-        })] : []
+        })]
         const records = await store.list()
         signal?.throwIfAborted()
-        // 助理只访问受管远端，不能为了本地索引唤醒全部 PeerHost 或重复扫描本地列表。
-        const selectedRecords = assistantWorkspaceIds === undefined ? records : records.filter((record) => record.status !== 'disabled' && record.status !== 'identity_changed'
-          && (record.visibleWorkspaceIds ?? []).some((workspaceId) => assistantWorkspaceIds.some((selected) => assistantWorkspaceMatches(selected, record.id, workspaceId))))
+        const selectedRecords = records.filter((record) => record.status !== 'disabled' && record.status !== 'identity_changed')
         // 摘要是实际数据面探针：握手状态可能滞后，但消息和终端仍可正常访问时，
         // 不能先用旧的 unreachable 状态把 Host 排除在 source 之外。
         const preparedRecords = await Promise.all(selectedRecords.map((record) => preparePeerHost(record, { allowTransientStatus: true }).catch(() => null)))
@@ -189,10 +180,7 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
             })
             continue
           }
-          const selectedWorkspaceIds = assistantWorkspaceIds === undefined
-            ? (record.visibleWorkspaceIds ?? [])
-            : (record.visibleWorkspaceIds ?? []).filter((workspaceId) => assistantWorkspaceIds.some((selected) => assistantWorkspaceMatches(selected, record.id, workspaceId)))
-          if (assistantWorkspaceIds !== undefined && selectedWorkspaceIds.length === 0) continue
+          const selectedWorkspaceIds = record.visibleWorkspaceIds ?? []
           sources.push(createAggregateHostSource({
             hostId: localHostId,
             targetHostId: record.id,
@@ -279,190 +267,6 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
         },
       })
       context.resources.add(() => aggregatedTransport.close())
-      const readNotificationSource = async (peerHostId: string, payload: AssistantNotificationFeedRequest, signal: AbortSignal): Promise<unknown> => {
-        const response = await httpProxy.request(peerHostId, {
-          scope: { hostId: localHostId, targetHostId: peerHostId, workspaceId: '__assistant_notifications__', sessionId: null, scopeGeneration: 0 },
-          path: '/api/codingns/assistant/notifications/source', method: 'POST',
-          body: JSON.stringify({ rpcId: `assistant-source-${randomUUID()}`, method: 'assistant/notifications/source', payload }), signal,
-        })
-        if ([404, 405, 501].includes(response.status)) throw new CodingNsRpcError('UNSUPPORTED_CAPABILITY', '远端不支持会话通知来源协议')
-        return readNativeRpcEnvelope(response.body)
-      }
-      const quickAppPeerGateway = createQuickAppPeerGateway(store, httpProxy, localHostId)
-      ;(context.services as { quickAppPeerGateway?: typeof quickAppPeerGateway }).quickAppPeerGateway = quickAppPeerGateway
-      context.resources.add(() => {
-        if (context.services.quickAppPeerGateway === quickAppPeerGateway) delete (context.services as { quickAppPeerGateway?: typeof quickAppPeerGateway }).quickAppPeerGateway
-      })
-      const assistantGateway = {
-        async validateNotificationTarget(target: AssistantNotificationTarget): Promise<boolean> {
-          if (target.hostId === localHostId) return false
-          const record = await store.get(target.hostId)
-          if (record === null || record.status === 'disabled' || record.status === 'identity_changed') return false
-          const workspaceId = assistantPeerNotificationWorkspaceIds(target.hostId, record.visibleWorkspaceIds ?? [], [target.workspaceId])[0]
-          if (workspaceId === undefined) return false
-          const signal = AbortSignal.timeout(5_000)
-          try {
-            const results = await aggregate.load(await buildSources([createVirtualWorkspaceId(target.hostId, workspaceId)], signal))
-            signal.throwIfAborted()
-            const present = results.some(result => result.targetHostId === target.hostId && result.availability === 'ready'
-              && result.workspaces.some(item => item.workspaceId === workspaceId
-                && item.sessions.some(session => session.scope.sessionId === target.sessionId && !session.blank)))
-            if (!present) return false
-            if (target.requestId === undefined) return true
-            const feed = readAssistantNotificationFeed(await readNotificationSource(target.hostId, { workspaceIds: [workspaceId] }, signal))
-            const actualSession = target.actualRequestTarget?.sessionId ?? target.sessionId
-            return feed.pending.some(fact => (fact.actualRequestSessionId ?? fact.sessionId) === actualSession && fact.requestId === target.requestId && fact.kind === target.requestKind)
-          } catch { return false }
-        },
-        subscribeNotifications(managedWorkspaceIds: readonly string[], observer: import('./assistant-peer-notifications.js').AssistantPeerNotificationObserver, signal?: AbortSignal) {
-          const subscription = new AssistantPeerNotifications({
-            observer,
-            nodes: async (signal) => {
-              signal.throwIfAborted()
-              const records = await store.list()
-              signal.throwIfAborted()
-              return records.filter(record => record.status !== 'disabled' && record.status !== 'identity_changed')
-                .map(record => ({
-                  hostId: record.id, hostLabel: record.displayName,
-                  capabilityKey: assistantPeerNotificationCapabilityKey(record),
-                  workspaceIds: assistantPeerNotificationWorkspaceIds(record.id, record.visibleWorkspaceIds ?? [], managedWorkspaceIds),
-                })).filter(node => node.workspaceIds.length > 0)
-            },
-            read: async (node, payload, signal) => {
-              // 通知不依赖索引触发握手；只在缓存尚未 ready 时准备当前这台受管 Host。
-              const configured = await store.get(node.hostId)
-              if (configured === null) throw new CodingNsRpcError('PEER_HOST_NOT_FOUND', 'PeerHost 不存在')
-              if (configured.status !== 'ready' && await preparePeerHost(configured) === null) throw new CodingNsRpcError('PEER_HOST_NOT_READY', '远端 Host 暂不可达')
-              signal.throwIfAborted()
-              return readNotificationSource(node.hostId, payload, signal)
-            },
-            stream: (node, signal) => aggregatedTransport.openStream({
-              scope: { hostId: localHostId, targetHostId: node.hostId, workspaceId: '__assistant_notifications__', sessionId: null, scopeGeneration: 0 },
-              method: 'codingnsAssistantNotifications/sourceStream',
-              payload: { args: { request: { workspaceIds: node.workspaceIds } } },
-              signal,
-            }),
-          }, signal)
-          return subscription.start()
-        },
-        async workspaces(signal?: AbortSignal) {
-          signal?.throwIfAborted()
-          const records = await store.list()
-          signal?.throwIfAborted()
-          return records.filter((record) => record.status !== 'disabled' && record.status !== 'identity_changed')
-            .flatMap((record) => (record.visibleWorkspaceIds ?? []).map((id) => ({ workspaceId: createVirtualWorkspaceId(record.id, id), name: `${record.displayName} / ${id}`, path: null })))
-        },
-        async list(managedWorkspaceIds: readonly string[], signal?: AbortSignal) {
-          signal?.throwIfAborted()
-          // 超时必须到达底层 RPC 和订阅，不能仅让 Promise.race 的调用方提前返回。
-          const deadline = AbortSignal.timeout(5_000)
-          const loadSignal = signal === undefined ? deadline : AbortSignal.any([signal, deadline])
-          const results = await aggregate.load(await buildSources(managedWorkspaceIds, loadSignal))
-          signal?.throwIfAborted()
-          const failed = results.some((result) => result.availability !== 'ready')
-          const sessions = [] as import('./assistant-session-index.js').AssistantSessionSourceRecord[]
-          const archivedSessionIds: string[] = []
-          for (const result of results) {
-            // 本地 Host 已由 global-voice-rpc 通过 sessionQuery 读取；Gateway 只补充
-            // 远端摘要，避免同一会话被两条来源重复计入。
-            if (result.targetHostId === null) continue
-            for (const workspace of result.workspaces) {
-              const hostId = workspace.targetHostId ?? workspace.hostId
-              const workspaceId = managedWorkspaceIds.find((selected) => assistantWorkspaceMatches(selected, hostId, workspace.workspaceId)) ?? workspace.workspaceId
-              for (const session of workspace.sessions) {
-                if (session.scope.sessionId === null) continue
-                sessions.push(toAssistantSourceRecord(session.scope.sessionId, assistantTitle(session.title, workspace.path, session.scope.sessionId), session.status, workspaceId, workspace.displayName, hostId, session.updatedAt, session.activity))
-              }
-              for (const session of workspace.archivedSessions ?? []) {
-                if (session.scope.sessionId === null) continue
-                archivedSessionIds.push(session.scope.sessionId)
-                sessions.push(toAssistantSourceRecord(session.scope.sessionId, assistantTitle(session.title, workspace.path, session.scope.sessionId), session.status, workspaceId, workspace.displayName, hostId, session.updatedAt, session.activity))
-              }
-            }
-          }
-          const remoteDetails = new Map<string, Promise<{ readonly summary: string | null; readonly waiting: AssistantWaitingKind | null; readonly messages: readonly AssistantSessionMessage[] }>>()
-          const readRemoteDetails = (session: import('./assistant-session-index.js').AssistantSessionSourceRecord, readSignal?: AbortSignal, toolCallId?: string) => {
-            readSignal?.throwIfAborted()
-            if (session.hostId === localHostId) {
-              return Promise.resolve({ summary: session.summary ?? null, waiting: session.waiting ?? null, messages: [] as readonly AssistantSessionMessage[] })
-            }
-            const key = `${session.hostId}:${session.sessionId}:${toolCallId ?? ''}`
-            const cached = remoteDetails.get(key)
-            if (cached !== undefined) return cached
-            const promise = (async () => {
-                const virtualWorkspace = parseVirtualWorkspaceId(session.workspaceId)
-                const scope = {
-                hostId: localHostId,
-                targetHostId: session.hostId,
-                  workspaceId: virtualWorkspace?.workspaceId ?? (session.workspaceId.startsWith(`${session.hostId}:`) ? session.workspaceId.slice(session.hostId.length + 1) : session.workspaceId),
-                sessionId: session.sessionId,
-                scopeGeneration: 0,
-              } as const
-              try {
-                // 只读取 DSH 原生 session/follow 的有界 snapshot；不访问目标 Host 的
-                // session 存储，也不把流式 chunk 当成摘要正文。
-                const stream = aggregatedTransport.openStream({
-                  scope,
-                  ...(readSignal === undefined ? {} : { signal: readSignal }),
-                  method: 'session/follow',
-                  payload: {
-                    args: {
-                      request: {
-                        address: { kind: 'session', sessionId: session.sessionId },
-                        assistantStream: true,
-                        maxMessages: 32,
-                      },
-                    },
-                  },
-                })
-                for await (const frame of stream) {
-                  readSignal?.throwIfAborted()
-                  if (!isRecordValue(frame)) continue
-                  const value = frame
-                  if (value.type !== 'snapshot') continue
-                  const records = Array.isArray(value.records) ? value.records : []
-                  return {
-                    summary: summarizeAssistantRemoteRecords(records),
-                    waiting: summarizeAssistantRemoteWaiting(records),
-                    messages: appendAssistantSessionStream(readAssistantSessionMessages(records, { ...(toolCallId === undefined ? {} : { toolCallId }) }), value.assistantStream),
-                  }
-                }
-              } catch {
-                readSignal?.throwIfAborted()
-                // 单个远端会话不可读时保留其元数据，不能让整个索引失败。
-              }
-              return { summary: session.summary ?? null, waiting: session.waiting ?? null, messages: [] }
-            })()
-            remoteDetails.set(key, promise)
-            return promise
-          }
-          return {
-            sessions,
-            archivedSessionIds,
-            volatile: results.length > 0,
-            failed,
-            warnings: failed ? ['部分远端 Host 暂不可达，已延后重试。'] : [],
-            readSummary: async (session: import('./assistant-session-index.js').AssistantSessionSourceRecord, signal?: AbortSignal) => (await readRemoteDetails(session, signal)).summary,
-            readWaiting: async (session: import('./assistant-session-index.js').AssistantSessionSourceRecord, signal?: AbortSignal) => (await readRemoteDetails(session, signal)).waiting,
-            readMessages: async (session: import('./assistant-session-index.js').AssistantSessionSourceRecord, signal?: AbortSignal, toolCallId?: string) => (await readRemoteDetails(session, signal, toolCallId)).messages,
-          }
-        },
-        async dispatch(request: { readonly hostId: string; readonly requestId: string; readonly sessionId: string; readonly mode: 'queue' | 'steer'; readonly content: readonly [{ readonly type: 'text'; readonly text: string }] }, signal?: AbortSignal) {
-          if (request.hostId === localHostId) throw new Error('本地 Host 不应经过 PeerHost 派发')
-          await aggregatedTransport.rpc({
-            scope: { hostId: localHostId, targetHostId: request.hostId, workspaceId: '__assistant__', sessionId: request.sessionId, scopeGeneration: 0 },
-            method: 'session/prompt',
-            payload: { requestId: request.requestId, sessionId: request.sessionId, mode: request.mode, content: request.content },
-            ...(signal === undefined ? {} : { signal }),
-          })
-        },
-      }
-      ;(context.services as CodingNsHostServices & { assistantGateway?: typeof assistantGateway }).assistantGateway = assistantGateway
-      context.resources.add(() => {
-        if ((context.services as CodingNsHostServices & { assistantGateway?: typeof assistantGateway }).assistantGateway === assistantGateway) {
-          delete (context.services as CodingNsHostServices & { assistantGateway?: typeof assistantGateway }).assistantGateway
-        }
-      })
       const loginStore = new FileLanAccessDshLoginStore()
       const lanSettings = context.services.settings?.get().lanAccessDsh
       const gateway = new PeerHostWebSocketGateway({
@@ -711,151 +515,6 @@ export function createPeerHostFeature(options: PeerHostFeatureOptions = {}): Fea
   }
 }
 
-/** 将 session/follow 的有界语义记录压缩成助理可读摘要。 */
-export function summarizeAssistantRemoteRecords(records: readonly unknown[]): string | null {
-  let latestUser: string | null = null
-  let latestAssistant: string | null = null
-  let latestTool: string | null = null
-  for (const raw of records.slice(-80)) {
-    if (!isRecordValue(raw)) continue
-    const event = raw
-    const data = isRecordValue(event.data) ? event.data : null
-    const type = textValue(event.type) ?? textValue(event.kind) ?? textValue(event.event) ?? ''
-    const role = textValue(event.role) ?? (data === null ? undefined : textValue(data.role))
-    const text = readAssistantRecordText(event, data)
-    if (type === 'user/message' || type === 'user.message' || type === 'message/user' || role === 'user') {
-      if (text !== null) latestUser = text
-      continue
-    }
-    if (type === 'assistant/message' || type === 'assistant.message' || type === 'message/assistant' || role === 'assistant') {
-      if (text !== null) latestAssistant = text
-      continue
-    }
-    if (type === 'tool/call' || type === 'tool.call' || type === 'tool-call' || type === 'tool/result' || type === 'tool.result' || type === 'tool-result' || role === 'tool') {
-      const tool = textValue(event.name) ?? textValue(event.tool) ?? textValue(event.toolName)
-        ?? (data === null ? undefined : textValue(data.name) ?? textValue(data.tool) ?? textValue(data.toolName))
-      if (tool !== undefined) latestTool = tool
-    }
-  }
-  const parts = [
-    latestUser === null ? null : `用户：${latestUser}`,
-    latestAssistant === null ? null : `助理：${latestAssistant}`,
-    latestTool === null ? null : `工具：${latestTool}`,
-  ].filter((item): item is string => item !== null)
-  return parts.length === 0 ? null : parts.join('；').slice(0, 2000)
-}
-
-/** 从 session/follow 的有界语义记录识别远端等待审批或提问状态。 */
-export function summarizeAssistantRemoteWaiting(records: readonly unknown[]): AssistantWaitingKind | null {
-  let waiting: AssistantWaitingKind | null = null
-  for (const raw of records.slice(-80)) {
-    if (!isRecordValue(raw)) continue
-    const event = raw
-    const data = isRecordValue(event.data) ? event.data : null
-    const candidates = [
-      textValue(event.type),
-      textValue(event.kind),
-      textValue(event.event),
-      data === null ? undefined : textValue(data.type),
-      data === null ? undefined : textValue(data.kind),
-      data === null ? undefined : textValue(data.event),
-    ].filter((value): value is string => value !== undefined)
-    for (const candidate of candidates) {
-      const normalized = candidate.toLocaleLowerCase().replaceAll('_', '-')
-      if (/approval[/:.-](request|asked|pending)/u.test(normalized)) {
-        waiting = 'approval'
-      } else if (/(?:user[-/]questions?|question)[/:.-](request|asked|pending)/u.test(normalized)) {
-        waiting = 'question'
-      } else if (
-        /approval[/:.-](resolve|resolved|response|responded|granted|denied|answer|answered)/u.test(normalized)
-        || /(?:user[-/]questions?|question)[/:.-](resolve|resolved|response|responded|answer|answered)/u.test(normalized)
-        || /turn[/:.-](end|ended|complete|completed)/u.test(normalized)
-      ) {
-        waiting = null
-      }
-    }
-  }
-  return waiting
-}
-
-function readAssistantRecordText(event: Record<string, unknown>, data: Record<string, unknown> | null): string | null {
-  for (const source of [event, data]) {
-    if (source === null) continue
-    for (const key of ['text', 'message', 'content', 'summary', 'transcript']) {
-      const value = source[key]
-      if (typeof value === 'string' && value.trim() !== '') return value.trim()
-      if (Array.isArray(value)) {
-        const text = value.map((item) => {
-          if (typeof item === 'string') return item
-          if (!isRecordValue(item)) return ''
-          return textValue(item.text) ?? textValue(item.content) ?? textValue(item.value) ?? ''
-        }).join(' ').trim()
-        if (text !== '') return text
-      }
-    }
-  }
-  return null
-}
-
-function toAssistantSourceRecord(
-  sessionId: string,
-  title: string | null,
-  status: string,
-  workspaceId: string,
-  workspaceName: string,
-  hostId: string,
-  updatedAt: number,
-  activity?: 'running' | 'idle' | 'unknown',
-): import('./assistant-session-index.js').AssistantSessionSourceRecord {
-  const normalized = status.toLocaleLowerCase()
-  const running = /running|active|working|queued/u.test(normalized)
-  const error = /error|failed|failure/u.test(normalized)
-  const completed = /completed|complete|done|success/u.test(normalized)
-  return {
-    sessionId,
-    title,
-    workspaceId,
-    workspaceName,
-    hostId,
-    running,
-    activity: activity ?? (running ? 'running' : /completed|complete|done|success|error|failed/u.test(normalized) ? 'idle' : 'unknown'),
-    completed,
-    ...(error ? { error: true } : {}),
-    updatedAt: Number.isFinite(updatedAt) ? updatedAt : null,
-    waiting: null,
-    summary: null,
-  }
-}
-
-/** 助理索引不能把远端 source 为导航而猜出的目录名或 ID 当成正式标题。 */
-function assistantTitle(title: string, workspacePath: string, sessionId: string): string | null {
-  const normalized = title.trim()
-  if (normalized === '' || normalized === sessionId) return null
-  const segments = workspacePath.split(/[\\/]+/u).filter((segment) => segment !== '')
-  const directory = segments.at(-1) ?? ''
-  return directory !== '' && normalized === directory ? null : normalized
-}
-
-/** 逐帧映射异步迭代器；不改变完成与错误语义。 */
-function mapAsyncIterator<TValue, TMapped>(iterator: AsyncIterator<TValue>, map: (value: TValue) => TMapped): AsyncIterator<TMapped> {
-  const mapped: AsyncIterator<TMapped> = {
-    async next(): Promise<IteratorResult<TMapped>> {
-      const next = await iterator.next()
-      if (next.done === true) return { done: true, value: undefined }
-      return { done: false, value: map(next.value) }
-    },
-  }
-  if (iterator.return !== undefined) {
-    const close = iterator.return.bind(iterator)
-    mapped.return = async (value?: unknown): Promise<IteratorResult<TMapped>> => {
-      const result = await close(value)
-      if (result.done === true) return { done: true, value: undefined }
-      return { done: false, value: map(result.value) }
-    }
-  }
-  return mapped
-}
-
 /** 通过目标 Host 自有 RPC 读取资源采样；不把目标 URL 暴露给客户端。 */
 async function loadPeerHostStatus(httpProxy: PeerHostHttpProxyService, peerHostId: string, localHostId: string): Promise<DshHostStatus> {
   const scope = { hostId: localHostId, targetHostId: peerHostId, workspaceId: '__management__', sessionId: null, scopeGeneration: 0 } as const
@@ -887,6 +546,18 @@ function finiteNumber(value: unknown): number | null {
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<unknown> {
   return typeof value === 'object' && value !== null && typeof (value as { [Symbol.asyncIterator]?: unknown })[Symbol.asyncIterator] === 'function'
+}
+
+function mapAsyncIterator<T, U>(iterator: AsyncIterator<T>, map: (value: T) => U): AsyncIterator<U> {
+  const mapped: AsyncIterator<U> = {
+    next: async (value?: unknown) => {
+      const result = await iterator.next(value)
+      return result.done === true ? result as IteratorReturnResult<undefined> : { done: false, value: map(result.value) }
+    },
+  }
+  if (typeof iterator.return === 'function') mapped.return = (value?: unknown) => iterator.return!(value) as Promise<IteratorResult<U>>
+  if (typeof iterator.throw === 'function') mapped.throw = (error?: unknown) => iterator.throw!(error) as Promise<IteratorResult<U>>
+  return mapped
 }
 
 async function authorizePeerHostUpgrade(loginStore: FileLanAccessDshLoginStore, request: import('node:http').IncomingMessage): Promise<boolean> {

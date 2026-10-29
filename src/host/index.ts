@@ -15,7 +15,7 @@ import { CodingNsRpcTable } from './rpc-table.js'
 import { configuredQuickAppTransport } from '../dsh-capabilities/host/quick-app-transport.js'
 import type { QuickAppProxyServer } from '../dsh-capabilities/host/quick-app-proxy-adapter.js'
 import { QuickAppProxyProvider } from '../dsh-capabilities/host/quick-app-proxy-provider.js'
-import { registerCodingNsSettings } from './settings.js'
+import { cleanupLegacyAssistantSettings, registerCodingNsSettings } from './settings.js'
 import { createCodingNsNativeSessionBridge } from './native-session-bridge.js'
 import { createSessionTranslationService } from './features/session-translation-service.js'
 import { installTerminalController } from './terminal/startup.js'
@@ -33,8 +33,6 @@ import { createAgentSubagentTool } from './cli-adapters/subagent-tool.js'
 import { registerNativeTeamSubagentProviders, type NativeSubagentService } from './cli-adapters/native-team-subagent.js'
 import { setNativeSubagents } from './cli-adapters/native-subagent-holder.js'
 import { installSidebarSessionCompat } from '../dsh-capabilities/host/sidebar-session-compat.js'
-import { registerAssistantVoiceStreamRoutes } from './features/assistant-voice-stream.js'
-import { registerAssistantAvatarRoutes } from './features/assistant-avatar-runtime.js'
 import { isStage0Runtime, registerStage0DevHmr } from './stage0-dev-hmr.js'
 import { CODINGNS_STAGE0_GLOBAL } from '../shared/runtime-environment.js'
 import { registerProviderIconRoutes } from './provider-icon-assets.js'
@@ -135,6 +133,34 @@ export async function apply(ctx?: Context): Promise<void> {
     })
     debugInfo('codingns4dsh: host index injection registration ready')
     debugInfo('codingns4dsh: host settings registration begin')
+    let cleanupFinished = false
+    let cleanupRunning = false
+    let disposeCleanupListener: (() => void) | undefined
+    const cleanupLegacySettings = async (): Promise<void> => {
+      if (cleanupFinished || cleanupRunning) return
+      cleanupRunning = true
+      try {
+        const result = await cleanupLegacyAssistantSettings(settingsContext.settings)
+        debugInfo('codingns4dsh: legacy assistant settings cleanup', result)
+        if (result.status !== 'skipped' || result.reason !== 'missing') {
+          cleanupFinished = true
+          disposeCleanupListener?.()
+          disposeCleanupListener = undefined
+        }
+      } catch (error) {
+        // Stale settings must never prevent the plugin from starting.
+        debugWarn('codingns4dsh: legacy assistant settings cleanup skipped', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      } finally {
+        cleanupRunning = false
+      }
+    }
+    disposeCleanupListener = settingsContext.settings.on?.('settings/document-updated', () => {
+      void cleanupLegacySettings()
+    })
+    hostCtx.effect(() => () => disposeCleanupListener?.(), 'codingns4dsh: stale assistant settings cleanup')
+    await cleanupLegacySettings()
     // 注入回调是子 Fiber；配置必须从拥有插件 Config 的入口 Fiber 读取。
     const settings = registerCodingNsSettings(settingsContext, () => ctx.fiber.config)
     indexInjectionSettings = settings
@@ -211,8 +237,6 @@ export async function apply(ctx?: Context): Promise<void> {
         requestBody: 'buffered',
         fetch: handler,
       }),
-      registerAssistantVoiceStreamRoute: (handler) => registerAssistantVoiceStreamRoutes(hostCtx.connection.fetch, handler),
-      registerAssistantAvatarRuntimeRoute: (handler, legacy) => registerAssistantAvatarRoutes(hostCtx.connection.fetch, handler, legacy),
     }
     const debug = new DebugWorkspaceService({
       resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveRegistryWorkspaceRoot(hostCtx, workspaceId),
@@ -367,29 +391,12 @@ export {
   createGitManagementFeature,
   createFileManagementFeature,
   createPeerHostFeature,
-  createAssistantVoiceActionBridge,
-  VoiceAgentService,
-  GlobalVoiceCoordinator,
 } from './features/index.js'
 export type {
   CodingNsHostServices,
-  AssistantVoiceActionBridge,
-  AssistantVoiceActionBridgeOptions,
-  StartConversationOptions,
-  VoiceAction,
-  VoiceActionControl,
-  VoiceActionRegistration,
-  VoiceAgentCapabilities,
-  VoiceConversation,
-  VoiceEvent,
 } from './features/index.js'
 export { CodingNsSettingsSchema, registerCodingNsSettings } from './settings.js'
 export { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler, registerCodingNsRpc } from './rpc.js'
-export { AssistantAvatarPackages, assistantAvatarPackageDirectory } from './avatar/packages.js'
-export { AssistantAvatarCatalog } from './avatar/catalog.js'
-export { getAssistantAvatarPackages, registerAssistantAvatarFormatAdapter, registerAssistantAvatarSourceAdapter, registerAssistantAvatarMaterialAdapter } from './avatar/registry.js'
-export type { AssistantAvatarSourceAdapter } from './avatar/sources.js'
-export type { AssistantAvatarMaterialAdapter, AssistantAvatarMaterialContext } from './avatar/materials.js'
 export {
   AGGREGATED_HOST_RPC_ROUTES,
   AggregatedHostTransportError,

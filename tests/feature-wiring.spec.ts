@@ -3,12 +3,11 @@ import test from 'node:test'
 import { FeatureRegistry, type FeatureModule } from '../data/build/dist/features/index.js'
 import { createCodingNsRpcHandler, createCodingNsSettingsRpcHandler } from '../data/build/dist/host/rpc.js'
 import { CodingNsRpcError, CodingNsRpcTable } from '../data/build/dist/host/rpc-table.js'
-import { createAuthFeature } from '../data/build/dist/host/features/index.js'
+import { createAuthFeature, HOST_FEATURES } from '../data/build/dist/host/features/index.js'
 import {
   cliAdaptersFeature,
   CLIENT_FEATURES,
   debugFeature,
-  globalVoiceAssistantFeature,
   lanAccessFeature,
   mobileAccessFeature,
   magpieManagementFeature,
@@ -82,26 +81,18 @@ test('设置开关驱动模块启停，常驻模块不受开关影响', async ()
   assert.equal(registry.getState('lanAccess'), 'enabled')
 })
 
-test('全局智能助理默认关闭且模块开关允许通过设置 RPC 写入', async () => {
-  assert.equal(globalVoiceAssistantFeature.descriptor.enabledByDefault, false)
-  assert.deepEqual(enabledFeatureNames([globalVoiceAssistantFeature.descriptor], undefined), [])
-  assert.deepEqual(
-    enabledFeatureNames([globalVoiceAssistantFeature.descriptor], settingsOf({ globalVoiceAssistant: true })),
-    ['globalVoiceAssistant'],
-  )
-
-  let received: unknown
+test('全局智能助理已从基座功能清单与设置写入边界移除', async () => {
+  assert.equal(CLIENT_FEATURES.some(({ descriptor }) => descriptor.name === 'globalVoiceAssistant'), false)
+  assert.equal(HOST_FEATURES.some(({ descriptor }) => ['globalVoiceAssistant', 'assistantAvatarRuntime', 'desktopAssistant'].includes(descriptor.name)), false)
   const handler = createCodingNsSettingsRpcHandler({
     writable: true,
     describe: () => [{ ns: 'codingns', revision: 1, value: settingsOf({}) }],
     get: () => settingsOf({}),
-    mutate: async (_namespace: string, ops: unknown) => { received = ops },
   } as never)
 
-  await handler('set', {
+  await assert.rejects(handler('set', {
     ops: [{ op: 'set', path: ['modules', 'globalVoiceAssistant'], value: true }],
-  })
-  assert.deepEqual(received, [{ op: 'set', path: ['modules', 'globalVoiceAssistant'], value: true }])
+  }), (error: unknown) => error instanceof CodingNsRpcError && error.code === 'CODINGNS_SETTINGS_FIELD_FORBIDDEN')
 })
 
 test('reconcile 会带上依赖，也不会在停用阶段误伤被依赖的模块', async () => {

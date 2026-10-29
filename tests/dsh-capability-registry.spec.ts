@@ -80,15 +80,9 @@ test('capability matrix contains minimum-gated routes and historical compatibili
 test('newer hosts retain shared capabilities when structural probes succeed', () => {
   const context = {
     settings: { describe() {}, mutate() {}, configure() {} },
-    agents: { create() {} },
-    tools: { register() {}, restrict() {}, guard() {}, presentAs() {} },
-    systemPrompt: { section() {}, suppressRuntimeContext() {} },
-    on() {},
   }
   for (const version of ['0.2.1-rc.4', '0.3.0-alpha.1', '1.0.0']) {
     const profile = createDshCapabilityRegistry(version, 'host', context).getProfile(context)
-    assert.equal(profile.capabilities.get('assistant.agent')?.status, 'ready', version)
-    assert.equal(profile.capabilities.get('assistant.agent')?.routeId, 'assistant-agent-021', version)
     assert.equal(profile.capabilities.get('settings.store')?.status, 'ready', version)
   }
 })

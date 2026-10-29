@@ -10,9 +10,6 @@ import { createGitManagementFeature } from './git-management.js'
 import { createFileManagementFeature } from './file-management.js'
 import { createQuickAppsFeature } from './quick-apps.js'
 import { createPeerHostFeature } from './peer-host.js'
-import { createGlobalVoiceRpcFeature } from './global-voice-rpc.js'
-import { createAssistantAvatarRuntimeFeature } from './assistant-avatar-runtime.js'
-import { createDesktopAssistantFeature } from '../desktop-assistant/feature.js'
 import { createSessionTitleOptimizationFeature } from './session-title-optimization.js'
 import { createSessionTranslationFeature } from './session-translation.js'
 import { createPluginUpdateFeature } from './plugin-update.js'
@@ -41,9 +38,6 @@ export function createHostFeatures(options: HostFeatureOptions = {}): readonly F
     createFileManagementFeature(),
     createQuickAppsFeature(),
     createPeerHostFeature(),
-    createGlobalVoiceRpcFeature(),
-    createAssistantAvatarRuntimeFeature(),
-    createDesktopAssistantFeature(),
   ]
 }
 

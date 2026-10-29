@@ -6,10 +6,6 @@ import type { TerminalProcessService } from '../terminal/terminal-process-servic
 import type { DebugWorkspaceService } from '../debug.js'
 import type { CodingNsNativeTeamProxy } from '../cli-adapters/native-team-proxy.js'
 import type { Context } from '@deepseek-ai/cordis'
-import type { AssistantSessionSourceRecord } from './assistant-session-index.js'
-import type { AssistantSessionMessage, AssistantWaitingKind } from '../../shared/contracts/assistant.js'
-import type { AssistantPeerNotificationObserver } from './assistant-peer-notifications.js'
-import type { AssistantNotificationTarget } from '../../shared/assistant-notifications.js'
 import type { SessionTranslationService } from './session-translation-service.js'
 import type { QuickAppLanTransport, QuickAppOriginProvider } from '../../dsh-capabilities/host/quick-app-origin-adapter.js'
 import type { QuickAppPeerGateway } from '../modules/quick-apps/remote.js'
@@ -19,28 +15,6 @@ export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
   /** 向 DSH 原生事件总线发布 Host 状态，供客户端会话状态投影消费。 */
   emit?(name: string, ...args: any[]): unknown
-}
-
-export interface AssistantHostGateway {
-  /** 按受管 Host 接收有界实时事实；旧远端能力不足时明确降级。 */
-  subscribeNotifications?(managedWorkspaceIds: readonly string[], observer: AssistantPeerNotificationObserver, signal?: AbortSignal): () => void
-  /** 导航前复核目标仍在显式可见工作区、未归档且当前请求仍有效。 */
-  validateNotificationTarget?(target: AssistantNotificationTarget): Promise<boolean>
-  /** 已显式加入聚合的工作区元数据；不读取远端会话正文。 */
-  workspaces?(signal?: AbortSignal): Promise<readonly { readonly workspaceId: string; readonly name: string; readonly path: string | null }[]>
-  list(managedWorkspaceIds: readonly string[], signal?: AbortSignal): Promise<{
-    readonly sessions: readonly AssistantSessionSourceRecord[]
-    readonly archivedSessionIds: readonly string[]
-    /** 远端来源没有本地事件总线；调用方必须在下次请求时重新取快照。 */
-    readonly volatile?: boolean
-    readonly warnings?: readonly string[]
-    readonly failed?: boolean
-    readonly readSummary?: (session: AssistantSessionSourceRecord, signal?: AbortSignal) => Promise<string | null>
-    /** 读取受管会话最近的有界消息，不读取完整历史。 */
-    readonly readMessages?: (session: AssistantSessionSourceRecord, signal?: AbortSignal, toolCallId?: string) => Promise<readonly AssistantSessionMessage[]>
-    readonly readWaiting?: (session: AssistantSessionSourceRecord, signal?: AbortSignal) => Promise<AssistantWaitingKind | null>
-  }>
-  dispatch(request: { readonly hostId: string; readonly requestId: string; readonly sessionId: string; readonly mode: 'queue' | 'steer'; readonly content: readonly [{ readonly type: 'text'; readonly text: string }]}, signal?: AbortSignal): Promise<void>
 }
 
 /**
@@ -92,8 +66,6 @@ export interface CodingNsHostServices {
   readonly resolveManagedWorkspaceRoot?: (workspaceId: string) => string | null
   /** 返回 Host 当前已知的工作区根目录，用于文件管理路径校验。 */
   readonly listWorkspaceRoots?: () => readonly string[]
-  /** PeerHost 已装配时提供跨 Host 的助理摘要与派发通道。 */
-  readonly assistantGateway?: AssistantHostGateway
   /** 外部 Agent 会话翻译服务；仅由会话翻译模块启用并配置。 */
   readonly sessionTranslation?: SessionTranslationService
 }

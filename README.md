@@ -320,7 +320,9 @@ pnpm typecheck
 
 源码链接与调试仅用于 Stage0；Desktop 使用已发布版本，不安装源码链接或本地开发包。开发环境说明见 [Stage0 开发记录](docs/开发记录/20261007-Stage0自动编译与热重载接入记录.md)。
 
-功能设计与实现细节见 [Spec 文档](specs/)、[开发记录](docs/开发记录/)和[开发规范](docs/开发规范/)。[形象包目录](assets/assistant-avatar-catalog.md)与[截图清单](assets/screenshots/README.md)也可单独查阅。
+功能设计与实现细节见 [Spec 文档](specs/)、[开发记录](docs/开发记录/)和[开发规范](docs/开发规范/)；[截图清单](assets/screenshots/README.md)也可单独查阅。
+
+[Spec019: Global Assistant Extraction and Performance Governance](specs/spec019-全局智能助理独立化与性能治理/README.md) tracks the proposal to make the global assistant an independently installable plugin, remove assistant-specific runtime from the base plugin, and verify idle/active performance with reproducible budgets.
 
 [Spec007.4: External Agent Team collaboration and management](specs/spec007.4-外部Agent团队协作与管理/README.md) adds native DSH Team tools for eligible external collaborators and Leads from DSH `0.2.1-alpha.2` onward when structural capability probes succeed. Headless reference acceptance covers native/external and mixed Codex/Claude workflows on alpha.2 and alpha.3; rc.2 compatibility is covered by repository regressions and Stage0 HTTP checks. Ordinary external sessions require DSH `>=0.2.0-rc.2`; newer hosts are enabled but remain unverified until tested. See the Spec for adapter eligibility, recovery evidence, and validation limits.
 

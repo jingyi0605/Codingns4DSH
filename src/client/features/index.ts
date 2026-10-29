@@ -13,7 +13,6 @@ import { gitManagementFeature } from '../git-management.js'
 import { fileManagementFeature } from './file-management.js'
 import { quickAppsFeature } from './quick-apps.js'
 import { peerHostFeature } from './peer-host.js'
-import { globalVoiceAssistantFeature } from './global-voice-assistant.js'
 import { subagentCollapsedLineageFeature } from './subagent-collapsed-lineage.js'
 import { sessionTranslationFeature } from './session-translation.js'
 import { pluginUpdateFeature } from './plugin-update.js'
@@ -37,7 +36,6 @@ export const CLIENT_FEATURES: readonly CodingNsClientFeatureModule[] = [
   fileManagementFeature,
   quickAppsFeature,
   peerHostFeature,
-  globalVoiceAssistantFeature,
   subagentCollapsedLineageFeature,
   sessionTranslationFeature,
 ]
@@ -72,7 +70,6 @@ export { globalVoiceAssistantFeature } from './global-voice-assistant.js'
 export { magpieManagementFeature } from './magpie-management.js'
 export { subagentCollapsedLineageFeature } from './subagent-collapsed-lineage.js'
 export { sessionTranslationFeature } from './session-translation.js'
-export { ClientSherpaVoiceAdapter } from '../sherpa-voice-adapter.js'
 export { createPeerHostPageTransport, installPeerHostConnectionRouting } from './peer-host.js'
 export { startBrowserRelayConnection } from './reverse-proxy.js'
 export { LanAccessPanel } from './lan-access-panel.js'
