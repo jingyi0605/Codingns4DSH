@@ -402,7 +402,7 @@ function TranslationToggleRow(props: {
       'aria-haspopup': 'dialog',
       onClick: props.onSettings,
       style: { ...settingsIconButtonStyle, flexBasis: 24, width: 24, height: 28 },
-    }, createElement(resolveAssistantControlIcon('settings'), { size: 16 })),
+    }, createElement(resolveControlIcon('settings'), { size: 16 })),
     createElement(Switch, {
       checked: props.checked,
       onChange: props.onChange,
@@ -453,7 +453,7 @@ const agentOptionLabelStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden
 const agentStatusStyle = { flex: '0 0 auto', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), whiteSpace: 'nowrap' as const }
 const agentFallbackIconStyle = { flexGrow: 0, flexShrink: 0, borderRadius: 5, color: '#fff', background: dshThemeColor.labelTertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: uiFontSize(11), fontWeight: 600, lineHeight: 1 }
 
-type ModelPane = 'root' | 'model' | 'effort' | 'credentials'
+type ModelPane = 'root' | 'model' | 'effort'
 
 interface ModelCatalogState {
   readonly sessionId: string | undefined
