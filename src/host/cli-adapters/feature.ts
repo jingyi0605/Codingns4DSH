@@ -2068,7 +2068,9 @@ function nativeTranslationContent(content: unknown, dshContext: CodingNsHostServ
 function isInjectedStepNotice(message: CodingNsCliMessage): boolean {
   if (message.role !== 'user' || !isRecord(message.source)) return false
   if (message.source.form !== 'notice') return false
-  return message.source.kind === 'model-selection'
+  // v4 continuations share DSH's model-selection source; only our own IDs
+  // identify a continuation, not an ordinary model-switch notification.
+  return message.source.kind === 'model-selection' && message.id?.startsWith('codingns-external-step-') === true
     || message.source.kind === 'plugin' && message.source.plugin === 'codingns4dsh'
 }
 

@@ -15,6 +15,12 @@ interface SelectionOwner {
 // Cordis creates fresh method proxies. Symbol properties survive those proxies
 // and retain the native accessor across plugin reloads.
 const NATIVE_ACCESSOR = Symbol.for('codingns4dsh.native-model-selection')
+// The native `current` reader survives our in-place getter override, so the
+// native-route probe can bypass the external overlay without recursing.
+const NATIVE_CURRENT = Symbol.for('codingns4dsh.native-model-current')
+type NativeSelectionRef = SelectionRef & {
+  readonly [NATIVE_CURRENT]?: () => SessionModelSelection
+}
 type SelectionAccessor = SelectionOwner['selectionFor'] & {
   readonly [NATIVE_ACCESSOR]?: {
     readonly native: SelectionOwner['selectionFor']
@@ -41,7 +47,9 @@ export function readNativeSessionModelSelection(controller: unknown, agent: { re
   if (owner === undefined) return undefined
   const current = owner.selectionFor as SelectionAccessor
   const accessor = current[NATIVE_ACCESSOR]?.native ?? current
-  return accessor.call(owner, agent).current
+  const selection = accessor.call(owner, agent) as NativeSelectionRef
+  const native = selection[NATIVE_CURRENT]
+  return native !== undefined ? native() : selection.current
 }
 
 /**
@@ -56,23 +64,48 @@ export function createSessionModelSelectionAdapter(controller: unknown): Session
     install(resolve) {
       const original = owner.selectionFor
       const ownDescriptor = Object.getOwnPropertyDescriptor(owner, 'selectionFor')
+      const restores = new WeakMap<SelectionRef, () => void>()
+      const references = new Set<WeakRef<SelectionRef>>()
       const selectionFor: SelectionOwner['selectionFor'] = function (this: SelectionOwner, agent) {
-        const selection = original.call(this, agent)
-        const external = resolve(agent.id)
-        if (external === undefined) return selection
-        // The native reference and its setters remain owned by DSH. Returning a
-        // view avoids overwriting pending native choices or the global default.
-        return new Proxy(selection, {
-          get(target, key, receiver) {
-            return key === 'current' ? external : Reflect.get(target, key, receiver)
+        const selection = original.call(this, agent) as NativeSelectionRef
+        if (restores.has(selection)) return selection
+        const sessionId = agent.id
+        const descriptor = Object.getOwnPropertyDescriptor(selection, 'current')!
+        let nativeValue = descriptor.value as SessionModelSelection
+        const readNative = descriptor.get
+          ? () => descriptor.get!.call(selection) as SessionModelSelection
+          : () => nativeValue
+        // DSH listeners retain this object. A Proxy return value cannot change
+        // their reads; wrap the native getter without overwriting its choices.
+        const get = () => resolve(sessionId) ?? readNative()
+        Object.defineProperty(selection, 'current', {
+          configurable: descriptor.configurable === true,
+          enumerable: descriptor.enumerable === true,
+          get,
+          set(next: SessionModelSelection) {
+            if (descriptor.set) descriptor.set.call(selection, next)
+            else nativeValue = next
           },
         })
+        Object.defineProperty(selection, NATIVE_CURRENT, { configurable: true, value: readNative })
+        restores.set(selection, () => {
+          if (Object.getOwnPropertyDescriptor(selection, 'current')?.get !== get) return
+          Reflect.deleteProperty(selection, NATIVE_CURRENT)
+          Object.defineProperty(selection, 'current', 'value' in descriptor ? { ...descriptor, value: nativeValue } : descriptor)
+        })
+        references.add(new WeakRef(selection))
+        return selection
       }
       Object.defineProperty(selectionFor, NATIVE_ACCESSOR, {
         value: { native: (original as SelectionAccessor)[NATIVE_ACCESSOR]?.native ?? original, installed: selectionFor },
       })
       owner.selectionFor = selectionFor
       return () => {
+        for (const reference of references) {
+          const selection = reference.deref()
+          if (selection !== undefined) restores.get(selection)?.()
+        }
+        references.clear()
         if ((owner.selectionFor as SelectionAccessor)[NATIVE_ACCESSOR]?.installed !== selectionFor) return
         if (ownDescriptor !== undefined) Object.defineProperty(owner, 'selectionFor', ownDescriptor)
         else Reflect.deleteProperty(owner, 'selectionFor')

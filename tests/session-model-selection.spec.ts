@@ -33,9 +33,14 @@ test('external selection capability probes newer hosts and still requires native
 
 test('external selection view preserves native choices, setters, other sessions and disposal', () => {
   const native = { provider: 'native', model: 'text-only', reasoningEffort: 'high' }
+  let nativeChoice: SessionModelSelection = native
   class Owner {
-    readonly ref = { current: native as SessionModelSelection }
-    selectionFor(_agent: { id: string }) { return this.ref }
+    readonly ref = {
+      get current() { return nativeChoice },
+      set current(value: SessionModelSelection) { nativeChoice = value },
+    }
+    readonly other = { current: native }
+    selectionFor(agent: { id: string }) { return agent.id === 'external' ? this.ref : this.other }
   }
   const owner = new Owner()
   const original = owner.selectionFor
@@ -43,10 +48,11 @@ test('external selection view preserves native choices, setters, other sessions 
   const dispose = createSessionModelSelectionAdapter({ agents: owner }).install(id => id === 'external' ? route : undefined)
   const external = { id: 'external' }
   assert.deepEqual(owner.selectionFor(external).current, route)
-  assert.equal(owner.ref.current, native)
-  assert.equal(owner.selectionFor({ id: 'other' }), owner.ref)
+  assert.equal(nativeChoice, native)
+  assert.equal(owner.selectionFor({ id: 'other' }), owner.other)
   owner.selectionFor(external).current = { provider: 'native', model: 'updated' }
-  assert.deepEqual(owner.ref.current, { provider: 'native', model: 'updated' })
+  assert.deepEqual(nativeChoice, { provider: 'native', model: 'updated' })
+  assert.deepEqual(owner.ref.current, route)
   route = { provider: 'grok', model: 'another-model' }
   assert.deepEqual(owner.selectionFor(external).current, route)
   route = undefined
@@ -55,6 +61,30 @@ test('external selection view preserves native choices, setters, other sessions 
   dispose()
   assert.equal(owner.selectionFor, original)
   assert.equal(Object.hasOwn(owner, 'selectionFor'), false)
+  assert.deepEqual(owner.ref.current, { provider: 'native', model: 'updated' })
+})
+
+test('Cordis method proxies release active selection overrides and preserve native data-property writes', () => {
+  const ctx = new Context()
+  const native = { provider: 'native', model: 'default' }
+  const ref = { current: native as SessionModelSelection }
+  const descriptor = Object.getOwnPropertyDescriptor(ref, 'current')!
+  const owner = { selectionFor(_agent: { id: string }) { return ref } }
+  const original = owner.selectionFor
+  ctx.provide('sessionController', { agents: owner })
+  const adapter = createSessionModelSelectionAdapter(ctx.get('sessionController'))
+  const route = { provider: 'codingns-cli-codex', model: 'selected-codex' }
+  const dispose = adapter.install(() => route)
+  const agent = { id: 'external' }
+  try {
+    assert.equal(owner.selectionFor(agent), ref)
+    assert.deepEqual(ref.current, route)
+    ref.current = { provider: 'native', model: 'updated' }
+    assert.deepEqual(ref.current, route)
+  } finally { dispose(); dispose() }
+  assert.equal(owner.selectionFor, original)
+  assert.deepEqual(ref.current, { provider: 'native', model: 'updated' })
+  assert.deepEqual(Object.getOwnPropertyDescriptor(ref, 'current'), { ...descriptor, value: ref.current })
 })
 
 for (const traceable of [false, true]) test(`native route reads avoid resolver recursion with ${traceable ? 'Cordis proxies' : 'plain services'}`, () => {
@@ -167,7 +197,8 @@ test('fresh Grok image prompt passes real DSH admission without changing the nat
     await set('grok', 'selected-grok-model')
     assert.deepEqual(await send(), { accepted: true })
     assert.deepEqual(checked.at(-1), { provider: 'codingns-cli-grok', model: 'selected-grok-model' })
-    assert.equal(nativeRef.current, defaultSelection)
+    assert.deepEqual(nativeRef.current, { provider: 'codingns-cli-grok', model: 'selected-grok-model' })
+    assert.equal(context.agentDefaultModel.currentSelection(), defaultSelection)
     assert.equal(delivered.length, 2)
     registry.setEnabled('grok', false)
     await assert.rejects(send(), /does not support image input/u)
@@ -175,10 +206,72 @@ test('fresh Grok image prompt passes real DSH admission without changing the nat
     await set('dsh')
     await assert.rejects(send(), /does not support image input/u)
     assert.equal(native.selectionFor(agent), nativeRef)
+    assert.equal(nativeRef.current, defaultSelection)
     await set('grok')
   } finally {
     await features.disable('cliAdapters')
   }
   assert.equal(native.selectionFor(agent), nativeRef)
+  assert.equal(nativeRef.current, defaultSelection)
   await assert.rejects(send(), /does not support image input/u)
+})
+
+test('retained native selection drives real DSH assembly without repeated model-switch notices', { skip: !available || version !== DSH_TESTED_VERSION }, async () => {
+  const { ApiSessionAgentController } = await import(pathToFileURL(join(controllerPackage, 'lib/types/agent.js')).href)
+  const nativeChoice = { provider: 'native', model: 'text-only', reasoningEffort: 'high' }
+  const hooks = new Map<string, (...args: any[]) => Promise<any>>()
+  const context = {
+    typert: { lookups: { configure() {} }, contexts: { configureHost() {} } },
+    sessionProjections: { stateOf: () => ({ pending: nativeChoice }) },
+    agentDefaultModel: { currentSelection: () => nativeChoice },
+  }
+  let route: SessionModelSelection | undefined = { provider: 'codingns-cli-codex', model: 'selected-codex' }
+  let previous = route
+  const agent = {
+    id: 'external-session',
+    ctx: {
+      on(name: string, listener: (...args: any[]) => Promise<any>) {
+        hooks.set(name, listener)
+        return () => hooks.delete(name)
+      },
+    },
+    session: { requestHeader: () => ({ config: previous }) },
+  }
+  const owner = new ApiSessionAgentController(context)
+  // DSH's installed listeners retain this reference, not the accessor's return value.
+  const retained = owner.selectionFor(agent)
+  const descriptor = Object.getOwnPropertyDescriptor(retained, 'current')
+  const dispose = createSessionModelSelectionAdapter({ agents: owner }).install(() => route)
+  try {
+    owner.selectionFor(agent)
+    for (let turn = 0; turn < 2; turn += 1) {
+      const assembly = await hooks.get('system-prompt/assemble')!({}, {}, async () => ({ variables: {} }))
+      assert.deepEqual(assembly.variables, { provider: route.provider, model: route.model })
+      const input = [{ role: 'user', source: { kind: 'user' }, content: `Split D:\\video-${turn}.mp4 at 05:00` }]
+      const decision = await hooks.get('agent/pre-step')!({ agent, messages: input, signal: new AbortController().signal, step: 1 }, async () => ({ kind: 'enter', messages: input }))
+      assert.deepEqual(decision.messages, input)
+    }
+    assert.equal(owner.selectionFor(agent), retained)
+    route = { provider: 'codingns-cli-codex', model: 'another-codex' }
+    await hooks.get('system-prompt/assemble')!({}, {}, async () => ({ variables: {} }))
+    assert.deepEqual(retained.assembled, route)
+    const input = [{ role: 'user', source: { kind: 'user' }, content: 'Continue with the new model' }]
+    const payload = { agent, messages: input, signal: new AbortController().signal, step: 1 }
+    const decision = await hooks.get('agent/pre-step')!(payload, async () => ({ kind: 'enter', messages: input }))
+    assert.equal(decision.messages.length, 2)
+    assert.equal(decision.messages[1].source.kind, 'model-selection')
+    assert.match(decision.messages[1].content[0].text, /selected-codex.*another-codex/u)
+    previous = route
+    const next = await hooks.get('agent/pre-step')!(payload, async () => ({ kind: 'enter', messages: input }))
+    assert.deepEqual(next.messages, input)
+    retained.current = { provider: 'native', model: 'updated-native' }
+    assert.deepEqual(retained.current, route)
+    route = undefined
+    assert.deepEqual(retained.current, { provider: 'native', model: 'updated-native' })
+    previous = retained.current
+    await hooks.get('system-prompt/assemble')!({}, {}, async () => ({ variables: {} }))
+    assert.deepEqual(retained.assembled, previous)
+    assert.equal(context.agentDefaultModel.currentSelection(), nativeChoice)
+  } finally { dispose() }
+  assert.deepEqual(Object.getOwnPropertyDescriptor(retained, 'current'), descriptor)
 })
