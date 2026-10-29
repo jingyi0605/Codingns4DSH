@@ -2,9 +2,9 @@ import { createElement, Fragment, useEffect, useRef, useState } from 'react'
 import type { KeyboardEvent, PointerEvent, ReactElement } from 'react'
 import {
   DshButton, DshCheckbox, DshInput, DshModal,
-  resolveAssistantControlIcon, resolveDataIcon, resolvePlusIcon,
+  resolveControlIcon, resolveDataIcon, resolvePlusIcon,
 } from '../dsh-capabilities/client/primitives-adapter.js'
-import type { AssistantChatCatalog } from '../shared/contracts/assistant.js'
+import type { NativeLlmCatalog } from '../shared/contracts/llm-chat.js'
 import { isSessionTranslationAdapter } from '../shared/contracts/session-translation.js'
 import type { CodingNsTranslator } from './locale.js'
 import { uiFontSize } from './font-scale.js'
@@ -17,7 +17,7 @@ interface ModelSelection {
 
 interface ModelPoolProps {
   readonly models: readonly ModelSelection[]
-  readonly catalog: AssistantChatCatalog | null
+  readonly catalog: NativeLlmCatalog | null
   readonly disabled: boolean
   readonly pending: boolean
   readonly t: CodingNsTranslator
@@ -173,7 +173,7 @@ export function ModelPriorityPool({ models: pool, catalog, disabled, pending, t,
             className: 'codingns-translation-pool-remove', 'aria-label': t('translation.modelRemove', { model: label }),
             title: t('translation.modelRemove', { model: label }),
             onClick: () => { if (!locked) void onChange(pool.filter((item) => modelKey(item) !== key)) },
-          }, createElement(resolveAssistantControlIcon('close'), { size: 14 })),
+          }, createElement(resolveControlIcon('close'), { size: 14 })),
         )
       }),
     ),

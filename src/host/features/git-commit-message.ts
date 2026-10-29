@@ -1,4 +1,4 @@
-import type { AssistantLlmAdapter } from '../../dsh-capabilities/host/assistant-llm-adapter.js'
+import type { NativeLlmTextAdapter } from '../../dsh-capabilities/host/llm-text-adapter.js'
 import type { GitCommitMessageDraft, GitManagementSettings } from '../../shared/contracts/git.js'
 import { MAX_GIT_COMMIT_MESSAGE_CHARS } from '../../shared/contracts/git.js'
 import { isSessionTranslationAdapter } from '../../shared/contracts/session-translation.js'
@@ -6,7 +6,7 @@ import { CodingNsRpcError } from '../rpc-table.js'
 
 /** Uses only Git preferences and the host model catalog; no translation service is involved. */
 export async function generateGitCommitMessage(
-  adapter: AssistantLlmAdapter,
+  adapter: NativeLlmTextAdapter,
   settings: GitManagementSettings,
   diff: string,
   signal: AbortSignal,
@@ -40,7 +40,7 @@ export async function generateGitCommitMessage(
     const attempt = AbortSignal.any([signal, AbortSignal.timeout(30_000)])
     try {
       const model = { ...candidate, label: `${candidate.provider} / ${candidate.model}` }
-      const options = await withAbort(() => adapter.indexOptions?.(model, attempt) ?? Promise.resolve(undefined), attempt)
+      const options = await withAbort(() => adapter.completionOptions?.(model, attempt) ?? Promise.resolve(undefined), attempt)
       const output = await withAbort(() => adapter.reply(model, system, [{ role: 'user', text: diff }], attempt, () => undefined,
         { maxTokens: settings.commitMessageDetail === 'detailed' ? 4096 : 1024, ...(options?.reasoningEffort === undefined ? {} : { reasoningEffort: options.reasoningEffort }) }), attempt)
       const text = output.trim().replace(/^```[^\n]*\n([\s\S]*?)\n```$/u, '$1').trim()

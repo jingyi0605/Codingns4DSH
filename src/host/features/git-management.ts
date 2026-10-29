@@ -19,7 +19,7 @@ import type {
 } from '../../shared/contracts/git.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import type { CodingNsHostServices } from './types.js'
-import { createAssistantLlmAdapter, type AssistantLlmAdapter } from '../../dsh-capabilities/host/assistant-llm-adapter.js'
+import { createNativeLlmTextAdapter, type NativeLlmTextAdapter } from '../../dsh-capabilities/host/llm-text-adapter.js'
 import { MAX_GIT_COMMIT_MESSAGE_CHARS, normalizeGitManagementSettings } from '../../shared/contracts/git.js'
 import { generateGitCommitMessage } from './git-commit-message.js'
 
@@ -51,7 +51,7 @@ export function createGitCommandEnv(source: NodeJS.ProcessEnv = process.env): No
 }
 
 /** Host 侧 Git 工作区服务；优先 Registry 根目录，终端缓存只作回退。 */
-export function createGitManagementFeature(options: { readonly llm?: AssistantLlmAdapter } = {}): FeatureModule<CodingNsHostServices> {
+export function createGitManagementFeature(options: { readonly llm?: NativeLlmTextAdapter } = {}): FeatureModule<CodingNsHostServices> {
   return {
     descriptor: {
       name: 'gitManagement',
@@ -64,7 +64,7 @@ export function createGitManagementFeature(options: { readonly llm?: AssistantLl
     start(context) {
       const lifetime = new AbortController()
       context.resources.add(() => lifetime.abort())
-      const llm = options.llm ?? (context.services.dshVersion === undefined ? undefined : createAssistantLlmAdapter(context.services.dshContext, context.services.dshVersion))
+      const llm = options.llm ?? (context.services.dshVersion === undefined ? undefined : createNativeLlmTextAdapter(context.services.dshContext, context.services.dshVersion))
       context.resources.add(context.services.rpc.register('git', async (action, payload, rpcContext) => {
         if (action === 'models') return llm?.catalog() ?? { models: [], default: null, errors: ['The native model service is unavailable.'] }
         const input = record(payload)

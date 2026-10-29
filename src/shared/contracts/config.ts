@@ -14,14 +14,6 @@ export interface CodingNsCliAdapterPreference {
   readonly translationEnabled?: boolean | undefined
 }
 
-export interface AssistantProfileSettings {
-  readonly name: string
-  /** 角色性格与背景，旧档案缺省时不额外限定角色；不作为项目事实。 */
-  readonly personality?: string
-  readonly initialized: boolean
-  readonly createdAt: number | null
-}
-
 /** Codingns4DSH 在 DSH 设置文档中持久化的用户选项。 */
 export interface CodingNsSettings {
   /** Control API 地址不是秘密，可以由 Web 设置页保存到 Host 设置。 */

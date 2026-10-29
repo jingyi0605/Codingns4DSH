@@ -4,7 +4,7 @@ import {
   CODINGNS_SESSION_TRANSLATION_FIELD,
   DEFAULT_CODINGNS_SETTINGS,
 } from '../../shared/contracts/config.js'
-import type { AssistantChatCatalog } from '../../shared/contracts/assistant.js'
+import type { NativeLlmCatalog } from '../../shared/contracts/llm-chat.js'
 import {
   DEFAULT_SESSION_TRANSLATION_SETTINGS,
   normalizeSessionTranslationSettings,
@@ -81,11 +81,11 @@ function SessionTranslationPanel({ services, enabled, snapshot, notify }: Featur
   const value = normalizeSessionTranslationSettings(snapshot.value?.sessionTranslation ?? DEFAULT_CODINGNS_SETTINGS.sessionTranslation ?? DEFAULT_SESSION_TRANSLATION_SETTINGS)
   const [saving, setSaving] = useState(false)
   const disabled = !enabled || snapshot.status === 'loading' || !snapshot.writable || saving
-  const [catalog, setCatalog] = useState<AssistantChatCatalog | null>(null)
+  const [catalog, setCatalog] = useState<NativeLlmCatalog | null>(null)
 
   useEffect(() => {
     let active = true
-    void callCliRpc<AssistantChatCatalog>(services.rpc, 'translation/models', {}, AbortSignal.timeout(10_000))
+    void callCliRpc<NativeLlmCatalog>(services.rpc, 'translation/models', {}, AbortSignal.timeout(10_000))
       .then((value) => { if (active) setCatalog(value) })
       .catch(() => undefined)
     return () => { active = false }

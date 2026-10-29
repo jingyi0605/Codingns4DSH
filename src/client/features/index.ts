@@ -66,7 +66,6 @@ export function settingsModules(
 }
 
 export { lanAccessFeature, loginProtectionFeature, reverseProxyFeature, cliAdaptersFeature, workspaceSessionEnhancementFeature, mobileAccessFeature, terminalEnhancementFeature, debugFeature, gitManagementFeature, fileManagementFeature, peerHostFeature, workspaceMcpFeature }
-export { globalVoiceAssistantFeature } from './global-voice-assistant.js'
 export { magpieManagementFeature } from './magpie-management.js'
 export { subagentCollapsedLineageFeature } from './subagent-collapsed-lineage.js'
 export { sessionTranslationFeature } from './session-translation.js'

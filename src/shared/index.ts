@@ -12,15 +12,12 @@ export {
   CODINGNS_SUBSCRIPTION_REPORTS_FIELD,
   CODINGNS_SESSION_TRANSLATION_FIELD,
   CODINGNS_GIT_MANAGEMENT_FIELD,
-  CODINGNS_ASSISTANT_FIELD,
   CODINGNS_MODULES_FIELD,
   CODINGNS_SETTINGS_NAMESPACE,
   CODINGNS_SETTINGS_ENTRY_IDS,
   DEFAULT_CODINGNS_CONTROL_BASE_URL,
   DEFAULT_CODINGNS_CONTROL_BASE_URLS,
   DEFAULT_CODINGNS_SETTINGS,
-  DEFAULT_ASSISTANT_SETTINGS,
-  DEFAULT_ASSISTANT_VOICE_SETTINGS,
   DEFAULT_QUICK_PHRASES,
   DEFAULT_TERMINAL_ENHANCEMENT_SETTINGS,
   DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS,
@@ -68,10 +65,6 @@ export {
   type SubscriptionUsageSettings,
   type SubscriptionReportSettings,
   type SubscriptionQuotaView,
-  type AssistantSettings,
-  type AssistantProfileSettings,
-  type AssistantVoiceProvider,
-  type AssistantVoiceSettings,
 } from './contracts/config.js'
 export {
   DEFAULT_GIT_MANAGEMENT_SETTINGS,
@@ -102,8 +95,12 @@ export {
   type SessionTranslationRecord,
   type SessionTranslationSettings,
 } from './contracts/session-translation.js'
-export { DEFAULT_ASSISTANT_NAME, DEFAULT_ASSISTANT_PERSONALITY, ASSISTANT_PERSONALITY_MAX_CHARS, assistantWorkspaceMatches, readAssistantProfile, readAssistantPersonality, validateAssistantProfile, validateAssistantModel, validateAssistantPersonality } from './assistant-lifecycle.js'
-export type { AssistantConversationMessage, AssistantConversationSnapshot, AssistantLifecycleSnapshot } from './contracts/assistant.js'
+export type {
+  NativeLlmCatalog,
+  NativeLlmCompletionOptions,
+  NativeLlmModel,
+  NativeLlmPromptMessage,
+} from './contracts/llm-chat.js'
 export type {
   FeatureContext,
   FeatureActivation,
@@ -415,79 +412,7 @@ export type {
   RelaySignalingServerMessage,
   RelaySignalingTicketResponse,
 } from './contracts/signaling.js'
-export type {
-  AssistantIndexAnalysisRun,
-  AssistantIndexAnalysisRecord,
-  AssistantIndexEvidence,
-  AssistantIndexFact,
-  AssistantNextAction,
-  AssistantSessionAnalysis,
-  AssistantSessionIndexTask,
-  AssistantStructuredIndex,
-  AssistantProgressSummary,
-  AssistantSessionStatus,
-  AssistantSummaryCategory,
-  AssistantSummaryOptions,
-  AssistantSummarySection,
-  AssistantWaitingKind,
-  SessionIndexEntry,
-} from './contracts/assistant.js'
-export type {
-  VoicePcmFrame,
-  VoiceRuntimeAdapter,
-  VoiceRuntimeCapabilities,
-  VoiceRuntimeEvent,
-  VoiceRuntimeListener,
-  VoiceRuntimeState,
-  VoiceClientDevice,
-  VoiceClientDeviceManager,
-  VoiceClientDeviceSnapshot,
-} from './contracts/voice-runtime.js'
-export { UnavailableVoiceRuntimeAdapter } from './contracts/voice-runtime.js'
-export { VoiceStreamDecoder, encodeVoiceStreamEvent, encodeVoiceStreamMessage, encodeVoiceStreamOpen, parseVoiceStreamMessage } from './voice-stream.js'
-export { sanitizeVoiceText } from './voice-text.js'
-export {
-  ASSISTANT_VOICE_MODEL_CATALOG,
-  findAssistantVoiceModel,
-  type AssistantVoiceModel,
-  type AssistantVoiceModelFile,
-} from './voice-models.js'
 export type { DshHostStatus } from './contracts/host-status.js'
-export {
-  BUILTIN_ASSISTANT_AVATAR,
-  BUILTIN_ASSISTANT_AVATARS,
-  BUILTIN_ASSISTANT_AVATAR_SOURCES,
-  ASSISTANT_AVATAR_MAX_MODELS,
-  getBuiltinAssistantAvatar,
-  builtinAssistantAvatarLabelKey,
-  DEFAULT_ASSISTANT_APPEARANCE,
-  normalizeAssistantAppearance,
-  listAssistantAvatars,
-  resolveAssistantAvatarState,
-  resolveAssistantAvatarAsset,
-  selectedAssistantAvatar,
-  validateAssistantAvatarModel,
-  validateAssistantAppearance,
-  type AssistantAvatarAsset,
-  type AssistantAvatarManifest,
-  type AssistantAvatarPackageInfo,
-  type AssistantAppearanceSettings,
-  type AssistantAvatarModel,
-  type AssistantAvatarState,
-  type AssistantAvatarSurface,
-} from './assistant-avatar.js'
-export { assistantAvatarManifest, resolveAssistantAvatarSource, type AssistantAvatarAdapter, type AssistantAvatarAdapterContext } from './assistant-avatar-adapters.js'
-export { ASSISTANT_AVATAR_PRESETS, getAssistantAvatarPreset, type AssistantAvatarPreset } from './assistant-avatar-presets.js'
-export type { AssistantAvatarCacheStatus } from './assistant-avatar-resources.js'
-export { ASSISTANT_AVATAR_ASSET_PATH, ASSISTANT_AVATAR_STATUS_PATH, type AssistantAvatarCandidate, type AssistantAvatarInstallation } from './assistant-avatar-installation.js'
-export { ASSISTANT_AVATAR_CATALOG_URL, ASSISTANT_AVATAR_CONSENT_VERSION, ASSISTANT_AVATAR_CATALOG_PREVIEW_PATH,
-  hasAssistantAvatarConsent, assistantAvatarCatalogPreviewUrl, type AssistantAvatarConsent, type AssistantAvatarCatalogEntry } from './assistant-avatar-catalog.js'
-export { ASSISTANT_AVATAR_ENGINE_VERSION, ASSISTANT_AVATAR_ENGINE_CONSENT_VERSION, hasAssistantAvatarEngineConsent,
-  validAssistantAvatarEngineConsent, type AssistantAvatarEngineConsent, type AssistantAvatarEngineSource,
-  type AssistantAvatarEngineStatus } from './assistant-avatar-engine.js'
-export { MOSS_BUILTIN_VOICES, ASSISTANT_VOICE_SITES, DEFAULT_ASSISTANT_TTS_SETTINGS, DEFAULT_ASSISTANT_TTS_PARAMETERS, ASSISTANT_TTS_PARAMETER_LIMITS, readAssistantTtsSettings, readAssistantTtsParameters, validateAssistantTtsParameters } from './assistant-tts.js'
-export type { AssistantTtsVoice, AssistantTtsSettings, AssistantTtsParameters, AssistantTtsSnapshot, AssistantTtsStatus } from './assistant-tts.js'
-export { ASSISTANT_PROMPT_MAX_CHARS, DEFAULT_ASSISTANT_PROMPTS, readAssistantPrompts, type AssistantPromptSettings } from './assistant-prompts.js'
 export {
   CODINGNS4DSH_DEBUG_ENV,
   CODINGNS4DSH_DEBUG_LEVEL_ENV,
@@ -498,5 +423,3 @@ export {
   resolveCodingNsDebugEnabled,
   resolveCodingNsDebugLevel,
 } from './debug.js'
-export { DEFAULT_LIGHT_VOICE_MODEL_ID } from './voice-initialization.js'
-export type { AssistantVoiceInitializationSnapshot, VoiceInitializationPhase } from './voice-initialization.js'

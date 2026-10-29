@@ -64,7 +64,6 @@ import { createInteractionTranslation } from '../features/interaction-translatio
 import { createSessionTranslationRecovery, SessionTranslationCancelled } from '../features/session-translation-recovery.js'
 import { isSessionTranslationInputEnabled } from '../features/session-translation-service.js'
 import { translationFailure } from '../features/session-translation-runtime.js'
-import { ASSISTANT_AGENT_PREFIX } from '../../dsh-capabilities/host/assistant-agent-adapter.js'
 import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
 import type { SessionModelSelectionAdapter } from '../../dsh-capabilities/host/session-model-selection-adapter.js'
 import { attachmentFileNotice } from '../../shared/attachment-prompts.js'

@@ -1,5 +1,5 @@
 import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
-import type { AssistantChatCatalog } from '../../shared/contracts/assistant.js'
+import type { NativeLlmCatalog } from '../../shared/contracts/llm-chat.js'
 import {
   isSessionTranslationAdapter,
   normalizeSessionTranslationSettings,
@@ -52,7 +52,7 @@ export interface SessionTranslationService {
   isInputEnabled?(adapterId: string): boolean
   /** 是否在界面同时保留原文与译文；旧测试替身未实现时按关闭处理。 */
   readonly bilingual?: boolean
-  catalog(): Promise<AssistantChatCatalog>
+  catalog(): Promise<NativeLlmCatalog>
   shouldTranslate(adapterId: string, kind: SessionTranslationOutputKind, sessionEnabled?: boolean): boolean
   activate(): void
   deactivate(): void

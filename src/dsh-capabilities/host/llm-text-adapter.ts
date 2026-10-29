@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { createDshCapabilityRegistry } from '../routes.js'
-import type { AssistantChatCatalog, AssistantChatMessage, AssistantChatModel, AssistantToolCall } from '../../shared/contracts/assistant.js'
+import type { NativeLlmCatalog, NativeLlmCompletionOptions, NativeLlmModel, NativeLlmPromptMessage } from '../../shared/contracts/llm-chat.js'
 
 interface LlmRuntime {
   listProviders(): readonly { id: string; name: string }[]
@@ -9,29 +9,22 @@ interface LlmRuntime {
   stream(options: Readonly<Record<string, unknown>>): AsyncIterable<Record<string, any>>
 }
 
-/** 只调用宿主原生 LLM；不创建 Agent、项目会话、工具或另一套凭据。 */
-export interface AssistantLlmAdapter {
-  catalog(): Promise<AssistantChatCatalog>
-  indexOptions?(model: AssistantChatModel, signal: AbortSignal): Promise<AssistantIndexLlmOptions>
-  assistantOptions?(model: AssistantChatModel, signal: AbortSignal): Promise<{ readonly maxTokens: number; readonly reasoningEffort?: string }>
-  reply(model: AssistantChatModel, system: string, messages: readonly AssistantChatMessage[], signal: AbortSignal, onText: (text: string) => void, options?: { readonly maxTokens: number; readonly reasoningEffort?: string }, onTool?: (call: AssistantToolCall) => void): Promise<string>
+/** Uses only the Host's configured native text model; creates no Agent or credentials. */
+export interface NativeLlmTextAdapter {
+  catalog(): Promise<NativeLlmCatalog>
+  completionOptions?(model: NativeLlmModel, signal: AbortSignal): Promise<NativeLlmCompletionOptions>
+  reply(model: NativeLlmModel, system: string, messages: readonly NativeLlmPromptMessage[], signal: AbortSignal, onText: (text: string) => void, options?: { readonly maxTokens: number; readonly reasoningEffort?: string }): Promise<string>
 }
 
-export interface AssistantIndexLlmOptions {
-  readonly maxTokens: number
-  readonly reasoningEffort?: string
-  readonly thinking: 'disabled' | 'provider-default'
-}
-
-/** 保留宿主的结构化失败信息，使索引能够区分临时故障与账户、参数错误。 */
-export class AssistantLlmRequestError extends Error {
+/** Preserve structured provider failures without exposing protocol objects. */
+export class NativeLlmRequestError extends Error {
   constructor(readonly failure: { readonly message: string; readonly code: string; readonly status?: number; readonly providerRetryAfterMs?: number }) {
     super(failure.message)
-    this.name = 'AssistantLlmRequestError'
+    this.name = 'NativeLlmRequestError'
   }
 }
 
-export function createAssistantLlmAdapter(ctx: unknown, dshVersion: string): AssistantLlmAdapter | undefined {
+export function createNativeLlmTextAdapter(ctx: unknown, dshVersion: string): NativeLlmTextAdapter | undefined {
   const resolution = createDshCapabilityRegistry(dshVersion, 'host', ctx).getProfile(ctx).capabilities.get('llm.text')
   if (resolution?.status !== 'ready') return undefined
   const llm = resolution.value as LlmRuntime
@@ -49,22 +42,12 @@ export function createAssistantLlmAdapter(ctx: unknown, dshVersion: string): Ass
       const selected = typeof service?.currentSelection === 'function' ? service.currentSelection() : undefined
       return { models, default: models.find((model) => model.provider === selected?.provider && model.model === selected?.model) ?? models[0] ?? null, errors }
     },
-    async indexOptions(model, signal) {
+    async completionOptions(model, signal) {
       signal.throwIfAborted()
-      // 采用原生模型能力值，不猜测供应商名称，也不向不支持的模型发送 off。
       const info = await llm.resolveModelInfo?.(model.provider, model.model, signal)
       signal.throwIfAborted()
       const effort = info?.reasoning?.efforts.find((item) => item.id === 'off' || item.id === 'none')?.id
-      return { maxTokens: 8192, ...(effort === undefined ? {} : { reasoningEffort: effort }), thinking: effort === undefined ? 'provider-default' : 'disabled' }
-    },
-    async assistantOptions(model, signal) {
-      signal.throwIfAborted()
-      if (llm.resolveModelInfo === undefined) throw new Error('当前模型服务不能确认助理的思考设置')
-      const info = await llm.resolveModelInfo(model.provider, model.model, signal)
-      signal.throwIfAborted()
-      const effort = info.reasoning?.efforts.find((item) => item.id === 'off' || item.id === 'none')?.id
-      if (info.reasoning !== undefined && effort === undefined) throw new Error('所选助理模型不支持关闭思考，请选择支持 off 或 none 的模型')
-      return { maxTokens: 1024, ...(effort === undefined ? {} : { reasoningEffort: effort }) }
+      return effort === undefined ? {} : { reasoningEffort: effort }
     },
     async reply(model, system, messages, signal, onText, limits) {
       signal.throwIfAborted()
@@ -81,7 +64,7 @@ export function createAssistantLlmAdapter(ctx: unknown, dshVersion: string): Ass
       }
       for await (const chunk of llm.stream(options)) {
         signal.throwIfAborted()
-        if (chunk.type === 'tool-call-delta' || (chunk.type === 'block-end' && chunk.block?.type === 'tool-call')) throw new Error('本轮对话只允许索引问答，不能执行工具或派发任务')
+        if (chunk.type === 'tool-call-delta' || (chunk.type === 'block-end' && chunk.block?.type === 'tool-call')) throw new Error('Text-only completion cannot execute tools')
         if (chunk.type === 'text-delta' && typeof chunk.text === 'string') {
           const previous = blocks.get(chunk.index) ?? { text: '', delta: false }
           blocks.set(chunk.index, { text: previous.text + chunk.text, delta: true })
@@ -93,18 +76,18 @@ export function createAssistantLlmAdapter(ctx: unknown, dshVersion: string): Ass
         }
         if (chunk.type === 'finish') {
           const reason = chunk.reason
-          if (reason?.kind === 'error' || reason?.kind === 'aborted') throw new AssistantLlmRequestError({
+          if (reason?.kind === 'error' || reason?.kind === 'aborted') throw new NativeLlmRequestError({
             message: reason.failure?.message ?? 'LLM 请求失败', code: reason.kind === 'aborted' ? 'ABORTED' : reason.failure?.code ?? 'UNKNOWN',
             ...(typeof reason.failure?.status === 'number' ? { status: reason.failure.status } : {}),
             ...(typeof reason.failure?.providerRetryAfterMs === 'number' ? { providerRetryAfterMs: reason.failure.providerRetryAfterMs } : {}),
           })
-          if (reason?.kind === 'tool-calls') throw new Error('本轮对话只允许索引问答')
+          if (reason?.kind === 'tool-calls') throw new Error('Text-only completion cannot execute tools')
           if (reason?.kind === 'max-tokens') throw new Error('LLM 回复达到长度上限，请缩小问题或分多次询问')
           finished = true
         }
       }
       signal.throwIfAborted()
-      if (!finished || joined().trim() === '') throw new AssistantLlmRequestError({ message: 'LLM 未返回完整文字回复，请检查模型服务', code: 'EMPTY_RESPONSE' })
+      if (!finished || joined().trim() === '') throw new NativeLlmRequestError({ message: 'LLM 未返回完整文字回复，请检查模型服务', code: 'EMPTY_RESPONSE' })
       return joined().trim()
     },
   }

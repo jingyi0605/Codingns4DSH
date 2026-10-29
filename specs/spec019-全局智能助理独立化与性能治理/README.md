@@ -1,6 +1,6 @@
 # Spec019: Global Assistant Extraction and Performance Governance
 
-Status: Approved for implementation by the user on 2026-10-29. Performance/lifecycle fixes are in progress; independent package extraction is blocked on a neutral Host/Client/settings contract. No commit, push, release, package publication, or Desktop operation is authorized.
+Status: Approved for implementation by the user on 2026-10-29. The standalone package, donor ownership cut, source purge, and startup-safe legacy-settings cleanup are implemented and locally verified. Final acceptance remains open for live DSH/browser workflows, real-profile migration, and matched machine-level performance evidence. No commit, push, release, package publication, or Desktop operation is authorized.
 
 This Spec proposes extracting the global intelligent assistant from CodingNS4DSH into an independently installable DSH plugin, then removing the assistant-specific runtime and UI from the base plugin. It also treats the reported idle-performance impact as a first-class acceptance requirement: extraction alone is not a performance fix unless the remaining plugin and the new assistant plugin pass explicit idle and active-workload checks.
 
@@ -11,6 +11,7 @@ This Spec proposes extracting the global intelligent assistant from CodingNS4DSH
 - [Tasks](tasks.md): implementation phases and verification requirements.
 - [Current-state and performance hotspot review](docs/20261029-助理模块现状与性能热点.md): source-based observations; not a machine benchmark.
 - [Implementation progress](../../docs/开发记录/20261029-全局助理空闲性能治理与独立化阶段记录.md): completed performance changes, verification, and remaining extraction work.
+- [2026-10-30 local acceptance update](../../docs/开发记录/20261030-全局助理独立化验收补充与残余门禁.md): current verification, expanded source-level workflow tests, and open gates.
 - [Supporting material index](docs/README.md).
 
 ## Existing assistant Specs
@@ -31,4 +32,4 @@ Their feature contracts and historical acceptance evidence remain authoritative 
 - No Desktop profile, process, installation, or running plugin operation is authorized by this Spec.
 - The standalone project target is `/Users/jackson/Code/CodingNS/data/dsh-global-assistant`, selected by the user. Keep it separate from the existing `dsh-codingns` checkout.
 - Source changes, tests, and local packaging are authorized. Commit, push, release, package publication, and Desktop installation remain unauthorized.
-- Shared package/version/lockfile changes appeared during this task and were left untouched. Full build/package checks were not run against the concurrently changing manifest.
+- The donor and standalone package have passed current source/build/package checks in their local trees. Shared credential-feature edits remain separate and were preserved; no Desktop, profile, process, real-user migration, commit, push, or release was performed.

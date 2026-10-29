@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 import test from 'node:test'
-import type { AssistantLlmAdapter } from '../src/dsh-capabilities/host/assistant-llm-adapter.js'
+import type { NativeLlmTextAdapter } from '../src/dsh-capabilities/host/llm-text-adapter.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
 import { DEFAULT_GIT_MANAGEMENT_SETTINGS } from '../src/shared/contracts/git.js'
 import { generateGitCommitMessage } from '../src/host/features/git-commit-message.js'
@@ -19,7 +19,7 @@ const signal = () => new AbortController().signal
 
 test('Git generation tries its own models in priority order and applies the selected detail level', async () => {
   const attempts: string[] = []
-  const adapter: AssistantLlmAdapter = {
+  const adapter: NativeLlmTextAdapter = {
     catalog: async () => { throw new Error('Explicit model pools do not need the default catalog') },
     async reply(model, system, messages) {
       attempts.push(model.model)
@@ -37,7 +37,7 @@ test('Git generation tries its own models in priority order and applies the sele
 })
 
 test('an empty Git pool follows the DSH default and concise output has no body', async () => {
-  const adapter: AssistantLlmAdapter = {
+  const adapter: NativeLlmTextAdapter = {
     catalog: async () => ({ ...catalog, default: backup }),
     async reply(model, system) {
       assert.equal(model.model, backup.model)
@@ -51,7 +51,7 @@ test('an empty Git pool follows the DSH default and concise output has no body',
 test('custom Git commit rules reach every fallback model while the selected detail level still applies', async () => {
   const rules = 'Write in French.\nUse Conventional Commits with a scope.'
   const attempts: string[] = []
-  const adapter: AssistantLlmAdapter = {
+  const adapter: NativeLlmTextAdapter = {
     catalog: async () => catalog,
     async reply(model, system, messages) {
       attempts.push(model.model)
@@ -72,7 +72,7 @@ test('custom Git commit rules reach every fallback model while the selected deta
 
 test('legacy settings and blank commit prompts preserve the default generation prompt', async () => {
   const prompts: string[] = []
-  const adapter: AssistantLlmAdapter = {
+  const adapter: NativeLlmTextAdapter = {
     catalog: async () => catalog,
     async reply(_model, system) { prompts.push(system); return 'Update Git settings' },
   }
@@ -87,7 +87,7 @@ test('legacy settings and blank commit prompts preserve the default generation p
 
 test('invalid results fall back and complete failure is reported', async () => {
   const attempts: string[] = []
-  const adapter: AssistantLlmAdapter = {
+  const adapter: NativeLlmTextAdapter = {
     catalog: async () => catalog,
     async reply(model) { attempts.push(model.model); return ' ' },
   }
@@ -101,7 +101,7 @@ test('invalid results fall back and complete failure is reported', async () => {
 test('cancellation stops generation even if the provider ignores the signal', async () => {
   let started!: () => void
   const ready = new Promise<void>((resolve) => { started = resolve })
-  const adapter: AssistantLlmAdapter = {
+  const adapter: NativeLlmTextAdapter = {
     catalog: async () => catalog,
     reply: async () => { started(); return new Promise<string>(() => undefined) },
   }
@@ -125,7 +125,7 @@ test('Git RPC generates from staged changes, respects enablement, and accepts de
   await writeFile(`${root}/untracked.txt`, 'UNTRACKED_MARKER\n')
   let requests = 0
   const message = `Improve Git settings\n\n${'- Add independent controls and model priorities.\n'.repeat(8)}`.trim()
-  const adapter: AssistantLlmAdapter = {
+  const adapter: NativeLlmTextAdapter = {
     catalog: async () => catalog,
     async reply(model, system, messages) {
       requests++

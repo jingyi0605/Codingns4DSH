@@ -1,6 +1,6 @@
 import { createElement, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
-import type { AssistantChatCatalog } from '../shared/contracts/assistant.js'
+import type { NativeLlmCatalog } from '../shared/contracts/llm-chat.js'
 import { CODINGNS_GIT_MANAGEMENT_FIELD } from '../shared/contracts/config.js'
 import { MAX_GIT_COMMIT_PROMPT_CHARS, normalizeGitManagementSettings, type GitManagementSettings } from '../shared/contracts/git.js'
 import { DshButton } from '../dsh-capabilities/client/primitives-adapter.js'
@@ -18,7 +18,7 @@ export function GitManagementSettingsPanel({ services, enabled, snapshot, notify
   const [promptDraft, setPromptDraft] = useState<string | null>(null)
   const promptText = promptDraft ?? value.commitMessagePrompt
   const savingRef = useRef(false)
-  const [catalog, setCatalog] = useState<AssistantChatCatalog | null>(null)
+  const [catalog, setCatalog] = useState<NativeLlmCatalog | null>(null)
   const disabled = !enabled || snapshot.status !== 'ready' || !snapshot.writable || saving
   const generationDisabled = disabled || !value.commitMessageEnabled
 
@@ -26,7 +26,7 @@ export function GitManagementSettingsPanel({ services, enabled, snapshot, notify
     if (!enabled) return
     const abort = new AbortController()
     void services.rpc.call(CODINGNS_RPC_CHANNEL, 'git/models', {}, AbortSignal.any([abort.signal, AbortSignal.timeout(10_000)]))
-      .then((result) => { if (!abort.signal.aborted && result.ok) setCatalog(result.value as AssistantChatCatalog) })
+      .then((result) => { if (!abort.signal.aborted && result.ok) setCatalog(result.value as NativeLlmCatalog) })
       .catch(() => undefined)
     return () => abort.abort()
   }, [services.rpc, enabled])
