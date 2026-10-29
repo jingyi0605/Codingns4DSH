@@ -6,8 +6,6 @@ import { createProviderIconHandler, registerProviderIconRoutes } from '../src/ho
 import { PROVIDER_ICON_FILES, PROVIDER_ICON_PATH } from '../src/shared/provider-icon-resources.js'
 import { installProviderIconImageBridge } from '../src/client/provider-icon-bridge.js'
 import { RemoteDshWebContext } from '../src/client/remote-web-context.js'
-import { registerCodingNsRpc } from '../src/host/rpc.js'
-import { CodingNsRpcTable } from '../src/host/rpc-table.js'
 
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve))
 const request = (filename: string, method = 'GET') => new Request(`https://host.test${PROVIDER_ICON_PATH}${filename}?v=1`, { method })
@@ -160,25 +158,4 @@ test('H5 脚本断线后清除失败的在途缓存，下一次操作重新请�
   await assert.rejects(context.loadScript('/plugins/test/client.editor.js'), /连接中断/u)
   assert.equal(await context.loadScript('/plugins/test/client.editor.js'), 'blob:recovered')
   assert.equal(calls, 2)
-})
-
-test('助理轻量状态贯通旧 HTTP 精确路由，与逻辑通道共用同一分发器', async () => {
-  const table = new CodingNsRpcTable()
-  const routes = new Map<string, any>()
-  let dispose!: () => Promise<void>
-  const value = { revision: 1, capturedAt: null, indexState: 'missing', indexedAt: null, workspaces: [] }
-  table.register('assistant', async (action) => { assert.equal(action, 'status'); return value })
-  registerCodingNsRpc({
-    effect(callback: () => () => Promise<void>) { dispose = callback() },
-    webServer: { register() { return () => {} } },
-    connection: { fetch: { register(route: any) { routes.set(route.path, route); return async () => { routes.delete(route.path) } } } },
-  } as never, table)
-  try {
-    const route = routes.get('/api/codingns/assistant/status')
-    assert.ok(route)
-    const response = await route.fetch(new Request('https://host.test/api/codingns/assistant/status', {
-      method: 'POST', body: JSON.stringify({ rpcId: 'test-status', method: 'codingns/assistant/status', payload: {} }),
-    }))
-    assert.deepEqual((await response.json()).result, { ok: true, value })
-  } finally { await dispose() }
 })

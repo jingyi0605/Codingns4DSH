@@ -15,6 +15,12 @@ const forbiddenInActiveFiles = [
   'desktopAssistant',
   'assistantNotificationController',
   'codingnsAssistantNotifications',
+  'AssistantChatCatalog',
+  'AssistantConversationSnapshot',
+  'AssistantIndexAnalysisRun',
+  'AssistantLlmAdapter',
+  'createAssistantLlmAdapter',
+  'assistant-llm-adapter.ts',
   'sherpa-onnx-node',
   'assets/assistant-basics',
   'assets/desktop-assistant',
@@ -33,10 +39,14 @@ const removedSourcePaths = [
   'src/host/features/global-voice-',
   'src/host/features/voice-',
   'src/shared/assistant-avatar',
+  'src/shared/contracts/assistant.ts',
+  'src/shared/assistant-attachments.ts',
   'src/shared/assistant-notification',
   'src/shared/assistant-tts.ts',
   'src/shared/assistant-voice-',
   'src/shared/desktop-assistant.ts',
+  'src/dsh-capabilities/host/assistant-llm-adapter.ts',
+  'src/dsh-capabilities/host/assistant-attachment-adapter.ts',
   'src/shared/voice-',
   'src/typert.notifications-client.ts',
   'tsdown.desktop-assistant.config.ts',
@@ -50,6 +60,9 @@ const activeFiles = [
   'src/host/settings.ts',
   'src/host/rpc.ts',
   'src/shared/contracts/config.ts',
+  'src/shared/index.ts',
+  'src/dsh-capabilities/matrix.ts',
+  'src/dsh-capabilities/host/llm-text-adapter.ts',
   'package.json',
 ]
 
@@ -68,6 +81,13 @@ for (const relativePath of removedSourcePaths) {
     false,
     `${relativePath} still exists in the donor`,
   )
+}
+
+for (const entry of sourceEntries.filter((path) => /\.(?:ts|tsx|js|jsx)$/u.test(path))) {
+  const content = await readFile(join(root, 'src', entry), 'utf8')
+  for (const marker of ['createAssistantAttachmentTool', 'AssistantAttachmentUpload', 'admitAssistantAttachments']) {
+    assert.equal(content.includes(marker), false, `${entry} still contains retired assistant attachment code: ${marker}`)
+  }
 }
 
 const files = Array.isArray(manifest.files) ? manifest.files : []

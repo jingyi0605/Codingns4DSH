@@ -56,10 +56,6 @@ export interface CodingNsHostServices {
   readonly registerDebugProxyRoute?: (handler: (request: Request) => Promise<Response>) => () => Promise<void>
   /** PeerHost 固定握手入口；只允许模块返回脱敏能力摘要。 */
   readonly registerPeerHostHandshakeRoute?: (handler: (request: Request) => Promise<Response>) => () => Promise<void>
-  /** 全局助理二进制 PCM 流入口；只由语音模块注册和注销。 */
-  readonly registerAssistantVoiceStreamRoute?: (handler: (request: Request) => Promise<Response>) => () => Promise<void>
-  /** 引擎与已安装素材入口；旧预设仅在已有配置需要时登记兼容路由。 */
-  readonly registerAssistantAvatarRuntimeRoute?: (handler: (request: Request) => Promise<Response>, legacy?: boolean) => () => Promise<void>
   /** 由 Host 权威解析 Workspace ID，Client 不可覆盖。 */
   readonly resolveWorkspaceRoot?: (workspaceId: string) => string | null
   /** Exact live workspace registry lookup; never falls back to a terminal/session directory cache. */

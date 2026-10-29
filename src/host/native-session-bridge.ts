@@ -5,8 +5,8 @@ import { createDshCapabilityRegistry } from '../dsh-capabilities/routes.js'
 import { readCodingNsImageArtifact } from './image-artifact-store.js'
 import type { Context } from '@deepseek-ai/cordis'
 import { debugWarn } from '../shared/debug.js'
-import { readAssistantAttachmentStore } from '../dsh-capabilities/host/assistant-attachment-adapter.js'
-import { readAssistantAttachments } from '../shared/assistant-attachments.js'
+import { readNativeAttachmentStore } from '../dsh-capabilities/host/attachment-store-adapter.js'
+import { readNativeAttachments } from '../shared/attachments.js'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentQuestion,
@@ -226,7 +226,7 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
   const activationController = dshVersion === undefined ? controller
     : createDshCapabilityRegistry(dshVersion, 'host', ctx).getProfile(ctx).capabilities.get('session.activation')?.value as SessionActivationController | undefined
   const workspaceController = isWorkspaceController(workspaceControllerValue) ? workspaceControllerValue : undefined
-  const attachments = readAssistantAttachmentStore(ctx)
+  const attachments = readNativeAttachmentStore(ctx)
   const currentWorkspaceController = (): CodingNsNativeWorkspaceController | undefined => {
     const value: unknown = ctx.get('workspaceController')
     return isWorkspaceController(value) ? value : undefined
@@ -784,7 +784,7 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
       if (typeof admitPromptContent !== 'function') return null
       try {
         const image = await readCodingNsImageArtifact(artifact)
-        const admitted = readAssistantAttachments(await admitPromptContent.call(attachments, [{
+        const admitted = readNativeAttachments(await admitPromptContent.call(attachments, [{
           type: 'image',
           mediaType: image.mediaType,
           data: Buffer.from(image.data).toString('base64'),
