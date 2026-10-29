@@ -1,7 +1,7 @@
 import { createElement as h, useEffect, useRef, useState, type ReactElement } from 'react'
 import type { QuickApp, QuickAppDocument } from '../../shared/contracts/quick-apps.js'
 import type { CodingNsTranslator } from '../locale.js'
-import { DshFileTypeIcon, DshPathLabel, DshTooltip, DshModal, DshMenu, classifyDshFileType, resolveAssistantControlIcon, resolveRefreshIcon, resolveTextWrapIcon, resolveViewerIcon, hasNativeMarkdown } from '../../dsh-capabilities/client/primitives-adapter.js'
+import { DshFileTypeIcon, DshPathLabel, DshTooltip, DshModal, DshMenu, classifyDshFileType, resolveControlIcon, resolveRefreshIcon, resolveTextWrapIcon, resolveViewerIcon, hasNativeMarkdown } from '../../dsh-capabilities/client/primitives-adapter.js'
 import type { QuickAppsClient, QuickAppView } from './client.js'
 import { QuickAppActions, QuickAppButton } from './ui.js'
 import { documentPath, QuickAppEditor, QuickAppMarkdown } from './document.js'
@@ -112,7 +112,7 @@ export function QuickAppViewer({ app, view, client, busy, error, t, onClose, onR
         h('div', { className: 'qa-view-title' }, h(DshFileTypeIcon, { kind: classifyDshFileType(path), size: 16 }),
           h('h2', null, app.title), dirty ? h('span', { className: 'qa-document-dirty', title: t('quickApps.unsaved'), 'aria-label': t('quickApps.unsaved') }, '●') : null),
         tool(t(maximized ? 'quickApps.restore' : 'quickApps.maximize'), resolveViewerIcon(maximized ? 'restore' : 'fullscreen'), () => setMaximized(!maximized), { pressed: maximized }),
-        tool(t('quickApps.back'), resolveAssistantControlIcon('close'), () => guard(onClose), { disabled })),
+        tool(t('quickApps.back'), resolveControlIcon('close'), () => guard(onClose), { disabled })),
       h('div', { className: 'qa-view-toolbar', role: 'group', 'aria-label': t('quickApps.viewerTools') },
         doc ? h(DshPathLabel, { path, className: 'qa-view-path' })
           : h('input', { className: 'qa-view-address', value: address, readOnly: true, 'aria-label': t('quickApps.entryAddress'), title: address }),

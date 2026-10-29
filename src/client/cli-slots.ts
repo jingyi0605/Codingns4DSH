@@ -17,7 +17,7 @@ import {
   needsServiceTierRevalidation,
   toggledServiceTierId,
 } from './service-tier.js'
-import { DshInput, rankModelByName, resolveAssistantControlIcon, resolveCloseFillIcon, resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
+import { DshInput, rankModelByName, resolveControlIcon, resolveCloseFillIcon, resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 import { composerSlotSelector } from '../dsh-capabilities/client/composer-slot-selectors.js'
 import { providerIconUrl } from './provider-icons.js'
 import { publishSessionSelection } from './session-adapter-cache.js'
@@ -453,7 +453,7 @@ const agentOptionLabelStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden
 const agentStatusStyle = { flex: '0 0 auto', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), whiteSpace: 'nowrap' as const }
 const agentFallbackIconStyle = { flexGrow: 0, flexShrink: 0, borderRadius: 5, color: '#fff', background: dshThemeColor.labelTertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: uiFontSize(11), fontWeight: 600, lineHeight: 1 }
 
-type ModelPane = 'root' | 'model' | 'effort'
+type ModelPane = 'root' | 'model' | 'effort' | 'credentials'
 
 interface ModelCatalogState {
   readonly sessionId: string | undefined
