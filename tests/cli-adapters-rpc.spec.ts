@@ -2405,6 +2405,8 @@ function createCodexServiceTierRecorder(options: {
   readonly accountReadFails?: boolean
   readonly modelList?: unknown
   readonly configuredServiceTier?: string | null
+  readonly codexHome?: string
+  readonly modelProvider?: string
 } = {}) {
   const state: {
     calls: Array<{ method: string; params: Record<string, unknown> }>
@@ -2412,6 +2414,7 @@ function createCodexServiceTierRecorder(options: {
   } = { calls: [], turnStarts: 0 }
   const driver = new CodexAppServerDriver({
     binaries: ['fake-codex'],
+    ...(options.codexHome === undefined ? {} : { codexHome: options.codexHome }),
     spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
     spawn: (() => {
       const stdout = new PassThrough()
@@ -2428,7 +2431,10 @@ function createCodexServiceTierRecorder(options: {
           return
         }
         if (request.method === 'config/read') {
-          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { config: { service_tier: options.configuredServiceTier ?? null } } })}\n`)
+          stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, result: { config: {
+            service_tier: options.configuredServiceTier ?? null,
+            ...(options.modelProvider === undefined ? {} : { model_provider: options.modelProvider }),
+          } } })}\n`)
           return
         }
         if (request.method === 'model/list') {
@@ -2524,6 +2530,34 @@ test('Codex model/list 的 serviceTiers 进入目录，并据 account/read 判�
   assert.equal(legacyCatalog.officialSubscription, undefined)
   assert.equal(legacyCatalog.groups[0]?.models[0]?.serviceTiers?.[0]?.id, 'priority')
   legacy.driver.dispose()
+})
+
+test('Codex recognizes ChatGPT OAuth behind a gateway when account/read omits the account', async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { tmpdir } = await import('node:os')
+  const home = mkdtempSync(join(tmpdir(), 'codingns-codex-oauth-tier-'))
+  writeFileSync(join(home, 'auth.json'), JSON.stringify({
+    auth_mode: 'chatgpt',
+    OPENAI_API_KEY: null,
+    tokens: { refresh_token: 'fixture-refresh-token', account_id: 'fixture-account' },
+  }))
+  const modelList = { data: [{
+    id: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol',
+    serviceTiers: [{ id: 'priority', name: 'Fast' }],
+  }] }
+  try {
+    const gateway = createCodexServiceTierRecorder({ codexHome: home, modelList })
+    const catalog = await gateway.driver.listModels()
+    assert.equal(catalog.officialSubscription, true)
+    gateway.driver.dispose()
+
+    const alternateProvider = createCodexServiceTierRecorder({ codexHome: home, modelProvider: 'relay', modelList })
+    assert.equal((await alternateProvider.driver.listModels()).officialSubscription, false)
+    alternateProvider.driver.dispose()
+  } finally {
+    rmSync(home, { recursive: true, force: true })
+  }
 })
 
 test('Codex 线程按 DSH 选择下发服务档位，并在关闭 Fast 时显式回落标准速度', async () => {

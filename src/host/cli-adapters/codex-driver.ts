@@ -261,7 +261,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       // 必须再用账号类型确认，否则界面会给出一个切换后不生效的开关。
       // 没有任何模型声明档位时不必多花一次 RPC，保留“未确认”语义。
       if (!catalogHasServiceTiers(withDefault)) return withDefault
-      const officialSubscription = await readCodexOfficialSubscription(rpc, controller.signal)
+      const officialSubscription = await readCodexOfficialSubscription(rpc, controller.signal, config, this.codexHome)
       return officialSubscription === undefined ? withDefault : { ...withDefault, officialSubscription }
     } catch {
       return CODEX_CATALOG
@@ -1274,20 +1274,48 @@ function readConfiguredServiceTier(config: unknown): string | null | undefined {
 /**
  * 用 `account/read` 确认当前 Codex 是否登录了官方订阅账号。
  *
- * 服务档位只在 ChatGPT 订阅账号下真正生效：`account.type === 'chatgpt'` 才是
- * 官方订阅；`apiKey`、`null`（第三方 Provider 或未登录）都必须判定为不可用。
- * 旧版 Codex 没有该方法时返回 undefined，让目录保留“未确认”，UI 按不可用处理——
- * 与其展示一个切换后不生效的开关，不如不展示。
+ * `account.type === 'chatgpt'` is authoritative when present. Some compatible gateways
+ * omit the account even when the local Codex profile uses ChatGPT OAuth, so account:null
+ * may fall back to the local auth mode unless an alternate model provider is configured.
+ * API-key accounts remain unavailable; an unsupported account/read method stays unknown.
  */
-async function readCodexOfficialSubscription(rpc: JsonRpcProcess, signal: AbortSignal): Promise<boolean | undefined> {
+async function readCodexOfficialSubscription(
+  rpc: JsonRpcProcess,
+  signal: AbortSignal,
+  config: unknown,
+  codexHome: string,
+): Promise<boolean | undefined> {
   try {
     const response = await rpc.request('account/read', {}, { signal })
     if (!isRecord(response)) return false
     const account = isRecord(response.account) ? response.account : null
-    // account 为 null 表示未登录官方账号（含第三方 Provider 配置），按不可用处理。
-    return account?.type === 'chatgpt'
+    if (account !== null) return account.type === 'chatgpt'
+    // Some compatible gateways return account:null even when Codex itself is signed in via
+    // ChatGPT OAuth. Trust the local auth mode only when no alternate model provider is active.
+    return !hasAlternateCodexProvider(config) && hasCodexChatGptAuth(codexHome)
   } catch {
     return undefined
+  }
+}
+
+function hasAlternateCodexProvider(config: unknown): boolean {
+  if (!isRecord(config)) return false
+  const root = isRecord(config.config) ? config.config : config
+  const provider = root.model_provider
+  return typeof provider === 'string' && provider.trim() !== '' && provider.trim() !== 'openai'
+}
+
+function hasCodexChatGptAuth(codexHome: string): boolean {
+  const auth = readTextFile(join(codexHome, 'auth.json'))
+  if (auth === undefined) return false
+  try {
+    const parsed: unknown = JSON.parse(auth)
+    if (!isRecord(parsed) || parsed.auth_mode !== 'chatgpt' || parsed.OPENAI_API_KEY) return false
+    return isRecord(parsed.tokens)
+      && typeof parsed.tokens.refresh_token === 'string'
+      && parsed.tokens.refresh_token.trim() !== ''
+  } catch {
+    return false
   }
 }
 
