@@ -2,9 +2,12 @@ import { createElement, useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { FeaturePanelProps, CodingNsClientFeatureModule } from './types.js'
 import { CODINGNS_RPC_CHANNEL } from '../../shared/contracts/transport.js'
+import type { LanAccessDshSnapshot } from '../../shared/contracts/lan-access-dsh.js'
 import { resolveCodingNsTranslator, useCodingNsTranslator } from '../locale.js'
 import { dshSettingsButtonStyle, dshSettingsFieldStyle, dshSettingsNoteStyle, dshSettingsPrimaryButtonStyle, dshThemeColor } from '../theme.js'
 import { uiFontSize } from '../font-scale.js'
+import { SettingsToggleRow } from '../settings-controls.js'
+import { buildLanAccessUrls } from './lan-access-status.js'
 
 const fallbackT = resolveCodingNsTranslator()
 
@@ -32,6 +35,7 @@ interface WorkspaceMcpStatus {
   readonly apiKeyConfigured: boolean
   readonly enabled: boolean
   readonly listening: boolean
+  readonly lanAccessEnabled: boolean
   readonly url: string | null
   readonly reason: string | null
 }
@@ -68,7 +72,7 @@ const REASON_KEYS: Readonly<Record<string, string>> = {
   'startup-failed': 'workspaceMcp.reason.listenFailed',
 }
 
-function WorkspaceMcpPanel({ services, enabled, notify }: FeaturePanelProps): ReactElement {
+function WorkspaceMcpPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
   const t = useCodingNsTranslator(services.locale)
   const [status, setStatus] = useState<WorkspaceMcpStatus | null>(null)
   const [loading, setLoading] = useState(true)
@@ -77,6 +81,8 @@ function WorkspaceMcpPanel({ services, enabled, notify }: FeaturePanelProps): Re
   const [busy, setBusy] = useState(false)
   const [generatedKey, setGeneratedKey] = useState<string | null>(null)
   const [capabilitiesOpen, setCapabilitiesOpen] = useState(false)
+  const [lanUrl, setLanUrl] = useState<string | null>(null)
+  const lanAccessEnabled = status?.lanAccessEnabled ?? snapshot.value?.modules.workspaceMcpLanAccess === true
 
   useEffect(() => {
     let active = true
@@ -96,7 +102,32 @@ function WorkspaceMcpPanel({ services, enabled, notify }: FeaturePanelProps): Re
       if (active) setLoading(false)
     })
     return () => { active = false }
-  }, [services.rpc, enabled, refreshCount])
+  }, [services.rpc, enabled, refreshCount, snapshot.value?.modules.workspaceMcpLanAccess])
+
+  useEffect(() => {
+    let active = true
+    if (!lanAccessEnabled) {
+      setLanUrl(null)
+      return () => { active = false }
+    }
+    void Promise.all([
+      services.rpc.call(CODINGNS_RPC_CHANNEL, 'lanAccessDsh/get', {}),
+      services.rpc.call(CODINGNS_RPC_CHANNEL, 'lanAccessDsh/addresses', {}),
+    ]).then(([snapshotResult, addressesResult]) => {
+      if (!snapshotResult.ok || !addressesResult.ok) throw new Error('LAN access status request failed')
+      const lanSnapshot = normalizeLanAccessSnapshot(snapshotResult.value)
+      const addresses = Array.isArray(addressesResult.value)
+        ? addressesResult.value.filter((value): value is string => typeof value === 'string')
+        : []
+      const accessUrl = buildLanAccessUrls(lanSnapshot, addresses)
+        .map((value) => workspaceMcpUrl(value))
+        .find((value): value is string => value !== null) ?? null
+      if (active) setLanUrl(accessUrl)
+    }).catch(() => {
+      if (active) setLanUrl(null)
+    })
+    return () => { active = false }
+  }, [services.rpc, lanAccessEnabled, refreshCount])
 
   useEffect(() => {
     if (!capabilitiesOpen) return
@@ -113,6 +144,7 @@ function WorkspaceMcpPanel({ services, enabled, notify }: FeaturePanelProps): Re
       ? REASON_KEYS[status.reason] ?? 'workspaceMcp.reason.other'
       : 'workspaceMcp.reason.other'
   const url = safeWorkspaceMcpUrl(status?.url)
+  const endpoint = lanUrl ?? url
 
   const generateKey = async (): Promise<void> => {
     setBusy(true)
@@ -152,6 +184,22 @@ function WorkspaceMcpPanel({ services, enabled, notify }: FeaturePanelProps): Re
     }
   }
 
+  const updateLanAccess = (next: boolean): void => {
+    void services.settings.mutate([{
+      op: 'set',
+      path: ['modules', 'workspaceMcpLanAccess'],
+      value: next,
+    }]).then((accepted) => {
+      notify({
+        kind: accepted ? 'success' : 'error',
+        message: accepted ? t('workspaceMcp.lanAccessSaved') : t('settings.moduleWriteRejected'),
+      })
+      if (accepted) setRefreshCount((count) => count + 1)
+    }).catch((cause: unknown) => {
+      notify({ kind: 'error', message: cause instanceof Error ? cause.message : String(cause) })
+    })
+  }
+
   const compactButtonStyle = {
     ...dshSettingsButtonStyle,
     flex: '1 1 0',
@@ -170,6 +218,13 @@ function WorkspaceMcpPanel({ services, enabled, notify }: FeaturePanelProps): Re
       createElement('strong', { style: { display: 'block', marginBottom: 4 } }, t('workspaceMcp.setupTitle')),
       createElement('span', undefined, t('workspaceMcp.setupInstruction')),
     ),
+    createElement(SettingsToggleRow, {
+      label: t('workspaceMcp.lanAccessLabel'),
+      description: t('workspaceMcp.lanAccessDescription'),
+      checked: lanAccessEnabled,
+      disabled: !enabled || loading || !snapshot.writable || busy,
+      onChange: updateLanAccess,
+    }),
     createElement('div', { style: { display: 'flex', flexWrap: 'nowrap', gap: 8, minWidth: 0 } },
       createElement('button', {
         type: 'button',
@@ -203,9 +258,10 @@ function WorkspaceMcpPanel({ services, enabled, notify }: FeaturePanelProps): Re
       status !== null && !loading ? createElement('span', undefined, t('workspaceMcp.apiKeyStatus', { status: t(status.apiKeyConfigured ? 'workspaceMcp.configured' : 'workspaceMcp.notConfigured') })) : null,
       status !== null && !loading ? createElement('span', undefined, t('workspaceMcp.enabledStatus', { status: t(status.enabled ? 'workspaceMcp.on' : 'workspaceMcp.off') })) : null,
       status !== null && !loading ? createElement('span', undefined, t('workspaceMcp.listeningStatus', { status: t(status.listening ? 'workspaceMcp.on' : 'workspaceMcp.off') })) : null,
-      status !== null && !loading && url !== null ? createElement('span', undefined,
+      status !== null && !loading ? createElement('span', undefined, t('workspaceMcp.lanAccessStatus', { status: t(status.lanAccessEnabled ? 'workspaceMcp.on' : 'workspaceMcp.off') })) : null,
+      status !== null && !loading && endpoint !== null ? createElement('span', undefined,
         createElement('span', { style: { color: dshThemeColor.labelSecondary } }, `${t('workspaceMcp.url')}: `),
-        createElement('code', undefined, url),
+        createElement('code', undefined, endpoint),
       ) : null,
       reasonKey !== null && status !== null && !loading ? createElement('span', { style: { color: dshThemeColor.labelSecondary } }, t(reasonKey)) : null,
     ),
@@ -393,6 +449,7 @@ function normalizeStatus(value: unknown): WorkspaceMcpStatus | null {
     apiKeyConfigured: value.apiKeyConfigured,
     enabled: value.enabled,
     listening: value.listening,
+    lanAccessEnabled: value.lanAccessEnabled === true,
     url: value.url,
     reason: value.reason,
   }
@@ -406,6 +463,31 @@ function safeWorkspaceMcpUrl(value: string | null | undefined): string | null {
       || url.search !== '' || url.hash !== '' || url.pathname !== '/mcp'
       || value !== `${url.origin}/mcp`) return null
     return url.toString()
+  } catch {
+    return null
+  }
+}
+
+function normalizeLanAccessSnapshot(value: unknown): LanAccessDshSnapshot | null {
+  if (!isRecord(value)
+    || typeof value.listenHost !== 'string'
+    || typeof value.listenPort !== 'number'
+    || typeof value.dshPort !== 'number'
+    || (value.actualListenPort !== null && typeof value.actualListenPort !== 'number')
+    || (value.state !== 'starting' && value.state !== 'listening' && value.state !== 'stopped' && value.state !== 'error')
+    || !Array.isArray(value.detectedDshPorts)
+    || value.detectedDshPorts.some((port) => typeof port !== 'number')
+    || (value.error !== null && typeof value.error !== 'string')
+    || typeof value.loginEnabled !== 'boolean') return null
+  return value as unknown as LanAccessDshSnapshot
+}
+
+function workspaceMcpUrl(value: string): string | null {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' || url.pathname !== '/' || url.search !== '' || url.hash !== '') return null
+    if (url.hostname === '0.0.0.0' || url.hostname === '::' || url.hostname === '[::]') return null
+    return `${url.origin}/mcp`
   } catch {
     return null
   }

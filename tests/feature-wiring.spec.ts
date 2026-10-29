@@ -480,6 +480,11 @@ test('移动端访问增强的设置路径与模块开关可通过 RPC 写入', 
     ops: [{ op: 'set', path: ['lanAccessDsh', 'pwa'], value: pwa }],
     expectedRevision: undefined,
   })
+  await handler('set', { ops: [{ op: 'set', path: ['modules', 'workspaceMcpLanAccess'], value: true }] })
+  assert.deepEqual(received, {
+    ops: [{ op: 'set', path: ['modules', 'workspaceMcpLanAccess'], value: true }],
+    expectedRevision: undefined,
+  })
   await assert.rejects(
     handler('set', { ops: [{ op: 'set', path: ['lanAccessDsh', 'unknownField'], value: 1 }] }),
     /禁止修改设置字段/u,
