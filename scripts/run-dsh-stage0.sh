@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Stage0 owns a versioned runtime independent of other DSH installations.
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-dsh_bin=${DSH_STAGE0_LAUNCHER:-"$HOME/.local/share/codingns/deepseek-harness/0.2.1-rc.3/node_modules/@deepseek-ai/dsh/lib/bin.js"}
+dsh_bin=${DSH_STAGE0_LAUNCHER:-"$HOME/.local/share/codingns/deepseek-harness/0.2.1-rc.4/node_modules/@deepseek-ai/dsh/lib/bin.js"}
 # Preserve Stage0's existing home. New session events may prevent downgrade.
 dsh_home=${DSH_STAGE0_HOME:-"$HOME/.dsh-stage0-020"}
 state_dir=${CODINGNS4DSH_STAGE0_STATE_DIR:-"$HOME/.config/codingns4dsh/stage0-020"}
@@ -11,7 +11,7 @@ port=${DSH_STAGE0_PORT:-17891}
 stage0_patch="$repo_root/dsh-stage0.patch.yml"
 
 if [[ ! -f "$dsh_bin" ]]; then
-  printf 'DSH 0.2.1-rc.3 launcher not found: %s\n' "$dsh_bin" >&2
+  printf 'DSH 0.2.1-rc.4 launcher not found: %s\n' "$dsh_bin" >&2
   exit 1
 fi
 
