@@ -11,7 +11,7 @@
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.1-rc.7`** · DSH 最低版本 **`0.2.0-rc.2`**（已验证 `0.2.1-rc.3`；更新版本仅告警，不阻止安装或运行）· Node **`>= 22.19`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.1-rc.7`** · DSH 最低版本 **`0.2.0-rc.2`**（已验证 `0.2.1-rc.4`；更新版本仅告警，不阻止安装或运行）· Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965** · **[微信群 / QQ 群二维码](#交流群)**
 
@@ -239,7 +239,7 @@ DSH 原生会话的翻译默认关闭，可在会话模型选择菜单中开启�
 
 ## 安装
 
-**环境要求**：DSH `>=0.2.0-rc.2`（已验证 `0.2.1-rc.3`；更高版本会显示未验证警告，但不阻止安装或运行）、Node.js `>=22.19`，并安装 pnpm。macOS/Linux 的持久终端还需要 tmux。
+**环境要求**：DSH `>=0.2.0-rc.2`（已验证 `0.2.1-rc.4`；更高版本会显示未验证警告，但不阻止安装或运行）、Node.js `>=22.19`，并安装 pnpm。macOS/Linux 的持久终端还需要 tmux。
 
 ### 使用内置 Web 配置
 

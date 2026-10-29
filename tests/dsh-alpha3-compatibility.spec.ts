@@ -14,7 +14,7 @@ function peer(kind = 'owner') {
   return { id: 'peer', principal: { kind }, signal: lifetime.signal, dispose: () => lifetime.abort() }
 }
 
-for (const version of ['0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3']) {
+for (const version of ['0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.4', '0.2.1-rc.3']) {
   test(`${version}: peer and message routes match the actual ABI`, () => {
     const modern = !['0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2'].includes(version)
     const owner = peer()

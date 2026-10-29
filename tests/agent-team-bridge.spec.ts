@@ -99,7 +99,7 @@ function harness(rootAdapter = 'dsh') {
 test('Team routes retain alpha.2 support and newer hosts use structural service checks', async () => {
   const h = harness()
   try {
-    for (const version of ['0.2.1-alpha.2', '0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3']) {
+    for (const version of ['0.2.1-alpha.2', '0.2.1-alpha.3', '0.2.1-alpha.4', '0.2.1-alpha.5', '0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.4', '0.2.1-rc.3']) {
       const profile = createDshCapabilityRegistry(version, 'host', h.context).getProfile(h.context)
       for (const role of ['member', 'lead'] as const) assert.equal(profile.capabilities.get(`agent-team.external-${role}`)?.status, 'ready')
     }

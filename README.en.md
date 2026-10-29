@@ -11,7 +11,7 @@
 
 [简体中文](README.md) · **English**
 
-**Current release `@jingyi0605/codingns4dsh@0.2.1-rc.7`** · DSH minimum **`0.2.0-rc.2`** (tested with `0.2.1-rc.3`; newer versions warn but do not block installation or operation) · Node **`>= 22.19`** · macOS / Linux / Windows
+**Current release `@jingyi0605/codingns4dsh@0.2.1-rc.7`** · DSH minimum **`0.2.0-rc.2`** (tested with `0.2.1-rc.4`; newer versions warn but do not block installation or operation) · Node **`>= 22.19`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ group 1092985965** · **[WeChat / QQ QR codes](#community)**
 
@@ -220,7 +220,7 @@ The account menu shows login status, access method, connection latency and Host 
 
 ## Installation
 
-**Requirements**: DSH `>=0.2.0-rc.2` (tested with `0.2.1-rc.3`; newer versions show an unverified-compatibility warning but do not block installation or operation), Node.js `>=22.19`, and pnpm. Persistent terminals on macOS/Linux also require tmux.
+**Requirements**: DSH `>=0.2.0-rc.2` (tested with `0.2.1-rc.4`; newer versions show an unverified-compatibility warning but do not block installation or operation), Node.js `>=22.19`, and pnpm. Persistent terminals on macOS/Linux also require tmux.
 
 ### Use the Built-in Web Profile
 

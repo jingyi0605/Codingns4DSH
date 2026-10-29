@@ -1,6 +1,6 @@
 # Codingns4DSH Profile
 
-这是独立的 Codingns4DSH Profile，插件版本为 `0.2.1-rc.7`，最低支持 DSH `0.2.0-rc.2`，已验证 `0.2.1-rc.3`。更新的 DSH 版本会显示未验证警告，但不会阻止安装或启用。
+这是独立的 Codingns4DSH Profile，插件版本为 `0.2.1-rc.7`，最低支持 DSH `0.2.0-rc.2`，已验证 `0.2.1-rc.4`。更新的 DSH 版本会显示未验证警告，但不会阻止安装或启用。
 
 Profile 选择 `dsh-multi-model-provider` 和 `codingns4dsh` Bundle。
 全局语音助理由 CodingNS 自己负责 Host 租约、浏览器设备、PCM 数据面、摘要和动作闭环，
