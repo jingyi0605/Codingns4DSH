@@ -1,6 +1,6 @@
 import { connect, createServer } from 'node:net'
 import { networkInterfaces } from 'node:os'
-import { Transform, type TransformCallback } from 'node:stream'
+import { PassThrough, Transform, type TransformCallback } from 'node:stream'
 import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import { homedir } from 'node:os'
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
@@ -35,6 +35,17 @@ export interface LanAccessDshRuntime {
     onConnect: (socket: LanAccessDshStream) => void,
     onError: (error: Error) => void,
   ): void
+}
+
+type WorkspaceMcpLanRoute = (request: ParsedLanRequest) => Promise<Uint8Array | undefined>
+let workspaceMcpLanRoute: WorkspaceMcpLanRoute | undefined
+
+/** Registers the authenticated MCP endpoint for multiplexing through the LAN listener. */
+export function registerWorkspaceMcpLanRoute(handler: WorkspaceMcpLanRoute): () => void {
+  workspaceMcpLanRoute = handler
+  return () => {
+    if (workspaceMcpLanRoute === handler) workspaceMcpLanRoute = undefined
+  }
 }
 
 interface ActiveProxy {
@@ -326,31 +337,36 @@ export class LanAccessDshProxy {
     const removeLocal = (): void => { active.sockets.delete(localSocket) }
     localSocket.once('close', removeLocal)
     localSocket.once('error', removeLocal)
-    this.runtime.connect(active.config.dshPort, (dshSocket) => {
-      if (active.state !== 'listening') {
-        dshSocket.destroy()
-        localSocket.destroy()
-        return
-      }
-      active.sockets.add(dshSocket)
-      const removeDsh = (): void => { active.sockets.delete(dshSocket) }
-      dshSocket.once('close', removeDsh)
-      dshSocket.once('error', removeDsh)
-      // DSH 的 API 信任校验依据上游看到的 Host/Origin。局域网入口的地址
-      // 与真实 DSH 地址不同，直接透传会导致静态页面能打开但所有 /api 返回 403。
-      // 改写请求头，并兼容旧版 Connection RPC 的正文格式；响应和 WebSocket 帧仍然
-      // 原样双向转发。测试运行时的最小 FakeStream 没有 Node Writable 接口，保留原始
-      // pipe 以便验证连接关系。
-      if (typeof (dshSocket as unknown as { on?: unknown }).on === 'function') {
-        const localAddress = isLoopbackSocket(localSocket)
-        const authTransform = new LanAccessDshAuthTransform(localSocket, (request) => this.authorize(request, localAddress, localSocket))
+    if (typeof (localSocket as unknown as { on?: unknown }).on !== 'function') {
+      this.runtime.connect(active.config.dshPort, (dshSocket) => {
+        if (active.state !== 'listening') { dshSocket.destroy(); localSocket.destroy(); return }
+        active.sockets.add(dshSocket)
+        dshSocket.once('close', () => active.sockets.delete(dshSocket))
+        localSocket.pipe(dshSocket)
+        dshSocket.pipe(localSocket)
+      }, (error) => localSocket.destroy(error))
+      return
+    }
+
+    const localAddress = isLoopbackSocket(localSocket)
+    const upstream = new PassThrough()
+    const authTransform = new LanAccessDshAuthTransform(
+      localSocket,
+      (request) => this.authorize(request, localAddress, localSocket),
+      () => this.runtime.connect(active.config.dshPort, (dshSocket) => {
+        if (active.state !== 'listening') { dshSocket.destroy(); localSocket.destroy(); return }
+        active.sockets.add(dshSocket)
+        const removeDsh = (): void => { active.sockets.delete(dshSocket) }
+        dshSocket.once('close', removeDsh)
+        dshSocket.once('error', removeDsh)
         const requestTransform = new LanAccessDshRequestTransform(`127.0.0.1:${active.config.dshPort}`, this.upstreamCookie)
-        localSocket.pipe(authTransform as unknown as LanAccessDshStream)
-        authTransform.pipe(requestTransform as unknown as NodeJS.WritableStream)
+        upstream.pipe(requestTransform as unknown as NodeJS.WritableStream)
         requestTransform.pipe(dshSocket as unknown as NodeJS.WritableStream)
-      } else localSocket.pipe(dshSocket)
-      dshSocket.pipe(localSocket)
-    }, (error) => localSocket.destroy(error))
+        dshSocket.pipe(localSocket)
+      }, (error) => localSocket.destroy(error)),
+    )
+    localSocket.pipe(authTransform as unknown as LanAccessDshStream)
+    authTransform.pipe(upstream)
   }
 
   private snapshot(active: ActiveProxy): LanAccessDshSnapshot {
@@ -365,7 +381,14 @@ export class LanAccessDshProxy {
     }
   }
 
-  private authorize(request: ParsedLanRequest, localAddress: boolean, localSocket: LanAccessDshStream): Uint8Array | 'pass' {
+  private authorize(request: ParsedLanRequest, localAddress: boolean, localSocket: LanAccessDshStream): Uint8Array | 'pass' | Promise<Uint8Array | 'pass'> {
+    if (request.path === '/mcp' && request.query === undefined && workspaceMcpLanRoute !== undefined) {
+      return workspaceMcpLanRoute(request).then((response) => response ?? this.authorizeWithoutMcp(request, localAddress, localSocket))
+    }
+    return this.authorizeWithoutMcp(request, localAddress, localSocket)
+  }
+
+  private authorizeWithoutMcp(request: ParsedLanRequest, localAddress: boolean, localSocket: LanAccessDshStream): Uint8Array | 'pass' {
     // This route authenticates with a Host-issued launch address, independently of
     // DSH login cookies. Sandboxed resource requests legitimately have Origin:null.
     if (quickAppProxyBase(request.path) && !request.headers.upgrade) return 'pass'
@@ -721,7 +744,8 @@ class LanAccessDshAuthTransform extends Transform {
   private handled = false
   constructor(
     private readonly client: LanAccessDshStream,
-    private readonly authorize: (request: ParsedLanRequest) => Uint8Array | 'pass',
+    private readonly authorize: (request: ParsedLanRequest) => Uint8Array | 'pass' | Promise<Uint8Array | 'pass'>,
+    private readonly onPass: () => void = () => undefined,
   ) { super() }
   _transform(chunk: Uint8Array, _encoding: string, callback: TransformCallback): void {
     if (this.handled) { callback(null, chunk); return }
@@ -736,20 +760,34 @@ class LanAccessDshAuthTransform extends Transform {
     const parts = requestLine.split(' ')
     const target = parts[1] ?? '/'
     const querySeparator = target.indexOf('?')
+    const path = querySeparator < 0 ? target : target.slice(0, querySeparator)
+    if (path === '/mcp' && headers['transfer-encoding'] !== undefined) {
+      this.finish(loginResponse(411, 'Content-Length required'))
+      callback()
+      return
+    }
     const request: ParsedLanRequest = {
       method: parts[0] ?? 'GET',
-      path: querySeparator < 0 ? target : target.slice(0, querySeparator),
+      path,
       ...(querySeparator < 0 ? {} : { query: target.slice(querySeparator + 1) }),
       headers,
       body: this.pending.subarray(end + 4, end + 4 + bodyLength),
     }
+    const handleDecision = (decision: Uint8Array | 'pass'): void => {
+      if (decision === 'pass') {
+        this.handled = true
+        this.onPass()
+        this.push(this.pending)
+        this.pending = new Uint8Array(0)
+      } else this.finish(decision)
+      callback()
+    }
     const decision = this.authorize(request)
-    if (decision === 'pass') {
-      this.handled = true
-      this.push(this.pending)
-      this.pending = new Uint8Array(0)
-    } else this.finish(decision)
-    callback()
+    if (decision instanceof Promise) void decision.then(handleDecision, () => {
+      this.finish(loginResponse(502, 'MCP listener unavailable'))
+      callback()
+    })
+    else handleDecision(decision)
   }
   _flush(callback: TransformCallback): void { callback() }
   private finish(response: Uint8Array): void {

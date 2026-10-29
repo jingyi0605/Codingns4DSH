@@ -13,6 +13,7 @@ import type { WorkspaceApprovalAdapter } from '../../dsh-capabilities/host/works
 import type { WorkspacePendingQuestionsAdapter } from '../../dsh-capabilities/host/workspace-pending-questions-adapter.js'
 import type { WorkspaceSessionControlAdapter } from '../../dsh-capabilities/host/workspace-session-control-adapter.js'
 import type { CodingNsHostServices } from './types.js'
+import { registerWorkspaceMcpLanRoute, synthLanResponse } from '../lan-access-dsh.js'
 
 const API_KEY_ENV = 'CODINGNS_WORKSPACE_MCP_API_KEY'
 
@@ -43,6 +44,36 @@ export function createWorkspaceMcpHostFeature(options: {
       let generation = 0
       let reconcileTail = Promise.resolve()
       const apiKeyStore = options.apiKeyStore ?? new FileWorkspaceMcpApiKeyStore()
+      const settings = context.services.settings
+      context.resources.add(registerWorkspaceMcpLanRoute(async (request) => {
+        const endpoint = transport?.active === true ? transport.url : null
+        if (endpoint === null) return undefined
+        if (settings?.get().modules.workspaceMcpLanAccess !== true) {
+          return synthLanResponse({ status: 404, contentType: 'application/json; charset=utf-8', body: JSON.stringify({ error: 'not found' }) })
+        }
+        const headers = new Headers()
+        for (const name of ['authorization', 'content-type', 'accept', 'mcp-protocol-version', 'mcp-method', 'mcp-name']) {
+          const value = request.headers[name]
+          if (value !== undefined) headers.set(name, value)
+        }
+        const response = await fetch(endpoint, {
+          method: request.method,
+          headers,
+          ...(request.method === 'GET' || request.method === 'HEAD' ? {} : { body: Buffer.from(request.body) }),
+          redirect: 'error',
+        })
+        const responseHeaders: Record<string, string> = {}
+        for (const name of ['mcp-protocol-version', 'mcp-session-id']) {
+          const value = response.headers.get(name)
+          if (value !== null) responseHeaders[name] = value
+        }
+        return synthLanResponse({
+          status: response.status,
+          contentType: response.headers.get('content-type') ?? 'application/json; charset=utf-8',
+          body: new Uint8Array(await response.arrayBuffer()),
+          headers: responseHeaders,
+        })
+      }))
       const capabilityProfile = context.services.dshContext === undefined || context.services.dshVersion === undefined
         ? undefined
         : createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext).getProfile(context.services.dshContext)
@@ -163,6 +194,7 @@ export function createWorkspaceMcpHostFeature(options: {
             apiKeyConfigured: key !== null || (process.env[API_KEY_ENV]?.trim() ?? '') !== '',
             enabled: enabled(),
             listening: transport?.active === true,
+            lanAccessEnabled: settings?.get().modules.workspaceMcpLanAccess === true,
             url: transport?.active === true ? transport.url : null,
             reason: transport?.active === true ? null : reason ?? (enabled() ? 'api-key-not-configured' : 'disabled'),
             capabilities: Object.fromEntries((['workspace.session-control', 'workspace.pending-questions', 'workspace.approval'] as const).map((id) => {
@@ -176,7 +208,6 @@ export function createWorkspaceMcpHostFeature(options: {
         }
       }))
 
-      const settings = context.services.settings
       if (settings !== undefined) context.resources.add(settings.watch((next) => {
         const nextEnabled = next.modules.workspaceMcp === true
         if (nextEnabled === enabledSnapshot) return

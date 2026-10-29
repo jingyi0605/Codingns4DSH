@@ -490,7 +490,7 @@ function operationsToPatch(operations: readonly CodingNsSettingsOperation[]): Re
 
 function isAllowedSettingsPath(path: readonly string[]): boolean {
   if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage', 'subscriptionReports', 'sessionTranslation', 'gitManagement', 'assistant'].includes(path[0] ?? '')
-  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'magpieManagement', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'quickApps', 'mobileAccess', 'peerHost', 'globalVoiceAssistant', 'sessionTranslation', 'workspaceMcp'].includes(path[1] ?? '')
+  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'magpieManagement', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'quickApps', 'mobileAccess', 'peerHost', 'globalVoiceAssistant', 'sessionTranslation', 'workspaceMcp', 'workspaceMcpLanAccess'].includes(path[1] ?? '')
   if (path[0] === 'workspaceSessionEnhancement') {
     return path.length === 2 && [
       'showAdapterLogo', 'showArchivedSessions', 'showWorkspaceHiding', 'hiddenWorkspaceIds',

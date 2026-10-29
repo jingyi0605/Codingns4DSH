@@ -429,7 +429,11 @@ test('Workspace MCP control RPC persists a key, enables the listener and returns
   const statusTarget = table.resolve('workspaceMcp/status')!
   const status = await statusTarget.handler(statusTarget.action, {}) as Record<string, unknown>
   assert.equal(status.apiKeyConfigured, true)
+  assert.equal(status.lanAccessEnabled, false)
   assert.equal('apiKey' in status, false)
+  config.modules.workspaceMcpLanAccess = true
+  const lanStatus = await statusTarget.handler(statusTarget.action, {}) as Record<string, unknown>
+  assert.equal(lanStatus.lanAccessEnabled, true)
   assert.equal(JSON.stringify(await createCodingNsSettingsRpcHandler({
     writable: true, describe: () => [{ ns: 'codingns', revision, value: config }], get: () => config,
   } as never)('get', {})).includes(generated.apiKey), false)
