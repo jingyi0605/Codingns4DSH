@@ -66,6 +66,37 @@ test('Host 装配从入口 Fiber 读取配置，不读取注入子 Fiber 的空�
   }
 })
 
+test('legacy cleanup event subscription failure does not block later Host setup', async () => {
+  const tasks: Promise<unknown>[] = []
+  const previousVersion = process.env.DSH_RUNTIME_VERSION
+  process.env.DSH_RUNTIME_VERSION = '0.2.1-alpha.1'
+  try {
+    const ctx = {
+      fiber: { config: CodingNsConfigSchema({ modules: { terminalEnhancement: true } } as never) },
+      inject(dependencies: string[], callback: (context: unknown) => Promise<void>) {
+        if (!dependencies.includes('settings')) return
+        tasks.push(callback({
+          fiber: { config: undefined },
+          settings: {
+            describe: () => [],
+            on: () => { throw new Error('document-updated events unavailable') },
+          },
+          connection: {},
+          webServer: { port: 13080 },
+          on: () => () => undefined,
+          effect: () => undefined,
+        }))
+      },
+    }
+    await apply(ctx as unknown as Context)
+    // The unrelated missing terminal provider is reached, proving cleanup did not abort this injection.
+    await assert.rejects(tasks[0]!, /终端增强需要文件型 DSH 设置 Provider/u)
+  } finally {
+    if (previousVersion === undefined) delete process.env.DSH_RUNTIME_VERSION
+    else process.env.DSH_RUNTIME_VERSION = previousVersion
+  }
+})
+
 test('Host 重载撤销自己的会话读取包装，不覆盖后来安装的包装', async () => {
   const root = mkdtempSync(join(tmpdir(), 'codingns-host-hmr-'))
   const previousVersion = process.env.DSH_RUNTIME_VERSION

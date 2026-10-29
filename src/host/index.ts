@@ -136,16 +136,24 @@ export async function apply(ctx?: Context): Promise<void> {
     let cleanupFinished = false
     let cleanupRunning = false
     let disposeCleanupListener: (() => void) | undefined
+    const disposeCleanupSubscription = (): void => {
+      const dispose = disposeCleanupListener
+      disposeCleanupListener = undefined
+      try { dispose?.() } catch (error) {
+        debugWarn('codingns4dsh: legacy assistant settings listener cleanup failed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
     const cleanupLegacySettings = async (): Promise<void> => {
       if (cleanupFinished || cleanupRunning) return
       cleanupRunning = true
       try {
         const result = await cleanupLegacyAssistantSettings(settingsContext.settings)
         debugInfo('codingns4dsh: legacy assistant settings cleanup', result)
-        if (result.status !== 'skipped' || result.reason !== 'missing') {
+        if (result.status !== 'skipped') {
           cleanupFinished = true
-          disposeCleanupListener?.()
-          disposeCleanupListener = undefined
+          disposeCleanupSubscription()
         }
       } catch (error) {
         // Stale settings must never prevent the plugin from starting.
@@ -156,10 +164,16 @@ export async function apply(ctx?: Context): Promise<void> {
         cleanupRunning = false
       }
     }
-    disposeCleanupListener = settingsContext.settings.on?.('settings/document-updated', () => {
-      void cleanupLegacySettings()
-    })
-    hostCtx.effect(() => () => disposeCleanupListener?.(), 'codingns4dsh: stale assistant settings cleanup')
+    try {
+      disposeCleanupListener = settingsContext.settings.on?.('settings/document-updated', () => {
+        void cleanupLegacySettings()
+      })
+    } catch (error) {
+      debugWarn('codingns4dsh: legacy assistant settings listener unavailable', {
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+    hostCtx.effect(() => disposeCleanupSubscription, 'codingns4dsh: stale assistant settings cleanup')
     await cleanupLegacySettings()
     // 注入回调是子 Fiber；配置必须从拥有插件 Config 的入口 Fiber 读取。
     const settings = registerCodingNsSettings(settingsContext, () => ctx.fiber.config)
