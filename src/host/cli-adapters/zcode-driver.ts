@@ -354,9 +354,9 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     return this.cachedRuntime
   }
 
-  private startAppServer(): JsonRpcProcess {
+  private startAppServer(runtimeEnv?: Readonly<Record<string, string>>): JsonRpcProcess {
     if (this.cachedBinary !== null) {
-      return new JsonRpcProcess({ command: this.cachedBinary, args: ['app-server'], wireFormat: 'zcode', spawn: this.runSpawn })
+      return new JsonRpcProcess({ command: this.cachedBinary, args: ['app-server'], env: { ...(runtimeEnv ?? {}) }, wireFormat: 'zcode', spawn: this.runSpawn })
     }
     const runtime = this.resolveRuntime()
     if (runtime !== null) {
@@ -366,13 +366,13 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
         // JsonRpcProcess 在 Windows 上经 shell 启动；node 与入口安装路径（如
         // D:\Program Files\…）都可能含空格，command 和入口参数都必须先加引号。
         args: [quoteWindowsArg(runtime.entry), 'app-server'],
-        env: { ...node.env, ...runtime.env },
+        env: { ...node.env, ...runtime.env, ...(runtimeEnv ?? {}) },
         wireFormat: 'zcode',
         spawn: this.runSpawn,
       })
     }
     const binary = this.cachedBinary ?? 'zcode'
-    return new JsonRpcProcess({ command: binary, args: ['app-server'], wireFormat: 'zcode', spawn: this.runSpawn })
+    return new JsonRpcProcess({ command: binary, args: ['app-server'], env: { ...(runtimeEnv ?? {}) }, wireFormat: 'zcode', spawn: this.runSpawn })
   }
 
   /** 复用同 cwd 的常驻 app 进程；cwd 变化或进程死亡时重建并重新挂载会话。 */
@@ -381,7 +381,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     if (previous !== undefined && previous.cwd === input.cwd && !previous.rpc.isClosed) return previous
     if (previous !== undefined) cancelZcodeInteractions(previous)
     previous?.rpc.dispose()
-    const rpc = this.startAppServer()
+    const rpc = this.startAppServer(input.runtimeEnv)
     const session: ZcodeSession = {
       rpc,
       cwd: input.cwd,

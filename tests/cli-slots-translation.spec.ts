@@ -124,6 +124,26 @@ test('Claude model menu keeps context variants distinct and submits their exact 
   }
 })
 
+test('model submenu stays constrained to the picker width and exposes full names on truncated rows', async () => {
+  const longName = 'provider/very-long-model-name-that-must-not-expand-the-mobile-screen'
+  const probe = createProbe('codex', {
+    modelGroups: [{ id: 'models', name: 'Models', models: [{ id: 'long-model', name: longName, efforts: [] }] }],
+    modelId: 'long-model',
+  })
+  const slot = probe.registered.get('codingns4dsh-model')!
+  const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
+  try {
+    const tree = await openModelPane(renderer)
+    const menu = elementWhere(tree, (element) => element.props.className === 'codingns4dsh-model-menu')!
+    const option = modelOptions(tree)[0]!
+    assert.equal(menu.props.style.width, 'min(420px, calc(100vw - 24px))')
+    assert.equal(menu.props.style.maxWidth, 'min(420px, calc(100vw - 24px))')
+    assert.equal(menu.props.style.boxSizing, 'border-box')
+    assert.equal(option.props.title, longName)
+    assert.equal(option.props.style.minWidth, 0)
+  } finally { renderer.dispose(); probe.dispose() }
+})
+
 test('Agent catalog failures remain visible and a retry restores the external Agents', async () => {
   const probe = createProbe()
   const call = probe.rpc.call
@@ -624,7 +644,8 @@ test('搜索组件注入的样式复用内置模型选择器的结构与主题�
   assert.match(css, /\.codingns4dsh-model-search-row\{[^}]*position:relative/u)
   assert.match(css, /\.codingns4dsh-model-search-row \.codingns4dsh-model-search\{[^}]*border-radius:var\(--dsw-radius-md/u)
   assert.match(css, /\.codingns4dsh-model-search-clear\{[^}]*width:24px;height:24px/u)
-  assert.match(css, /\.codingns4dsh-model-groups\{[^}]*overflow-y:auto/u)
+  assert.match(css, /\.codingns4dsh-model-groups\{[^}]*width:100%;max-width:100%;min-width:0[^}]*overflow-x:hidden;overflow-y:auto/u)
+  assert.match(css, /\.codingns4dsh-model-option\{[^}]*box-sizing:border-box;min-width:0;max-width:100%;overflow:hidden/u)
   assert.match(css, /\.codingns4dsh-model-search-row \.codingns4dsh-model-search input\{[^}]*font-size:/u)
   assert.match(css, /::placeholder\{color:var\(--dsw-alias-label-caption/u)
 })

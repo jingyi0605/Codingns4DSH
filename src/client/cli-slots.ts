@@ -6,7 +6,6 @@ import type { ReactElement } from 'react'
 import type { CSSProperties, ChangeEvent as ReactChangeEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CodingNsCliAdapterDescriptor, CodingNsCliModel, CodingNsCliModelCatalog, CodingNsCliSessionConfig } from '../shared/contracts/cli-adapter.js'
-import type { CredentialMetadata, CredentialReference } from '../shared/contracts/credentials.js'
 import type { CodingNsClientServices, CodingNsRpcClient } from './features/types.js'
 import { adapterCatalogWithDsh, adapterDetectionLabel, callCliRpc, findModel, firstModel } from './cli-catalog.js'
 import {
@@ -40,7 +39,6 @@ import { watchNativeModelMenu, type NativeModelCatalogEntry } from './native-mod
 import { MagpieModelTag } from './magpie-model-tag.js'
 import { ConversationTranslationSettings } from './conversation-translation-settings.js'
 import { settingsIconButtonStyle } from './settings-controls.js'
-import { CODINGNS_RPC_CHANNEL } from '../shared/contracts/transport.js'
 
 const claudeModelAliases = ['provider-default', 'sonnet', 'opus', 'haiku', 'fable']
 const claudeModelCollator = new Intl.Collator('en', { numeric: true, sensitivity: 'base', ignorePunctuation: true })
@@ -137,7 +135,9 @@ function installComposerStyles(): void {
     '.codingns4dsh-model-search-row .codingns4dsh-model-search:focus-within{border-color:transparent}',
     '.codingns4dsh-model-search-clear{corner-shape:round;width:24px;height:24px;color:var(--dsw-alias-label-secondary,GrayText);cursor:pointer;background:transparent;border:none;border-radius:50%;justify-content:center;align-items:center;padding:0;display:inline-flex;position:absolute;top:50%;right:4px;transform:translateY(-50%)}',
     '.codingns4dsh-model-search-clear:hover,.codingns4dsh-model-search-clear:focus-visible{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08));outline:none}',
-    '.codingns4dsh-model-groups{min-height:0;overflow-y:auto}',
+    '.codingns4dsh-model-groups{box-sizing:border-box;width:100%;max-width:100%;min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto}',
+    '.codingns4dsh-model-groups>section{min-width:0;max-width:100%}',
+    '.codingns4dsh-model-option{box-sizing:border-box;min-width:0;max-width:100%;overflow:hidden}',
     '.codingns4dsh-model-option[data-highlighted="true"]{background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.08))}',
     '@media (prefers-reduced-motion:reduce){.codingns4dsh-cli-spinner{animation-duration:1.6s}.codingns4dsh-model-name[data-overflow="true"]>span{animation:none;transform:translateX(0)}}',
   ].join('')
@@ -456,7 +456,7 @@ const agentOptionLabelStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden
 const agentStatusStyle = { flex: '0 0 auto', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), whiteSpace: 'nowrap' as const }
 const agentFallbackIconStyle = { flexGrow: 0, flexShrink: 0, borderRadius: 5, color: '#fff', background: dshThemeColor.labelTertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: uiFontSize(11), fontWeight: 600, lineHeight: 1 }
 
-type ModelPane = 'root' | 'model' | 'effort' | 'credentials'
+type ModelPane = 'root' | 'model' | 'effort'
 
 interface ModelCatalogState {
   readonly sessionId: string | undefined
@@ -685,7 +685,6 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     setOpen(false)
     setTranslationSettingsOpen(true)
   }
-  const openCredentialBindings = (): void => setPane('credentials')
   if (selection.adapterId === DSH_NATIVE_SESSION_ADAPTER_ID) {
     return createElement('div', { ref: rootRef, hidden: true },
       nativeMenu !== null && nativeAvailable ? createPortal(createElement(TranslationToggleRow, {
@@ -844,10 +843,6 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
           createElement('span', { style: nativeMenuLabelStyle }, t('cli.model')), createElement('span', { style: nativeMenuValueStyle }, modelLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
         createElement('button', { key: 'effort', type: 'button', role: 'menuitem', disabled: modelUnavailable, onClick: () => setPane('effort'), style: nativeMenuCellStyle },
           createElement('span', undefined, t('cli.thinking')), createElement('span', { style: nativeMenuValueStyle }, effortLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
-        createElement('button', { key: 'credentials', type: 'button', role: 'menuitem', disabled: sessionId === undefined, onClick: openCredentialBindings, style: nativeMenuCellStyle },
-          createElement('span', undefined, t('credentials.sessionBindings')),
-          createElement('span', { style: nativeMenuValueStyle }, selection.credentialRefs?.length ? `${selection.credentialRefs.length}` : t('credentials.noneSelected')),
-          createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
       ]
     : pane === 'model'
       ? [
@@ -891,6 +886,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
                   'data-highlighted': showModelSearch && index === activeModelIndex ? 'true' : undefined,
                   tabIndex: showModelSearch ? -1 : undefined,
                   className: 'codingns4dsh-model-option',
+                  title: item.name,
                   onMouseMove: () => { if (showModelSearch && index !== activeModelIndex) setHighlightedModelIndex(index) },
                   onClick: () => chooseModel(item),
                   style: nativeOptionStyle,
@@ -905,15 +901,6 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
               t(modelGroups.length === 0 ? 'cli.noModelsAvailable' : 'cli.modelSearchEmpty')),
           ),
         ]
-      : pane === 'credentials'
-        ? [createElement(CredentialBindingPane, {
-            key: 'credentials',
-            rpc: props.rpc,
-            selection,
-            update,
-            onClose: () => setPane('root'),
-            t,
-          })]
       : [
           // 思考档位同样是原生式下钻面板，没有返回按钮；Escape 回到根菜单。
           createElement('div', { key: 'title', style: nativeGroupTitleStyle }, t('cli.thinkingLevelTitle', { model: modelLabel })),
@@ -929,7 +916,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       !loading && createElement('span', { className: 'codingns4dsh-model-effort', style: { color: dshThemeColor.labelCaption, whiteSpace: 'nowrap' } }, effortLabel),
       !loading && createElement(NativeDropdownChevron, { open }),
     ),
-    open && createElement('div', { role: 'menu', 'aria-label': t('cli.chooseModelMenu'), style: pane === 'model' ? nativeModelMenuStyle : nativeMenuStyle }, ...menu),
+    open && createElement('div', { role: 'menu', 'aria-label': t('cli.chooseModelMenu'), className: pane === 'model' ? 'codingns4dsh-model-menu' : undefined, style: pane === 'model' ? nativeModelMenuStyle : nativeMenuStyle }, ...menu),
     translationSettings,
   )
 }
@@ -939,105 +926,21 @@ function effortDisplayName(model: CodingNsCliModel | undefined, effort: string, 
   return model?.effortLabels?.[effort] ?? effort
 }
 
-function CredentialBindingPane(props: {
-  readonly rpc: CodingNsRpcClient
-  readonly selection: SelectionState
-  readonly update: (next: SelectionState) => Promise<boolean>
-  readonly onClose: () => void
-  readonly t: ReturnType<typeof useCodingNsTranslator>
-}): ReactElement {
-  const [items, setItems] = useState<readonly CredentialMetadata[]>([])
-  const [draft, setDraft] = useState<readonly CredentialReference[]>(props.selection.credentialRefs ?? [])
-  const [loading, setLoading] = useState(true)
-  const [busy, setBusy] = useState(false)
-  useEffect(() => {
-    let active = true
-    void props.rpc.call(CODINGNS_RPC_CHANNEL, 'credentials/list', {}).then((result) => {
-      if (!result.ok || !Array.isArray(result.value)) throw new Error('credential list failed')
-      if (active) setItems(result.value.filter(isCredentialMetadata))
-    }).catch(() => {
-      if (active) setItems([])
-    }).finally(() => {
-      if (active) setLoading(false)
-    })
-    return () => { active = false }
-  }, [props.rpc])
-
-  const save = async (): Promise<void> => {
-    setBusy(true)
-    try {
-      const accepted = await props.update({ ...props.selection, credentialRefs: draft })
-      if (accepted) props.onClose()
-    } finally {
-      setBusy(false)
-    }
-  }
-  const toggle = (item: CredentialMetadata, checked: boolean): void => {
-    if (checked) {
-      const existing = draft.find((reference) => reference.credentialId === item.id)
-      if (existing !== undefined) return
-      setDraft([...draft, {
-        credentialId: item.id,
-        bindings: item.fields.map((field) => ({ field: field.name, env: defaultCredentialEnv(field.name) })),
-      }])
-    } else {
-      setDraft(draft.filter((reference) => reference.credentialId !== item.id))
-    }
-  }
-  const updateEnv = (credentialId: string, field: string, env: string): void => {
-    setDraft(draft.map((reference) => reference.credentialId !== credentialId
-      ? reference
-      : { ...reference, bindings: reference.bindings.map((binding) => binding.field === field ? { ...binding, env } : binding) }))
-  }
-  return createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, padding: 6 } },
-    createElement('div', { style: nativeGroupTitleStyle }, props.t('credentials.sessionBindings')),
-    createElement('div', { style: { padding: '4px 8px 8px', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: 1.4 } }, props.t('credentials.sessionBindingsHint')),
-    loading
-      ? createElement('div', { role: 'status', style: modelLoadingMenuStyle }, 'Loading…')
-      : items.length === 0
-        ? createElement('div', { style: modelSearchEmptyStyle }, props.t('credentials.noneSelected'))
-        : items.map((item) => {
-          const reference = draft.find((candidate) => candidate.credentialId === item.id)
-          return createElement('div', { key: item.id, style: { display: 'flex', flexDirection: 'column', gap: 5, padding: '6px 8px', borderRadius: 8, background: dshThemeColor.surfaceSubtle } },
-            createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 7, fontSize: uiFontSize(13) } },
-              createElement('input', { type: 'checkbox', checked: reference !== undefined, onChange: (event: { currentTarget: { checked: boolean } }) => toggle(item, event.currentTarget.checked) }),
-              createElement('span', undefined, item.label),
-            ),
-            reference?.bindings.map((binding) => createElement('label', { key: binding.field, style: { display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 22, fontSize: uiFontSize(12) } },
-              createElement('span', { style: { minWidth: 72, color: dshThemeColor.labelTertiary } }, binding.field),
-              createElement('input', { value: binding.env, onChange: (event: { currentTarget: { value: string } }) => updateEnv(item.id, binding.field, event.currentTarget.value), style: { ...inputStyle, padding: '4px 6px', fontSize: uiFontSize(12) } }),
-            )),
-          )
-        }),
-    createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 } },
-      createElement('button', { type: 'button', style: nativeOptionStyle, disabled: busy, onClick: props.onClose }, props.t('credentials.cancel')),
-      createElement('button', { type: 'button', style: { ...nativeOptionStyle, color: dshThemeColor.accent }, disabled: busy || loading, onClick: () => { void save() } }, props.t('credentials.save')),
-    ),
-  )
-}
-
-function defaultCredentialEnv(field: string): string {
-  const value = field.replace(/[^A-Za-z0-9_]/gu, '_').toUpperCase()
-  return `CREDENTIAL_${value || 'VALUE'}`
-}
-
-function isCredentialMetadata(value: unknown): value is CredentialMetadata {
-  return isRecord(value) && typeof value.id === 'string' && typeof value.label === 'string' && Array.isArray(value.fields)
-    && value.fields.every((field) => isRecord(field) && typeof field.name === 'string' && typeof field.hasValue === 'boolean')
-}
-
-function isRecord(value: unknown): value is Record<string, any> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
-
-const inputStyle = { width: '100%', boxSizing: 'border-box' as const, border: `1px solid ${dshThemeColor.border}`, borderRadius: 6, padding: '7px 8px', color: dshThemeColor.labelPrimary, background: dshThemeColor.surfaceSubtle, fontSize: uiFontSize(13) }
-
 const nativeTriggerStyle = { width: '100%', minWidth: 0, maxWidth: 'min(360px, 45cqw)', height: 28, color: dshThemeColor.labelSecondary, cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 24, padding: '0 4px 0 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: uiFontSize(13), lineHeight: '20px' }
 const modelNameStyle = { minWidth: 0, maxWidth: 150, flex: '0 1 150px', display: 'block', overflow: 'hidden', whiteSpace: 'nowrap' as const }
 const nativeMenuStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1100, right: 0, bottom: 'calc(100% + 8px)', minWidth: 240, maxWidth: 'min(420px, calc(100vw - 32px))', maxHeight: 'min(360px, calc(100vh - 96px))', overflowX: 'hidden' as const, overflowY: 'auto' as const, padding: 4, border: 0, borderRadius: 20 }
 // 模型列表菜单改为列布局：搜索行固定在顶部，只有模型分组区域滚动，
 // 与内置模型选择器的 MenuSurface + groups 结构一致。
-const nativeModelMenuStyle = { ...nativeMenuStyle, display: 'flex' as const, flexDirection: 'column' as const, overflowY: 'hidden' as const }
+const nativeModelMenuStyle = {
+  ...nativeMenuStyle,
+  boxSizing: 'border-box' as const,
+  minWidth: 'min(240px, calc(100vw - 24px))',
+  width: 'min(420px, calc(100vw - 24px))',
+  maxWidth: 'min(420px, calc(100vw - 24px))',
+  display: 'flex' as const,
+  flexDirection: 'column' as const,
+  overflowY: 'hidden' as const,
+}
 // 菜单行同时用于 <button> 和 <div>：button 由 DSH 全局样式给了 border-box，
 // div 没有，若只写 width:100%+padding，div 会按 content-box 多出左右各 10px，
 // 把整行撑出面板并触发横向滚动条（档位开关因此被推到贴住右边缘）。
@@ -1050,7 +953,7 @@ const nativeMenuLabelStyle = { flex: 'none', whiteSpace: 'nowrap' as const }
 const nativeMenuValueStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const, textAlign: 'right' as const, color: dshThemeColor.labelTertiary }
 const nativeChevronStyle = { flex: 'none', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(20), lineHeight: 1 }
 const nativeGroupTitleStyle = { position: 'sticky' as const, top: 0, zIndex: 1, padding: '5px 8px 3px', color: dshThemeColor.labelTertiary, background: dshThemeColor.menuBackground, fontSize: uiFontSize(12), fontWeight: 500, lineHeight: '18px' }
-const nativeOptionStyle = { width: '100%', minHeight: 38, color: 'inherit', cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 10, padding: '6px 8px', display: 'flex', alignItems: 'center', gap: 8, fontSize: uiFontSize(14), lineHeight: '20px' }
+const nativeOptionStyle = { width: '100%', minWidth: 0, minHeight: 38, boxSizing: 'border-box' as const, color: 'inherit', cursor: 'pointer', textAlign: 'left' as const, background: 'transparent', border: 0, borderRadius: 10, padding: '6px 8px', display: 'flex', alignItems: 'center', gap: 8, fontSize: uiFontSize(14), lineHeight: '20px' }
 const modelSpinnerStyle = { width: 12, height: 12, flex: '0 0 12px', boxSizing: 'border-box' as const, border: '2px solid currentColor', borderRightColor: 'transparent', borderRadius: '50%' }
 const modelLoadingMenuStyle = { minHeight: 56, padding: '0 12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(13) }
 const modelSearchEmptyStyle = { margin: 0, padding: 8, color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: '18px' }

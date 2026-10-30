@@ -295,7 +295,7 @@ export class QoderCliDriver implements CodingNsCliDriver {
     if (previous !== undefined && previous.cwd === input.cwd && previous.effortId === normalizedEffort(input.effortId) && previous.permissionMode === permissionMode && !previous.rpc.isClosed) return previous
     previous?.rpc.dispose()
     const session: QoderSession = {
-      rpc: new JsonRpcProcess({ command, args: qoderAcpArgs(input.effortId, input.permission), cwd: input.cwd, env: { ...commandEnvironment(command), ...this.baseEnvironment }, spawn: this.runSpawn }),
+      rpc: new JsonRpcProcess({ command, args: qoderAcpArgs(input.effortId, input.permission), cwd: input.cwd, env: { ...commandEnvironment(command), ...this.baseEnvironment, ...(input.runtimeEnv ?? {}) }, spawn: this.runSpawn }),
       cwd: input.cwd,
       effortId: normalizedEffort(input.effortId),
       permissionMode,

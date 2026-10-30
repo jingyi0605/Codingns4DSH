@@ -92,7 +92,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) throw new Error('Pi Agent 未安装')
-    const session = this.getSession(input.sessionId, command, input.cwd, input.providerSessionId, input.rawStoreRef)
+    const session = this.getSession(input.sessionId, command, input.cwd, input.providerSessionId, input.rawStoreRef, input.runtimeEnv)
     const rpc = session.rpc
     try {
       // Pi 的 sessionId 由进程创建；先读状态，避免把 DSH sessionId 错当成 Provider 会话标识。
@@ -196,6 +196,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
     cwd: string | undefined,
     providerSessionId: string | undefined,
     rawStoreRef: string | undefined,
+    runtimeEnv: Readonly<Record<string, string>> | undefined,
   ) {
     const bridgeArgs = piBridgeArgs(sessionId)
     const bridgeEnvironment = piBridgeEnvironment(sessionId, 'pi')
@@ -219,7 +220,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
     const args = ['--mode', 'rpc', ...bridgeArgs]
     if (resumeStoreRef?.trim()) args.push('--session', resumeStoreRef.trim())
     else if (resumeProviderSessionId?.trim()) args.push('--session-id', resumeProviderSessionId.trim())
-    const rpc = new JsonRpcProcess({ command, args, cwd, env: bridgeEnvironment, spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args, cwd, env: { ...bridgeEnvironment, ...(runtimeEnv ?? {}) }, spawn: this.runSpawn })
     this.processes.add(rpc)
     const session = {
       rpc,

@@ -231,7 +231,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
-    const server = await this.ensureServer(false, input.cwd)
+    const server = await this.ensureServer(false, input.cwd, input.runtimeEnv)
     if (server === null) throw new Error('OpenCode server 未运行，请先启动 `opencode serve`')
     if (this.serverProtocols.get(server) === 2) { yield* this.v2.executeTurn(server, input); return }
     const modelId = await this.resolveModelId(server, input.modelId)
@@ -593,18 +593,22 @@ export class OpenCodeDriver implements CodingNsCliDriver {
     }
   }
 
-  private async ensureServer(probeOnly: boolean, cwd: string | undefined): Promise<string | null> {
+  private async ensureServer(
+    probeOnly: boolean,
+    cwd: string | undefined,
+    runtimeEnv?: Readonly<Record<string, string>>,
+  ): Promise<string | null> {
     const workspace = cwd ?? process.cwd()
     const managed = this.managedServers.get(workspace)
     if (managed !== undefined) return managed.url
     if (this.cachedServer !== null) return this.cachedServer
     const server = await this.findServer()
     if (server !== null) { this.cachedServer = server.url; return server.url }
-    if (!probeOnly) return this.startServer(workspace)
+    if (!probeOnly) return this.startServer(workspace, runtimeEnv)
     return null
   }
 
-  private async startServer(cwd: string): Promise<string | null> {
+  private async startServer(cwd: string, runtimeEnv?: Readonly<Record<string, string>>): Promise<string | null> {
     const command = this.cachedBinary?.command ?? (await this.findBinary())?.command
     if (command === null || command === undefined) return null
     // 端口不能按固定 4096 递增分配：它会被其他 DSH Profile（Desktop、Web）
@@ -623,7 +627,7 @@ export class OpenCodeDriver implements CodingNsCliDriver {
       try {
         child = this.runSpawn(command, [...this.serverArgs, '--port', String(port)], {
           cwd,
-          env: { ...commandEnvironment(command), OPENCODE_PASSWORD: password, OPENCODE_SERVER_PASSWORD: password },
+          env: { ...commandEnvironment(command), ...(runtimeEnv ?? {}), OPENCODE_PASSWORD: password, OPENCODE_SERVER_PASSWORD: password },
           stdio: ['ignore', 'pipe', 'pipe'],
           windowsHide: true,
           shell: WINDOWS,

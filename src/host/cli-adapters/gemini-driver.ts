@@ -129,7 +129,7 @@ export class GeminiCliDriver extends StandardStreamDriver {
       command,
       args: ['--experimental-acp', ...geminiPermissionArgs(input.permission)],
       cwd: input.cwd,
-      ...(runtimeSettings === null ? {} : { env: runtimeSettings.env }),
+      env: { ...(runtimeSettings?.env ?? {}), ...(input.runtimeEnv ?? {}) },
       spawn: this.runSpawn,
     })
     const interaction = {

@@ -243,6 +243,7 @@ Status: Draft
   - Done when: Session configuration round-trips only reference metadata and invalid selections are shown.
   - Verify: `pnpm run build`; full suite model-menu/session coverage; session serialization contains references only.
   - Requirements/design: Requirements 3, 5, 6; design §§2.4, 3.4, 4.4.
+  - Revision (2026-10-30): The model-selector session binding panel was removed at the user's request. The only credential entry is now the operation (Add) menu's credential command; see `docs/开发记录/20261030-移除模型选择器会话环境变量绑定入口记录.md`. Stored references remain readable for compatibility.
 
 - [ ] 3.3 Final security and repository verification
   - Status: IN_REVIEW

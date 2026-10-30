@@ -302,7 +302,7 @@ export class MiniMaxCodeDriver implements CodingNsCliDriver {
     const teamToken = teamBridgeToken(input.sessionId)
     if (previous !== undefined && previous.cwd === input.cwd && previous.teamToken === teamToken && !previous.rpc.isClosed) return previous
     previous?.rpc.dispose()
-    const rpc = new JsonRpcProcess({ command, args: ['acp'], cwd: input.cwd, spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({ command, args: ['acp'], cwd: input.cwd, env: { ...(input.runtimeEnv ?? {}) }, spawn: this.runSpawn })
     const session: McodeSession = {
       teamToken,
       rpc,

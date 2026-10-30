@@ -89,7 +89,11 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     let child: CodingNsChildProcess
     try {
       child = this.spawnProcess(command, this.buildArgs(input), {
-        cwd: input.cwd ?? process.cwd(), env: this.cachedEnvironment ?? commandEnvironment(command), stdio: [this.usesStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'], windowsHide: true, shell: WINDOWS,
+        cwd: input.cwd ?? process.cwd(),
+        env: { ...(this.cachedEnvironment ?? commandEnvironment(command)), ...(input.runtimeEnv ?? {}) },
+        stdio: [this.usesStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+        shell: WINDOWS,
       })
     } catch (error) {
       // spawn 在命令路径或参数非法时可能同步抛错；必须收敛成当前回合错误，

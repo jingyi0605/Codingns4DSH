@@ -7,6 +7,7 @@ import { DoubaoEventProjector } from './doubao-events.js'
 import { HttpSseClient } from './http-sse-client.js'
 import { DOUBAO_CATALOG } from './model-catalog.js'
 import { doubaoArtifactDirectory, doubaoArtifactName, saveDoubaoArtifact } from './doubao-artifact-store.js'
+import { CodingNsRpcError } from '../rpc-table.js'
 
 interface Run {
   bridge?: DoubaoBridge
@@ -34,7 +35,7 @@ export function doubaoMode(input: CodingNsCliTurnInput): number {
   const serviceTier = input.serviceTierId?.trim()
   if (effort && effort !== 'default') throw new Error('豆包 App 不支持独立思考强度，请使用默认值并选择快速、专家或工作任务')
   if (serviceTier && serviceTier !== 'default') throw new Error('豆包 App 不支持自定义服务档位，请使用默认值')
-  if (Object.keys(input.runtimeEnv ?? {}).length) throw new Error('豆包 App 不支持运行环境注入')
+  if (Object.keys(input.runtimeEnv ?? {}).length) throw new CodingNsRpcError('CREDENTIAL_INJECTION_UNSUPPORTED', '豆包 App 不支持运行环境注入')
   const modes: Record<string, number> = { 'provider-default': 0, 'doubao-fast': 0, 'doubao-expert': 3, 'doubao-work': 4 }
   const mode = modes[input.modelId ?? 'doubao-fast']
   if (mode === undefined) throw new Error('未知豆包产品档位，请选择快速、专家或工作任务')

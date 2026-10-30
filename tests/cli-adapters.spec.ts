@@ -1800,15 +1800,17 @@ test('Registry 为普通适配器在工具完成处切分 step 并继续消费�
 
 test('自行分段的驱动只在切分边界后收到续段意图，丢弃时同步清理驱动状态', async () => {
   const resumes: Array<boolean | undefined> = []
+  const runtimeEnvs: Array<Readonly<Record<string, string>> | undefined> = []
   const discarded: string[] = []
   const registry = new CodingNsCliAdapterRegistry([{
-    descriptor: { id: 'codex', name: 'Codex' },
+    descriptor: { id: 'fake', name: 'Fake segmented Agent' },
     supportsSegmentedTurns: true,
     discardSegmentedTurn(sessionId: string) { discarded.push(sessionId) },
     async detect() { return { installed: true, version: '1.0.0', command: 'fake' } },
     async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
-    async *executeTurn(input: { readonly resumeSegmentedTurn?: boolean }) {
+    async *executeTurn(input: { readonly resumeSegmentedTurn?: boolean; readonly runtimeEnv?: Readonly<Record<string, string>> }) {
       resumes.push(input.resumeSegmentedTurn)
+      runtimeEnvs.push(input.runtimeEnv)
       if (input.resumeSegmentedTurn !== true) {
         yield { type: 'tool-event', toolName: 'shell', callId: 'call-1', status: 'completed' } as const
         yield { type: 'step-boundary' } as const
@@ -1818,16 +1820,31 @@ test('自行分段的驱动只在切分边界后收到续段意图，丢弃时�
       yield { type: 'finish', reason: 'stop' } as const
     },
   }])
-  const input = { adapterId: 'codex' as const, sessionId: 'resume-protocol', messages: [], prompt: '执行', splitToolSteps: true }
+  const originalRuntimeEnv = { CODINGNS_CREDENTIAL_BROKER_ENDPOINT: 'unix:/tmp/broker.sock', PATH: '/tmp/codingns-credential-bin:/usr/bin' }
+  const input = {
+    adapterId: 'fake' as const,
+    sessionId: 'resume-protocol',
+    messages: [],
+    prompt: '执行',
+    splitToolSteps: true,
+    runtimeEnv: originalRuntimeEnv,
+  }
 
   const first = []
   for await (const event of registry.execute(input)) first.push(event)
   assert.deepEqual(first.map(({ type }) => type), ['tool-event', 'step-boundary'])
 
   const second = []
-  for await (const event of registry.execute(input)) second.push(event)
+  for await (const event of registry.execute({
+    ...input,
+    runtimeEnv: { CODINGNS_CREDENTIAL_BROKER_ENDPOINT: 'unix:/tmp/new-broker.sock', PATH: '/usr/bin' },
+  })) second.push(event)
   assert.deepEqual(second.map(({ type }) => type), ['text-delta', 'finish'])
   assert.deepEqual(resumes, [undefined, true])
+  assert.deepEqual(runtimeEnvs, [
+    originalRuntimeEnv,
+    originalRuntimeEnv,
+  ])
 
   // 再次切分后由 Host 丢弃：必须通知驱动结束悬挂运行，且下一次执行重新开始。
   const third = []

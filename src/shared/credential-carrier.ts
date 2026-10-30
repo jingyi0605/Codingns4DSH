@@ -1,10 +1,10 @@
 /**
- * A credential reference carrier contains only a Host lookup id and display label.
+ * A credential carrier contains only a short-lived Host request code and display label.
  * Secret values are never serialized into the composer draft or a DSH message.
  */
 export interface CredentialCarrier {
   readonly version: 1
-  readonly credentialId: string
+  readonly requestCode: string
   readonly label: string
 }
 
@@ -19,17 +19,17 @@ const FORMATTED_PATTERN = /@\[([^\]\n]*)\]\(codingns-credential:([^\)\s]+)\)/gu
 const LEGACY_PATTERN = /@([^<\n]+)<!--codingns:credential:v1:([^:>]+):([^>]+)-->/gu
 const MALFORMED_PATTERN = /(?:@\[?[^\n>]*codingns-credential:[^>\n]*\)?|<!--codingns:credential:[^>]*-->)/gu
 
-export function encodeCredentialCarrier(credentialId: string, label: string): string {
-  const id = credentialId.trim()
-  const display = label.trim() || id
-  if (id === '') throw new Error('The credential carrier id cannot be empty.')
-  return `@[${encodeURIComponent(display)}](codingns-credential:${encodeURIComponent(id)})`
+export function encodeCredentialCarrier(requestCode: string, label: string): string {
+  const code = requestCode.trim()
+  const display = label.trim() || code
+  if (code === '') throw new Error('The credential request code cannot be empty.')
+  return `@[${encodeURIComponent(display)}](codingns-credential:${encodeURIComponent(code)})`
 }
 
-export function insertCredentialCarrier(draft: string, credentialId: string, label: string): string {
+export function insertCredentialCarrier(draft: string, requestCode: string, label: string): string {
   const parsed = parseCredentialCarriers(draft)
-  if (parsed.carriers.some((item) => item.credentialId === credentialId.trim())) return draft
-  const carrier = encodeCredentialCarrier(credentialId, label)
+  if (parsed.carriers.some((item) => item.requestCode === requestCode.trim())) return draft
+  const carrier = encodeCredentialCarrier(requestCode, label)
   const trimmed = draft.trimEnd()
   return trimmed === '' ? carrier : `${trimmed} ${carrier}`
 }
@@ -47,8 +47,8 @@ export function parseCredentialCarriers(input: string): ParsedCredentialCarriers
     const index = match.index ?? -1
     if (index < 0) continue
     const label = decodeCarrierPart(match[1], errors)
-    const credentialId = decodeCarrierPart(match[2], errors)
-    addCarrier(carriers, errors, credentialId, label)
+    const requestCode = decodeCarrierPart(match[2], errors)
+    addCarrier(carriers, errors, requestCode, label)
     ranges.push([index, index + match[0].length])
     replacements.set(`${index}:${index + match[0].length}`, label === '' ? '' : `@${label}`)
   }
@@ -58,9 +58,9 @@ export function parseCredentialCarriers(input: string): ParsedCredentialCarriers
     if (index < 0) continue
     found = true
     const label = match[1]?.trim() ?? ''
-    const credentialId = decodeCarrierPart(match[2], errors)
+    const requestCode = decodeCarrierPart(match[2], errors)
     const encodedLabel = decodeCarrierPart(match[3], errors)
-    addCarrier(carriers, errors, credentialId, label || encodedLabel)
+    addCarrier(carriers, errors, requestCode, label || encodedLabel)
     ranges.push([index, index + match[0].length])
     replacements.set(`${index}:${index + match[0].length}`, label === '' ? '' : `@${label}`)
   }
@@ -95,10 +95,10 @@ function decodeCarrierPart(value: string | undefined, errors: string[]): string 
   }
 }
 
-function addCarrier(carriers: CredentialCarrier[], errors: string[], credentialId: string, label: string): void {
-  if (credentialId === '' || label === '') {
-    errors.push('CREDENTIAL_CARRIER_INVALID: carrier is missing a credential identifier')
+function addCarrier(carriers: CredentialCarrier[], errors: string[], requestCode: string, label: string): void {
+  if (requestCode === '' || label === '') {
+    errors.push('CREDENTIAL_CARRIER_INVALID: carrier is missing a credential request code')
     return
   }
-  if (!carriers.some((item) => item.credentialId === credentialId)) carriers.push({ version: 1, credentialId, label })
+  if (!carriers.some((item) => item.requestCode === requestCode)) carriers.push({ version: 1, requestCode, label })
 }

@@ -395,7 +395,13 @@ export class GrokBuildDriver implements CodingNsCliDriver {
       this.processes.delete(previous.rpc)
     }
     const resumeId = input.providerSessionId ?? (previous?.cwd === input.cwd ? previous?.providerSessionId : undefined)
-    const rpc = new JsonRpcProcess({ command, args: ['agent', '--no-leader', ...(alwaysApprove ? ['--always-approve'] : []), 'stdio'], cwd: input.cwd, env: grokRuntimeEnvironment(), spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({
+      command,
+      args: ['agent', '--no-leader', ...(alwaysApprove ? ['--always-approve'] : []), 'stdio'],
+      cwd: input.cwd,
+      env: { ...grokRuntimeEnvironment(), ...(input.runtimeEnv ?? {}) },
+      spawn: this.runSpawn,
+    })
     this.processes.add(rpc)
     const state: GrokSessionState = { teamToken, bridgeToken, rpc, contextUsage: new GrokContextUsage(), cwd: input.cwd, rawStoreRef: input.rawStoreRef, alwaysApprove, providerSessionId: '', requests: new Map(), permissionDenials: new Map(), questions: new Map(), grokQuestions: new Map(), grokQuestionCallIds: new Set(), grokQuestionEventIds: new Set() }
     rpc.addNotificationListener(message => {

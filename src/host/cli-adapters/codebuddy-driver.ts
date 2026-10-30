@@ -350,7 +350,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
       command,
       args: ['--acp'],
       cwd: input.cwd,
-      env: this.runtimeEnvironment(command),
+      env: { ...this.runtimeEnvironment(command), ...(input.runtimeEnv ?? {}) },
       spawn: this.runSpawn,
     })
     const processState = { rpc, providerSessionId: '' }
@@ -495,7 +495,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
         launch,
         command,
         this.configRoot,
-        this.runtimeEnvironment(command),
+        { ...this.runtimeEnvironment(command), ...(input.runtimeEnv ?? {}) },
         this.platform,
         this.environment,
         (value: string) => {

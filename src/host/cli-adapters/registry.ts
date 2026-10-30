@@ -108,6 +108,8 @@ export class CodingNsCliAdapterRegistry {
     readonly adapterId: CodingNsCliAdapterId
     readonly iterator: AsyncIterator<CodingNsAgentEvent> | null
     readonly deferredPeerInput?: CodingNsCliTurnInput
+    /** Runtime state required when a driver-owned segment is resumed later. */
+    readonly runtimeEnv?: Readonly<Record<string, string>>
   }>()
   private cacheGeneration = 0
   private startupTimer: ReturnType<typeof setTimeout> | undefined
@@ -622,6 +624,15 @@ export class CodingNsCliAdapterRegistry {
       // 驱动自行分段时，续段必须由 Host 显式声明；驱动不能靠猜输入形状决定是否
       // 复用旧进程，否则注入失败后的新用户消息会被拼进上一次运行。
       const resumingDriverTurn = resumingSegmentedTurn && suspended !== undefined && suspended.iterator === null
+      const resumedDriverInput = resumingDriverTurn && suspended?.runtimeEnv !== undefined
+        ? {
+            ...driverInput,
+            // A segmented turn keeps its original execution context. Combining a
+            // refreshed broker token with the old endpoint (or vice versa) can
+            // invalidate credentials midway through the same provider turn.
+            runtimeEnv: suspended.runtimeEnv,
+          }
+        : driverInput
       if (resumingDriverTurn) this.segmentedTurns.delete(input.sessionId)
       this.sessions.set(input.sessionId, current)
       this.sessionStore?.upsert(input.sessionId, {
@@ -664,7 +675,7 @@ export class CodingNsCliAdapterRegistry {
         this.segmentedTurns.delete(input.sessionId)
         iterator = suspended.iterator
       } else {
-        iterator = driver.executeTurn({ ...driverInput, ...(resumingDriverTurn ? { resumeSegmentedTurn: true } : {}) })[Symbol.asyncIterator]()
+        iterator = driver.executeTurn({ ...resumedDriverInput, ...(resumingDriverTurn ? { resumeSegmentedTurn: true } : {}) })[Symbol.asyncIterator]()
       }
       while (true) {
         const next = await iterator.next()
@@ -712,12 +723,23 @@ export class CodingNsCliAdapterRegistry {
         }
         // Explicit boundaries preserve the driver's grouping of messages and tool batches.
         if (event.type === 'step-boundary') {
+          const segmentedRuntimeEnv = driverInput.runtimeEnv
           if (driver.supportsStreamStepSplitting === true) {
-            this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator, ...(deferredPeerInput ? { deferredPeerInput } : {}) })
+            this.segmentedTurns.set(input.sessionId, {
+              adapterId: input.adapterId,
+              iterator,
+              ...(deferredPeerInput ? { deferredPeerInput } : {}),
+              ...(segmentedRuntimeEnv === undefined ? {} : { runtimeEnv: segmentedRuntimeEnv }),
+            })
           } else {
             await closeAgentIterator(iterator)
             // Driver-owned segments resume through a new executeTurn call.
-            this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator: null, ...(deferredPeerInput ? { deferredPeerInput } : {}) })
+            this.segmentedTurns.set(input.sessionId, {
+              adapterId: input.adapterId,
+              iterator: null,
+              ...(deferredPeerInput ? { deferredPeerInput } : {}),
+              ...(segmentedRuntimeEnv === undefined ? {} : { runtimeEnv: segmentedRuntimeEnv }),
+            })
           }
           iterator = undefined
           yield event
@@ -730,7 +752,12 @@ export class CodingNsCliAdapterRegistry {
           && (event.status === 'completed' || event.status === 'failed')) {
           // 先保存迭代器再 yield。即使调用方在工具事件后提前关闭流，
           // 下一次 DSH step 仍能从同一个 Provider 进程继续读取正文。
-          this.segmentedTurns.set(input.sessionId, { adapterId: input.adapterId, iterator, ...(deferredPeerInput ? { deferredPeerInput } : {}) })
+          this.segmentedTurns.set(input.sessionId, {
+            adapterId: input.adapterId,
+            iterator,
+            ...(deferredPeerInput ? { deferredPeerInput } : {}),
+            ...(driverInput.runtimeEnv === undefined ? {} : { runtimeEnv: driverInput.runtimeEnv }),
+          })
           // 所有权交给续段表，当前调用结束不得关闭需要继续消费的 Provider 流。
           iterator = undefined
           yield event

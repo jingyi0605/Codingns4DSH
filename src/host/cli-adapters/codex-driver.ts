@@ -59,6 +59,7 @@ interface CodexTurnEventQueue {
 interface CodexSession {
   readonly teamToken: string | undefined
   readonly resumeThreadId: string | undefined
+  readonly runtimeEnvFingerprint: string
   readonly performance: CodexPerformanceTracker
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
@@ -1065,16 +1066,29 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   private async getSession(input: CodingNsCliTurnInput, command: string) {
     const previous = this.sessions.get(input.sessionId)
     const teamToken = teamBridgeToken(input.sessionId)
-    if (previous !== undefined && previous.cwd === input.cwd && previous.teamToken === teamToken && !previous.rpc.isClosed) return previous
+    const runtimeEnvFingerprint = fingerprintRuntimeEnvironment(input.runtimeEnv)
+    if (previous !== undefined
+      && previous.cwd === input.cwd
+      && previous.teamToken === teamToken
+      && previous.runtimeEnvFingerprint === runtimeEnvFingerprint
+      && !previous.rpc.isClosed) return previous
     if (previous?.segmentedTurn !== undefined) this.closeSegmentedTurn(previous, previous.segmentedTurn)
     previous?.rpc.dispose()
     // 子代理托管开启时用 `-c` 覆盖注入 MCP 替身工具；工具由桥接转投成 DSH 原生子会话。
     const bridgeArgs = codexBridgeArgs(input.sessionId, this.descriptor.id)
     // Codex 的 `-c` 覆盖项必须与 app-server 的其余启动参数放在同一侧；
     // 统一置于子命令前，避免不同版本对全局/子命令参数的解析差异。
-    const rpc = new JsonRpcProcess({ command, args: [...bridgeArgs, ...this.appServerArgs()], cwd: input.cwd, explicitWindowsShell: true, spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({
+      command,
+      args: [...bridgeArgs, ...this.appServerArgs()],
+      cwd: input.cwd,
+      env: { ...(input.runtimeEnv ?? {}) },
+      explicitWindowsShell: true,
+      spawn: this.runSpawn,
+    })
     const session = {
       teamToken,
+      runtimeEnvFingerprint,
       resumeThreadId: input.providerSessionId ?? (previous?.cwd === input.cwd ? previous?.threadId || previous?.resumeThreadId : undefined),
       performance: new CodexPerformanceTracker(this.now),
       rpc,
@@ -1186,6 +1200,11 @@ function prepareCodexSession(session: CodexSession, input: CodingNsCliTurnInput)
     && input.modelContextWindow > 0) {
     session.contextWindow = input.modelContextWindow
   }
+}
+
+function fingerprintRuntimeEnvironment(environment: Readonly<Record<string, string>> | undefined): string {
+  const entries = Object.entries(environment ?? {}).sort(([left], [right]) => left.localeCompare(right))
+  return createHash('sha256').update(JSON.stringify(entries), 'utf8').digest('hex')
 }
 
 function parseCodexCatalog(value: unknown): CodingNsCliModelCatalog {

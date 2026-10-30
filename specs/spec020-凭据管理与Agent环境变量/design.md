@@ -191,6 +191,8 @@ The panel lists metadata and offers add/edit/delete actions. An edit form starts
 
 Session selection UI is shown where external Agent session settings are already edited. It stores only `CredentialReference` objects in the Host session configuration. It does not store environment values, and it does not display a secret preview.
 
+Revision (2026-10-30): The model-selector session binding panel was removed at the user's request. Credentials are now selected per message from the operation (Add) menu's credential command, which inserts a short-lived credential carrier into the draft and lets the Host resolve it immediately before the Agent turn. No model-selector entry creates or edits stored references; existing stored references remain readable for compatibility.
+
 ## 4. Data and state model
 
 ### 4.1 Relationships

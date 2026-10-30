@@ -73,6 +73,8 @@ export function registerCredentialReferenceSource(ctx: Context, rpc: CodingNsRpc
   const fiber = ctx.inject(['inputTriggers'], (scope) => {
     const inputTriggers = readService<InputTriggersService>(scope, 'inputTriggers')
     if (inputTriggers === undefined) return
+    const sessions = readService<SessionsService>(scope, 'sessions')
+    const conversation = readService<ConversationService>(scope, 'conversation')
     const source: InputTriggerSource = {
       trigger: '/',
       name: CREDENTIAL_INPUT_SOURCE,
@@ -84,21 +86,14 @@ export function registerCredentialReferenceSource(ctx: Context, rpc: CodingNsRpc
           name: item.id,
           label: item.label,
           description: item.fields.map((field) => field.name).join(', '),
-          value: encodeSelection({ credentialId: item.id, label: item.label }),
+          value: encodeSelection({ requestCode: item.id, label: item.label }),
         }))
       },
       onPick(pick: InputTriggerPick) {
         const selection = decodeSelection(pick.candidate.value)
-        if (selection === undefined) return { text: '' }
-        return {
-          insert: {
-            source: CREDENTIAL_INPUT_SOURCE,
-            ref: encodeSelection(selection),
-            label: selection.label,
-            appearance: 'session',
-            clipboardText: `@${selection.label}`,
-          },
-        }
+        if (selection === undefined || pick.action !== 'pick') return { text: '' }
+        void issueAndInsertCredentialReference(rpc, sessions, conversation, pick.session.sessionId, selection, pick.span)
+        return 'handled'
       },
       codec: {
         clipboardText(ref) {
@@ -108,7 +103,9 @@ export function registerCredentialReferenceSource(ctx: Context, rpc: CodingNsRpc
         async serialize(ref) {
           const selection = decodeSelection(ref)
           if (selection === undefined) throw new Error('Credential reference is invalid')
-          return encodeCredentialCarrier(selection.credentialId, selection.label)
+          const issued = decodeIssuedSelection(ref)
+          if (issued === undefined) throw new Error('Credential request code is missing or expired')
+          return encodeCredentialCarrier(issued.requestCode, selection.label)
         },
       },
     }
@@ -148,7 +145,7 @@ export function registerCredentialCommand(ctx: Context, rpc: CodingNsRpcClient, 
             detail: item.fields.map((field) => field.name).join(', '),
           }))
         },
-        onSelect(option, session) {
+        async onSelect(option, session) {
           const sessions = readService<SessionsService>(scope, 'sessions')
           const conversation = readService<ConversationService>(scope, 'conversation')
           const sessionContext = sessions?.scope(session.sessionId)
@@ -160,16 +157,21 @@ export function registerCredentialCommand(ctx: Context, rpc: CodingNsRpcClient, 
             ?? (selection !== undefined && snapshot.draftRev !== undefined
               ? { start: selection.start, end: selection.end, draftRev: snapshot.draftRev }
               : { start: snapshot.draft.length, end: snapshot.draft.length, draftRev: snapshot.draftRev ?? 0 })
-          const reference = {
-            source: CREDENTIAL_INPUT_SOURCE,
-            ref: encodeSelection({ credentialId: option.id, label: option.label }),
-            label: option.label,
-            appearance: 'session' as const,
-            clipboardText: `@${option.label}`,
+          try {
+            const issued = await issueCredential(rpc, session.sessionId, option.id)
+            const reference = {
+              source: CREDENTIAL_INPUT_SOURCE,
+              ref: encodeSelection({ requestCode: issued.requestCode, label: option.label }),
+              label: option.label,
+              appearance: 'session' as const,
+              clipboardText: `@${option.label}`,
+            }
+            if (input.insertReference?.(reference, span) === true) return
+            if (input.setDraft !== undefined) input.setDraft(`${snapshot.draft.slice(0, span.start)}${encodeCredentialCarrier(issued.requestCode, option.label)}${snapshot.draft.slice(span.end)}`)
+            else input.notify?.('error', t('credentials.commandUnavailable'))
+          } catch {
+            input.notify?.('error', t('credentials.commandUnavailable'))
           }
-          if (input.insertReference?.(reference, span) === true) return
-          if (input.setDraft !== undefined) input.setDraft(`${snapshot.draft.slice(0, span.start)}${encodeCredentialCarrier(option.id, option.label)}${snapshot.draft.slice(span.end)}`)
-          else input.notify?.('error', t('credentials.commandUnavailable'))
         },
       },
     }), 'codingns: credential add command')
@@ -254,8 +256,8 @@ async function listAllCredentials(rpc: CodingNsRpcClient, signal: AbortSignal): 
   return items
 }
 
-function encodeSelection(selection: CredentialReferenceSelection): string {
-  return encodeURIComponent(`${selection.credentialId}\u0000${selection.label}`)
+function encodeSelection(selection: { readonly requestCode: string; readonly label: string }): string {
+  return encodeURIComponent(`${selection.requestCode}\u0000${selection.label}`)
 }
 
 function decodeSelection(value: string | undefined): CredentialReferenceSelection | undefined {
@@ -267,6 +269,51 @@ function decodeSelection(value: string | undefined): CredentialReferenceSelectio
   const credentialId = decoded.slice(0, separator).trim()
   const label = decoded.slice(separator + 1).trim()
   return credentialId === '' || label === '' ? undefined : { credentialId, label }
+}
+
+function decodeIssuedSelection(value: string | undefined): { readonly requestCode: string; readonly label: string } | undefined {
+  const selection = decodeSelection(value)
+  return selection === undefined ? undefined : { requestCode: selection.credentialId, label: selection.label }
+}
+
+async function issueCredential(
+  rpc: CodingNsRpcClient,
+  sessionId: string,
+  credentialId: string,
+): Promise<{ readonly requestCode: string }> {
+  const result = await rpc.call(CODINGNS_RPC_CHANNEL, 'credentials/issue', { sessionId, credentialId })
+  if (!result.ok || !isRecord(result.value) || typeof result.value.requestCode !== 'string') {
+    throw new Error('Credential issue failed')
+  }
+  return { requestCode: result.value.requestCode }
+}
+
+async function issueAndInsertCredentialReference(
+  rpc: CodingNsRpcClient,
+  sessions: SessionsService | undefined,
+  conversation: ConversationService | undefined,
+  sessionId: string,
+  selection: CredentialReferenceSelection,
+  span: { readonly start: number; readonly end: number; readonly draftRev: number },
+): Promise<void> {
+  const sessionContext = sessions?.scope(sessionId)
+  const input = sessionContext === undefined ? undefined : conversation?.input.for(sessionContext)
+  if (input === undefined) return
+  try {
+    const issued = await issueCredential(rpc, sessionId, selection.credentialId)
+    const reference = {
+      source: CREDENTIAL_INPUT_SOURCE,
+      ref: encodeSelection({ requestCode: issued.requestCode, label: selection.label }),
+      label: selection.label,
+      appearance: 'session' as const,
+      clipboardText: `@${selection.label}`,
+    }
+    if (input.insertReference?.(reference, span) === true) return
+    const snapshot = input.state.getSnapshot()
+    input.setDraft?.(`${snapshot.draft.slice(0, span.start)}${encodeCredentialCarrier(issued.requestCode, selection.label)}${snapshot.draft.slice(span.end)}`)
+  } catch {
+    input.notify?.('error', 'Could not issue the credential request code.')
+  }
 }
 
 function isCredentialMetadata(value: unknown): value is CredentialMetadata {

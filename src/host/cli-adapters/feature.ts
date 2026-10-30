@@ -79,7 +79,7 @@ import { CodingNsTeamDispatcher } from '../cli-bridge/team-dispatch.js'
 import { createAgentTeamTool } from '../cli-bridge/team-tool.js'
 import { TeamInputTracker, isTeamInputMessage, pendingPeerInput } from './team-input.js'
 import { withTeamSupport } from '../cli-bridge/team-adapters.js'
-import { isCredentialReference } from '../../shared/contracts/credentials.js'
+import { isCredentialReference, type CredentialBrokerBinding } from '../../shared/contracts/credentials.js'
 import { parseCredentialCarriers, type CredentialCarrier } from '../../shared/credential-carrier.js'
 
 export function createCliAdaptersFeature(options: {
@@ -329,7 +329,7 @@ export function createCliAdaptersFeature(options: {
           .getProfile(context.services.dshContext).capabilities.get('session.prompt-assembly')?.value as SessionPromptAdapter | undefined
         if (adapter !== undefined) context.resources.add(adapter.install((assembly, scope) => promptTranslation.translateAssembly(assembly, scope)))
       }
-      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, translationRecovery, promptTranslation, nativeSessions, teamInputs)
+      registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, translationRecovery, promptTranslation, context.services.credentialBroker, nativeSessions, teamInputs)
       const interactionTranslation = createInteractionTranslation(translation, sessionId => registry.getSession(sessionId))
       context.resources.add(() => interactionTranslation.dispose())
       context.resources.add(context.services.rpc.register('cli', async (action, payload, rpcContext) => {
@@ -714,7 +714,19 @@ export function createCliAdaptersFeature(options: {
           if (config.teamId && !teamDispatcher.identity(sessionId)) {
             throw Object.assign(new Error('The native Team identity is unavailable. Restore its Team profile and adapter before continuing.'), { code: 'TEAM_SERVICE_UNAVAILABLE' })
           }
+          const turnInput = extractTurnInput(messages, context.services.dshContext, teamInputs.take(sessionId, messages))
+          const credentialResolution = await resolveCredentialEnvironment(
+            context.services.credentials,
+            context.services.credentialBroker,
+            sessionId,
+            config.credentialRefs,
+            turnInput.credentialCarriers,
+            config.adapterId === 'dsh',
+          )
           if (config.adapterId === 'dsh') {
+            if (credentialResolution !== undefined && context.services.credentialBroker?.nativeToolAvailable() !== true) {
+              throw new CodingNsRpcError('CREDENTIAL_INJECTION_UNSUPPORTED', 'Native DSH credential tool is unavailable')
+            }
             const selection = dshSelection
             if (sessionId !== '' && (selection.modelId !== undefined || selection.effortId !== undefined)) {
               registry.setSession(sessionId, { adapterId: 'dsh', ...selection })
@@ -740,10 +752,8 @@ export function createCliAdaptersFeature(options: {
             return
           }
           const cwd = resolveSessionCwd(context.services.nativeSessions, sessionId, value)
-          const turnInput = extractTurnInput(messages, context.services.dshContext, teamInputs.take(sessionId, messages))
           const turnOptions = readCliTurnOptions(value)
           const runtimeEnv = readCliRuntimeEnv(value)
-          const credentialResolution = await resolveCredentialEnvironment(context.services.credentials, config.credentialRefs, turnInput.credentialCarriers)
           const requestSignal = isAbortSignal(value?.signal)
             ? AbortSignal.any([value.signal, lifetime.signal])
             : lifetime.signal
@@ -761,7 +771,7 @@ export function createCliAdaptersFeature(options: {
           const userPrompt = turnInput.translatePrompt
             ? [translatedPrompt, translationLanguage === undefined ? turnInput.untranslatedPrompt : attachmentNotices(turnInput.attachments, translationLanguage)].filter((part) => part.trim() !== '').join('\n\n')
             : turnInput.prompt
-          const prompt = [formatCredentialEnvironmentNotice(credentialResolution?.environmentNames ?? []), userPrompt]
+          const prompt = [formatCredentialUsageNotice(credentialResolution), userPrompt]
             .filter((part) => part.trim() !== '')
             .join('\n\n')
           // 权限状态必须与 DSH 会话当前生效值同源。驱动不能自行假设“完全权限”，
@@ -792,7 +802,7 @@ export function createCliAdaptersFeature(options: {
             ...(turnOptions.enableAskUserQuestion === true ? { enableAskUserQuestion: true } : {}),
             ...(runtimeEnv === undefined && credentialResolution === undefined
               ? {}
-              : { runtimeEnv: { ...(runtimeEnv ?? {}), ...(credentialResolution?.values ?? {}) } }),
+              : { runtimeEnv: { ...(runtimeEnv ?? {}), ...(credentialResolution?.runtimeEnv ?? {}) } }),
             ...(config.modelId ? { modelId: config.modelId } : {}),
             ...(magpieCodexContextWindow === undefined ? {} : { modelContextWindow: magpieCodexContextWindow }),
             ...(config.effortId ? { effortId: config.effortId } : {}),
@@ -946,6 +956,7 @@ function registerDelegationAgentHooks(
   translation: CodingNsHostServices['sessionTranslation'],
   translationRecovery: ReturnType<typeof createSessionTranslationRecovery>,
   promptTranslation: ReturnType<typeof createSessionPromptTranslation>,
+  credentialBroker: CodingNsHostServices['credentialBroker'],
   nativeSessions?: CodingNsHostServices['nativeSessions'],
   teamInputs?: TeamInputTracker,
 ): void {
@@ -1077,6 +1088,7 @@ function registerDelegationAgentHooks(
   register('agent/disposed', (payload: unknown) => {
     const sessionId = readAgentSessionId(asRecord(payload)?.agent)
     teamInputs?.release(sessionId)
+    credentialBroker?.revokeSession(sessionId)
     getSubagentBridge()?.revokeTeamSession?.(sessionId)
     translationRecovery.cancelSession(sessionId)
     // disposed 只代表运行时释放；subagentCatalog 没有删除语义，保留目录项并
@@ -1397,32 +1409,82 @@ function readCliRuntimeEnv(value: Record<string, any> | null): Readonly<Record<s
 
 async function resolveCredentialEnvironment(
   service: CodingNsHostServices['credentials'],
+  broker: CodingNsHostServices['credentialBroker'],
+  sessionId: string,
   references: CodingNsCliSessionConfig['credentialRefs'],
   carriers: readonly CredentialCarrier[] = [],
+  reuseExisting = false,
 ): Promise<{
-  readonly values: Readonly<Record<string, string>>
+  readonly runtimeEnv: Readonly<Record<string, string>>
   readonly environmentNames: readonly string[]
+  readonly requestCodes: readonly {
+    readonly requestCode: string
+    readonly label: string
+    readonly bindings: readonly CredentialBrokerBinding[]
+  }[]
 } | undefined> {
   if ((references === undefined || references.length === 0) && carriers.length === 0) return undefined
-  if (service === undefined) throw new CodingNsRpcError('CREDENTIAL_STORE_UNAVAILABLE', 'Credential module is unavailable')
-  const resolved: Record<string, string> = {}
+  if (service === undefined || broker === undefined) throw new CodingNsRpcError('CREDENTIAL_BROKER_UNAVAILABLE', 'Credential broker is unavailable')
+  const processEnvironment = broker.processEnvironment(sessionId)
+  const requestCodes: Array<{
+    readonly requestCode: string
+    readonly label: string
+    readonly bindings: readonly CredentialBrokerBinding[]
+  }> = []
   for (const reference of references ?? []) {
-    const values = await service.resolve(reference)
-    for (const [name, value] of Object.entries(values)) {
-      if (resolved[name] !== undefined) throw new CodingNsRpcError('CREDENTIAL_ENV_CONFLICT', 'Credential environment names must be unique')
-      resolved[name] = value
-    }
+    const issued = await broker.issue({ sessionId, credentialId: reference.credentialId, bindings: reference.bindings, reuseExisting })
+    requestCodes.push(issued)
   }
   for (const carrier of carriers) {
-    const values = await service.resolveAll(carrier.credentialId)
-    for (const [name, value] of Object.entries(values)) {
-      if (resolved[name] !== undefined) throw new CodingNsRpcError('CREDENTIAL_ENV_CONFLICT', 'Credential environment names must be unique')
-      resolved[name] = value
-    }
+    requestCodes.push(await broker.resolveCarrier(sessionId, carrier.requestCode, carrier.label))
   }
-  return { values: resolved, environmentNames: Object.keys(resolved).sort() }
+  const environmentNames = requestCodes.flatMap((item) => item.bindings.map((binding) => binding.env))
+  if (new Set(environmentNames).size !== environmentNames.length) {
+    throw new CodingNsRpcError('CREDENTIAL_ENV_CONFLICT', 'Credential environment names must be unique')
+  }
+  return {
+    runtimeEnv: {
+      CODINGNS_CREDENTIAL_BROKER_ENDPOINT: processEnvironment.endpoint,
+      CODINGNS_CREDENTIAL_BROKER_TOKEN: processEnvironment.token,
+      CODINGNS_CREDENTIAL_SESSION: processEnvironment.sessionId,
+      PATH: processEnvironment.path,
+    },
+    environmentNames: [...new Set(environmentNames)].sort(),
+    requestCodes,
+  }
 }
 
+export function formatCredentialUsageNotice(
+  resolution: Awaited<ReturnType<typeof resolveCredentialEnvironment>> | undefined,
+  nativeToolAvailable = false,
+): string {
+  if (resolution === undefined || resolution.requestCodes.length === 0) return ''
+  const codes = resolution.requestCodes.map((item) => [
+    `- ${item.label}: ${item.requestCode}`,
+    ...item.bindings.map((binding) => `  ${binding.field} -> ${binding.env} (${binding.kind}; ${binding.usages.join(', ')})`),
+  ].join('\n')).join('\n')
+  const usage = nativeToolAvailable
+    ? [
+      'Use the native `codingns_credential` tool, not a shell command, to consume this credential.',
+      'Call it with action="exec", the request code, and a command array. For SSH, use `sh -lc` so the broker-provided username expands inside the broker environment; the broker configures SSH askpass for SSH secret bindings.',
+      'Example command array: ["sh", "-lc", "exec ssh -o IdentityAgent=none -o IdentitiesOnly=yes -o PubkeyAuthentication=no -o PreferredAuthentications=' + 'pass' + 'word,keyboard-interactive -o NumberOfPasswordPrompts=1 -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \\\"$CREDENTIAL_USERNAME@HOST\\\" \\\"printf ssh-login-ok\\\""]',
+    ]
+    : [
+      'If the native `codingns_credential` tool is available, prefer it: call action="exec" with the request code and a command argv array. Otherwise use the credential CLI shown below.',
+      'Use `codingns-credential exec --code <request-code> -- <command>` or `codingns-credential exec --handle <handle> -- <command>` after describe.',
+      'For SSH, the broker configures SSH askpass for SSH secret bindings. Run SSH inside a child shell so the username environment variable expands there, and disable unrelated SSH-agent keys with `-o IdentityAgent=none -o IdentitiesOnly=yes -o PubkeyAuthentication=no -o PreferredAuthentications=' + 'pass' + 'word,keyboard-interactive -o NumberOfPasswordPrompts=1`.',
+      'CLI example: `codingns-credential exec --code <request-code> -- sh -lc \'exec ssh -o IdentityAgent=none -o IdentitiesOnly=yes -o PubkeyAuthentication=no -o PreferredAuthentications=' + 'pass' + 'word,keyboard-interactive -o NumberOfPasswordPrompts=1 "$CREDENTIAL_USERNAME@HOST" "printf ssh-login-ok"\'`.',
+    ]
+  return [
+    'CodingNS credential broker is available for this Agent.',
+    ...(nativeToolAvailable ? [] : ['Use `codingns-credential describe --code <request-code>` to inspect bindings without reading secret values; it returns a handle for later execution.']),
+    ...usage,
+    'The request codes and environment names below are session-scoped. Never print credential values or open the credential store.',
+    codes,
+  ].join('\n')
+}
+
+/** Compatibility formatter for callers that only have environment names. */
 export function formatCredentialEnvironmentNotice(environmentNames: readonly string[]): string {
   const names = [...new Set(environmentNames.map((name) => name.trim()).filter((name) => name !== ''))].sort()
   if (names.length === 0) return ''
@@ -2205,7 +2267,7 @@ function extractMessageInput(content: unknown, dshContext?: CodingNsHostServices
       const parsed = parseCredentialCarriers(part.text)
       text.push(parsed.text)
       for (const carrier of parsed.carriers) {
-        if (!credentialCarriers.some((item) => item.credentialId === carrier.credentialId)) credentialCarriers.push(carrier)
+        if (!credentialCarriers.some((item) => item.requestCode === carrier.requestCode)) credentialCarriers.push(carrier)
       }
     }
     const kind = part.type === 'image' ? 'image' : part.type === 'file' ? 'file' : null
