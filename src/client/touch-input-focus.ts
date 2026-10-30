@@ -26,6 +26,10 @@ interface InputElementLike {
 }
 
 const INPUT_SELECTOR = 'input, textarea, [contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"], [data-composer-input="true"]'
+// DSH 弹层内部的焦点是应用自己的导航（模型列表搜索框、对话框首个输入项），
+// 不是页面加载时的自动聚焦；收走它会让 DSH 的 onBlur 直接关掉弹层。
+const POPUP_SURFACE_SELECTOR = '[role="menu"],[role="listbox"],[role="dialog"],[role="group"],[aria-modal="true"]'
+const POPUP_ITEM_SELECTOR = '[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],[role="option"]'
 const NON_TEXT_INPUT_TYPES = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'])
 const ACTIVATION_MAX_MS = 700
 const TAP_MAX_DISTANCE_PX = 12
@@ -56,7 +60,10 @@ export function startTouchInputFocusGuard(options: {
   const allowed = (input: InputElementLike): boolean => activation?.input === input
     && Date.now() - activation.at <= ACTIVATION_MAX_MS
 
-  const blurActiveInput = (): void => { editableInput(dom?.activeElement)?.blur?.() }
+  const blurActiveInput = (): void => {
+    const input = editableInput(dom?.activeElement)
+    if (input !== null && !inPopupSurface(input)) input.blur?.()
+  }
   const revoke = (): void => { activation = undefined }
 
   const onActivate = (event: unknown): void => {
@@ -77,12 +84,12 @@ export function startTouchInputFocusGuard(options: {
 
   const onFocusIn = (event: unknown): void => {
     const input = editableInput(eventTarget(event))
-    if (input === null || allowed(input)) return
+    if (input === null || allowed(input) || inPopupSurface(input)) return
     // 捕获原生 autofocus 或绕过原型包装的聚焦；同步失焦，避免键盘一直保留。
     input.blur?.()
     queueMicrotask(() => {
       // 不能让迟到的失焦任务撤销用户随后对同一输入框的真实点按。
-      if (active && editableInput(dom?.activeElement) === input && !allowed(input)) input.blur?.()
+      if (active && editableInput(dom?.activeElement) === input && !allowed(input) && !inPopupSurface(input)) input.blur?.()
     })
   }
 
@@ -100,7 +107,7 @@ export function startTouchInputFocusGuard(options: {
     const original = prototype.focus
     const guarded: HTMLElement['focus'] = function (this: HTMLElement, ...args): void {
       const input = editableInput(this)
-      if (active && this.ownerDocument === dom && input !== null && !allowed(input)) return
+      if (active && this.ownerDocument === dom && input !== null && !allowed(input) && !inPopupSurface(input)) return
       original.apply(this, args)
     }
     // 只包装当前浏览器窗口；在调用原生方法前拒绝，避免先弹出键盘再收回的闪动。
@@ -169,6 +176,17 @@ function isEditable(element: InputElementLike): boolean {
   if (value === 'false') return false
   return element.isContentEditable === true || value === '' || value === 'true' || value === 'plaintext-only'
     || element.getAttribute?.('data-composer-input') === 'true'
+}
+
+/**
+ * 弹层内部已经打开的输入框属于应用自己的焦点导航：DSH 的模型列表会把焦点
+ * 交给搜索框，并在 `onBlur` 时关闭整个菜单。只豁免真正承载可选项、且不是
+ * 可点按控件的弹层，避免把普通布局容器当成豁免区。
+ */
+function inPopupSurface(input: InputElementLike): boolean {
+  const surface = closest(input, POPUP_SURFACE_SELECTOR)
+  if (surface === null || closest(surface, 'button, a') !== null) return false
+  return Boolean(surface.querySelector?.(POPUP_ITEM_SELECTOR))
 }
 
 function tappedInput(value: unknown): InputElementLike | null {
