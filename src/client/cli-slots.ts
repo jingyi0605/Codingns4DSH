@@ -464,6 +464,19 @@ interface ModelCatalogState {
   readonly value: CodingNsCliModelCatalog
 }
 
+export function modelMenuLeftOffset(
+  rootLeft: number,
+  rootRight: number,
+  menuWidth: number,
+  viewportLeft: number,
+  viewportWidth: number,
+): number {
+  const minLeft = viewportLeft + 12
+  const maxLeft = Math.max(minLeft, viewportLeft + viewportWidth - menuWidth - 12)
+  const menuLeft = Math.min(maxLeft, Math.max(minLeft, rootRight - menuWidth))
+  return menuLeft - rootLeft
+}
+
 interface ModelNameProps {
   readonly label: string
   readonly loading: boolean
@@ -517,11 +530,13 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   const [catalogRetry, setCatalogRetry] = useState(0)
   const [open, setOpen] = useState(false)
   const [pane, setPane] = useState<ModelPane>('root')
+  const [modelMenuLeft, setModelMenuLeft] = useState<number | null>(null)
   const [translationSettingsOpen, setTranslationSettingsOpen] = useState(false)
   const [modelQuery, setModelQuery] = useState('')
   const [highlightedModelIndex, setHighlightedModelIndex] = useState<number | null>(null)
   const modelSearchRef = useRef<HTMLInputElement | null>(null)
   const modelOptionRefs = useRef<Array<HTMLButtonElement | null>>([])
+  const modelMenuRef = useRef<HTMLDivElement | null>(null)
   const modelGroupsId = useId()
   const rootRef = useRef<HTMLDivElement | null>(null)
   const nativeMagpieModelsRef = useRef<readonly NativeModelCatalogEntry[]>([])
@@ -639,6 +654,37 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
   useEffect(() => {
     setPane('root')
   }, [sessionId, selection.adapterId])
+
+  useEffect(() => {
+    if (!open || pane !== 'model' || typeof window === 'undefined' || typeof document === 'undefined') return
+    const updateMenuPosition = (): void => {
+      const root = rootRef.current
+      const menuElement = modelMenuRef.current
+      if (root === null || menuElement === null) return
+      const rootRect = root.getBoundingClientRect()
+      const viewport = window.visualViewport
+      const viewportLeft = viewport?.offsetLeft ?? 0
+      const viewportWidth = viewport?.width ?? document.documentElement.clientWidth
+      setModelMenuLeft(modelMenuLeftOffset(
+        rootRect.left,
+        rootRect.right,
+        menuElement.getBoundingClientRect().width,
+        viewportLeft,
+        viewportWidth,
+      ))
+    }
+    updateMenuPosition()
+    window.addEventListener('resize', updateMenuPosition)
+    window.addEventListener('scroll', updateMenuPosition, true)
+    window.visualViewport?.addEventListener('resize', updateMenuPosition)
+    window.visualViewport?.addEventListener('scroll', updateMenuPosition)
+    return () => {
+      window.removeEventListener('resize', updateMenuPosition)
+      window.removeEventListener('scroll', updateMenuPosition, true)
+      window.visualViewport?.removeEventListener('resize', updateMenuPosition)
+      window.visualViewport?.removeEventListener('scroll', updateMenuPosition)
+    }
+  }, [open, pane])
 
   // 手动重新检测后刷新目录；日常读取沿用缓存，不定时重启探测。
   useEffect(() => subscribeAdapterCatalogChanged(props.rpc, (change) => {
@@ -916,7 +962,15 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
       !loading && createElement('span', { className: 'codingns4dsh-model-effort', style: { color: dshThemeColor.labelCaption, whiteSpace: 'nowrap' } }, effortLabel),
       !loading && createElement(NativeDropdownChevron, { open }),
     ),
-    open && createElement('div', { role: 'menu', 'aria-label': t('cli.chooseModelMenu'), className: pane === 'model' ? 'codingns4dsh-model-menu' : undefined, style: pane === 'model' ? nativeModelMenuStyle : nativeMenuStyle }, ...menu),
+    open && createElement('div', {
+      ref: pane === 'model' ? modelMenuRef : undefined,
+      role: 'menu',
+      'aria-label': t('cli.chooseModelMenu'),
+      className: pane === 'model' ? 'codingns4dsh-model-menu' : undefined,
+      style: pane === 'model'
+        ? { ...nativeModelMenuStyle, ...(modelMenuLeft === null ? {} : { left: modelMenuLeft, right: 'auto' }) }
+        : nativeMenuStyle,
+    }, ...menu),
     translationSettings,
   )
 }

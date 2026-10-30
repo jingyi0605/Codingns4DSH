@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createElement, useMemo, useSyncExternalStore } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { registerCliConversationSlots } from '../src/client/cli-slots.js'
+import { modelMenuLeftOffset, registerCliConversationSlots } from '../src/client/cli-slots.js'
 import { watchNativeModelMenu } from '../src/client/native-model-translation-menu.js'
 import { composerSlotSelector, contextComposerSlotName } from '../src/dsh-capabilities/client/composer-slot-selectors.js'
 import { createSessionPerformancePresentation } from '../src/dsh-capabilities/client/session-performance-adapter.js'
@@ -122,6 +122,50 @@ test('original and mirrored composers keep one model picker, responsive sizing, 
         }
       }
     }
+  }
+})
+
+test('model submenu width remains stable while scrolling wide rows on mobile viewports', { timeout: 30_000 }, async t => {
+  const browser = await quickAppBrowser(t)
+  if (browser === undefined) return
+  const css = composerStyles()
+  await browser.command('Page.enable')
+  const { frameTree } = await browser.command('Page.getFrameTree')
+  await browser.command('Page.setDocumentContent', { frameId: frameTree.frame.id, html: `<style>
+    *{box-sizing:border-box}body{margin:0;overflow-x:hidden}.composer{position:absolute;right:-60px;top:250px;width:100px;display:flex;justify-content:flex-end}
+    .picker{position:relative;width:220px;height:32px;flex:none}
+    .model-menu{position:absolute;z-index:2;right:0;bottom:100%;box-sizing:border-box;width:min(420px,calc(100vw - 24px));min-width:min(240px,calc(100vw - 24px));max-width:min(420px,calc(100vw - 24px));height:180px;overflow:hidden;border-radius:12px;background:#333;color:white}
+    .model-groups{width:100%;height:100%;min-width:0;overflow-x:hidden;overflow-y:auto}
+    .model-option{display:block;width:100%;min-width:0;max-width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;padding:10px}
+    ${css}</style><div class="composer"><div class="picker"><div class="model-menu"><div class="model-groups">${Array.from({ length: 12 }, (_, index) => `<div class="model-option">${index === 10 ? 'provider/' + 'extremely-wide-model-name-'.repeat(12) : 'Model ' + index}</div>`).join('')}</div></div></div></div>` })
+
+  for (const width of [320, 390, 660]) {
+    await browser.command('Emulation.setDeviceMetricsOverride', { width, height: 844, deviceScaleFactor: 1, mobile: true })
+    const result = await browser.evaluate(`(() => {
+      const picker = document.querySelector('.picker');
+      const menu = document.querySelector('.model-menu');
+      const list = document.querySelector('.model-groups');
+      const positionMenu = () => {
+        const root = picker.getBoundingClientRect();
+        const viewportWidth = innerWidth;
+        const menuWidth = menu.getBoundingClientRect().width;
+        const offset = (${modelMenuLeftOffset.toString()})(root.left, root.right, menuWidth, 0, viewportWidth);
+        menu.style.left = offset + 'px';
+        menu.style.right = 'auto';
+      };
+      positionMenu();
+      const initial = menu.getBoundingClientRect();
+      list.scrollTop = list.scrollHeight;
+      picker.style.width = 'min(560px, calc(100vw - 20px))';
+      positionMenu();
+      const after = menu.getBoundingClientRect();
+      return { initialWidth: initial.width, afterWidth: after.width, left: after.left, right: after.right,
+        viewportWidth: innerWidth, scrollWidth: document.documentElement.scrollWidth };
+    })()`)
+    assert.equal(result.afterWidth, result.initialWidth, `${width}px menu width must not track a resized picker`)
+    assert.ok(result.left >= 0, `${width}px menu left edge must remain in the viewport`)
+    assert.ok(result.right <= result.viewportWidth, `${width}px menu right edge must remain in the viewport`)
+    assert.ok(result.scrollWidth <= result.viewportWidth, `${width}px page must not gain horizontal overflow`)
   }
 })
 

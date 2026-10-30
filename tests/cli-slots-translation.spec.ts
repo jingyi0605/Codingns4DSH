@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createElement, type ReactElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { registerCliConversationSlots, useCliSessionTranslationEnabled } from '../src/client/cli-slots.js'
+import { modelMenuLeftOffset, registerCliConversationSlots, useCliSessionTranslationEnabled } from '../src/client/cli-slots.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import { SESSION_TRANSLATION_ADAPTER_IDS } from '../src/shared/contracts/session-translation.js'
 import type { CodingNsCliModelGroup } from '../src/shared/contracts/cli-adapter.js'
@@ -142,6 +142,11 @@ test('model submenu stays constrained to the picker width and exposes full names
     assert.equal(option.props.title, longName)
     assert.equal(option.props.style.minWidth, 0)
   } finally { renderer.dispose(); probe.dispose() }
+})
+
+test('model menu horizontal offset clamps an off-screen anchor into the viewport', () => {
+  assert.equal(modelMenuLeftOffset(520, 880, 420, 0, 660), -292, 'right-aligned menu is shifted left into the viewport')
+  assert.equal(modelMenuLeftOffset(-120, 240, 420, 0, 660), 132, 'left-shifted anchor is shifted right into the viewport')
 })
 
 test('Agent catalog failures remain visible and a retry restores the external Agents', async () => {
