@@ -11,6 +11,7 @@ import type { QuickAppLanTransport, QuickAppOriginProvider } from '../../dsh-cap
 import type { QuickAppPeerGateway } from '../modules/quick-apps/remote.js'
 import type { WorkspaceDirectoryBrowser } from '../../dsh-capabilities/host/workspace-directory-adapter.js'
 import type { CredentialService } from '../credentials/service.js'
+import type { CredentialBroker } from '../credentials/broker.js'
 
 export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
@@ -67,4 +68,6 @@ export interface CodingNsHostServices {
   readonly sessionTranslation?: SessionTranslationService
   /** Host-only credential resolver; never serialized to Client or session records. */
   readonly credentials?: CredentialService
+  /** Host-owned short-lived credential command broker. */
+  readonly credentialBroker?: CredentialBroker
 }

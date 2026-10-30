@@ -10,6 +10,9 @@
   "type": "module",
   "main": "./data/build/dist/index.js",
   "types": "./data/build/dist/index.d.ts",
+  "bin": {
+    "codingns-credential": "./bin/codingns-credential.mjs"
+  },
   "exports": {
     ".": {
       "types": "./data/build/dist/index.d.ts",
@@ -130,6 +133,7 @@
     "data/build/dist/**/*.d.ts.map",
     "data/build/dist/**/*.css",
     "assets/provider-icons/**",
+    "bin/codingns-credential.mjs",
     "dsh.bundle.patch",
     "profile/**",
     "version.json",

@@ -4,13 +4,14 @@ import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from 'node:crypt
 import { dirname, join } from 'node:path'
 import type {
   CredentialEnvironmentBinding,
+  CredentialFieldSemanticMetadata,
   CredentialErrorCode,
   CredentialListPage,
   CredentialMetadata,
   CredentialMutation,
   CredentialReference,
 } from '../../shared/contracts/credentials.js'
-import { CREDENTIAL_ENV_PATTERN, defaultCredentialEnvironmentName } from '../../shared/contracts/credentials.js'
+import { CREDENTIAL_ENV_PATTERN, defaultCredentialEnvironmentName, inferCredentialFieldMetadata } from '../../shared/contracts/credentials.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import {
   cloneRecord,
@@ -119,6 +120,7 @@ export class CredentialService {
         id: normalized.id,
         label: normalized.label,
         fields,
+        fieldMetadata: normalizeFieldMetadata(fields, normalized.fieldMetadata, previous?.fieldMetadata),
         createdAt: previous?.createdAt ?? timestamp,
         updatedAt: timestamp,
         version: 1,
@@ -170,6 +172,24 @@ export class CredentialService {
     return this.resolve({ credentialId: record.id, bindings })
   }
 
+  async metadataFor(credentialId: string): Promise<CredentialMetadata> {
+    const record = (await this.readRecords()).get(requireId(credentialId))
+    if (record === undefined) throw credentialError('CREDENTIAL_NOT_FOUND', 'Credential not found')
+    return toMetadata(record)
+  }
+
+  async defaultReference(credentialId: string): Promise<CredentialReference> {
+    const record = (await this.readRecords()).get(requireId(credentialId))
+    if (record === undefined) throw credentialError('CREDENTIAL_NOT_FOUND', 'Credential not found')
+    return {
+      credentialId: record.id,
+      bindings: Object.keys(record.fields).map((field) => ({
+        field,
+        env: defaultCredentialEnvironmentName(field),
+      })),
+    }
+  }
+
   activate(): void {
     this.active = true
   }
@@ -213,7 +233,16 @@ export function toMetadata(record: HostCredentialRecord): CredentialMetadata {
   return {
     id: record.id,
     label: record.label,
-    fields: Object.keys(record.fields).sort().map((name) => ({ name, hasValue: record.fields[name] !== '' })),
+    fields: Object.keys(record.fields).sort().map((name) => {
+      const inferred = inferCredentialFieldMetadata(name)
+      const metadata = record.fieldMetadata?.[name]
+      return {
+        name,
+        hasValue: record.fields[name] !== '',
+        kind: metadata?.kind ?? inferred.kind,
+        usages: metadata?.usages ?? inferred.usages,
+      }
+    }),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   }
@@ -235,7 +264,10 @@ export function normalizeMutation(value: CredentialMutation): CredentialMutation
     else if (isClear(raw)) fields[field] = { clear: true }
     else throw credentialError('CREDENTIAL_INVALID', 'Credential field mutation is invalid')
   }
-  return { id, label, fields }
+  const fieldMetadata = isRecord(value.fieldMetadata)
+    ? Object.fromEntries(Object.entries(value.fieldMetadata).map(([name, metadata]) => [requireFieldName(name), normalizeFieldSemanticMetadata(metadata)]))
+    : undefined
+  return { id, label, fields, ...(fieldMetadata === undefined ? {} : { fieldMetadata }) }
 }
 
 function normalizeStoredRecord(record: HostCredentialRecord): HostCredentialRecord {
@@ -253,10 +285,38 @@ function normalizeStoredRecord(record: HostCredentialRecord): HostCredentialReco
     id: record.id,
     label: record.label,
     fields,
+    fieldMetadata: normalizeFieldMetadata(fields, record.fieldMetadata),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     version: 1,
   }
+}
+
+function normalizeFieldMetadata(
+  fields: Readonly<Record<string, string>>,
+  requested?: Readonly<Record<string, CredentialFieldSemanticMetadata>>,
+  previous?: Readonly<Record<string, CredentialFieldSemanticMetadata>>,
+): Readonly<Record<string, CredentialFieldSemanticMetadata>> {
+  const result: Record<string, CredentialFieldSemanticMetadata> = {}
+  for (const field of Object.keys(fields)) {
+    const value = requested?.[field] ?? previous?.[field] ?? inferCredentialFieldMetadata(field)
+    result[field] = normalizeFieldSemanticMetadata(value)
+  }
+  return result
+}
+
+function normalizeFieldSemanticMetadata(value: unknown): CredentialFieldSemanticMetadata {
+  if (!isRecord(value)) return { ...inferCredentialFieldMetadata('custom') }
+  const kind = typeof value.kind === 'string' ? value.kind : undefined
+  const usages = Array.isArray(value.usages)
+    ? value.usages.filter((item): item is string => typeof item === 'string')
+    : undefined
+  if (kind !== undefined && usages !== undefined) {
+    return { kind: kind as NonNullable<CredentialFieldSemanticMetadata['kind']>, usages: usages as NonNullable<CredentialFieldSemanticMetadata['usages']> }
+  }
+  if (kind !== undefined) return { kind: kind as NonNullable<CredentialFieldSemanticMetadata['kind']> }
+  if (usages !== undefined) return { usages: usages as NonNullable<CredentialFieldSemanticMetadata['usages']> }
+  return {}
 }
 
 function requireId(value: unknown): string {

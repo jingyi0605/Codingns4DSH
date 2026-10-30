@@ -39,6 +39,8 @@ import { registerProviderIconRoutes } from './provider-icon-assets.js'
 import { listWorkspaceRoots as listRegistryWorkspaceRoots, resolveWorkspaceRoot as resolveRegistryWorkspaceRoot } from './workspace-root.js'
 import { installSessionHandleEviction } from './session-handle-eviction.js'
 import { CredentialService } from './credentials/service.js'
+import { CredentialBroker } from './credentials/broker.js'
+import { createCredentialBrokerTool } from './credentials/tool.js'
 
 export async function apply(ctx?: Context): Promise<void> {
   if (ctx === undefined) return
@@ -220,6 +222,7 @@ export async function apply(ctx?: Context): Promise<void> {
     debugInfo('codingns4dsh: host terminal controller ready', { mode: terminal.mode })
     const sessionTranslation = createSessionTranslationService(hostCtx, dshVersion)
     const credentialService = new CredentialService()
+    const credentialBroker = new CredentialBroker({ service: credentialService })
     const services: CodingNsHostServices = {
       rpc: new CodingNsRpcTable(),
       ...(quickAppOrigins ? { quickAppOrigins } : {}),
@@ -234,6 +237,7 @@ export async function apply(ctx?: Context): Promise<void> {
       nativeSessions: createCodingNsNativeSessionBridge(hostCtx, dshVersion),
       ...(sessionTranslation === undefined ? {} : { sessionTranslation }),
       credentials: credentialService,
+      credentialBroker,
       nativeTeam: new DshNativeTeamProxy(
         readOptionalService(hostCtx, 'agentTeams') as NativeTeamService | undefined,
         readOptionalService(hostCtx, 'agents') as AgentRegistry | undefined,
@@ -318,10 +322,18 @@ export async function apply(ctx?: Context): Promise<void> {
 
     // DSH 提供原生工具运行时后再注册；能力缺失时不阻塞 Host 启动。
     hostCtx.inject(['tools'], (toolsCtx) => {
-      if (capabilityProfile.capabilities.get('subagent.continuable')?.status !== 'ready') return
       const tools = (toolsCtx as unknown as { tools?: { register(definition: Record<string, unknown>): unknown } }).tools
       if (tools === undefined || typeof tools.register !== 'function') return
       try {
+        if (services.credentialBroker !== undefined) {
+          const credentialDispose = tools.register(createCredentialBrokerTool(services.credentialBroker))
+          services.credentialBroker.setNativeToolAvailable(true)
+          hostCtx.effect(() => () => {
+            services.credentialBroker?.setNativeToolAvailable(false)
+            if (typeof credentialDispose === 'function') credentialDispose()
+          }, 'CodingNS credential tool')
+        }
+        if (capabilityProfile.capabilities.get('subagent.continuable')?.status !== 'ready') return
         const dispose = tools.register(createAgentSubagentTool({ nativeSessions: services.nativeSessions }))
         return typeof dispose === 'function' ? dispose : undefined
       } catch (error) {

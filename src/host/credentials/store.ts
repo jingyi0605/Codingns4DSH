@@ -1,11 +1,13 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto'
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import type { CredentialFieldSemanticMetadata } from '../../shared/contracts/credentials.js'
 
 export interface HostCredentialRecord {
   readonly id: string
   readonly label: string
   readonly fields: Readonly<Record<string, string>>
+  readonly fieldMetadata?: Readonly<Record<string, CredentialFieldSemanticMetadata>>
   readonly createdAt: string
   readonly updatedAt: string
   readonly version: 1
@@ -76,6 +78,7 @@ export class EncryptedFileCredentialStore implements CredentialStore {
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
       version: record.version,
+      ...(record.fieldMetadata === undefined ? {} : { fieldMetadata: record.fieldMetadata }),
       fields: Object.fromEntries(Object.entries(record.fields).map(([field, value]) => [
         field,
         encryptValue(vaultKey, Buffer.from(value, 'utf8'), fieldAad(record.id, field)),
@@ -110,6 +113,7 @@ export function cloneRecord(record: HostCredentialRecord): HostCredentialRecord 
   return {
     ...record,
     fields: { ...record.fields },
+    ...(record.fieldMetadata === undefined ? {} : { fieldMetadata: { ...record.fieldMetadata } }),
   }
 }
 
@@ -144,6 +148,7 @@ function parseRecord(value: unknown): HostCredentialRecord {
     id: value.id,
     label: value.label,
     fields: { ...value.fields },
+    ...(isRecord(value.fieldMetadata) ? { fieldMetadata: cloneFieldMetadata(value.fieldMetadata) } : {}),
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
     version: 1,
@@ -187,10 +192,30 @@ function parseEncryptedRecord(value: unknown, vaultKey: Buffer): HostCredentialR
     id: value.id,
     label: value.label,
     fields,
+    ...(isRecord(value.fieldMetadata) ? { fieldMetadata: cloneFieldMetadata(value.fieldMetadata) } : {}),
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
     version: 1,
   }
+}
+
+function cloneFieldMetadata(value: Record<string, unknown>): Readonly<Record<string, CredentialFieldSemanticMetadata>> {
+  const result: Record<string, CredentialFieldSemanticMetadata> = {}
+  for (const [field, metadata] of Object.entries(value)) {
+    if (!isRecord(metadata)) continue
+    const kind = typeof metadata.kind === 'string' ? metadata.kind : undefined
+    const usages = Array.isArray(metadata.usages)
+      ? metadata.usages.filter((usage): usage is string => typeof usage === 'string')
+      : undefined
+    result[field] = kind !== undefined && usages !== undefined
+      ? { kind: kind as NonNullable<CredentialFieldSemanticMetadata['kind']>, usages: usages as NonNullable<CredentialFieldSemanticMetadata['usages']> }
+      : kind !== undefined
+        ? { kind: kind as NonNullable<CredentialFieldSemanticMetadata['kind']> }
+        : usages !== undefined
+          ? { usages: usages as NonNullable<CredentialFieldSemanticMetadata['usages']> }
+          : {}
+  }
+  return result
 }
 
 interface CipherEnvelope {

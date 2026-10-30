@@ -13,10 +13,13 @@ export function createCredentialsFeature(): FeatureModule<CodingNsHostServices> 
       dependencies: [],
       runtime: 'host',
     },
-    start(context) {
+    async start(context) {
       const service = context.services.credentials
+      const broker = context.services.credentialBroker
       if (service === undefined) throw new CodingNsRpcError('CREDENTIAL_STORE_UNAVAILABLE', 'Credential service is unavailable')
       service.activate()
+      if (broker === undefined) throw new CodingNsRpcError('CREDENTIAL_BROKER_UNAVAILABLE', 'Credential broker is unavailable')
+      await broker.activate()
       const connection = (context.services.dshContext as { readonly connection?: unknown } | undefined)?.connection
       const requireOwner = (rpcContext: unknown): void => {
         const peer = isRecord(rpcContext) ? rpcContext.peer : undefined
@@ -37,11 +40,30 @@ export function createCredentialsFeature(): FeatureModule<CodingNsHostServices> 
           return service.list()
         }
         if (action === 'master-password/status') return service.masterPasswordStatus()
+        if (action === 'issue') {
+          requireOwner(rpcContext)
+          const value = isRecord(payload) ? payload : {}
+          const sessionId = typeof value.sessionId === 'string' ? value.sessionId : ''
+          const credentialId = typeof value.credentialId === 'string' ? value.credentialId : ''
+          const bindings = Array.isArray(value.bindings)
+            ? value.bindings.filter((item): item is { readonly field: string; readonly env: string } => isRecord(item) && typeof item.field === 'string' && typeof item.env === 'string')
+            : undefined
+          if (bindings === undefined) return broker.issueDefault(sessionId, credentialId)
+          return broker.issue({ sessionId, credentialId, bindings })
+        }
+        if (action === 'capability') {
+          return {
+            command: 'codingns-credential',
+            available: broker.nativeToolAvailable(),
+            ttlMs: broker.validityMs,
+          }
+        }
         requireOwner(rpcContext)
         if (action === 'save') return { credential: await service.save(payload as CredentialMutation) }
         if (action === 'delete') {
           const id = isRecord(payload) && typeof payload.id === 'string' ? payload.id : ''
           await service.delete(id)
+          broker.revokeCredential(id)
           return { deleted: true }
         }
         if (action === 'master-password/set') {
@@ -54,7 +76,10 @@ export function createCredentialsFeature(): FeatureModule<CodingNsHostServices> 
         }
         throw new CodingNsRpcError('CODINGNS_RPC_NOT_FOUND', `Unknown credentials action: ${action}`)
       }))
-      context.resources.add(() => service.deactivate())
+      context.resources.add(async () => {
+        await broker.deactivate()
+        service.deactivate()
+      })
     },
   }
 }

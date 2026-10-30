@@ -1,8 +1,33 @@
 export const CREDENTIALS_FEATURE_NAME = 'credentials'
 
+export type CredentialFieldKind =
+  | 'username'
+  | 'password'
+  | 'token'
+  | 'api-key'
+  | 'host'
+  | 'port'
+  | 'private-key'
+  | 'custom'
+
+export type CredentialFieldUsage =
+  | 'ssh.username'
+  | 'ssh.password'
+  | 'ssh.askpass'
+  | 'http.authorization'
+  | 'http.header'
+  | 'generic'
+
+export interface CredentialFieldSemanticMetadata {
+  readonly kind?: CredentialFieldKind
+  readonly usages?: readonly CredentialFieldUsage[]
+}
+
 export interface CredentialFieldMetadata {
   readonly name: string
   readonly hasValue: boolean
+  readonly kind: CredentialFieldKind
+  readonly usages: readonly CredentialFieldUsage[]
 }
 
 export interface CredentialMetadata {
@@ -37,6 +62,7 @@ export interface CredentialMutation {
   readonly id: string
   readonly label: string
   readonly fields: Readonly<Record<string, CredentialFieldMutation>>
+  readonly fieldMetadata?: Readonly<Record<string, CredentialFieldSemanticMetadata>>
 }
 
 export type CredentialErrorCode =
@@ -48,12 +74,68 @@ export type CredentialErrorCode =
   | 'CREDENTIAL_ENV_CONFLICT'
   | 'CREDENTIAL_INJECTION_UNSUPPORTED'
   | 'CREDENTIAL_MASTER_PASSWORD_INVALID'
+  | 'CREDENTIAL_REQUEST_INVALID'
+  | 'CREDENTIAL_REQUEST_EXPIRED'
+  | 'CREDENTIAL_REQUEST_REPLAYED'
+  | 'CREDENTIAL_REQUEST_REVOKED'
+  | 'CREDENTIAL_BROKER_UNAVAILABLE'
+  | 'CREDENTIAL_COMMAND_FAILED'
 
 export const CREDENTIAL_ENV_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/u
 
 export function defaultCredentialEnvironmentName(field: string): string {
   const value = field.replace(/[^A-Za-z0-9_]/gu, '_').toUpperCase()
   return `CREDENTIAL_${value || 'VALUE'}`
+}
+
+export function inferCredentialFieldMetadata(field: string): Required<CredentialFieldSemanticMetadata> {
+  const normalized = field.trim().toLocaleLowerCase()
+  if (normalized === 'username' || normalized === 'user' || normalized === 'login') {
+    return { kind: 'username', usages: ['ssh.username', 'generic'] }
+  }
+  if (normalized === 'password' || normalized === 'pass' || normalized === 'pwd') {
+    return { kind: 'password', usages: ['ssh.password', 'ssh.askpass', 'generic'] }
+  }
+  if (normalized === 'token' || normalized === 'access_token' || normalized === 'accesstoken') {
+    return { kind: 'token', usages: ['http.authorization', 'generic'] }
+  }
+  if (normalized === 'apikey' || normalized === 'api_key' || normalized === 'api-key') {
+    return { kind: 'api-key', usages: ['http.header', 'generic'] }
+  }
+  if (normalized === 'host' || normalized === 'hostname') return { kind: 'host', usages: ['generic'] }
+  if (normalized === 'port') return { kind: 'port', usages: ['generic'] }
+  if (normalized === 'privatekey' || normalized === 'private_key' || normalized === 'private-key') {
+    return { kind: 'private-key', usages: ['generic'] }
+  }
+  return { kind: 'custom', usages: ['generic'] }
+}
+
+export interface CredentialBrokerBinding {
+  readonly field: string
+  readonly env: string
+  readonly kind: CredentialFieldKind
+  readonly usages: readonly CredentialFieldUsage[]
+}
+
+export interface CredentialBrokerIssueResult {
+  readonly requestCode: string
+  readonly label: string
+  readonly expiresAt: string
+  readonly bindings: readonly CredentialBrokerBinding[]
+}
+
+export interface CredentialBrokerDescription {
+  readonly handle: string
+  readonly label: string
+  readonly expiresAt: string
+  readonly bindings: readonly CredentialBrokerBinding[]
+}
+
+export interface CredentialBrokerProcessEnvironment {
+  readonly endpoint: string
+  readonly token: string
+  readonly sessionId: string
+  readonly path: string
 }
 
 export function isCredentialReference(value: unknown): value is CredentialReference {

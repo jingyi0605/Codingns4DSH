@@ -10,3 +10,4 @@ export {
   type CredentialStore,
   type HostCredentialRecord,
 } from './store.js'
+export { CredentialBroker, type CredentialBrokerOptions, type CredentialBrokerCommandResult } from './broker.js'
