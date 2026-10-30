@@ -1904,8 +1904,7 @@ function readNativeSessionHeader(
 
 /** 插件自己的全局助理会话不属于用户对话，不能被翻译改写。 */
 function isAssistantSession(sessionId: string): boolean {
-  // 复用助理适配器导出的会话前缀常量：会话身份的唯一定义在那里，重复字面量会漂移。
-  return sessionId.startsWith(ASSISTANT_AGENT_PREFIX)
+  return sessionId.startsWith('codingns-assistant-')
 }
 
 interface NativeStreamBlock {

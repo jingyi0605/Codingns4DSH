@@ -775,6 +775,7 @@ interface AssistantReasoningContentProps {
   readonly sessionId?: string | undefined
   readonly services: CodingNsClientServices
   readonly translationT: CodingNsTranslator
+  /** DSH-prepared display text; the reasoning Body Slot's original output is `rawText`. */
   readonly text: string
   readonly running: boolean
   /** 该思考块的翻译记录；缺省表示无需展示翻译入口。 */
