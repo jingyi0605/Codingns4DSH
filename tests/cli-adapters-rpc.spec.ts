@@ -2472,6 +2472,9 @@ function createCodexServiceTierRecorder(options: {
 }
 
 test('Codex model/list 的 serviceTiers 进入目录，并据 account/read 判定官方订阅', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
   const modelList = {
     data: [{
       id: 'gpt-6.1-sol',
@@ -2520,9 +2523,14 @@ test('Codex model/list 的 serviceTiers 进入目录，并据 account/read 判�
   apiKey.driver.dispose()
 
   // 未登录（account 为 null）。
-  const anonymous = createCodexServiceTierRecorder({ account: null, modelList })
-  assert.equal((await anonymous.driver.listModels()).officialSubscription, false)
-  anonymous.driver.dispose()
+  const anonymousHome = mkdtempSync(join(tmpdir(), 'codingns-codex-anonymous-'))
+  const anonymous = createCodexServiceTierRecorder({ account: null, codexHome: anonymousHome, modelList })
+  try {
+    assert.equal((await anonymous.driver.listModels()).officialSubscription, false)
+  } finally {
+    anonymous.driver.dispose()
+    rmSync(anonymousHome, { recursive: true, force: true })
+  }
 
   // 旧版 Codex 没有 account/read：保留“未确认”，不能当成已确认官方订阅。
   const legacy = createCodexServiceTierRecorder({ accountReadFails: true, modelList })
