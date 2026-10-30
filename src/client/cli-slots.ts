@@ -6,6 +6,7 @@ import type { ReactElement } from 'react'
 import type { CSSProperties, ChangeEvent as ReactChangeEvent, KeyboardEvent as ReactKeyboardEvent } from 'react'
 import { Switch } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { CodingNsCliAdapterDescriptor, CodingNsCliModel, CodingNsCliModelCatalog, CodingNsCliSessionConfig } from '../shared/contracts/cli-adapter.js'
+import type { CredentialMetadata, CredentialReference } from '../shared/contracts/credentials.js'
 import type { CodingNsClientServices, CodingNsRpcClient } from './features/types.js'
 import { adapterCatalogWithDsh, adapterDetectionLabel, callCliRpc, findModel, firstModel } from './cli-catalog.js'
 import {
@@ -39,6 +40,7 @@ import { watchNativeModelMenu, type NativeModelCatalogEntry } from './native-mod
 import { MagpieModelTag } from './magpie-model-tag.js'
 import { ConversationTranslationSettings } from './conversation-translation-settings.js'
 import { settingsIconButtonStyle } from './settings-controls.js'
+import { CODINGNS_RPC_CHANNEL } from '../shared/contracts/transport.js'
 
 const claudeModelAliases = ['provider-default', 'sonnet', 'opus', 'haiku', 'fable']
 const claudeModelCollator = new Intl.Collator('en', { numeric: true, sensitivity: 'base', ignorePunctuation: true })
@@ -267,6 +269,7 @@ function publishSelection(sessionId: string, next: SelectionState): void {
     ...(next.effortId ? { effortId: next.effortId } : {}),
     ...(next.serviceTierId ? { serviceTierId: next.serviceTierId } : {}),
     ...(next.translationEnabled === undefined ? {} : { translationEnabled: next.translationEnabled }),
+    ...(next.credentialRefs === undefined ? {} : { credentialRefs: next.credentialRefs }),
   }
   selections.set(sessionId, normalized)
   selectionLastUsed.set(sessionId, Date.now())
@@ -453,7 +456,7 @@ const agentOptionLabelStyle = { flex: '1 1 auto', minWidth: 0, overflow: 'hidden
 const agentStatusStyle = { flex: '0 0 auto', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), whiteSpace: 'nowrap' as const }
 const agentFallbackIconStyle = { flexGrow: 0, flexShrink: 0, borderRadius: 5, color: '#fff', background: dshThemeColor.labelTertiary, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: uiFontSize(11), fontWeight: 600, lineHeight: 1 }
 
-type ModelPane = 'root' | 'model' | 'effort'
+type ModelPane = 'root' | 'model' | 'effort' | 'credentials'
 
 interface ModelCatalogState {
   readonly sessionId: string | undefined
@@ -682,6 +685,7 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
     setOpen(false)
     setTranslationSettingsOpen(true)
   }
+  const openCredentialBindings = (): void => setPane('credentials')
   if (selection.adapterId === DSH_NATIVE_SESSION_ADAPTER_ID) {
     return createElement('div', { ref: rootRef, hidden: true },
       nativeMenu !== null && nativeAvailable ? createPortal(createElement(TranslationToggleRow, {
@@ -840,6 +844,10 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
           createElement('span', { style: nativeMenuLabelStyle }, t('cli.model')), createElement('span', { style: nativeMenuValueStyle }, modelLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
         createElement('button', { key: 'effort', type: 'button', role: 'menuitem', disabled: modelUnavailable, onClick: () => setPane('effort'), style: nativeMenuCellStyle },
           createElement('span', undefined, t('cli.thinking')), createElement('span', { style: nativeMenuValueStyle }, effortLabel), createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
+        createElement('button', { key: 'credentials', type: 'button', role: 'menuitem', disabled: sessionId === undefined, onClick: openCredentialBindings, style: nativeMenuCellStyle },
+          createElement('span', undefined, t('credentials.sessionBindings')),
+          createElement('span', { style: nativeMenuValueStyle }, selection.credentialRefs?.length ? `${selection.credentialRefs.length}` : t('credentials.noneSelected')),
+          createElement('span', { 'aria-hidden': true, style: nativeChevronStyle }, '›')),
       ]
     : pane === 'model'
       ? [
@@ -897,6 +905,15 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
               t(modelGroups.length === 0 ? 'cli.noModelsAvailable' : 'cli.modelSearchEmpty')),
           ),
         ]
+      : pane === 'credentials'
+        ? [createElement(CredentialBindingPane, {
+            key: 'credentials',
+            rpc: props.rpc,
+            selection,
+            update,
+            onClose: () => setPane('root'),
+            t,
+          })]
       : [
           // 思考档位同样是原生式下钻面板，没有返回按钮；Escape 回到根菜单。
           createElement('div', { key: 'title', style: nativeGroupTitleStyle }, t('cli.thinkingLevelTitle', { model: modelLabel })),
@@ -921,6 +938,99 @@ function effortDisplayName(model: CodingNsCliModel | undefined, effort: string, 
   if (effort === 'default') return defaultLabel
   return model?.effortLabels?.[effort] ?? effort
 }
+
+function CredentialBindingPane(props: {
+  readonly rpc: CodingNsRpcClient
+  readonly selection: SelectionState
+  readonly update: (next: SelectionState) => Promise<boolean>
+  readonly onClose: () => void
+  readonly t: ReturnType<typeof useCodingNsTranslator>
+}): ReactElement {
+  const [items, setItems] = useState<readonly CredentialMetadata[]>([])
+  const [draft, setDraft] = useState<readonly CredentialReference[]>(props.selection.credentialRefs ?? [])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    let active = true
+    void props.rpc.call(CODINGNS_RPC_CHANNEL, 'credentials/list', {}).then((result) => {
+      if (!result.ok || !Array.isArray(result.value)) throw new Error('credential list failed')
+      if (active) setItems(result.value.filter(isCredentialMetadata))
+    }).catch(() => {
+      if (active) setItems([])
+    }).finally(() => {
+      if (active) setLoading(false)
+    })
+    return () => { active = false }
+  }, [props.rpc])
+
+  const save = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const accepted = await props.update({ ...props.selection, credentialRefs: draft })
+      if (accepted) props.onClose()
+    } finally {
+      setBusy(false)
+    }
+  }
+  const toggle = (item: CredentialMetadata, checked: boolean): void => {
+    if (checked) {
+      const existing = draft.find((reference) => reference.credentialId === item.id)
+      if (existing !== undefined) return
+      setDraft([...draft, {
+        credentialId: item.id,
+        bindings: item.fields.map((field) => ({ field: field.name, env: defaultCredentialEnv(field.name) })),
+      }])
+    } else {
+      setDraft(draft.filter((reference) => reference.credentialId !== item.id))
+    }
+  }
+  const updateEnv = (credentialId: string, field: string, env: string): void => {
+    setDraft(draft.map((reference) => reference.credentialId !== credentialId
+      ? reference
+      : { ...reference, bindings: reference.bindings.map((binding) => binding.field === field ? { ...binding, env } : binding) }))
+  }
+  return createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, padding: 6 } },
+    createElement('div', { style: nativeGroupTitleStyle }, props.t('credentials.sessionBindings')),
+    createElement('div', { style: { padding: '4px 8px 8px', color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12), lineHeight: 1.4 } }, props.t('credentials.sessionBindingsHint')),
+    loading
+      ? createElement('div', { role: 'status', style: modelLoadingMenuStyle }, 'Loading…')
+      : items.length === 0
+        ? createElement('div', { style: modelSearchEmptyStyle }, props.t('credentials.noneSelected'))
+        : items.map((item) => {
+          const reference = draft.find((candidate) => candidate.credentialId === item.id)
+          return createElement('div', { key: item.id, style: { display: 'flex', flexDirection: 'column', gap: 5, padding: '6px 8px', borderRadius: 8, background: dshThemeColor.surfaceSubtle } },
+            createElement('label', { style: { display: 'flex', alignItems: 'center', gap: 7, fontSize: uiFontSize(13) } },
+              createElement('input', { type: 'checkbox', checked: reference !== undefined, onChange: (event: { currentTarget: { checked: boolean } }) => toggle(item, event.currentTarget.checked) }),
+              createElement('span', undefined, item.label),
+            ),
+            reference?.bindings.map((binding) => createElement('label', { key: binding.field, style: { display: 'flex', alignItems: 'center', gap: 6, paddingLeft: 22, fontSize: uiFontSize(12) } },
+              createElement('span', { style: { minWidth: 72, color: dshThemeColor.labelTertiary } }, binding.field),
+              createElement('input', { value: binding.env, onChange: (event: { currentTarget: { value: string } }) => updateEnv(item.id, binding.field, event.currentTarget.value), style: { ...inputStyle, padding: '4px 6px', fontSize: uiFontSize(12) } }),
+            )),
+          )
+        }),
+    createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 } },
+      createElement('button', { type: 'button', style: nativeOptionStyle, disabled: busy, onClick: props.onClose }, props.t('credentials.cancel')),
+      createElement('button', { type: 'button', style: { ...nativeOptionStyle, color: dshThemeColor.accent }, disabled: busy || loading, onClick: () => { void save() } }, props.t('credentials.save')),
+    ),
+  )
+}
+
+function defaultCredentialEnv(field: string): string {
+  const value = field.replace(/[^A-Za-z0-9_]/gu, '_').toUpperCase()
+  return `CREDENTIAL_${value || 'VALUE'}`
+}
+
+function isCredentialMetadata(value: unknown): value is CredentialMetadata {
+  return isRecord(value) && typeof value.id === 'string' && typeof value.label === 'string' && Array.isArray(value.fields)
+    && value.fields.every((field) => isRecord(field) && typeof field.name === 'string' && typeof field.hasValue === 'boolean')
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+const inputStyle = { width: '100%', boxSizing: 'border-box' as const, border: `1px solid ${dshThemeColor.border}`, borderRadius: 6, padding: '7px 8px', color: dshThemeColor.labelPrimary, background: dshThemeColor.surfaceSubtle, fontSize: uiFontSize(13) }
 
 const nativeTriggerStyle = { width: '100%', minWidth: 0, maxWidth: 'min(360px, 45cqw)', height: 28, color: dshThemeColor.labelSecondary, cursor: 'pointer', background: 'transparent', border: 0, borderRadius: 24, padding: '0 4px 0 8px', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: uiFontSize(13), lineHeight: '20px' }
 const modelNameStyle = { minWidth: 0, maxWidth: 150, flex: '0 1 150px', display: 'block', overflow: 'hidden', whiteSpace: 'nowrap' as const }

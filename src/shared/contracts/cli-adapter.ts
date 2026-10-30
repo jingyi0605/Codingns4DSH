@@ -1,4 +1,5 @@
 import type { SessionTranslationInputRecord, SessionTranslationLanguage, SessionTranslationRecord } from './session-translation.js'
+import type { CredentialReference } from './credentials.js'
 
 /** Codingns4DSH 当前可接入的外部 Agent 标识。内部字段沿用 cli 命名以保持协议兼容。 */
 export type CodingNsCliAdapterId = string
@@ -211,6 +212,8 @@ export interface CodingNsCliSessionConfig {
   readonly teamMemberId?: string
   /** 最近一次 Provider 用量快照；仅供 Client 展示，不参与会话恢复。 */
   readonly lastUsage?: CodingNsCliSessionUsage
+  /** Secret-free Host credential references; values never enter this record. */
+  readonly credentialRefs?: readonly CredentialReference[]
 }
 
 /** 外部 Provider 最近一次用量快照；Qoder 等 Provider 可只提供上下文比例或额度。 */

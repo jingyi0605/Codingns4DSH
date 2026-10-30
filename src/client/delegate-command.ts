@@ -13,6 +13,7 @@ import { resolveDelegateIcon } from '../dsh-capabilities/client/primitives-adapt
 import { debugInfo, debugWarn } from '../shared/debug.js'
 import { encodeDelegationCarrier } from '../shared/delegation-carrier.js'
 import { createMagpieModelTagNode } from './magpie-model-tag.js'
+import { bareSlashSpanAtCaret } from './command-token.js'
 
 const DELEGATE_REFERENCE_SOURCE = 'codingns-delegate'
 const delegateReferenceLabels = new Map<string, string>()
@@ -207,7 +208,9 @@ function registerDelegateCommandIn(ctx: Context, options: RegisterDelegateComman
           const selection = input.caretSpan?.()
           const span = snapshot.draftRev === undefined
             ? undefined
-            : delegateCommandSpan(draft, snapshot.draftRev, selection) ?? (selection === undefined ? undefined : { ...selection, draftRev: snapshot.draftRev })
+            : delegateCommandSpan(draft, snapshot.draftRev, selection)
+              ?? bareSlashSpanAtCaret(draft, snapshot.draftRev, selection)
+              ?? (selection === undefined ? undefined : { ...selection, draftRev: snapshot.draftRev })
           const inserted = span !== undefined && input.insertReference?.({
             source: DELEGATE_REFERENCE_SOURCE,
             ref: option.id,

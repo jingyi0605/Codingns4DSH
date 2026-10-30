@@ -79,6 +79,8 @@ import { CodingNsTeamDispatcher } from '../cli-bridge/team-dispatch.js'
 import { createAgentTeamTool } from '../cli-bridge/team-tool.js'
 import { TeamInputTracker, isTeamInputMessage, pendingPeerInput } from './team-input.js'
 import { withTeamSupport } from '../cli-bridge/team-adapters.js'
+import { isCredentialReference } from '../../shared/contracts/credentials.js'
+import { parseCredentialCarriers, type CredentialCarrier } from '../../shared/credential-carrier.js'
 
 export function createCliAdaptersFeature(options: {
   registry?: CodingNsCliAdapterRegistry
@@ -741,6 +743,7 @@ export function createCliAdaptersFeature(options: {
           const turnInput = extractTurnInput(messages, context.services.dshContext, teamInputs.take(sessionId, messages))
           const turnOptions = readCliTurnOptions(value)
           const runtimeEnv = readCliRuntimeEnv(value)
+          const credentialResolution = await resolveCredentialEnvironment(context.services.credentials, config.credentialRefs, turnInput.credentialCarriers)
           const requestSignal = isAbortSignal(value?.signal)
             ? AbortSignal.any([value.signal, lifetime.signal])
             : lifetime.signal
@@ -755,9 +758,12 @@ export function createCliAdaptersFeature(options: {
               return
             }
           }
-          const prompt = turnInput.translatePrompt
+          const userPrompt = turnInput.translatePrompt
             ? [translatedPrompt, translationLanguage === undefined ? turnInput.untranslatedPrompt : attachmentNotices(turnInput.attachments, translationLanguage)].filter((part) => part.trim() !== '').join('\n\n')
             : turnInput.prompt
+          const prompt = [formatCredentialEnvironmentNotice(credentialResolution?.environmentNames ?? []), userPrompt]
+            .filter((part) => part.trim() !== '')
+            .join('\n\n')
           // 权限状态必须与 DSH 会话当前生效值同源。驱动不能自行假设“完全权限”，
           // 也不能把缺省当成“已确认无限制”：解析失败时留空，由驱动沿用保守默认。
           const permission = resolveSessionPermission(context.services.dshContext, sessionId)
@@ -784,7 +790,9 @@ export function createCliAdaptersFeature(options: {
             ...(turnOptions.plan === true ? { plan: true } : {}),
             ...(turnOptions.forkSession === true ? { forkSession: true } : {}),
             ...(turnOptions.enableAskUserQuestion === true ? { enableAskUserQuestion: true } : {}),
-            ...(runtimeEnv === undefined ? {} : { runtimeEnv }),
+            ...(runtimeEnv === undefined && credentialResolution === undefined
+              ? {}
+              : { runtimeEnv: { ...(runtimeEnv ?? {}), ...(credentialResolution?.values ?? {}) } }),
             ...(config.modelId ? { modelId: config.modelId } : {}),
             ...(magpieCodexContextWindow === undefined ? {} : { modelContextWindow: magpieCodexContextWindow }),
             ...(config.effortId ? { effortId: config.effortId } : {}),
@@ -1296,6 +1304,7 @@ function readSessionConfig(value: unknown): CodingNsCliSessionConfig {
     ...(typeof record?.providerId === 'string' && record.providerId.trim() ? { providerId: record.providerId.trim() } : {}),
     ...(typeof record?.providerSessionId === 'string' && record.providerSessionId.trim() ? { providerSessionId: record.providerSessionId.trim() } : {}),
     ...(typeof record?.rawStoreRef === 'string' && record.rawStoreRef.trim() ? { rawStoreRef: record.rawStoreRef.trim() } : {}),
+    ...(Array.isArray(record?.credentialRefs) ? { credentialRefs: record.credentialRefs.filter(isCredentialReference) } : {}),
   }
 }
 
@@ -1379,8 +1388,49 @@ function readCliTurnOptions(value: Record<string, any> | null): {
 function readCliRuntimeEnv(value: Record<string, any> | null): Readonly<Record<string, string>> | undefined {
   const candidate = asRecord(value?.runtimeEnv) ?? asRecord(asRecord(value?.options)?.runtimeEnv)
   if (candidate === null) return undefined
-  const entries = Object.entries(candidate).filter(([, item]) => typeof item === 'string') as [string, string][]
+  // The only browser/DSH compatibility variable is a boolean feature switch.
+  // Credential values must come from Host-owned references, never from this payload.
+  const entries = Object.entries(candidate)
+    .filter(([name, item]) => name === 'CMD_TOOLS_ASK_USER_QUESTION_ENABLE' && item === 'true') as [string, string][]
   return entries.length === 0 ? undefined : Object.fromEntries(entries)
+}
+
+async function resolveCredentialEnvironment(
+  service: CodingNsHostServices['credentials'],
+  references: CodingNsCliSessionConfig['credentialRefs'],
+  carriers: readonly CredentialCarrier[] = [],
+): Promise<{
+  readonly values: Readonly<Record<string, string>>
+  readonly environmentNames: readonly string[]
+} | undefined> {
+  if ((references === undefined || references.length === 0) && carriers.length === 0) return undefined
+  if (service === undefined) throw new CodingNsRpcError('CREDENTIAL_STORE_UNAVAILABLE', 'Credential module is unavailable')
+  const resolved: Record<string, string> = {}
+  for (const reference of references ?? []) {
+    const values = await service.resolve(reference)
+    for (const [name, value] of Object.entries(values)) {
+      if (resolved[name] !== undefined) throw new CodingNsRpcError('CREDENTIAL_ENV_CONFLICT', 'Credential environment names must be unique')
+      resolved[name] = value
+    }
+  }
+  for (const carrier of carriers) {
+    const values = await service.resolveAll(carrier.credentialId)
+    for (const [name, value] of Object.entries(values)) {
+      if (resolved[name] !== undefined) throw new CodingNsRpcError('CREDENTIAL_ENV_CONFLICT', 'Credential environment names must be unique')
+      resolved[name] = value
+    }
+  }
+  return { values: resolved, environmentNames: Object.keys(resolved).sort() }
+}
+
+export function formatCredentialEnvironmentNotice(environmentNames: readonly string[]): string {
+  const names = [...new Set(environmentNames.map((name) => name.trim()).filter((name) => name !== ''))].sort()
+  if (names.length === 0) return ''
+  return [
+    'The selected CodingNS credential is available to this Agent through these process environment variables:',
+    names.map((name) => `- ${name}`).join('\n'),
+    'Read these variables from the process environment when a tool or command needs the credential. Never print their values in chat, logs, or tool output.',
+  ].join('\n')
 }
 
 /** Prefer the pending/next DSH route because lastUsed may still be stale. */
@@ -1934,6 +1984,7 @@ function extractTurnInput(
   readonly untranslatedPrompt: string
   /** 继续提示是 Host 注入的控制文本，不应再送入用户输入翻译。 */
   readonly translatePrompt: boolean
+  readonly credentialCarriers: readonly CredentialCarrier[]
   /** 当前轮已拼入 prompt 的引用上下文不再作为历史消息重复交给驱动。 */
   readonly messages: readonly CodingNsCliMessage[]
 } {
@@ -1944,13 +1995,22 @@ function extractTurnInput(
       return translated ? { ...part, prompt: translated.translated } : part
     })
     const prompt = parts.map(part => part.prompt).filter(text => text.trim() !== '').join('\n\n')
-    return { prompt, peerInput: true, translationPrompt: prompt, untranslatedPrompt: '', attachments: parts.flatMap(part => part.attachments), translatePrompt: false, messages: stripInputTranslationDisplay(messages) }
+    return {
+      prompt,
+      peerInput: true,
+      translationPrompt: prompt,
+      untranslatedPrompt: '',
+      attachments: parts.flatMap(part => part.attachments),
+      credentialCarriers: parts.flatMap(part => part.credentialCarriers),
+      translatePrompt: false,
+      messages: stripCredentialCarriers(stripInputTranslationDisplay(messages)),
+    }
   }
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index]
     if (message !== undefined && isInjectedStepNotice(message)) {
       const prompt = extractText(message.content)
-      return { prompt, translationPrompt: prompt, untranslatedPrompt: '', attachments: [], translatePrompt: false, messages }
+      return { prompt, translationPrompt: prompt, untranslatedPrompt: '', attachments: [], credentialCarriers: [], translatePrompt: false, messages: stripCredentialCarriers(messages) }
     }
     if (message !== undefined && isHumanUserMessage(message)) {
       const direct = extractMessageInput(message.content, dshContext)
@@ -1969,13 +2029,14 @@ function extractTurnInput(
       const translatedInput = readInputTranslation(message.source)
       if (translatedInput !== undefined) {
         const prompt = [translatedInput.translated, ...referenceText].join('\n\n')
-        return {
+      return {
           prompt,
           translationPrompt: prompt,
           untranslatedPrompt: '',
           attachments: direct.attachments,
           translatePrompt: false,
-          messages: stripInputTranslationDisplay(forwarded),
+        credentialCarriers: direct.credentialCarriers,
+        messages: stripCredentialCarriers(stripInputTranslationDisplay(forwarded)),
         }
       }
       return {
@@ -1984,11 +2045,20 @@ function extractTurnInput(
         untranslatedPrompt: direct.untranslatedPrompt,
         attachments: direct.attachments,
         translatePrompt: true,
-        messages: stripInputTranslationDisplay(forwarded),
+        credentialCarriers: direct.credentialCarriers,
+        messages: stripCredentialCarriers(stripInputTranslationDisplay(forwarded)),
       }
     }
   }
-  return { prompt: '', translationPrompt: '', untranslatedPrompt: '', attachments: [], translatePrompt: false, messages: stripInputTranslationDisplay(messages) }
+  return {
+    prompt: '',
+    translationPrompt: '',
+    untranslatedPrompt: '',
+    attachments: [],
+    credentialCarriers: [],
+    translatePrompt: false,
+    messages: stripCredentialCarriers(stripInputTranslationDisplay(messages)),
+  }
 }
 
 function findLatestHumanMessage(messages: readonly CodingNsCliMessage[]): number {
@@ -2036,6 +2106,27 @@ function stripInputTranslationDisplay(messages: readonly CodingNsCliMessage[]): 
       ...(cleanSource === undefined ? {} : { source: cleanSource }),
     }
   })
+}
+
+function stripCredentialCarriers(messages: readonly CodingNsCliMessage[]): readonly CodingNsCliMessage[] {
+  return messages.map((message) => {
+    const content = replaceCredentialCarriersInContent(message.content)
+    return content === message.content ? message : { ...message, content }
+  })
+}
+
+function replaceCredentialCarriersInContent(content: unknown): unknown {
+  if (typeof content === 'string') return parseCredentialCarriers(content).text
+  if (!Array.isArray(content)) return content
+  let changed = false
+  const next = content.map((part) => {
+    if (!isRecord(part) || typeof part.text !== 'string') return part
+    const text = parseCredentialCarriers(part.text).text
+    if (text === part.text) return part
+    changed = true
+    return { ...part, text }
+  })
+  return changed ? next : content
 }
 
 function replaceInputTranslationContent(content: unknown, text: string): unknown {
@@ -2098,14 +2189,25 @@ function extractMessageInput(content: unknown, dshContext?: CodingNsHostServices
   readonly translationPrompt: string
   readonly untranslatedPrompt: string
   readonly attachments: readonly CodingNsCliAttachment[]
+  readonly credentialCarriers: readonly CredentialCarrier[]
 } {
-  if (typeof content === 'string') return { prompt: content, translationPrompt: content, untranslatedPrompt: '', attachments: [] }
-  if (!Array.isArray(content)) return { prompt: '', translationPrompt: '', untranslatedPrompt: '', attachments: [] }
+  if (typeof content === 'string') {
+    const parsed = parseCredentialCarriers(content)
+    return { prompt: parsed.text, translationPrompt: parsed.text, untranslatedPrompt: '', attachments: [], credentialCarriers: parsed.carriers }
+  }
+  if (!Array.isArray(content)) return { prompt: '', translationPrompt: '', untranslatedPrompt: '', attachments: [], credentialCarriers: [] }
   const text: string[] = []
   const attachments: CodingNsCliAttachment[] = []
+  const credentialCarriers: CredentialCarrier[] = []
   for (const part of content) {
     if (!isRecord(part)) continue
-    if (typeof part.text === 'string' && part.text.trim() !== '') text.push(part.text)
+    if (typeof part.text === 'string' && part.text.trim() !== '') {
+      const parsed = parseCredentialCarriers(part.text)
+      text.push(parsed.text)
+      for (const carrier of parsed.carriers) {
+        if (!credentialCarriers.some((item) => item.credentialId === carrier.credentialId)) credentialCarriers.push(carrier)
+      }
+    }
     const kind = part.type === 'image' ? 'image' : part.type === 'file' ? 'file' : null
     if (kind === null) continue
     const reference = isRecord(part.attachment) ? part.attachment : part
@@ -2117,7 +2219,13 @@ function extractMessageInput(content: unknown, dshContext?: CodingNsHostServices
   }
   const translationPrompt = text.join('\n\n').trim()
   const untranslatedPrompt = attachmentNotices(attachments)
-  return { prompt: [translationPrompt, untranslatedPrompt].filter(value => value !== '').join('\n\n'), translationPrompt, untranslatedPrompt, attachments }
+  return {
+    prompt: [translationPrompt, untranslatedPrompt].filter(value => value !== '').join('\n\n'),
+    translationPrompt,
+    untranslatedPrompt,
+    attachments,
+    credentialCarriers,
+  }
 }
 
 function attachmentNotices(attachments: readonly CodingNsCliAttachment[], language?: SessionTranslationInputRecord['targetLanguage']): string {

@@ -395,6 +395,9 @@ export class CodingNsCliAdapterRegistry {
       ...(config.teamMemberId?.trim()
         ? { teamMemberId: config.teamMemberId.trim() }
         : sameAdapter && previous?.teamMemberId ? { teamMemberId: previous.teamMemberId } : {}),
+      ...(config.credentialRefs !== undefined
+        ? { credentialRefs: config.credentialRefs }
+        : sameAdapter && previous?.credentialRefs !== undefined ? { credentialRefs: previous.credentialRefs } : {}),
     }
     this.sessions.set(sessionId, normalized)
     this.sessionStore?.upsert(sessionId, normalized)
@@ -516,6 +519,7 @@ export class CodingNsCliAdapterRegistry {
         ...(stored.origin === undefined ? {} : { origin: stored.origin }),
         ...(stored.teamId === undefined ? {} : { teamId: stored.teamId }),
         ...(stored.teamMemberId === undefined ? {} : { teamMemberId: stored.teamMemberId }),
+        ...(stored.credentialRefs === undefined ? {} : { credentialRefs: stored.credentialRefs }),
       }
       this.sessions.set(sessionId, config)
       return { ...config, ...lastUsageField(this.lastUsages.get(sessionId)) }

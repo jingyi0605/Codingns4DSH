@@ -8,6 +8,7 @@ import type {
   CodingNsSessionAdapterBinding,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsSettings } from '../../shared/contracts/config.js'
+import { isCredentialReference, type CredentialReference } from '../../shared/contracts/credentials.js'
 import { inspectLegacySessionAdapter, type LegacySessionAdapterEvidence } from './legacy-session-adapter.js'
 import { readLegacyImportedSessionRecords } from './legacy-session-settings.js'
 
@@ -41,6 +42,7 @@ export interface CodingNsCliSessionPatch {
   readonly continuationId?: string
   readonly teamId?: string
   readonly teamMemberId?: string
+  readonly credentialRefs?: readonly CredentialReference[]
   readonly title?: string
   readonly cwd?: string
   readonly status?: CodingNsCliSessionStatus
@@ -218,6 +220,7 @@ export class CodingNsCliSessionStore {
       ...(stringValue(patch.continuationId) ? { continuationId: stringValue(patch.continuationId)! } : base?.continuationId ? { continuationId: base.continuationId } : {}),
       ...(stringValue(patch.teamId) ? { teamId: stringValue(patch.teamId)! } : base?.teamId ? { teamId: base.teamId } : {}),
       ...(stringValue(patch.teamMemberId) ? { teamMemberId: stringValue(patch.teamMemberId)! } : base?.teamMemberId ? { teamMemberId: base.teamMemberId } : {}),
+      ...(patch.credentialRefs !== undefined ? { credentialRefs: normalizeCredentialRefs(patch.credentialRefs) } : base?.credentialRefs === undefined ? {} : { credentialRefs: base.credentialRefs }),
       ...(patch.title?.trim() ? { title: patch.title.trim() } : base?.title ? { title: base.title } : {}),
       ...(patch.cwd?.trim() ? { cwd: patch.cwd.trim() } : base?.cwd ? { cwd: base.cwd } : {}),
       ...(patch.lastError?.trim() ? { lastError: patch.lastError.trim() } : {}),
@@ -308,6 +311,7 @@ export class CodingNsCliSessionStore {
       ...(stringValue(value.continuationId) ? { continuationId: stringValue(value.continuationId)! } : {}),
       ...(stringValue(value.teamId) ? { teamId: stringValue(value.teamId)! } : {}),
       ...(stringValue(value.teamMemberId) ? { teamMemberId: stringValue(value.teamMemberId)! } : {}),
+      ...(Array.isArray(value.credentialRefs) ? { credentialRefs: normalizeCredentialRefs(value.credentialRefs) } : {}),
       ...(stringValue(value.title) ? { title: stringValue(value.title)! } : {}),
       ...(stringValue(value.cwd) ? { cwd: stringValue(value.cwd)! } : {}),
       ...(stringValue(value.lastError) ? { lastError: stringValue(value.lastError)! } : {}),
@@ -392,4 +396,11 @@ function finiteNonNegativeInteger(value: unknown): value is number {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeCredentialRefs(value: readonly CredentialReference[]): readonly CredentialReference[] {
+  return value.filter(isCredentialReference).map((reference) => ({
+    credentialId: reference.credentialId.trim(),
+    bindings: reference.bindings.map((binding) => ({ field: binding.field.trim(), env: binding.env.trim() })),
+  }))
 }
