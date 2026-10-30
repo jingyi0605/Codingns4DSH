@@ -92,7 +92,7 @@ for (const kind of ['profile', 'package'] as const) {
   test(`${kind} install check warns without blocking newer prerelease, stable, or major versions`, () => {
     const sandbox = makeSandbox(kind)
     cleanups.push(sandbox)
-    for (const version of ['0.2.1-rc.4', '0.2.1-rc.10', '0.2.1', '0.3.0-alpha.1', '1.0.0']) {
+    for (const version of ['0.2.1-rc.10', '0.2.1', '0.3.0-alpha.1', '1.0.0']) {
       const result = runSandbox(sandbox, { env: { ...scrubbedEnv(), DSH_RUNTIME_VERSION: version } })
       assert.equal(result.status, 0, `${version}\n${result.stdout}\n${result.stderr}`)
       assert.match(result.stderr, /newer than the latest tested version/u)
