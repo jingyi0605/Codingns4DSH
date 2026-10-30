@@ -48,8 +48,20 @@ function createHarness(width = 1366, agent = 'Mozilla/5.0 (Macintosh; Intel Mac 
       return null
     }
     querySelector(selector: string): FakeElement | null {
-      const [tag, className] = selector.split('.')
-      return this.children.find((child) => child.tagName.toLowerCase() === tag && child.matches('.' + className)) ?? null
+      const parts = selector.split(',').map((part) => part.trim())
+      const attributeOnly = parts.every((part) => part.startsWith('['))
+      for (const child of this.children) {
+        const matched = attributeOnly
+          ? parts.some((part) => child.matches(part))
+          : (() => {
+              const [tag, className] = selector.split('.')
+              return child.tagName.toLowerCase() === tag && child.matches('.' + className)
+            })()
+        if (matched) return child
+        const nested = child.querySelector(selector)
+        if (nested !== null) return nested
+      }
+      return null
     }
     focus(options?: FocusOptions): void {
       this.focusCount += 1
@@ -238,6 +250,31 @@ test('终端自动恢复不能聚焦隐藏输入，明确点按终端文字面�
   h.tap(canvas)
   input.focus()
   assert.equal(h.document.activeElement, input)
+})
+
+test('弹层内搜索框保持应用自身的焦点导航，不被当作自动聚焦收回', (t) => {
+  const h = createHarness()
+  t.after(() => h.controller.dispose())
+  // DSH 模型列表弹层：role="group" 的 Portal 容器，内部是搜索框和模型行。
+  const surface = new h.Element('DIV', { role: 'group' })
+  const search = new h.Element('INPUT', { type: 'search', role: 'searchbox' }, surface)
+  new h.Element('BUTTON', { role: 'menuitemradio' }, surface)
+  search.focus()
+  assert.equal(h.document.activeElement, search, '弹层搜索框必须在 onBlur 关闭菜单前保住焦点')
+  assert.equal(search.blurCount, 0)
+
+  // 收起弹层后同一输入框不再豁免，仍按普通自动聚焦拒绝。
+  surface.attrs.role = 'presentation'
+  search.blur()
+  search.focus()
+  assert.equal(h.document.activeElement, null)
+  assert.equal(search.focusCount, 1)
+
+  // 不含可选项的弹层容器不是豁免区，避免普通布局容器绕过键盘保护。
+  const plain = new h.Element('DIV', { role: 'menu' })
+  const plainInput = new h.Element('INPUT', {}, plain)
+  plainInput.focus()
+  assert.equal(plainInput.focusCount, 0)
 })
 
 test('切到后台撤销许可，普通桌面无需保护，销毁后恢复原生方法和全部监听', (t) => {
