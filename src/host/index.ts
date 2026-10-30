@@ -38,6 +38,7 @@ import { CODINGNS_STAGE0_GLOBAL } from '../shared/runtime-environment.js'
 import { registerProviderIconRoutes } from './provider-icon-assets.js'
 import { listWorkspaceRoots as listRegistryWorkspaceRoots, resolveWorkspaceRoot as resolveRegistryWorkspaceRoot } from './workspace-root.js'
 import { installSessionHandleEviction } from './session-handle-eviction.js'
+import { CredentialService } from './credentials/service.js'
 
 export async function apply(ctx?: Context): Promise<void> {
   if (ctx === undefined) return
@@ -218,6 +219,7 @@ export async function apply(ctx?: Context): Promise<void> {
     })
     debugInfo('codingns4dsh: host terminal controller ready', { mode: terminal.mode })
     const sessionTranslation = createSessionTranslationService(hostCtx, dshVersion)
+    const credentialService = new CredentialService()
     const services: CodingNsHostServices = {
       rpc: new CodingNsRpcTable(),
       ...(quickAppOrigins ? { quickAppOrigins } : {}),
@@ -231,6 +233,7 @@ export async function apply(ctx?: Context): Promise<void> {
       events: { on: hostCtx.on.bind(hostCtx), emit: hostCtx.emit.bind(hostCtx) },
       nativeSessions: createCodingNsNativeSessionBridge(hostCtx, dshVersion),
       ...(sessionTranslation === undefined ? {} : { sessionTranslation }),
+      credentials: credentialService,
       nativeTeam: new DshNativeTeamProxy(
         readOptionalService(hostCtx, 'agentTeams') as NativeTeamService | undefined,
         readOptionalService(hostCtx, 'agents') as AgentRegistry | undefined,

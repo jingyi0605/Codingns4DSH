@@ -32,6 +32,7 @@ import { CLIENT_FEATURES } from './features/index.js'
 import type { CodingNsClientFeatureModule, CodingNsClientServices, CodingNsRpcClient } from './features/types.js'
 import { ensureCryptoRandomUUID } from './lan-access.js'
 import { CodingNsSettingsSection } from './settings-section.js'
+import { CredentialsSettingsSection } from './credentials-settings-section.js'
 import { callCodingNsRpc, createCodingNsSettingsBridge } from './settings-bridge.js'
 import { debugInfo, debugWarn } from '../shared/debug.js'
 import { createConfigFormSettingsStore, resolveServedConfigFormNamespace, type DshClientConfigForms } from '../dsh-capabilities/client/config-forms-adapter.js'
@@ -61,7 +62,7 @@ export type {
   LanAccessCrypto,
   LanAccessGlobal,
 } from './lan-access.js'
-export { CLIENT_FEATURES, settingsModules, startBrowserRelayConnection, gitManagementFeature, fileManagementFeature, magpieManagementFeature } from './features/index.js'
+export { CLIENT_FEATURES, settingsModules, startBrowserRelayConnection, gitManagementFeature, fileManagementFeature, magpieManagementFeature, credentialsFeature } from './features/index.js'
 export { chooseDshDevice, createHttpDshH5ControlApi, startDshH5Bootstrap, startDshH5BrowserBootstrap } from './dsh-h5-bootstrap.js'
 export type {
   DshH5BootstrapOptions,
@@ -82,6 +83,7 @@ export type {
   FeaturePanelProps,
 } from './features/index.js'
 export { CodingNsSettingsSection } from './settings-section.js'
+export { CredentialsSettingsSection } from './credentials-settings-section.js'
 export {
   startWorkspaceSessionArchiveDom,
   WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE,
@@ -265,6 +267,13 @@ export function apply(ctx?: Context): void {
           inject: () => ({ settings, registry, services, restartStates }),
         }, CodingNsSettingsSection)
       })
+      settingsCtx.slots.inject('settings.section', () => settingsCtx.slots!.register({
+        name: 'settings.section',
+        id: 'codingns-credentials',
+        order: 31,
+        label: settingsCtx.locale.bind('codingns')('feature.credentials.label'),
+        inject: () => ({ settings, services }),
+      }, CredentialsSettingsSection))
       debugInfo('codingns4dsh: client settings slot registration requested')
     } catch (error) {
       console.error('codingns4dsh: client settings slot registration failed', error)

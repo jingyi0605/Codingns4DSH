@@ -10,6 +10,7 @@ import type { SessionTranslationService } from './session-translation-service.js
 import type { QuickAppLanTransport, QuickAppOriginProvider } from '../../dsh-capabilities/host/quick-app-origin-adapter.js'
 import type { QuickAppPeerGateway } from '../modules/quick-apps/remote.js'
 import type { WorkspaceDirectoryBrowser } from '../../dsh-capabilities/host/workspace-directory-adapter.js'
+import type { CredentialService } from '../credentials/service.js'
 
 export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
@@ -64,4 +65,6 @@ export interface CodingNsHostServices {
   readonly listWorkspaceRoots?: () => readonly string[]
   /** 外部 Agent 会话翻译服务；仅由会话翻译模块启用并配置。 */
   readonly sessionTranslation?: SessionTranslationService
+  /** Host-only credential resolver; never serialized to Client or session records. */
+  readonly credentials?: CredentialService
 }

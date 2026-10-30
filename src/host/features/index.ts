@@ -14,6 +14,7 @@ import { createSessionTitleOptimizationFeature } from './session-title-optimizat
 import { createSessionTranslationFeature } from './session-translation.js'
 import { createPluginUpdateFeature } from './plugin-update.js'
 import { createWorkspaceMcpHostFeature } from './workspace-mcp.js'
+import { createCredentialsFeature } from './credentials.js'
 import type { CodingNsHostServices } from './types.js'
 
 export interface HostFeatureOptions {
@@ -27,6 +28,7 @@ export function createHostFeatures(options: HostFeatureOptions = {}): readonly F
     createLanAccessDshFeature(),
     createTerminalStatusFeature(options.terminalStatus),
     createSessionTranslationFeature(),
+    createCredentialsFeature(),
     createCliAdaptersFeature(),
     createSessionTitleOptimizationFeature(),
     createTerminalProcessFeature(),
@@ -54,6 +56,7 @@ export { createTerminalProcessFeature } from './terminal-process.js'
 export { createDebugFeature } from './debug.js'
 export { createHostStatusFeature } from './host-status.js'
 export { createWorkspaceMcpHostFeature } from './workspace-mcp.js'
+export { createCredentialsFeature } from './credentials.js'
 export { createGitManagementFeature } from './git-management.js'
 export { createFileManagementFeature } from './file-management.js'
 export { createPeerHostFeature, toPeerHostClientRecord } from './peer-host.js'

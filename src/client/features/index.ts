@@ -17,12 +17,14 @@ import { subagentCollapsedLineageFeature } from './subagent-collapsed-lineage.js
 import { sessionTranslationFeature } from './session-translation.js'
 import { pluginUpdateFeature } from './plugin-update.js'
 import { workspaceMcpFeature } from './workspace-mcp.js'
+import { credentialsFeature } from './credentials.js'
 import type { CodingNsClientFeatureModule, CodingNsClientServices } from './types.js'
 
 /** Client 侧功能模块清单：新增模块在这里登记一行，不需要改动设置页和入口。 */
 export const CLIENT_FEATURES: readonly CodingNsClientFeatureModule[] = [
   pluginUpdateFeature,
   workspaceMcpFeature,
+  credentialsFeature,
   lanAccessFeature,
   loginProtectionFeature,
   reverseProxyFeature,
@@ -66,6 +68,7 @@ export function settingsModules(
 }
 
 export { lanAccessFeature, loginProtectionFeature, reverseProxyFeature, cliAdaptersFeature, workspaceSessionEnhancementFeature, mobileAccessFeature, terminalEnhancementFeature, debugFeature, gitManagementFeature, fileManagementFeature, peerHostFeature, workspaceMcpFeature }
+export { credentialsFeature } from './credentials.js'
 export { magpieManagementFeature } from './magpie-management.js'
 export { subagentCollapsedLineageFeature } from './subagent-collapsed-lineage.js'
 export { sessionTranslationFeature } from './session-translation.js'

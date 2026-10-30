@@ -67,6 +67,18 @@ export {
   type SubscriptionQuotaView,
 } from './contracts/config.js'
 export {
+  CREDENTIALS_FEATURE_NAME,
+  CREDENTIAL_ENV_PATTERN,
+  isCredentialReference,
+  type CredentialEnvironmentBinding,
+  type CredentialErrorCode,
+  type CredentialFieldMetadata,
+  type CredentialFieldMutation,
+  type CredentialMetadata,
+  type CredentialMutation,
+  type CredentialReference,
+} from './contracts/credentials.js'
+export {
   DEFAULT_GIT_MANAGEMENT_SETTINGS,
   MAX_GIT_COMMIT_MESSAGE_CHARS,
   MAX_GIT_COMMIT_PROMPT_CHARS,
