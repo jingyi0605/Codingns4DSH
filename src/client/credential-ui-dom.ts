@@ -24,6 +24,7 @@ export interface CredentialUiDomOptions {
   readonly document?: Document
   readonly MutationObserver?: typeof MutationObserver
   readonly menuLabel: () => string
+  readonly popupPlaceholder: () => string
 }
 
 export function startCredentialUiDom(options: CredentialUiDomOptions): () => void {
@@ -34,28 +35,47 @@ export function startCredentialUiDom(options: CredentialUiDomOptions): () => voi
 
   let disposed = false
   let queued = false
+  const inputPrototype = dom.defaultView?.HTMLInputElement?.prototype
+  const originalFocus = inputPrototype?.focus
+  const patchedFocus = originalFocus === undefined ? undefined : function (this: HTMLInputElement, focusOptions?: FocusOptions): void {
+    sanitizeCredentialSearchInput(this, options.popupPlaceholder())
+    originalFocus.call(this, focusOptions)
+  }
+  if (inputPrototype !== undefined && patchedFocus !== undefined) {
+    inputPrototype.focus = patchedFocus as typeof inputPrototype.focus
+  }
+  const onFocusIn = (event: FocusEvent): void => {
+    const target = event.target
+    if (target instanceof Element) sanitizeCredentialSearchInput(target, options.popupPlaceholder())
+  }
   const observer = new Observer(() => {
     if (queued || disposed) return
     queued = true
     queueMicrotask(() => {
       queued = false
-      if (!disposed) scan(dom, options.menuLabel())
+      if (!disposed) scan(dom, options.menuLabel(), options.popupPlaceholder())
     })
   })
 
+  dom.addEventListener('focusin', onFocusIn, true)
   installStyles(dom)
   observer.observe(dom.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['aria-selected'] })
-  scan(dom, options.menuLabel())
+  scan(dom, options.menuLabel(), options.popupPlaceholder())
 
   return () => {
     if (disposed) return
     disposed = true
     observer.disconnect()
+    dom.removeEventListener('focusin', onFocusIn, true)
+    if (inputPrototype !== undefined && originalFocus !== undefined && inputPrototype.focus === patchedFocus) {
+      inputPrototype.focus = originalFocus
+    }
     removeCredentialNodes(dom)
   }
 }
 
-function scan(dom: Document, label: string): void {
+function scan(dom: Document, label: string, popupPlaceholder: string): void {
+  sanitizeCredentialSearchInputs(dom, popupPlaceholder)
   const listbox = findSlashMenuListbox(dom)
   if (listbox === undefined) return
   const row = findCredentialRow(listbox, label)
@@ -95,6 +115,22 @@ function scan(dom: Document, label: string): void {
   }
   row.setAttribute(CREDENTIAL_MENU_ROW_ATTRIBUTE, '')
   syncActive(row, proxy)
+}
+
+function sanitizeCredentialSearchInputs(dom: Document, placeholder: string): void {
+  if (placeholder === '') return
+  for (const input of dom.querySelectorAll('input')) sanitizeCredentialSearchInput(input, placeholder)
+}
+
+function sanitizeCredentialSearchInput(target: Element, placeholder: string): void {
+  if (target.tagName !== 'INPUT' || target.getAttribute('placeholder') !== placeholder) return
+  target.setAttribute('type', 'text')
+  target.setAttribute('autocomplete', 'off')
+  target.setAttribute('name', 'codingns-credential-search')
+  target.setAttribute('data-1p-ignore', 'true')
+  target.setAttribute('data-1password-ignore', 'true')
+  target.setAttribute('data-lpignore', 'true')
+  target.setAttribute('data-bwignore', 'true')
 }
 
 function findSlashMenuListbox(dom: Document): Element | undefined {

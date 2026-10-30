@@ -32,7 +32,10 @@ export const credentialsFeature: CodingNsClientFeatureModule = {
       context.resources.add(registerCredentialCommand(context.services.uiContext, context.services.rpc, context.services.locale))
       context.resources.add(registerCredentialUserTextRule(context.services.uiContext))
       const translate = context.services.locale.bind('codingns')
-      context.resources.add(startCredentialUiDom({ menuLabel: () => translate('credentials.commandLabel') }))
+      context.resources.add(startCredentialUiDom({
+        menuLabel: () => translate('credentials.commandLabel'),
+        popupPlaceholder: () => translate('credentials.referenceSearch'),
+      }))
     }
   },
   settingsPanel: CredentialsModuleSettingsPanel,
