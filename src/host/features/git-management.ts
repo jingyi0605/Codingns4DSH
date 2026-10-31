@@ -59,6 +59,12 @@ export function createGitManagementFeature(options: { readonly llm?: NativeLlmTe
       enabledByDefault: true,
       dependencies: [],
       runtime: 'host',
+      nativeReplacement: {
+        dshFeature: '@deepseek-ai/dsh-experimental-tool-worktree change requests',
+        since: '0.2.2-alpha.2',
+        coverage: 'partial',
+        note: 'Native worktrees and change requests cover isolated worktree operations; the plugin still owns Git status, history, commit, and push workflows.',
+      },
       requires: [{ capability: 'llm.text', required: false, fallback: 'degrade' }],
     },
     start(context) {

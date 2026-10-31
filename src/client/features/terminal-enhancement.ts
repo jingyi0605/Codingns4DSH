@@ -10,6 +10,12 @@ export const terminalEnhancementFeature: CodingNsClientFeatureModule = {
     dependencies: [],
     runtime: 'client',
     activation: 'restart',
+    nativeReplacement: {
+      dshFeature: '@deepseek-ai/dsh-experimental-terminal-bundle',
+      since: '0.2.2-alpha.2',
+      coverage: 'full',
+      note: 'DSH now bundles the native terminal surface and its settings path.',
+    },
     ui: {
       label: 'Terminal enhancements',
       description: 'Configure the default shell and terminal appearance. Enabling or disabling requires a DSH restart.',

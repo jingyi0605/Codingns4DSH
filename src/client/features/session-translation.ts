@@ -46,6 +46,12 @@ export const sessionTranslationFeature: CodingNsClientFeatureModule = {
     enabledByDefault: false,
     dependencies: ['cliAdapters'],
     runtime: 'client',
+    nativeReplacement: {
+      dshFeature: '@deepseek-ai/dsh-experimental-cot-translation-bundle',
+      since: '0.2.2-alpha.2',
+      coverage: 'partial',
+      note: 'The native translation switch is now host-owned; this feature still provides external Agent translation UI and presentation.',
+    },
     requires: [
       { capability: 'conversation.interaction-translation', required: false, fallback: 'degrade' },
       { capability: 'conversation.message-presentation', required: false, fallback: 'degrade' },

@@ -18,6 +18,12 @@ export const fileManagementFeature: CodingNsClientFeatureModule = {
     enabledByDefault: false,
     dependencies: [],
     runtime: 'client',
+    nativeReplacement: {
+      dshFeature: 'DSH native file delivery, image upload, and drag-and-drop',
+      since: '0.2.2-alpha.2',
+      coverage: 'partial',
+      note: 'Native delivery replaces the file-transfer subset; the plugin still owns its editor, HTML workspace, and change-management surfaces.',
+    },
     ui: {
       label: fallbackT('feature.fileManagement.label'),
       description: fallbackT('feature.fileManagement.description'),

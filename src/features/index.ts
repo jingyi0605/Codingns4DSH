@@ -10,6 +10,8 @@ export type {
   FeatureDescriptor,
   FeatureDisposer,
   FeatureModule,
+  FeatureNativeReplacement,
+  FeatureNativeReplacementCoverage,
   FeatureResourceScope,
   FeatureRuntime,
   FeatureState,

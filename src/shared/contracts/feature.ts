@@ -8,6 +8,19 @@ export type FeatureRuntime = 'host' | 'client' | 'both'
 
 /** 功能开关的生效时机；未声明时按实时生效处理。 */
 export type FeatureActivation = 'live' | 'restart'
+export type FeatureNativeReplacementCoverage = 'full' | 'partial'
+
+/** DSH-native functionality that overlaps or replaces a plugin feature. */
+export interface FeatureNativeReplacement {
+  /** Stable DSH bundle, feature, or interface name. */
+  dshFeature: string
+  /** DSH release where the overlapping native functionality is available. */
+  since: string
+  /** Whether the native surface covers the whole plugin feature or only a subset. */
+  coverage: FeatureNativeReplacementCoverage
+  /** Scope of the overlap, kept explicit so a partial replacement is not mistaken for removal. */
+  note: string
+}
 
 /**
  * 功能模块在设置界面中的静态描述。
@@ -50,6 +63,8 @@ export interface FeatureDescriptor {
   enabledByDefault: boolean
   /** 维护期间强制停用；即使历史设置为 true 也不得启动。 */
   disabled?: boolean
+  /** Native DSH functionality that overlaps this feature. */
+  nativeReplacement?: FeatureNativeReplacement
   dependencies: string[]
   runtime: FeatureRuntime
   /** `restart` 表示只保存下次启动意图，当前进程不跟随设置变化启停。 */

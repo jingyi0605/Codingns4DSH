@@ -472,6 +472,7 @@ function validateDescriptor(descriptor: FeatureDescriptor | undefined): asserts 
   if (descriptor.disabled !== undefined && typeof descriptor.disabled !== 'boolean') {
     throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid disabled`, descriptor.name)
   }
+  if (descriptor.nativeReplacement !== undefined) validateNativeReplacement(descriptor)
   if (descriptor.runtime !== 'host' && descriptor.runtime !== 'client' && descriptor.runtime !== 'both') {
     throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid runtime`, descriptor.name)
   }
@@ -503,6 +504,23 @@ function validateDescriptor(descriptor: FeatureDescriptor | undefined): asserts 
     throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has duplicate dependencies`, descriptor.name)
   }
   validateUiDescriptor(descriptor)
+}
+
+function validateNativeReplacement(descriptor: FeatureDescriptor): void {
+  const replacement = descriptor.nativeReplacement
+  if (replacement === undefined) return
+  if (typeof replacement.dshFeature !== 'string' || replacement.dshFeature.trim() === '') {
+    throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid nativeReplacement.dshFeature`, descriptor.name)
+  }
+  if (typeof replacement.since !== 'string' || replacement.since.trim() === '') {
+    throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid nativeReplacement.since`, descriptor.name)
+  }
+  if (replacement.coverage !== 'full' && replacement.coverage !== 'partial') {
+    throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid nativeReplacement.coverage`, descriptor.name)
+  }
+  if (typeof replacement.note !== 'string' || replacement.note.trim() === '') {
+    throw new FeatureRegistryError('FEATURE_INVALID_DESCRIPTOR', `Feature ${descriptor.name} has invalid nativeReplacement.note`, descriptor.name)
+  }
 }
 
 function validateUiDescriptor(descriptor: FeatureDescriptor): void {

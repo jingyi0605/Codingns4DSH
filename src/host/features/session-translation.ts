@@ -11,6 +11,12 @@ export function createSessionTranslationFeature(): FeatureModule<CodingNsHostSer
       enabledByDefault: false,
       dependencies: ['cliAdapters'],
       runtime: 'host',
+      nativeReplacement: {
+        dshFeature: '@deepseek-ai/dsh-experimental-cot-translation-bundle',
+        since: '0.2.2-alpha.2',
+        coverage: 'partial',
+        note: 'Native DSH translation covers native-session COT translation; the plugin still translates external Agent traffic.',
+      },
       requires: [
         { capability: 'llm.text', required: false, fallback: 'disable' },
         { capability: 'session.prompt-assembly', required: false, fallback: 'degrade' },

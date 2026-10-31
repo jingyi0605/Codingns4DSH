@@ -30,6 +30,12 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
     enabledByDefault: false,
     dependencies: ['cliAdapters'],
     runtime: 'client',
+    nativeReplacement: {
+      dshFeature: 'DSH native session list, session search, plugin icons, and working-directory presentation',
+      since: '0.2.2-alpha.2',
+      coverage: 'partial',
+      note: 'Native DSH now covers several session-list and navigation enhancements; plugin-specific workspace/archive presentation remains.',
+    },
     ui: {
       label: fallbackT('feature.workspaceSession.label'),
       description: fallbackT('feature.workspaceSession.description'),

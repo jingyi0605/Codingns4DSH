@@ -17,6 +17,12 @@ export function createFileManagementFeature(): FeatureModule<CodingNsHostService
       enabledByDefault: false,
       dependencies: [],
       runtime: 'host',
+      nativeReplacement: {
+        dshFeature: 'DSH native file delivery, image upload, and drag-and-drop',
+        since: '0.2.2-alpha.2',
+        coverage: 'partial',
+        note: 'Native delivery replaces the file-transfer subset; the plugin still owns its workspace file and change-management RPCs.',
+      },
     },
     start(context) {
       context.resources.add(context.services.rpc.register('fileManagement', async (action, payload) => {

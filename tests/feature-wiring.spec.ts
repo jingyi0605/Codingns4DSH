@@ -95,6 +95,22 @@ test('全局智能助理已从基座功能清单与设置写入边界移除', as
   }), (error: unknown) => error instanceof CodingNsRpcError && error.code === 'CODINGNS_SETTINGS_FIELD_FORBIDDEN')
 })
 
+test('DSH alpha.2 原生替代面已在重叠插件功能上显式标记', () => {
+  const descriptors = [...HOST_FEATURES, ...CLIENT_FEATURES].map(({ descriptor }) => descriptor)
+  const replacement = (name: string) => descriptors.find((descriptor) => descriptor.name === name)?.nativeReplacement
+  assert.deepEqual(replacement('pluginUpdate')?.coverage, 'full')
+  assert.deepEqual(replacement('sessionTitleOptimization')?.dshFeature, '@deepseek-ai/dsh-experimental-session-titles-bundle')
+  assert.deepEqual(replacement('terminalEnhancement')?.coverage, 'full')
+  assert.deepEqual(replacement('sessionTranslation')?.coverage, 'partial')
+  assert.deepEqual(replacement('gitManagement')?.coverage, 'partial')
+  assert.deepEqual(replacement('workspaceSessionEnhancement')?.coverage, 'partial')
+  assert.deepEqual(replacement('fileManagement')?.coverage, 'partial')
+  for (const descriptor of descriptors.filter((item) => item.nativeReplacement !== undefined)) {
+    assert.equal(descriptor.nativeReplacement?.since, '0.2.2-alpha.2', descriptor.name)
+    assert.notEqual(descriptor.nativeReplacement?.note.trim(), '', descriptor.name)
+  }
+})
+
 test('reconcile 会带上依赖，也不会在停用阶段误伤被依赖的模块', async () => {
   const events: string[] = []
   const registry = new FeatureRegistry({})

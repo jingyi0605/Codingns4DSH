@@ -1254,6 +1254,12 @@ const menuItemStyle: CSSProperties = { padding: '6px 8px' }
 export const gitManagementFeature: CodingNsClientFeatureModule = {
   descriptor: {
     name: 'gitManagement', version: '0.1.0', enabledByDefault: true, dependencies: [], runtime: 'client',
+    nativeReplacement: {
+      dshFeature: '@deepseek-ai/dsh-experimental-tool-worktree change requests',
+      since: '0.2.2-alpha.2',
+      coverage: 'partial',
+      note: 'Native worktrees and change requests overlap the repository panel only for isolated change workflows.',
+    },
     ui: { label: 'Git repository management', labelKey: 'feature.gitManagement.label', description: 'View changes and manage commits', descriptionKey: 'feature.gitManagement.description', order: 40, defaultOpen: false },
   },
   start(context) {

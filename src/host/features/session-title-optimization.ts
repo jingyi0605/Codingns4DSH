@@ -9,6 +9,12 @@ export function createSessionTitleOptimizationFeature(): FeatureModule<CodingNsH
     descriptor: {
       name: 'sessionTitleOptimization', version: '0.1.0', enabledByDefault: true,
       dependencies: [], runtime: 'host',
+      nativeReplacement: {
+        dshFeature: '@deepseek-ai/dsh-experimental-session-titles-bundle',
+        since: '0.2.2-alpha.2',
+        coverage: 'full',
+        note: 'Native DSH session-title generation is bundled and supersedes this plugin-owned title path.',
+      },
       requires: [
         { capability: 'llm.text', required: false, fallback: 'disable' },
         { capability: 'session.title', required: false, fallback: 'disable' },

@@ -11,6 +11,12 @@ export function createPluginUpdateFeature(options: { readonly request?: typeof f
   return {
     descriptor: {
       name: 'pluginUpdate', version: '1.0.0', enabledByDefault: true, dependencies: [], runtime: 'host',
+      nativeReplacement: {
+        dshFeature: '@deepseek-ai/dsh-plugin-manager third-party updates',
+        since: '0.2.2-alpha.2',
+        coverage: 'full',
+        note: 'DSH now owns third-party plugin updates and rollback after a failed hot update.',
+      },
       requires: [{ capability: 'plugin.update.inspect', required: false, fallback: 'degrade' }],
     },
     start(context) {
