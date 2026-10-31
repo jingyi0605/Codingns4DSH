@@ -41,7 +41,7 @@ test('Host entry 可以加载并卸载且不创建资源', async () => {
 test('Host 装配从入口 Fiber 读取配置，不读取注入子 Fiber 的空配置', async () => {
   const tasks: Promise<unknown>[] = []
   const previousVersion = process.env.DSH_RUNTIME_VERSION
-  process.env.DSH_RUNTIME_VERSION = '0.2.1-alpha.1'
+  process.env.DSH_RUNTIME_VERSION = '0.2.1-alpha.2'
   try {
     const ctx = {
       fiber: { config: CodingNsConfigSchema({ modules: { terminalEnhancement: true } } as never) },
@@ -69,7 +69,7 @@ test('Host 装配从入口 Fiber 读取配置，不读取注入子 Fiber 的空�
 test('legacy cleanup event subscription failure does not block later Host setup', async () => {
   const tasks: Promise<unknown>[] = []
   const previousVersion = process.env.DSH_RUNTIME_VERSION
-  process.env.DSH_RUNTIME_VERSION = '0.2.1-alpha.1'
+  process.env.DSH_RUNTIME_VERSION = '0.2.1-alpha.2'
   try {
     const ctx = {
       fiber: { config: CodingNsConfigSchema({ modules: { terminalEnhancement: true } } as never) },
@@ -100,7 +100,7 @@ test('legacy cleanup event subscription failure does not block later Host setup'
 test('Host 重载撤销自己的会话读取包装，不覆盖后来安装的包装', async () => {
   const root = mkdtempSync(join(tmpdir(), 'codingns-host-hmr-'))
   const previousVersion = process.env.DSH_RUNTIME_VERSION
-  process.env.DSH_RUNTIME_VERSION = '0.2.1-alpha.1'
+  process.env.DSH_RUNTIME_VERSION = '0.2.1-alpha.2'
   try {
     const directory = join(root, '_no-cwd', 'legacy')
     mkdirSync(directory, { recursive: true })

@@ -92,7 +92,7 @@ for (const kind of ['profile', 'package'] as const) {
   test(`${kind} install check warns without blocking newer prerelease, stable, or major versions`, () => {
     const sandbox = makeSandbox(kind)
     cleanups.push(sandbox)
-    for (const version of ['0.2.1-rc.10', '0.2.1', '0.3.0-alpha.1', '1.0.0']) {
+    for (const version of ['0.2.2-alpha.3', '0.2.2', '0.3.0-alpha.1', '1.0.0']) {
       const result = runSandbox(sandbox, { env: { ...scrubbedEnv(), DSH_RUNTIME_VERSION: version } })
       assert.equal(result.status, 0, `${version}\n${result.stdout}\n${result.stderr}`)
       assert.match(result.stderr, /newer than the latest tested version/u)
@@ -120,13 +120,13 @@ for (const kind of ['profile', 'package'] as const) {
   })
 }
 
-test('Profile 安装检查接受范围内更早的 0.2 世代版本', () => {
-  // 兼容范围覆盖 rc.2：已发布的旧环境不能因为插件升级而被拒绝安装。
+test('Profile 安装检查接受兼容范围下界版本', () => {
+  // The compatibility floor remains installable after the plugin upgrade.
   const sandbox = makeSandbox()
   cleanups.push(sandbox)
-  const result = runSandbox(sandbox, { env: { ...scrubbedEnv(), DSH_RUNTIME_VERSION: '0.2.0-rc.2', PATH: '' } })
+  const result = runSandbox(sandbox, { env: { ...scrubbedEnv(), DSH_RUNTIME_VERSION: '0.2.1-alpha.2', PATH: '' } })
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
-  assert.match(result.stdout, /DSH 0\.2\.0-rc\.2（来源 env）/u)
+  assert.match(result.stdout, /DSH 0\.2\.1-alpha\.2（来源 env）/u)
 })
 
 test('Profile 安装检查仍拒绝兼容范围下界之前的 DSH', () => {

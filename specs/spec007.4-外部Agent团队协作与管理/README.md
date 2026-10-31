@@ -14,7 +14,7 @@ Claude retry follow-up: a supplied teammate export and its matching CLI transcri
 
 An external Agent should be able to work as a named DSH teammate or execute the top-level Team Lead session. DSH remains responsible for membership, tasks, authority, persistence, and child lifecycle. CodingNS connects that real DSH identity to an external adapter and exposes the appropriate Team tools.
 
-The user authorized this Spec workflow after selecting **DSH `0.2.1-alpha.2` as the minimum for full Team support**. The initial certification targets are alpha.2 and alpha.3. The plugin-wide compatibility range remains `>=0.2.0-rc.2 <=0.2.1-alpha.3`; ordinary external sessions and existing subagent delegation on rc.2/alpha.1 remain supported. Future DSH versions require a separate compatibility review.
+The user authorized this Spec workflow after selecting **DSH `0.2.1-alpha.2` as the minimum for full Team support**. The initial certification targets are alpha.2 and alpha.3. The plugin-wide compatibility floor is now `>=0.2.1-alpha.2`; the former 0.2.0 interface generation is retired. Future DSH versions require a separate compatibility review.
 
 ## Documents
 

@@ -1,6 +1,6 @@
 export interface SessionPromptAssembly {
   readonly sections: readonly { readonly name: string; readonly text: string; readonly [key: string]: unknown }[]
-  readonly tools: readonly { readonly name: string; readonly description?: string; readonly parameters?: unknown; readonly [key: string]: unknown }[]
+  readonly tools?: readonly { readonly name: string; readonly description?: string; readonly parameters?: unknown; readonly [key: string]: unknown }[]
   readonly [key: string]: unknown
 }
 
@@ -15,7 +15,11 @@ export interface SessionPromptAdapter {
   install(transform: (assembly: SessionPromptAssembly, scope: SessionPromptScope) => Promise<SessionPromptAssembly>): () => void
 }
 
-type HostContext = { on(name: string, listener: (...args: any[]) => unknown, options: { global: boolean; prepend: boolean }): unknown; get?(name: string): unknown; systemPrompt?: unknown }
+type PromptService = {
+  assemble?: (context?: unknown) => Promise<SessionPromptAssembly>
+}
+
+type HostContext = { on?(name: string, listener: (...args: any[]) => unknown, options: { global: boolean; prepend: boolean }): unknown; get?(name: string): unknown; systemPrompt?: unknown }
 
 export function supportsSessionPromptAssembly(value: unknown): boolean {
   const ctx = value as HostContext | undefined
@@ -38,13 +42,39 @@ export function createSessionPromptAdapter(value: unknown): SessionPromptAdapter
   const ctx = value as HostContext
   return {
     install(transform) {
-      const dispose = ctx.on('system-prompt/assemble', async (_assembly: unknown, context: any, next: () => Promise<SessionPromptAssembly>) => {
+      const prompt = (ctx.get?.('systemPrompt') ?? ctx.systemPrompt) as PromptService | undefined
+      const original = prompt?.assemble
+      if (typeof original !== 'function' || prompt === undefined) return () => undefined
+      const transformedByWaterfall = new WeakMap<object, boolean>()
+      const disposeWaterfall = ctx.on?.('system-prompt/assemble', async (_assembly: unknown, context: any, next: () => Promise<SessionPromptAssembly>) => {
         const assembly = await next()
         const scope = sessionPromptScope(context?.agent, context?.signal)
-        if (scope.sessionId === '' || scope.subagent || !Array.isArray(assembly?.sections) || !Array.isArray(assembly.tools)) return assembly
-        return transform(assembly, scope)
+        if (scope.sessionId === '' || scope.subagent || !Array.isArray(assembly?.sections)) return assembly
+        const hasTools = Array.isArray(assembly.tools)
+        const input = hasTools ? assembly : { ...assembly, tools: [] }
+        const transformed = await transform(input, scope)
+        if (context !== null && typeof context === 'object') transformedByWaterfall.set(context, hasTools)
+        return transformed
       }, { global: true, prepend: true })
-      return typeof dispose === 'function' ? dispose as () => void : () => undefined
+      const wrapped = async function (this: unknown, context?: any): Promise<SessionPromptAssembly> {
+        const assembly = await original.call(this, context)
+        const scope = sessionPromptScope(context?.agent, context?.signal)
+        const hasWaterfallResult = context !== null && typeof context === 'object' && transformedByWaterfall.has(context)
+        const waterfallHadTools = hasWaterfallResult ? transformedByWaterfall.get(context) === true : false
+        if (hasWaterfallResult) transformedByWaterfall.delete(context)
+        if (waterfallHadTools || scope.sessionId === '' || scope.subagent || !Array.isArray(assembly?.sections) || !Array.isArray(assembly.tools)) return assembly
+        const transformed = await transform({ ...assembly, sections: [], tools: assembly.tools }, scope)
+        return { ...assembly, tools: transformed.tools ?? [] }
+      }
+      try {
+        prompt.assemble = wrapped
+      } catch {
+        return typeof disposeWaterfall === 'function' ? disposeWaterfall as () => void : () => undefined
+      }
+      return () => {
+        prompt.assemble = original
+        if (typeof disposeWaterfall === 'function') disposeWaterfall()
+      }
     },
   }
 }

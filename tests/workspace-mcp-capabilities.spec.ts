@@ -37,7 +37,7 @@ import { DSH_COMPATIBILITY, DSH_VERSION, minimumSupportedDshVersion } from '../d
 /** 历史世代：低于兼容下界，插件根本不安装。 */
 const LEGACY_VERSIONS = ['0.1.5-rc.3', '0.1.6-alpha.2', '0.1.7-rc.2'] as const
 /** 兼容范围内的世代：下界与当前测试版本。 */
-const SUPPORTED_VERSIONS = ['0.2.0-rc.2', DSH_VERSION] as const
+const SUPPORTED_VERSIONS = ['0.2.1-alpha.2', DSH_VERSION] as const
 /** 全部 fixture；AGENTS.md 要求新能力至少覆盖三个历史 fixture。 */
 const VERSION_FIXTURES = [...LEGACY_VERSIONS, ...SUPPORTED_VERSIONS] as const
 

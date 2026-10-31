@@ -31,7 +31,7 @@ function runMatrix(runtimeRoot) {
 }
 
 test('Desktop runtime 落在兼容范围内时通过（兼容范围下界即当前最低支持版本）', () => {
-  const result = runMatrix(makeRuntimeRoot('0.2.0-rc.2'))
+  const result = runMatrix(makeRuntimeRoot('0.2.1-alpha.2'))
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
   assert.match(result.stdout, /依赖矩阵校验通过/u)
 })
@@ -42,10 +42,10 @@ test('Desktop runtime 等于当前测试版本时通过', () => {
 })
 
 test('newer runtime fixtures warn without failing the dependency matrix', () => {
-  const result = runMatrix(makeRuntimeRoot('0.2.1'))
+  const result = runMatrix(makeRuntimeRoot('0.2.2'))
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
   assert.match(result.stderr, /newer than the latest tested/u)
-  assert.match(result.stderr, /0\.2\.1/u)
+  assert.match(result.stderr, /0\.2\.2-alpha\.2/u)
 })
 
 test('Desktop runtime 低于最低支持版本时被拒绝', () => {

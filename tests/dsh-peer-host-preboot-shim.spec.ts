@@ -125,7 +125,7 @@ test('启动页内联 preboot fallback RPC 可解析本机二进制 Remote 响�
   shim.dispose()
 })
 
-test('0.2.0-rc.1/rc.2 Web shim 可幂等安装并在激活后切换 rpc.call', async () => {
+test('0.2.1-alpha.2 Web shim 可幂等安装并在激活后切换 rpc.call', async () => {
   await withCleanGlobals(async (globals) => {
     const first = installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
     const second = installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
@@ -148,11 +148,9 @@ test('0.2.0-rc.1/rc.2 Web shim 可幂等安装并在激活后切换 rpc.call', a
     assert.equal(first.getState(), 'installed')
     first.dispose()
     assert.equal(globals.__DSH_TRANSPORT__, undefined)
-    // 兼容范围覆盖同一 0.2 API 世代的版本，同一个 shim 必须能在 rc.2 上安装：
-    // 老测试版本（rc.2）与当前测试版本都走同一套注入脚本。
-    const updated = installDshPeerHostPrebootShim({ dshVersion: '0.2.0-rc.2' })
+    const updated = installDshPeerHostPrebootShim({ dshVersion: '0.2.1-alpha.2' })
     assert.equal(updated.getState(), 'installed')
-    assert.equal(updated.version, '0.2.0-rc.2')
+    assert.equal(updated.version, '0.2.1-alpha.2')
     updated.dispose()
     const current = installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
     assert.equal(current.getState(), 'installed')

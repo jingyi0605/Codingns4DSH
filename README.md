@@ -6,12 +6,12 @@
 
 [![npm version](https://img.shields.io/npm/v/%40jingyi0605%2Fcodingns4dsh?logo=npm)](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)
 [![DSH compatibility](https://img.shields.io/badge/DSH-0.2.1--rc.2-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
-[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D22.19-3C873A?logo=node.js&logoColor=white)](https://nodejs.org)
+[![Node.js](https://img.shields.io/badge/Node.js-%3E%3D24.9-3C873A?logo=node.js&logoColor=white)](https://nodejs.org)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/License-GPL--3.0--or--later-blue.svg)](https://www.gnu.org/licenses/gpl-3.0.html)
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.1-rc.8`** · DSH 最低版本 **`0.2.0-rc.2`**（已验证 `0.2.1-rc.5`；更新版本仅告警，不阻止安装或运行）· Node **`>= 22.19`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.1-rc.8`** · DSH 最低版本 **`0.2.1-alpha.2`**（已验证 `0.2.2-alpha.2`；更新版本仅告警，不阻止安装或运行）· Node **`>= 24.9`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965** · **[微信群 / QQ 群二维码](#交流群)**
 
@@ -239,7 +239,7 @@ DSH 原生会话的翻译默认关闭，可在会话模型选择菜单中开启�
 
 ## 安装
 
-**环境要求**：DSH `>=0.2.0-rc.2`（已验证 `0.2.1-rc.5`；更高版本会显示未验证警告，但不阻止安装或运行）、Node.js `>=22.19`，并安装 pnpm。macOS/Linux 的持久终端还需要 tmux。
+**环境要求**：DSH `>=0.2.1-alpha.2`（已验证 `0.2.2-alpha.2`；更高版本会显示未验证警告，但不阻止安装或运行）、Node.js `>=24.9`，并安装 pnpm。macOS/Linux 的持久终端还需要 tmux。
 
 ### 使用内置 Web 配置
 
@@ -324,7 +324,7 @@ pnpm typecheck
 
 [Spec019: Global Assistant Extraction and Performance Governance](specs/spec019-全局智能助理独立化与性能治理/README.md) tracks the proposal to make the global assistant an independently installable plugin, remove assistant-specific runtime from the base plugin, and verify idle/active performance with reproducible budgets.
 
-[Spec007.4: External Agent Team collaboration and management](specs/spec007.4-外部Agent团队协作与管理/README.md) adds native DSH Team tools for eligible external collaborators and Leads from DSH `0.2.1-alpha.2` onward when structural capability probes succeed. Headless reference acceptance covers native/external and mixed Codex/Claude workflows on alpha.2 and alpha.3; rc.2 compatibility is covered by repository regressions and Stage0 HTTP checks. Ordinary external sessions require DSH `>=0.2.0-rc.2`; newer hosts are enabled but remain unverified until tested. See the Spec for adapter eligibility, recovery evidence, and validation limits.
+[Spec007.4: External Agent Team collaboration and management](specs/spec007.4-外部Agent团队协作与管理/README.md) adds native DSH Team tools for eligible external collaborators and Leads from DSH `0.2.1-alpha.2` onward when structural capability probes succeed. Headless reference acceptance covers native/external and mixed Codex/Claude workflows on alpha.2 and alpha.3; the plugin-wide compatibility floor is now `>=0.2.1-alpha.2`. Newer hosts are enabled but remain unverified until tested. See the Spec for adapter eligibility, recovery evidence, and validation limits.
 
 ---
 

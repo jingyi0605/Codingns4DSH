@@ -9,7 +9,7 @@ import type { CodingNsClientServices } from '../src/client/features/types.js'
 import { QuickAppsLauncher } from '../src/client/quick-apps/launcher.js'
 import { DEFAULT_CODINGNS_SETTINGS, enabledFeatureNames } from '../src/shared/contracts/config.js'
 
-for (const version of ['0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3']) {
+for (const version of ['0.2.1-alpha.2', '0.2.1-alpha.3']) {
   test(`Quick Apps setting mounts and disposes the native footer on DSH ${version}`, async () => {
     const events: string[] = []
     let render!: (props: { wide: boolean }) => { type: unknown; props: { wide: boolean } }
@@ -45,7 +45,7 @@ for (const version of ['0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-al
 
 test('Quick Apps remains disabled with an explainable missing-footer diagnostic', async () => {
   const services = {} as CodingNsClientServices
-  const profile = createDshCapabilityRegistry('0.2.0-rc.2', 'client', services).getProfile(services)
+  const profile = createDshCapabilityRegistry('0.2.1-alpha.2', 'client', services).getProfile(services)
   const registry = new FeatureRegistry(services, profile)
   registry.register(quickAppsFeature)
   await registry.start('quickApps')
@@ -55,7 +55,7 @@ test('Quick Apps remains disabled with an explainable missing-footer diagnostic'
   assert.ok(snapshot.capabilities.some(item => item.capability === 'sidebar.footer-action'))
 })
 
-test('rc.2 proxy adapter uses the actual listener port and keeps native route ownership', () => {
+test('alpha.2 proxy adapter uses the actual listener port and keeps native route ownership', () => {
   for (const host of ['127.0.0.1', '0.0.0.0']) {
     let released = false
     const native = { host, port: 12345, register(route: { path: string }) {
@@ -64,7 +64,7 @@ test('rc.2 proxy adapter uses the actual listener port and keeps native route ow
       return () => { released = true }
     } }
     const context = { webServer: native }
-    const capability = createDshCapabilityRegistry('0.2.0-rc.2', 'host', context).getProfile(context).capabilities.get('quick-app.proxy')!
+    const capability = createDshCapabilityRegistry('0.2.1-alpha.2', 'host', context).getProfile(context).capabilities.get('quick-app.proxy')!
     assert.equal(capability.status, 'ready')
     const proxy = capability.value as QuickAppProxyServer
     assert.equal(proxy.getOrigin(), 'http://127.0.0.1:12345')
@@ -85,7 +85,7 @@ test('proxy detection rejects incomplete or untrusted rc.2 listener shapes', () 
   for (const webServer of [{ register }, { register, host: 'example.test', port: 12345 },
     ...[0, -1, 65536, 1.5, '12345'].map(port => ({ register, host: '127.0.0.1', port }))]) {
     const context = { webServer }
-    const profile = createDshCapabilityRegistry('0.2.0-rc.2', 'host', context).getProfile(context)
+    const profile = createDshCapabilityRegistry('0.2.1-alpha.2', 'host', context).getProfile(context)
     assert.equal(profile.capabilities.get('quick-app.proxy')?.status, 'unavailable')
     assert.ok(profile.diagnostics.some(item => item.capability === 'quick-app.proxy'))
   }

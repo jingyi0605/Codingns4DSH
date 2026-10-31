@@ -113,7 +113,7 @@ export function createSessionPromptTranslation(
           Promise.all(assembly.sections.map(async section => ({
             ...section, text: (await translate(section.text, { promptMarkup: true })).translated,
           }))),
-          Promise.all(assembly.tools.map(async tool => {
+          Promise.all((assembly.tools ?? []).map(async tool => {
             const literals = [tool.name, ...schemaLiterals(tool.parameters)]
             const translateDescription = async (text: string): Promise<string> => {
               const localized = service?.inputLanguage === 'en' && service.customRulesEnabled === false

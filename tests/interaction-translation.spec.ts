@@ -190,7 +190,7 @@ test('interaction capability reports unsupported older fixtures and requires the
     assert.equal(profile.capabilities.get('conversation.interaction-translation')?.status, 'unavailable')
     assert.ok(profile.diagnostics.some(d => d.capability === 'conversation.interaction-translation'))
   }
-  for (const version of ['0.2.0-rc.2', '0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.1-alpha.3']) {
+  for (const version of ['0.2.1-alpha.2', '0.2.1-alpha.3']) {
     assert.equal(createDshCapabilityRegistry(version, 'client', context).getProfile(context).capabilities.get('conversation.interaction-translation')?.status, 'ready', version)
     assert.equal(createDshCapabilityRegistry(version, 'client', {}).getProfile({}).capabilities.get('conversation.interaction-translation')?.status, 'unavailable')
   }

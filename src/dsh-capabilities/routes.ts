@@ -61,7 +61,7 @@ export function createDshCapabilityRegistry(
       detect: supportsSessionPromptAssembly, create: createSessionPromptAdapter })
     add({ id: 'session-external-model-selection-021', capability: 'session.external-model-selection', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: ctx => supportsSessionModelSelection(read(ctx, 'sessionController')), create: ctx => createSessionModelSelectionAdapter(read(ctx, 'sessionController')) })
-    add({ id: 'session-activation-020', capability: 'session.activation', supportedDsh: '>=0.2.0-rc.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
+    add({ id: 'session-activation-020', capability: 'session.activation', supportedDsh: '>=0.2.1-alpha.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.2',
       detect: ctx => hasMethods(read(ctx, 'sessionController'), ['create']), create: ctx => read(ctx, 'sessionController') })
     add({ id: 'session-activation-021', capability: 'session.activation', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: ctx => hasMethods(read(ctx, 'sessionController'), ['create', 'resolveAgent']), create: ctx => read(ctx, 'sessionController') })
@@ -92,7 +92,7 @@ export function createDshCapabilityRegistry(
     add({ id: 'session-performance-presentation-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformancePresentation, create: createSessionPerformancePresentation })
     add({ id: 'sidebar-footer-action-021', capability: 'sidebar.footer-action', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: ctx => supportsQuickAppFooter(read(ctx, 'slots')), create: ctx => read(ctx, 'slots') })
-    add({ id: 'message-presentation-020', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.0-rc.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
+    add({ id: 'message-presentation-020', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.1-alpha.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.2',
       detect: ctx => supportsLegacyMessagePresentation({ slots: read(ctx, 'slots') }, facts.primitives), create: () => createLegacyMessagePresentation(facts.primitives) })
     add({ id: 'message-presentation-021', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: ctx => supportsFactoryMessagePresentation({ slots: read(ctx, 'slots') }), create: createFactoryMessagePresentation })
@@ -158,8 +158,8 @@ function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): v
     create: (ctx) => read(ctx, 'connection'),
   })
   add({
-    id: 'connection-peer-admission-020', capability: 'connection.peer', supportedDsh: '>=0.2.0-rc.2 <=0.2.1-alpha.2', runtime: 'host', priority: 30,
-    status: 'supported', introducedIn: '0.2.0-rc.1',
+    id: 'connection-peer-admission-020', capability: 'connection.peer', supportedDsh: '>=0.2.1-alpha.2 <=0.2.1-alpha.2', runtime: 'host', priority: 30,
+    status: 'supported', introducedIn: '0.2.1-alpha.2',
     detect: (ctx) => hasMethods(read(ctx, 'connection'), ['admit', 'requestRejection']) && read(ctx, 'connection.operator') !== undefined,
     create: (ctx) => read(ctx, 'connection'),
   })
@@ -170,8 +170,8 @@ function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): v
     create: (ctx) => read(ctx, 'connection'),
   })
   add({
-    id: 'connection-rpc-uplink-020', capability: 'connection.uplink', supportedDsh: '>=0.2.0-rc.2 <=0.2.1-alpha.2', runtime: 'host', priority: 10,
-    status: 'supported', introducedIn: '0.2.0-rc.1',
+    id: 'connection-rpc-uplink-020', capability: 'connection.uplink', supportedDsh: '>=0.2.1-alpha.2 <=0.2.1-alpha.2', runtime: 'host', priority: 10,
+    status: 'supported', introducedIn: '0.2.1-alpha.2',
     detect: (ctx) => hasMethods(read(ctx, 'connection.rpc'), ['handle']) && read(ctx, 'connection.operator') !== undefined,
     create: (ctx) => read(ctx, 'connection'),
   })
@@ -212,13 +212,6 @@ function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): v
     // 两条路由共用 `subagent.continuable` 能力，Registry 按版本范围与优先级择优，
     // 业务侧只认能力是否 ready，不需要在运行期写版本判断。
     detect: (ctx) => hasMethods(read(ctx, 'subagents'), ['startActivation', 'sendMessage']),
-    create: (ctx) => read(ctx, 'subagents'),
-  })
-  add({
-    id: 'subagent-continuable-020', capability: 'subagent.continuable', supportedDsh: '>=0.2.0-rc.1 <=0.2.1-alpha.1', runtime: 'host', priority: 10,
-    status: 'supported', introducedIn: '0.2.0-rc.1',
-    // rc.1 到 alpha.1 的可续子代理是 SubagentRuntime 的公开操作 startContinuable/sendMessage。
-    detect: (ctx) => hasMethods(read(ctx, 'subagents'), ['startContinuable', 'sendMessage']),
     create: (ctx) => read(ctx, 'subagents'),
   })
   add({

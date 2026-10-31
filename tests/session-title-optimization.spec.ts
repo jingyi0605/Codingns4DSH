@@ -50,7 +50,7 @@ function fixture(replies: Reply[] = ['排查 PeerHost 远程会话访问问题']
     get(name: string) { return name === 'agentDefaultModel' ? { currentSelection: () => defaultSelection } : undefined },
     on(_name: string, callback: any) { listener = callback; return () => { listener = undefined; removals++ } },
   }
-  const adapter = createSessionTitleOptimizationAdapter(ctx, '0.2.1-alpha.1')!
+  const adapter = createSessionTitleOptimizationAdapter(ctx, '0.2.1-alpha.2')!
   const controller = new AbortController()
   const prompt = '通过 Peerhost访问远程工作区会话时，需要定位标题显示异常并验证修复结果。'
   const request = Object.freeze({
@@ -119,7 +119,7 @@ test('客户端经真实设置 RPC 保存标题开关并驱动 Host，未知字�
   t.after(() => bridge.dispose())
   const feature = createSessionTitleOptimizationFeature()
   await feature.start({ descriptor: feature.descriptor, resources, services: {
-    dshContext: f.ctx as never, dshVersion: '0.2.1-alpha.1', rpc: table,
+    dshContext: f.ctx as never, dshVersion: '0.2.1-alpha.2', rpc: table,
     settings: { get: () => settings, watch: (listener) => { listeners.add(listener); return () => listeners.delete(listener) } } as never,
   } })
   await bridge.load()
@@ -467,7 +467,7 @@ test('真实 Cordis 服务探测和 waterfall 保留其他中间件，嵌套调�
   let adapter: ReturnType<typeof createSessionTitleOptimizationAdapter>
   await app.plugin((ctx) => {
     assert.throws(() => Reflect.get(ctx, 'sessionTitle'), /without inject/u)
-    adapter = createSessionTitleOptimizationAdapter(ctx, '0.2.1-alpha.1')
+    adapter = createSessionTitleOptimizationAdapter(ctx, '0.2.1-alpha.2')
   })
   assert.ok(adapter)
   adapter.setEnabled(true)
@@ -520,7 +520,7 @@ test('主模块和子开关共同控制 Host，后台设置更新即时生效，
   let settings = structuredClone(DEFAULT_CODINGNS_SETTINGS)
   let watch: any
   await module.start({ descriptor: module.descriptor, resources, services: {
-    dshContext: f.ctx as never, dshVersion: '0.2.1-alpha.1', rpc: {} as never,
+    dshContext: f.ctx as never, dshVersion: '0.2.1-alpha.2', rpc: {} as never,
     settings: { get: () => settings, watch: (listener) => { watch = listener; return () => { watch = undefined } } } as never,
   } })
   settings.workspaceSessionEnhancement.optimizeSessionTitles = true
@@ -548,12 +548,12 @@ test('支持版本按结构接入，旧版和缺失标题服务明确降级', ()
     assert.equal(createSessionTitleOptimizationAdapter(f.ctx, version), undefined)
     assert.ok(profile.diagnostics.some((entry) => entry.capability === 'session.title'))
   }
-  for (const version of ['0.2.0-rc.2', '0.2.1-alpha.1']) {
+  for (const version of ['0.2.1-alpha.2', '0.2.2-alpha.2']) {
     const adapter = createSessionTitleOptimizationAdapter(f.ctx, version)
     assert.ok(adapter)
     adapter.dispose()
   }
-  assert.equal(createSessionTitleOptimizationAdapter({ ...f.ctx, sessionTitle: undefined }, '0.2.1-alpha.1'), undefined)
+  assert.equal(createSessionTitleOptimizationAdapter({ ...f.ctx, sessionTitle: undefined }, '0.2.1-alpha.2'), undefined)
 })
 
 test('设置面板显示优化开关，主模块关闭和只读状态禁用输入', () => {
