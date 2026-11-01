@@ -281,12 +281,16 @@ test('CDP 请求超时和断线都会结算 pending，不暴露原生错误堆�
     if (message.method === 'close') socket.close()
     if (message.method === 'Runtime.evaluate') socket.send(JSON.stringify({ id: message.id, result: { exceptionDetails: { exception: { description: 'SECRET_TOKEN_DO_NOT_EXPOSE' } } } }))
   }))
-  const cdp = await DoubaoCdp.connect(`ws://127.0.0.1:${port}`, 50)
   try {
-    await assert.rejects(cdp.evaluate('x'), (error: Error) => !error.message.includes('SECRET_TOKEN'))
-    await assert.rejects(cdp.request('timeout', {}), /超时/u)
-    await assert.rejects(cdp.request('close', {}), /已关闭/u)
-  } finally { cdp.close(); for (const socket of server.clients) socket.terminate(); await new Promise<void>((resolve) => server.close(() => resolve())) }
+    const cdp = await DoubaoCdp.connect(`ws://127.0.0.1:${port}`, 50)
+    try {
+      await assert.rejects(cdp.evaluate('x'), (error: Error) => !error.message.includes('SECRET_TOKEN'))
+      await assert.rejects(cdp.request('timeout', {}), /超时/u)
+      await assert.rejects(cdp.request('close', {}), /已关闭/u)
+    } finally {
+      cdp.close()
+    }
+  } finally { for (const socket of server.clients) socket.terminate(); await new Promise<void>((resolve) => server.close(() => resolve())) }
 })
 
 test('CDP fetch 桥按需读取字节，关闭只释放本轮运行，不关闭浏览器', async () => {
