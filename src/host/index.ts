@@ -37,13 +37,14 @@ import { isStage0Runtime, registerStage0DevHmr } from './stage0-dev-hmr.js'
 import { CODINGNS_STAGE0_GLOBAL } from '../shared/runtime-environment.js'
 import { registerProviderIconRoutes } from './provider-icon-assets.js'
 import { listWorkspaceRoots as listRegistryWorkspaceRoots, resolveWorkspaceRoot as resolveRegistryWorkspaceRoot } from './workspace-root.js'
-import { installSessionHandleEviction } from './session-handle-eviction.js'
+import { installSessionHandleEviction, type SessionHandleEvictionController } from './session-handle-eviction.js'
 import { CredentialService } from './credentials/service.js'
 import { CredentialBroker } from './credentials/broker.js'
 import { createCredentialBrokerTool } from './credentials/tool.js'
 
 export async function apply(ctx?: Context): Promise<void> {
   if (ctx === undefined) return
+  let sessionHandleEviction: SessionHandleEvictionController | undefined
   const dshVersion = await detectRuntimeDshVersion()
   const stage0 = isStage0Runtime()
   debugInfo('codingns4dsh: host apply entered', { dshVersion })
@@ -64,6 +65,7 @@ export async function apply(ctx?: Context): Promise<void> {
         warn: (message, fields) => debugWarn(`codingns4dsh: ${message}`, fields),
       },
     })
+    sessionHandleEviction = eviction
     const open = persistence.open
     if (typeof open !== 'function') return
     const lifetime = new AbortController()
@@ -95,6 +97,7 @@ export async function apply(ctx?: Context): Promise<void> {
       sessionCtx.effect(() => () => {
         lifetime.abort()
         if (persistence.open === wrappedOpen) persistence.open = open
+        if (sessionHandleEviction === eviction) sessionHandleEviction = undefined
         void eviction?.dispose()
       }, 'codingns4dsh: 会话读取修复包装')
     } catch (error) {
@@ -264,7 +267,12 @@ export async function apply(ctx?: Context): Promise<void> {
       terminalProcesses: terminal.processService,
     })
     let directoryBrowser: CodingNsHostServices['workspaceDirectoryBrowser']
-    const servicesWithDebug: CodingNsHostServices = { ...services, debug, get workspaceDirectoryBrowser() { return directoryBrowser } }
+    const servicesWithDebug: CodingNsHostServices = {
+      ...services,
+      debug,
+      get workspaceDirectoryBrowser() { return directoryBrowser },
+      get sessionHandleEviction() { return sessionHandleEviction },
+    }
     // This optional provider may start after CodingNS. Its lifecycle must not restart other modules.
     hostCtx.inject(['workspaceFiles'], directoryCtx => {
       const capability = createDshCapabilityRegistry(dshVersion, 'host', directoryCtx).getProfile(directoryCtx).capabilities.get('workspace.directory-list')

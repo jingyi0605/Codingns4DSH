@@ -16,6 +16,8 @@ export interface SessionHandleEvictionOptions {
 
 export interface SessionHandleEvictionDiagnostics {
   readonly openHandles: number
+  readonly openReadHandles: number
+  readonly openWriteHandles: number
   readonly maxOpenHandles: number
   readonly evictedTotal: number
 }
@@ -82,11 +84,15 @@ export function installSessionHandleEviction(
   let evictedTotal = 0
   let disposed = false
 
-  const getDiagnostics = (): SessionHandleEvictionDiagnostics => ({
-    openHandles: records.size,
-    maxOpenHandles,
-    evictedTotal,
-  })
+  const getDiagnostics = (): SessionHandleEvictionDiagnostics => {
+    let openReadHandles = 0
+    let openWriteHandles = 0
+    for (const record of records.values()) {
+      if (record.access === 'read') openReadHandles += 1
+      else if (record.access === 'write') openWriteHandles += 1
+    }
+    return { openHandles: records.size, openReadHandles, openWriteHandles, maxOpenHandles, evictedTotal }
+  }
 
   const log = (message: string, fields: Record<string, unknown>): void => {
     try { logger?.debug(message, fields) } catch { /* diagnostics must not break persistence */ }
@@ -197,7 +203,7 @@ export function installSessionHandleEviction(
     if (reason !== undefined) {
       evictedTotal += 1
       const idleMs = Math.max(0, now() - record.lastUsedAt)
-      log('session handle evicted', { id: record.id, reason, idleMs, openCount: records.size })
+      log('session handle evicted', { id: record.id, access: record.access, reason, idleMs, openCount: records.size })
     }
     let result: unknown
     try {
@@ -352,6 +358,12 @@ export function installSessionHandleEviction(
       if (persistence.open === wrappedOpen) persistence.open = originalOpen
       if (originalFlushAll !== undefined && persistence.flushAll !== originalFlushAll) persistence.flushAll = originalFlushAll
       await sweepPromise
+      const readers = [...records.values()].filter((record) => isSafeToEvict(record))
+      await Promise.all(readers.map(async (record) => {
+        try { await closeRecord(record) } catch { /* teardown must not break the owning Host */ }
+      }))
+      records.clear()
+      traceCounts.clear()
     },
   }
 }

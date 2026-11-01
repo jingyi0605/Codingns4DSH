@@ -12,6 +12,7 @@ import type { QuickAppPeerGateway } from '../modules/quick-apps/remote.js'
 import type { WorkspaceDirectoryBrowser } from '../../dsh-capabilities/host/workspace-directory-adapter.js'
 import type { CredentialService } from '../credentials/service.js'
 import type { CredentialBroker } from '../credentials/broker.js'
+import type { SessionHandleEvictionController } from '../session-handle-eviction.js'
 
 export interface CodingNsHostEvents {
   on(name: string, listener: (...args: any[]) => any): unknown
@@ -70,4 +71,6 @@ export interface CodingNsHostServices {
   readonly credentials?: CredentialService
   /** Host-owned short-lived credential command broker. */
   readonly credentialBroker?: CredentialBroker
+  /** Session persistence diagnostics; the controller remains Host-owned. */
+  readonly sessionHandleEviction?: SessionHandleEvictionController | undefined
 }

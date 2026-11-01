@@ -10,4 +10,24 @@ export interface DshHostStatus {
   memoryTotalBytes: number
   /** Host 采样时间戳。 */
   sampledAt: number
+  /** 当前 Host 进程的 V8/原生内存计数；按需采样，不写入磁盘。 */
+  processMemory?: HostProcessMemory
+  /** 当前进程可观测的会话句柄计数；写句柄仍由 DSH 负责生命周期。 */
+  sessionHandles?: HostSessionHandleStatus
+}
+
+export interface HostProcessMemory {
+  rssBytes: number
+  heapTotalBytes: number
+  heapUsedBytes: number
+  externalBytes: number
+  arrayBuffersBytes: number
+}
+
+export interface HostSessionHandleStatus {
+  openHandles: number
+  openReadHandles: number
+  openWriteHandles: number
+  maxOpenHandles: number
+  evictedTotal: number
 }

@@ -113,8 +113,8 @@ test('TTL eviction closes an idle read handle and emits diagnostics', async () =
   await tracker.sweep()
 
   assert.deepEqual(fake.closeOrder, ['idle'])
-  assert.deepEqual(tracker.getDiagnostics(), { openHandles: 0, maxOpenHandles: 32, evictedTotal: 1 })
-  assert.deepEqual(logs.find((entry) => entry.message === 'session handle evicted')?.fields, { id: 'idle', reason: 'ttl', idleMs: 100, openCount: 1 })
+  assert.deepEqual(tracker.getDiagnostics(), { openHandles: 0, openReadHandles: 0, openWriteHandles: 0, maxOpenHandles: 32, evictedTotal: 1 })
+  assert.deepEqual(logs.find((entry) => entry.message === 'session handle evicted')?.fields, { id: 'idle', access: 'read', reason: 'ttl', idleMs: 100, openCount: 1 })
   await tracker.dispose()
 })
 
@@ -131,7 +131,7 @@ test('cap eviction uses LRU order without waiting for the TTL', async () => {
   await tracker.sweep()
 
   assert.deepEqual(fake.closeOrder, ['oldest'])
-  assert.equal(tracker.getDiagnostics().openHandles, 2)
+  assert.deepEqual(tracker.getDiagnostics(), { openHandles: 2, openReadHandles: 2, openWriteHandles: 0, maxOpenHandles: 2, evictedTotal: 1 })
   await tracker.dispose()
 })
 
@@ -276,4 +276,18 @@ test('disabled eviction leaves the persistence service untouched', async () => {
     settings: { enabled: false, idleTtlMs: 100, maxOpenHandles: 1 },
   }), undefined)
   assert.equal(fake.persistence.open, originalOpen)
+})
+
+test('dispose closes safe readers, preserves writers, and releases tracker bookkeeping', async () => {
+  const fake = fixture()
+  const tracker = controller(fake.persistence, () => 0, { idleTtlMs: 600_000, maxOpenHandles: 1 })
+  await fake.persistence.open('reader', 'read')
+  const writer = await fake.persistence.open('writer', 'write')
+
+  assert.deepEqual(tracker.getDiagnostics(), { openHandles: 2, openReadHandles: 1, openWriteHandles: 1, maxOpenHandles: 1, evictedTotal: 0 })
+  await tracker.dispose()
+
+  assert.deepEqual(fake.closeOrder, ['reader'])
+  assert.equal(writer.closed, false)
+  assert.deepEqual(tracker.getDiagnostics(), { openHandles: 0, openReadHandles: 0, openWriteHandles: 0, maxOpenHandles: 1, evictedTotal: 0 })
 })

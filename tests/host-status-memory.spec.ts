@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
   createHostStatusFeature,
   parseMacosVmStat,
+  readProcessMemory,
   readHostMemory,
 } from '../src/host/features/host-status.js'
 
@@ -79,4 +80,24 @@ test('host/status 返回的已用内存不超过总内存', async () => {
   assert.ok(status.memoryUsedBytes <= status.memoryTotalBytes)
   assert.ok(status.memoryPercent >= 0 && status.memoryPercent <= 100)
   await assert.rejects(handler('unknown'), /未知 Host RPC/u)
+})
+
+test('host/status includes bounded process memory counters and handle diagnostics', async () => {
+  let handler: ((action: string) => Promise<Record<string, unknown>>) | undefined
+  createHostStatusFeature().start({
+    services: {
+      rpc: { register: (_namespace: string, value: typeof handler) => { handler = value; return () => undefined } },
+      sessionHandleEviction: { getDiagnostics: () => ({ openHandles: 3, openReadHandles: 2, openWriteHandles: 1, maxOpenHandles: 32, evictedTotal: 4 }) },
+    },
+    resources: { add: () => undefined },
+  } as never)
+  assert.ok(handler !== undefined)
+  const status = await handler('status')
+  const processMemory = status.processMemory as Record<string, unknown>
+  assert.equal(typeof processMemory.rssBytes, 'number')
+  assert.equal(typeof processMemory.heapUsedBytes, 'number')
+  assert.deepEqual(status.sessionHandles, { openHandles: 3, openReadHandles: 2, openWriteHandles: 1, maxOpenHandles: 32, evictedTotal: 4 })
+  const currentMemory = readProcessMemory()
+  assert.ok(currentMemory.rssBytes >= currentMemory.heapUsedBytes)
+  assert.deepEqual(Object.keys(processMemory).sort(), Object.keys(currentMemory).sort())
 })

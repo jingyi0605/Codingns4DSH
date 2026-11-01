@@ -27,12 +27,16 @@ export function createHostStatusFeature(): FeatureModule<CodingNsHostServices> {
         const cpuPercent = previous === undefined ? 0 : cpuUsage(previous, current)
         previous = current
         const memory = await readHostMemory()
+        const processMemory = readProcessMemory()
+        const sessionHandles = context.services.sessionHandleEviction?.getDiagnostics()
         const value: DshHostStatus = {
           cpuPercent,
           memoryPercent: memory.totalBytes > 0 ? (memory.usedBytes / memory.totalBytes) * 100 : 0,
           memoryUsedBytes: memory.usedBytes,
           memoryTotalBytes: memory.totalBytes,
           sampledAt: Date.now(),
+          processMemory,
+          ...(sessionHandles === undefined ? {} : { sessionHandles }),
         }
         return value
       }))
@@ -44,6 +48,25 @@ interface CpuSample { idle: number; total: number }
 
 /** 内存采样结果；平台差异只在采集层消化，契约保持字节数。 */
 export interface HostMemorySample { usedBytes: number; totalBytes: number }
+
+export interface HostProcessMemorySample {
+  rssBytes: number
+  heapTotalBytes: number
+  heapUsedBytes: number
+  externalBytes: number
+  arrayBuffersBytes: number
+}
+
+export function readProcessMemory(): HostProcessMemorySample {
+  const usage = process.memoryUsage()
+  return {
+    rssBytes: usage.rss,
+    heapTotalBytes: usage.heapTotal,
+    heapUsedBytes: usage.heapUsed,
+    externalBytes: usage.external,
+    arrayBuffersBytes: usage.arrayBuffers,
+  }
+}
 
 /** 采样依赖；默认读取真实主机，测试可注入固定输出。 */
 export interface HostMemorySources {
