@@ -81,6 +81,7 @@ import { TeamInputTracker, isTeamInputMessage, pendingPeerInput } from './team-i
 import { withTeamSupport } from '../cli-bridge/team-adapters.js'
 import { isCredentialReference, type CredentialBrokerBinding } from '../../shared/contracts/credentials.js'
 import { parseCredentialCarriers, type CredentialCarrier } from '../../shared/credential-carrier.js'
+import { createDshModelCatalogReader } from './dsh-model-catalog.js'
 
 export function createCliAdaptersFeature(options: {
   registry?: CodingNsCliAdapterRegistry
@@ -231,6 +232,9 @@ export function createCliAdaptersFeature(options: {
       const teamCatalog = (catalog: readonly import('../../shared/contracts/cli-adapter.js').CodingNsCliAdapterDescriptor[]) => withTeamSupport(catalog,
         !versionSupported ? 'version' : !normalizeSubagentBridgeSettings(context.services.settings?.get().subagentBridge).enabled ? 'disabled' : !teamAdapter ? 'profile' : undefined, teamAdapter?.supportsLead)
       const dshContext = context.services.dshContext
+      const readCachedDshModelCatalog = createDshModelCatalogReader(
+        () => readDshModelCatalog(dshContext),
+      )
       if (dshContext?.inject && context.services.dshVersion) {
         const teamScope = dshContext.inject(['agentTeams', 'agents', 'subagents', 'tools'], scoped => {
           const capability = createDshCapabilityRegistry(context.services.dshVersion!, 'host', scoped).getProfile(scoped).capabilities.get('agent-team.external-member')
@@ -350,7 +354,7 @@ export function createCliAdaptersFeature(options: {
           case 'models': {
             const adapterId = readAdapterId(payload)
             const catalog = adapterId === 'dsh'
-              ? readDshModelCatalog(context.services.dshContext)
+              ? readCachedDshModelCatalog()
               : registry.models(adapterId)
             if (asRecord(payload)?.stage === 'base') {
               const base = await catalog

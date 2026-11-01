@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
+import { createDshModelCatalogReader } from '../data/build/dist/host/cli-adapters/dsh-model-catalog.js'
 import { failedDetection } from '../src/host/cli-adapters/binary-detection.ts'
 import type { CodingNsCliModelCatalog } from '../data/build/dist/shared/contracts/cli-adapter.js'
 
@@ -8,6 +9,29 @@ const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 const catalog = (id: string): CodingNsCliModelCatalog => ({ groups: [{ id: 'default', name: '默认', models: [{ id, name: id, efforts: [] }] }], currentModel: null, currentEffort: null })
 const firstModel = (value: CodingNsCliModelCatalog) => value.groups[0]?.models[0]?.id
 const finish = async function* () { yield { type: 'finish' as const, reason: 'stop' as const } }
+
+test('native DSH model requests share in-flight work and a short-lived snapshot', async () => {
+  let now = 0
+  let calls = 0
+  const read = createDshModelCatalogReader(async () => {
+    calls += 1
+    await delay(10)
+    return catalog(`model-${calls}`)
+  }, { now: () => now, ttlMs: 1_000 })
+
+  const first = await Promise.all([read(), read(), read()])
+  assert.equal(calls, 1)
+  assert.ok(first.every((value) => value === first[0]))
+
+  now = 500
+  assert.equal(await read(), first[0])
+  assert.equal(calls, 1)
+
+  now = 1_001
+  const refreshed = await read()
+  assert.equal(calls, 2)
+  assert.equal(firstModel(refreshed), 'model-2')
+})
 
 test('启动异步检测一次，普通目录读取和驱动内部自检只读缓存', async (t) => {
   let detections = 0, models = 0
