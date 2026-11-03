@@ -19,7 +19,10 @@ Magpie exposes configured provider/model choices through its Agent catalog. Codi
 
 - Read the bounded Magpie CLI version and model catalog on the Host that owns the selected Agent.
 - Keep an explicit adapter-to-Magpie-Agent mapping, including naming differences such as `cursor-cli` -> `cursor` and `command-code` -> `commandcode`.
-- Recognize a Magpie model only when its exact ID appears in the mapped Agent catalog, or when its display label maps uniquely to one catalog ID. Command Code may use its documented `magpie/provider/model` normalization.
+- Recognize a Magpie model only when its exact ID appears in the mapped Agent catalog, or when its display label maps uniquely to one catalog ID. Antigravity requires the exact ID, since native and Magpie choices may share names. Command Code, Pi, and Antigravity may normalize their native `magpie/provider/model` prefix for matching while preserving the selected ID.
+- Keep native Antigravity and explicit Magpie choices separately selectable. Native entries display a localized Antigravity-source suffix and never inherit Magpie labels, provider badges, efforts, or context metadata merely because their names match.
+- Sort the Antigravity conversation model menu like Claude Code: put `provider-default` first, then sort by verified Magpie provider ID and natural model name, keeping context variants adjacent. This affects presentation only; keep catalog order, model IDs, and selection payloads unchanged.
+- Read `magpie agy env` on the owning Host for Antigravity model discovery and turn startup. Keep the returned credentials transient and Host-private; preserve explicit model choices and use Magpie's model only for the default selection. This does not write or persist Agent/Magpie configuration.
 - Read aggregate Magpie usage through the documented local Gateway API.
 - Read model metadata through the Gateway's standard OpenAI-compatible `/v1/models` endpoint and expose it to external Agent catalogs using exact verified model IDs.
 - Add exact, validated Magpie Codex model IDs missing from Codex `model/list` to the existing Codex model group; keep Codex-native entries and selection behavior unchanged.
@@ -105,7 +108,7 @@ Magpie exposes configured provider/model choices through its Agent catalog. Codi
 #### Acceptance criteria
 
 1. The Host fetches Magpie `/v1/models` only after the mapped `magpie models <agent>` catalog and its loopback Gateway origin have been validated.
-2. A record is eligible only when its exact model ID appears in that same mapped Agent's CLI catalog, or when the Agent row has a unique exact normalized display-label alias to one CLI ID. Only explicitly tested adapter-specific normalization (currently Command Code's `magpie/` prefix) is allowed; there is no fuzzy matching.
+2. A record is eligible only when its exact model ID appears in that same mapped Agent's CLI catalog, or when the Agent row has a unique exact normalized display-label alias to one CLI ID. Antigravity uses exact ID matching only. Only explicitly tested adapter-specific normalization (Command Code, Pi, and Antigravity's `magpie/` prefix) is allowed; there is no fuzzy matching.
 3. For exact matches, expose Magpie's model display label, context window, maximum input/output tokens, input/output modalities, reasoning support and levels, service tiers, and other supported public capabilities through the shared model contract.
 4. `reasoning_levels` and `supported_reasoning_levels` are normalized into the Agent model's existing effort identifiers. The Host never invents effort levels from a model name or a bare reasoning boolean.
 5. Magpie-provided metadata takes precedence for a field it explicitly declares on an exact Magpie model. If a field is absent, preserve the Agent's existing verified value; explicit `reasoning: false` clears stale effort options.

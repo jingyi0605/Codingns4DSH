@@ -57,6 +57,116 @@ function stepUpdate(payload: Record<string, unknown>): Record<string, unknown> {
   return { event: 'step_update', step_update: { conversation_id: 'agy-provider-session', ...payload } }
 }
 
+function magpieDriver(readEnv: () => { status: number; stdout: string }, options: { command?: () => string | null } = {}) {
+  const calls: Array<{ args: readonly string[]; env: NodeJS.ProcessEnv }> = []
+  const envCalls: string[][] = []
+  const driver = new AntigravityDriver({
+    binaries: ['fake-agy'],
+    magpieCommand: options.command ?? (() => 'custom-magpie'),
+    resolveContextWindow: () => undefined,
+    resolveModelId: () => null,
+    spawnSync: ((command: string, args: string[]) => {
+      if (command === 'custom-magpie') {
+        envCalls.push([command, ...args])
+        return { ...readEnv(), stderr: '' }
+      }
+      return { status: 0, stdout: 'agy 1.4.12', stderr: '' }
+    }) as never,
+    spawn: ((_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
+      calls.push({ args, env: options.env })
+      const child = Object.assign(new EventEmitter(), {
+        stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(),
+        kill() { return true },
+      })
+      if (args[0] === 'models') queueMicrotask(() => {
+        const configured = options.env.GEMINI_API_KEY === 'test-magpie-key'
+        child.stdout.end(configured ? 'magpie/hl/gpt-6-astra\tGPT-6 Astra\n' : '')
+        child.stderr.end()
+        child.emit('close', configured ? 0 : 1)
+      })
+      else child.stdin.once('finish', () => {
+        child.stdout.end(`${JSON.stringify(resultEvent(undefined))}\n`)
+        child.stderr.end()
+      })
+      return child
+    }) as never,
+  })
+  return { driver, calls, envCalls }
+}
+
+const magpieEnv = [
+  'GEMINI_API_KEY=test-magpie-key',
+  'GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:3425/v1',
+  'model=magpie/hl/gpt-6-astra',
+  'PATH=must-not-replace-host-path',
+].join('\n')
+
+test('Antigravity 模型探测从选定的 Magpie 入口读取环境，仅传递允许的变量', async () => {
+  const originalKey = process.env.GEMINI_API_KEY
+  const { driver, calls, envCalls } = magpieDriver(() => ({ status: 0, stdout: magpieEnv }))
+  try {
+    const catalog = await driver.listModels()
+    assert.deepEqual(envCalls, [['custom-magpie', 'agy', 'env']])
+    assert.equal(catalog.groups[0]?.models.some(model => model.id === 'magpie/hl/gpt-6-astra'), true)
+    assert.equal(calls[0]?.env.GEMINI_API_KEY, 'test-magpie-key')
+    assert.equal(calls[0]?.env.GOOGLE_GEMINI_BASE_URL, 'http://127.0.0.1:3425/v1')
+    assert.notEqual(calls[0]?.env.PATH, 'must-not-replace-host-path')
+    assert.equal(calls[0]?.env.model, undefined)
+    assert.equal(process.env.GEMINI_API_KEY, originalKey)
+    assert.doesNotMatch(JSON.stringify(catalog), /test-magpie-key/u)
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 首轮和续接重新读取 Magpie 默认模型，同时保留显式模型和 Host 运行环境', async () => {
+  let output = magpieEnv
+  const { driver, calls } = magpieDriver(() => ({ status: 0, stdout: output }))
+  try {
+    await collect(driver, { modelId: 'provider-default' })
+    output = magpieEnv.replace('magpie/hl/gpt-6-astra', 'magpie/tlp/gpt-6.1-sol')
+    await collect(driver, { providerSessionId: 'agy-provider-session' })
+    await collect(driver, {
+      modelId: 'magpie/hl/claude-opus-5-5',
+      runtimeEnv: { GEMINI_API_KEY: 'host-override', CODINGNS_CREDENTIAL_BROKER_ENDPOINT: 'test-broker' },
+    })
+    assert.deepEqual(calls.map(call => call.args.slice(call.args.indexOf('--model'), call.args.indexOf('--model') + 2)), [
+      ['--model', 'magpie/hl/gpt-6-astra'], ['--model', 'magpie/tlp/gpt-6.1-sol'], ['--model', 'magpie/hl/claude-opus-5-5'],
+    ])
+    assert.deepEqual(calls[1]?.args.slice(0, 2), ['--conversation', 'agy-provider-session'])
+    assert.equal(calls[0]?.env.GEMINI_API_KEY, 'test-magpie-key')
+    assert.equal(calls[1]?.env.GEMINI_API_KEY, 'test-magpie-key')
+    assert.equal(calls[2]?.env.GEMINI_API_KEY, 'host-override')
+    assert.equal(calls[2]?.env.CODINGNS_CREDENTIAL_BROKER_ENDPOINT, 'test-broker')
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 未选择 Magpie 或环境读取失败、不完整时保留原生启动行为', async () => {
+  for (const stdout of ['', 'model=magpie/hl/gpt-6-astra', magpieEnv]) {
+    const { driver, calls } = magpieDriver(() => ({ status: stdout === magpieEnv ? 1 : 0, stdout }))
+    try {
+      await collect(driver, { modelId: 'provider-default', runtimeEnv: { GEMINI_API_KEY: 'native-key' } })
+      assert.equal(calls[0]?.args.includes('--model'), false)
+      assert.equal(calls[0]?.env.GEMINI_API_KEY, 'native-key')
+    } finally { driver.dispose() }
+  }
+  const { driver, envCalls } = magpieDriver(() => { throw new Error('must not run') }, { command: () => null })
+  try {
+    await collect(driver, {})
+    assert.deepEqual(envCalls, [])
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 在读取 Magpie 环境期间取消或停用后不再启动会话', async () => {
+  const controller = new AbortController()
+  const cancelled = magpieDriver(() => { controller.abort(); return { status: 0, stdout: magpieEnv } })
+  try {
+    await assert.rejects(collect(cancelled.driver, { signal: controller.signal }), /abort/iu)
+    assert.deepEqual(cancelled.calls, [])
+  } finally { cancelled.driver.dispose() }
+  const disposed = magpieDriver(() => { disposed.driver.dispose(); return { status: 0, stdout: magpieEnv } })
+  await assert.rejects(collect(disposed.driver, {}), /abort/iu)
+  assert.deepEqual(disposed.calls, [])
+})
+
 function agentResponseUsage(stepIndex: number, usage: Record<string, number>, extra: Record<string, unknown> = {}): Record<string, unknown> {
   return stepUpdate({ step_index: stepIndex, state: 'DONE', step_type: 'agent_response', usage, ...extra })
 }
@@ -272,7 +382,7 @@ test('Antigravity 从 agy models 动态加载模型并合并思考档位', async
   ])
   assert.deepEqual(modelProbeCalls[0], ['fake-agy', 'models'])
   assert.deepEqual(modelProbeOptions[0]?.stdio, ['ignore', 'pipe', 'pipe'])
-  assert.equal(modelProbeOptions[0]?.shell, false)
+  assert.equal(modelProbeOptions[0]?.shell, process.platform === 'win32')
   assert.equal(typeof modelProbeOptions[0]?.env?.PATH, 'string')
   driver.dispose()
 })

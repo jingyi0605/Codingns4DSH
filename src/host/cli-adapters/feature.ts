@@ -212,7 +212,7 @@ export function createCliAdaptersFeature(options: {
         new KiroCliDriver(),
         new QoderCliDriver(),
         new QoderCliDriver({ variant: 'qoder-cn' }),
-        new AntigravityDriver(),
+        new AntigravityDriver({ magpieCommand: () => magpieCommand }),
         new DoubaoAppDriver(),
       ], context.services.settings?.get().agentAdapters, {
         sessionStore,

@@ -5,7 +5,7 @@ import type { CodingNsCliDriver } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, genericEventChunks } from './standard-stream-driver.js'
 import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, antigravityUsageExcludesCacheFromInput, isProviderDefaultModel, knownAntigravityContextWindow, parseAntigravityModels, resolveAntigravityModelId } from './model-catalog.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
-import { commandEnvironment, terminateChildProcess, type CodingNsChildProcess } from './process-utils.js'
+import { commandEnvironment, runAsyncCommand, terminateChildProcess, withCommandSignal, type CodingNsChildProcess } from './process-utils.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 
@@ -83,6 +83,8 @@ export interface AntigravityDriverOptions {
   readonly binaries?: readonly string[]
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
+  /** Host 已检测的 Magpie 入口；实时读取以跟随自定义路径的切换，不加载 Shell Profile。 */
+  readonly magpieCommand?: () => string | null
   /**
    * 上下文窗口解析。默认读 AGY 设置文件判断 `provider-default` 实际使用的模型，
    * 测试注入固定实现即可脱离本机 AGY 安装状态。
@@ -110,6 +112,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   private readonly resolveContextWindow: (modelId: string | undefined) => number | undefined
   private readonly resolveModelId: (modelId: string | undefined) => string | null
   private readonly modelProbeAbort = new AbortController()
+  private readonly magpieCommand: () => string | null
 
   readonly warmModelCatalog = true
   /** AGY stream-json 会把工具和后续正文放在同一条可暂停事件流中。 */
@@ -135,24 +138,74 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     }, options)
     this.resolveContextWindow = options.resolveContextWindow ?? ((modelId) => knownAntigravityContextWindow(modelId))
     this.resolveModelId = options.resolveModelId ?? ((modelId) => resolveAntigravityModelId(modelId))
+    this.magpieCommand = options.magpieCommand ?? (() => null)
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {
     const detected = await this.detect()
     if (!detected.installed || detected.command === null) return emptyCatalog()
     try {
+      const magpie = await this.readMagpieEnvironment(this.modelProbeAbort.signal)
       // `agy models` 需要向服务端拉取目录；在本机冷启动约 19 秒，
       // 这里沿用 codexhost 的异步缓冲方式，避免同步阻塞 Host 事件循环。
       const result = await runBufferedModels(
         this.runSpawn,
         detected.command,
-        this.resolvedEnvironment ?? commandEnvironment(detected.command),
+        { ...(this.resolvedEnvironment ?? commandEnvironment(detected.command)), ...magpie?.env },
         ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS,
         this.modelProbeAbort.signal,
       )
       return parseAntigravityModels(`${result.stdout}\n${result.stderr}`)
     } catch {
       return ANTIGRAVITY_CATALOG
+    }
+  }
+
+  async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
+    const signal = input.signal === undefined ? this.modelProbeAbort.signal
+      : AbortSignal.any([this.modelProbeAbort.signal, input.signal])
+    const magpie = await this.readMagpieEnvironment(signal)
+    // 与 Magpie 的 Shell 包装器一致：显式 --model 优先，否则跟随其当前模型。
+    // 凭据只留在本轮子进程环境，不修改宿主环境、会话配置或 Client 返回值。
+    yield* super.executeTurn(magpie === null ? { ...input, signal } : {
+      ...input,
+      signal,
+      modelId: isProviderDefaultModel(input.modelId) ? magpie.model : input.modelId!,
+      runtimeEnv: { ...magpie.env, ...input.runtimeEnv },
+    })
+  }
+
+  private async readMagpieEnvironment(signal: AbortSignal): Promise<{
+    readonly model: string
+    readonly env: Readonly<Record<string, string>>
+  } | null> {
+    signal.throwIfAborted()
+    const command = this.magpieCommand()
+    if (command === null) return null
+    try {
+      const result = await withCommandSignal(signal, () => runAsyncCommand(this.runSpawnSync, command, ['agy', 'env'], {
+        encoding: 'utf8', timeout: 5_000, maxBuffer: 64 * 1024,
+        windowsHide: true, shell: process.platform === 'win32', env: commandEnvironment(command),
+      }))
+      signal.throwIfAborted()
+      if (result.status !== 0) return null
+      // env 是 KEY=value 文本，绝不作为 Shell 脚本执行；只接受 AGY 所需字段。
+      const values = new Map<string, string>()
+      for (const line of result.stdout.split(/\r?\n/u)) {
+        const separator = line.indexOf('=')
+        if (separator < 1) continue
+        const key = line.slice(0, separator)
+        if (['model', 'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL'].includes(key)) values.set(key, line.slice(separator + 1))
+      }
+      const model = values.get('model')?.trim()
+      const apiKey = values.get('GEMINI_API_KEY')
+      const baseUrl = values.get('GOOGLE_GEMINI_BASE_URL')
+      if (!model || !apiKey?.trim() || !baseUrl?.trim()) return null
+      return { model, env: { GEMINI_API_KEY: apiKey, GOOGLE_GEMINI_BASE_URL: baseUrl } }
+    } catch {
+      signal.throwIfAborted()
+      // 未配置、旧版不支持或入口不可用时，保留原生 AGY 路径；不转发含凭据的输出。
+      return null
     }
   }
 
