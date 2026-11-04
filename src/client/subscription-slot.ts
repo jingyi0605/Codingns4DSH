@@ -629,10 +629,10 @@ function MagpieUsagePopover({ rpc, usage, t, onPolicyChange = () => {}, policyPe
     [t('usage.magpieErrors'), formatMagpieNumber(usage.aggregate.errors)],
     [t('usage.magpieInputTokens'), formatMagpieTokenCount(usage.aggregate.inputTokens)],
     [t('usage.magpieOutputTokens'), formatMagpieTokenCount(usage.aggregate.outputTokens)],
-    [t('usage.magpieCacheReadTokens'), formatMagpieTokenCount(usage.aggregate.cacheReadTokens)],
-    [t('usage.magpieCacheWriteTokens'), formatMagpieTokenCount(usage.aggregate.cacheWriteTokens)],
+    [t('usage.magpieCacheReadTokens'), formatMagpieTokenCount(usage.aggregate.cacheReadTokens) ?? t('usage.upstreamNotProvided')],
+    [t('usage.magpieCacheWriteTokens'), formatMagpieTokenCount(usage.aggregate.cacheWriteTokens) ?? t('usage.upstreamNotProvided')],
     [t('usage.magpieTotalTokens'), formatMagpieTokenCount(sumKnownCounts(usage.aggregate.inputTokens, usage.aggregate.outputTokens))],
-    [t('usage.magpieCacheHitRate'), formatMagpieCacheHitRate(usage.aggregate.inputTokens, usage.aggregate.cacheReadTokens)],
+    [t('usage.magpieCacheHitRate'), formatMagpieCacheHitRate(usage.aggregate.inputTokens, usage.aggregate.cacheReadTokens) ?? t('usage.upstreamNotProvided')],
     [t('usage.magpieCost'), formatMagpieCost(usage.aggregate.costUsd)],
   ] as const
   const sessionRows = usage.session === null ? [] : [
@@ -640,10 +640,10 @@ function MagpieUsagePopover({ rpc, usage, t, onPolicyChange = () => {}, policyPe
     [t('usage.magpieErrors'), formatMagpieNumber(usage.session.errors)],
     [t('usage.magpieInputTokens'), formatMagpieTokenCount(usage.session.inputTokens)],
     [t('usage.magpieOutputTokens'), formatMagpieTokenCount(usage.session.outputTokens)],
-    [t('usage.magpieCacheReadTokens'), formatMagpieTokenCount(usage.session.cacheReadTokens)],
-    [t('usage.magpieCacheWriteTokens'), formatMagpieTokenCount(usage.session.cacheWriteTokens)],
+    [t('usage.magpieCacheReadTokens'), formatMagpieTokenCount(usage.session.cacheReadTokens) ?? t('usage.upstreamNotProvided')],
+    [t('usage.magpieCacheWriteTokens'), formatMagpieTokenCount(usage.session.cacheWriteTokens) ?? t('usage.upstreamNotProvided')],
     [t('usage.magpieTotalTokens'), formatMagpieTokenCount(sumKnownCounts(usage.session.inputTokens, usage.session.outputTokens))],
-    [t('usage.magpieCacheHitRate'), formatMagpieCacheHitRate(usage.session.inputTokens, usage.session.cacheReadTokens)],
+    [t('usage.magpieCacheHitRate'), formatMagpieCacheHitRate(usage.session.inputTokens, usage.session.cacheReadTokens) ?? t('usage.upstreamNotProvided')],
     [t('usage.magpieCost'), formatMagpieCost(usage.session.costUsd)],
   ] as const
   const quotas = usage.quotas ?? []

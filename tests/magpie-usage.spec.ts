@@ -6,6 +6,7 @@ import { MagpieUsageService, magpieAgentForAdapter, parseMagpieCliVersion, parse
 import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js'
 import { MagpieRouteRequests, SUBSCRIPTION_RESPONSIVE_CSS, calculateMagpiePopoverPlacement, registerSubscriptionSlot } from '../src/client/subscription-slot.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
+import type { MagpieUsageSnapshot } from '../src/shared/contracts/subscription.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 
 const fixture = (name: string) => readFile(new URL(`./fixtures/${name}`, import.meta.url), 'utf8')
@@ -819,6 +820,47 @@ test('Magpie compact usage reads only Web API usage and exact session ledger dat
     windows: [], active: true, error: null, until: null, renew: null, credits: null,
   }])
   assert.doesNotMatch(JSON.stringify(result), /Bearer|Authorization|prompt|response body/u)
+})
+
+test('Magpie compact usage preserves unknown cache accounting instead of reporting zero', async () => {
+  for (const marker of [{ cache_unknown: 120 }, { cache_unknown: true }, { cache_unknown_calls: 1 }]) {
+    const service = createWebUsageService({
+      fetch: (async (input) => {
+        if (new URL(String(input)).pathname === '/api/usage/quotas') return Response.json({ data: [] })
+        return Response.json({
+          ...usageReply([{ agent: 'claude', id: 'agent-session-1', input: 120, output: 30,
+            cache_read: 0, cache_write: 0, cost: 0.0125, ...marker }]),
+          ...marker,
+        })
+      }) as typeof fetch,
+    })
+    const result = await service.read({ adapterId: 'claude-code', modelId: 'kiro/claude-opus-5.5', providerSessionId: 'agent-session-1' })
+    assert.equal(result?.usageStatus, 'available')
+    assert.equal(result?.aggregate?.inputTokens, 300)
+    assert.equal(result?.aggregate?.costUsd, 0.0325)
+    // Even a mixed-provider aggregate has no complete cache breakdown.
+    assert.equal(result?.aggregate?.cacheReadTokens, null)
+    assert.equal(result?.aggregate?.cacheWriteTokens, null)
+    assert.equal(result?.session?.inputTokens, 120)
+    assert.equal(result?.session?.cacheReadTokens, null)
+    assert.equal(result?.session?.cacheWriteTokens, null)
+  }
+})
+
+test('Magpie compact usage retains an explicitly reported zero cache breakdown', async () => {
+  const service = createWebUsageService({
+    fetch: (async (input) => {
+      if (new URL(String(input)).pathname === '/api/usage/quotas') return Response.json({ data: [] })
+      return Response.json({ ...usageReply([{ agent: 'claude', id: 'agent-session-1', input: 120, output: 30,
+        cache_read: 0, cache_write: 0, cache_unknown: false, cache_unknown_calls: 0 }]),
+        cache_read: 0, cache_write: 0, cache_unknown: 0, cache_unknown_calls: 0 })
+    }) as typeof fetch,
+  })
+  const result = await service.read({ adapterId: 'claude-code', modelId: 'kiro/claude-opus-5.5', providerSessionId: 'agent-session-1' })
+  assert.equal(result?.aggregate?.cacheReadTokens, 0)
+  assert.equal(result?.aggregate?.cacheWriteTokens, 0)
+  assert.equal(result?.session?.cacheReadTokens, 0)
+  assert.equal(result?.session?.cacheWriteTokens, 0)
 })
 
 test('Magpie session usage includes earlier dates while gateway usage stays daily', async () => {
@@ -1846,6 +1888,23 @@ test('关闭 Magpie 用量弹层会取消当前路由读取', async (t) => {
   assert.match(content, /6\.3%/u)
   assert.match(content, /20\.0%/u)
   assert.ok(content.indexOf('缓存命中率') < content.indexOf('预估费用'), 'cache hit rate should appear to the left of estimated cost')
+  const popoverProps = popover.props as { readonly usage: MagpieUsageSnapshot }
+  const { usage } = popoverProps
+  assert.ok(usage.aggregate)
+  assert.ok(usage.session)
+  for (const cacheTokens of [null, 0]) {
+    const cacheContent = JSON.stringify(popover.type({ ...popoverProps, usage: { ...usage,
+      aggregate: { ...usage.aggregate, cacheReadTokens: cacheTokens, cacheWriteTokens: cacheTokens },
+      session: { ...usage.session, cacheReadTokens: cacheTokens, cacheWriteTokens: cacheTokens },
+    } } as never))
+    if (cacheTokens === null) {
+      assert.equal((cacheContent.match(/上游未提供/gu) ?? []).length, 6)
+      assert.doesNotMatch(cacheContent, /0\.0%/u)
+    } else {
+      assert.equal((cacheContent.match(/0\.0%/gu) ?? []).length, 2)
+      assert.doesNotMatch(cacheContent, /上游未提供/u)
+    }
+  }
   const findRouteTab = (node: unknown): { readonly props: { readonly onClick: () => void } } | null => {
     if (Array.isArray(node)) return node.map(findRouteTab).find((item) => item !== null) ?? null
     if (node === null || typeof node !== 'object') return null
