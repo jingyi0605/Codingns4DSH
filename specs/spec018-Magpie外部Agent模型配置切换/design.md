@@ -63,6 +63,18 @@ The map authorizes read-only catalog recognition only. It does not authorize any
 - The parsed catalog stays Host-private. The Client receives no Magpie catalog and no raw CLI output.
 - Catalog and version reads are cached briefly and share in-flight reads per Agent. A caller abort does not cancel a shared Host-lifetime read.
 
+#### Antigravity child-process environment
+
+Antigravity also reads `magpie agy env` through the Host's currently detected Magpie executable, including a custom executable selection. This read has a five-second timeout, a 64 KiB output limit, and cancellation tied to the operation and driver lifetime. The output is parsed as `KEY=value` data, never evaluated as shell code. Only `GEMINI_API_KEY`, `GOOGLE_GEMINI_BASE_URL`, and `model` are accepted, and all three must be present before applying the result.
+
+The API key and endpoint are passed only to `agy models` and the current AGY turn's child process; explicit Host runtime environment overrides take precedence. An explicit selected model is retained; `provider-default` follows the model returned by Magpie, as its shell wrapper does. Each new turn reads the environment again. Read failures preserve native AGY behavior; cancellation propagates. No credentials enter the model catalog, settings, session index, logs, or Client response, and no configuration is written.
+
+AGY's native model IDs keep their `magpie/` prefix when selected or sent to the CLI. Only verified catalog/metadata matching removes that prefix, so `magpie/hl/gpt-6-astra` can match the exact `hl/gpt-6-astra` row from `magpie models agy` without changing the selection ID.
+
+AGY model recognition requires that exact ID match; its native Gemini names are not Magpie display-name aliases. Otherwise native `gemini-3.8-flash` and explicit `magpie/tlp/gemini-3.8-flash` would inherit the same provider label and metadata despite having different selection IDs. Keep both sources selectable, leave native metadata intact, and add a localized native-Antigravity suffix only in the conversation picker's display and tooltip. Explicit Magpie rows keep their verified provider label and badge.
+
+The Antigravity conversation menu pins only `provider-default`, then uses the same provider-first, natural-name, context-variant and ID tie-break ordering as Claude Code. This is a copied presentation view; cached Host group order and exact selection IDs remain unchanged.
+
 ### 3.3 Gateway reads
 
 `MagpieUsageService.read()` first confirms the current model in the current Agent catalog. It then reads:
@@ -76,7 +88,7 @@ Responses are size-limited and normalized to the shared `MagpieUsageSnapshot` co
 
 - Add a bounded, read-only `GET /v1/models` reader on the Host, reusing the validated loopback origin and the existing response-size and timeout safeguards.
 - Normalize only known public fields: `id`, `display_name`/`magpie_label`, `context_window`/`context_length`, `max_input_tokens`, `max_output_tokens`, `modalities.input`/`modalities.output`, `reasoning`, `reasoning_levels`, `supported_reasoning_levels`, `service_tiers`, and explicitly supported capability/description fields.
-- Require the exact model ID in the mapped `magpie models <agent>` output, or a unique exact normalized display-label alias, and an exact matching `/v1/models` `id`. Apply only documented adapter-specific ID normalization; Command Code's `magpie/` prefix is the existing exception.
+- Require the exact model ID in the mapped `magpie models <agent>` output, or a unique exact normalized display-label alias, and an exact matching `/v1/models` `id`. Antigravity requires the exact ID rather than a display-label alias. Command Code, Pi, and Antigravity normalize their native `magpie/` prefix for matching without changing the selection ID.
 - Enrich existing Agent model entries; do not add models from unrelated records or change selection semantics. The Codex-only addition is limited to exact IDs in the validated Codex CLI catalog. On exact Magpie matches, Magpie's declared value wins. An absent field preserves the Agent's own known value; explicit `reasoning: false` removes stale efforts.
 - Cache parsed metadata per Magpie Agent for a short bounded TTL and clear it when its catalog/origin changes. A failed metadata read leaves existing rows unchanged; Codex additions may still use their validated CLI labels without inferred metadata.
 - Never return the raw Magpie document, ownership secrets, or unrecognized fields to the Client.

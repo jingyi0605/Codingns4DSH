@@ -97,6 +97,76 @@ test('Claude menu pins Fable and sorts providers, names and context variants wit
   }
 })
 
+test('Antigravity model menu puts provider-default first and sorts Magpie providers and model names', async () => {
+  const models = [
+    { id: 'magpie/tlp/gpt-6.1-sol', name: 'GPT-6.1 Sol · tlp', efforts: [], source: 'magpie' as const, magpieProviderId: 'tlp' },
+    { id: 'provider-default', name: '跟随 Antigravity 默认模型', efforts: [] },
+    { id: 'gemini-3.7-flash', name: 'Gemini 3.7 Flash', efforts: ['low', 'medium', 'high'] },
+    { id: 'magpie/hl/gpt-6-astra', name: 'GPT-6 Astra · hl', efforts: [], source: 'magpie' as const, magpieProviderId: 'hl' },
+    { id: 'magpie/tlp/gemini-4-argon', name: 'Gemini 4 Argon · tlp', efforts: ['low', 'medium', 'high'], source: 'magpie' as const, magpieProviderId: 'tlp' },
+    { id: 'magpie/hl/claude-sonnet-5-5', name: 'Claude Sonnet 5.5 · hl', efforts: ['low', 'high'], source: 'magpie' as const, magpieProviderId: 'hl' },
+    { id: 'magpie/hl/gpt-6.1-sol', name: 'GPT-6.1 Sol · hl', efforts: [], source: 'magpie' as const, magpieProviderId: 'hl' },
+    { id: 'magpie/tlp/gpt-6-astra', name: 'GPT-6 Astra · tlp', efforts: [], source: 'magpie' as const, magpieProviderId: 'tlp' },
+    { id: 'magpie/hl/claude-opus-5-5', name: 'Claude Opus 5.5 · hl', efforts: [], source: 'magpie' as const, magpieProviderId: 'hl' },
+  ]
+  const originalIds = models.map(model => model.id)
+  Object.freeze(models)
+  const probe = createProbe('antigravity', { modelGroups: [{ id: 'antigravity', name: 'Antigravity', models }], modelId: 'provider-default' })
+  const slot = probe.registered.get('codingns4dsh-model')!
+  const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
+  try {
+    const tree = await openModelPane(renderer)
+    assert.deepEqual(modelOptions(tree).map(element => element.key), [
+      'antigravity:provider-default',
+      'antigravity:gemini-3.7-flash',
+      'antigravity:magpie/hl/claude-opus-5-5',
+      'antigravity:magpie/hl/claude-sonnet-5-5',
+      'antigravity:magpie/hl/gpt-6.1-sol',
+      'antigravity:magpie/hl/gpt-6-astra',
+      'antigravity:magpie/tlp/gemini-4-argon',
+      'antigravity:magpie/tlp/gpt-6.1-sol',
+      'antigravity:magpie/tlp/gpt-6-astra',
+    ])
+    assert.deepEqual(models.map(model => model.id), originalIds, 'sorting must not mutate the cached Host catalog')
+    modelOptions(tree).find(element => element.key === 'antigravity:magpie/tlp/gpt-6.1-sol')!.props.onClick()
+    await flush()
+    assert.ok(probe.calls.some(call => call.endpoint === 'cli/session/set' && call.payload.modelId === 'magpie/tlp/gpt-6.1-sol'))
+  } finally { renderer.dispose(); probe.dispose() }
+})
+
+test('Antigravity keeps native and Magpie Gemini choices visibly distinct with their exact selection IDs', async () => {
+  const models = [
+    { id: 'provider-default', name: '跟随 Antigravity 默认模型', efforts: [] },
+    ...['3.8-flash', '4-argon'].flatMap(version => {
+      const name = version === '3.8-flash' ? 'Gemini 3.8 Flash' : 'Gemini 4 Argon'
+      return [
+        { id: `gemini-${version}`, name, efforts: ['low', 'medium', 'high'] },
+        { id: `magpie/tlp/gemini-${version}`, name: `${name} · tlp`, efforts: ['low', 'high'], source: 'magpie' as const, magpieProviderId: 'tlp' },
+      ]
+    }),
+  ]
+  for (const selected of models.slice(1)) {
+    const probe = createProbe('antigravity', { modelGroups: [{ id: 'antigravity', name: 'Antigravity', models }], modelId: selected.id })
+    const slot = probe.registered.get('codingns4dsh-model')!
+    const renderer = createHookRenderer(slot.component, slot.props, { checkHookOrder: true })
+    try {
+      const options = modelOptions(await openModelPane(renderer))
+      assert.equal(options.length, models.length, 'both sources remain selectable')
+      for (const model of models) {
+        const option = options.find(element => element.key === `antigravity:${model.id}`)!
+        const native = model.id !== 'provider-default' && !model.id.startsWith('magpie/')
+        assert.equal(option.props.title, native ? `${model.name} · Antigravity` : model.name)
+        const markup = renderToStaticMarkup(option)
+        if (model.id.startsWith('magpie/')) assert.match(markup, /data-codingns-magpie-model-tag/u)
+        else assert.doesNotMatch(markup, /data-codingns-magpie-model-tag/u)
+      }
+      options.find(element => element.key === `antigravity:${selected.id}`)!.props.onClick()
+      await flush()
+      assert.ok(probe.calls.some(call => call.endpoint === 'cli/session/set' && call.payload.modelId === selected.id))
+    } finally { renderer.dispose(); probe.dispose() }
+  }
+})
+
 test('Claude model menu keeps context variants distinct and submits their exact IDs', async () => {
   const models = [
     { id: 'hl/claude-sonnet-5-5', name: 'Claude Sonnet 5.5 · hl', efforts: ['high'], source: 'magpie' as const, magpieProviderId: 'hl' },

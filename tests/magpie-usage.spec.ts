@@ -461,7 +461,7 @@ test('Magpie metadata enriches exact model matches for DSH and every verified ex
 
   for (const [adapterId, agent] of adapters) {
     const cliModelId = 'example-provider/model-one'
-    const modelId = agent === 'commandcode' ? `magpie/${cliModelId}` : cliModelId
+    const modelId = agent === 'commandcode' || agent === 'agy' ? `magpie/${cliModelId}` : cliModelId
     const service = new MagpieUsageService({
       readModels: async (requestedAgent) => [
         'Example provider',
@@ -634,12 +634,12 @@ test('Magpie metadata joins unique display names when Agent model IDs differ', a
   assert.equal(models[2]!.source, undefined)
 })
 
-test('Magpie display-name aliases enrich every verified Agent catalog', async () => {
+test('Magpie display-name aliases enrich supported Agent catalogs', async () => {
   const adapters = [
     ['dsh', 'dsh'], ['codex', 'codex'], ['claude-code', 'claude'], ['command-code', 'commandcode'],
     ['kimi', 'kimi'], ['gemini', 'gemini'], ['pi', 'pi'], ['opencode', 'opencode'], ['grok', 'grok'],
     ['mcode', 'minimax-code'], ['zcode', 'zcode'], ['codebuddy', 'codebuddy'], ['workbuddy', 'workbuddy'],
-    ['cursor-cli', 'cursor'], ['qoder', 'qoder'], ['qoder-cn', 'qoder-cn'], ['antigravity', 'agy'],
+    ['cursor-cli', 'cursor'], ['qoder', 'qoder'], ['qoder-cn', 'qoder-cn'],
   ] as const
   for (const [adapterId, agent] of adapters) {
     const service = new MagpieUsageService({
@@ -662,6 +662,46 @@ test('Magpie display-name aliases enrich every verified Agent catalog', async ()
     assert.equal(model.magpieProviderId, 'provider', 'aliases use the verified Magpie ID, not the native ID')
     assert.equal(model.contextWindow, 500000, adapterId)
     assert.deepEqual(model.efforts, ['low', 'high'], adapterId)
+  }
+})
+
+test('Antigravity native Gemini names do not inherit metadata from the same-name Magpie route', async () => {
+  const service = new MagpieUsageService({
+    readModels: async () => [
+      'Routing groups',
+      'tlp/gemini-3.8-flash    Gemini 3.8 Flash',
+      'tlp/gemini-4-argon    Gemini 4 Argon',
+      "agy is shown every provider's models · magpie visible agy",
+      'http://127.0.0.1:3425/v1',
+    ].join('\n'),
+    fetch: (async () => Response.json({ data: [
+      { id: 'tlp/gemini-3.8-flash', display_name: 'Gemini 3.8 Flash · tlp', reasoning_levels: ['low', 'high'], context_window: 500000 },
+      { id: 'tlp/gemini-4-argon', display_name: 'Gemini 4 Argon · tlp', reasoning_levels: ['low', 'high'], context_window: 500000 },
+    ] })) as typeof fetch,
+  })
+  const nativeModels = [
+    { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', efforts: ['low', 'medium', 'high'] },
+    { id: 'gemini-4-argon', name: 'Gemini 4 Argon', efforts: ['low', 'medium', 'high'] },
+  ]
+  // The native names are not Magpie aliases, even if no prefixed choice is present.
+  for (const withMagpieRoutes of [false, true]) {
+    const models = [...nativeModels, ...(withMagpieRoutes ? nativeModels.map(model => ({ ...model, id: `magpie/tlp/${model.id}` })) : [])]
+    const original = { groups: [{ id: 'antigravity', name: 'Antigravity', models }], currentModel: 'gemini-3.8-flash', currentEffort: 'medium' }
+    const result = await service.enrichModelCatalog('antigravity', original)
+    assert.equal(result.currentModel, original.currentModel)
+    assert.equal(result.currentEffort, original.currentEffort)
+    assert.deepEqual(result.groups[0]!.models.map(model => model.id), models.map(model => model.id))
+    for (const [index, native] of nativeModels.entries()) {
+      assert.equal(result.groups[0]!.models[index], native, 'native labels, efforts, source and context must stay unchanged')
+      assert.equal(await service.readModelMetadata('antigravity', native.id), null)
+      if (withMagpieRoutes) {
+        const routed = result.groups[0]!.models[index + nativeModels.length]!
+        assert.equal(routed.source, 'magpie')
+        assert.equal(routed.magpieProviderId, 'tlp')
+        assert.equal(routed.name, `${native.name} · tlp`)
+        assert.deepEqual(routed.efforts, ['low', 'high'])
+      }
+    }
   }
 })
 

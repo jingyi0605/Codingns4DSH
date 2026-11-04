@@ -2310,11 +2310,14 @@ function cleanSessionName(value: unknown): string | null {
   return text === '' ? null : text
 }
 
-/** Pi and Command Code store Magpie selections with a local `magpie/` provider prefix. */
+/** Pi, Command Code and AGY store Magpie selections with a local `magpie/` provider prefix. */
 function resolveCatalogModelId(agent: MagpieAgent, requestedModelId: string, catalog: MagpieModelCatalog | null, modelName?: string): string | null {
   if (catalog === null) return null
   const catalogModelId = catalogModelIdForRequested(agent, requestedModelId)
   if (catalogModelId !== null && catalog.models.has(catalogModelId)) return catalogModelId
+  // AGY exposes explicit magpie/provider/model IDs alongside its native models.
+  // A shared display name does not make a native Gemini selection a Magpie route.
+  if (agent === 'agy') return null
   const normalizedName = normalizeMagpieModelName(modelName)
   return normalizedName === null ? null : catalog.names.get(normalizedName) ?? null
 }
@@ -2327,7 +2330,7 @@ function catalogModelIdForRequested(agent: MagpieAgent, requestedModelId: string
 }
 
 function stripMagpieProviderPrefix(agent: MagpieAgent, modelId: string): string {
-  return (agent === 'commandcode' || agent === 'pi') && modelId.startsWith('magpie/')
+  return (agent === 'commandcode' || agent === 'pi' || agent === 'agy') && modelId.startsWith('magpie/')
     ? modelId.slice('magpie/'.length)
     : modelId
 }
