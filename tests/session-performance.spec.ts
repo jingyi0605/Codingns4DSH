@@ -93,6 +93,28 @@ test('native activity UI uses corrected Codex statistics and preserves native se
   await Promise.resolve()
 })
 
+test('Claude Code hides delivery timing that would fabricate a decode speed', () => {
+  const slots = createPresentationSlots()
+  const root = slots.register({ name: 'root', children: { 'conversation.composer.dock': { kind: 'list', scope: 'session' } } }, (() => null) as never)
+  const Native = (props: any) => createElement('span', undefined, JSON.stringify(props.useProjection('sessionStats')))
+  slots.register({ name: 'conversation.composer.dock', id: 'activity' }, Native as never)
+  const dispose = createSessionPerformancePresentation({ slots }).install(() => 'claude-code', createElement, { useMemo, useSyncExternalStore })
+  const Wrapper = slots.core.entriesOfSlot('conversation.composer.dock')[0]!.component as any
+  const original = { turns: 1, steps: 2, toolMs: 2100, llmMs: 169000, decodeTokens: 3108, decodeMs: 2, ttftMs: 114446, ttftSteps: 1 }
+  const render = () => renderToStaticMarkup(createElement(Wrapper, {
+    sessionId: 'claude-session',
+    useProjection: (key: string) => key === CODEX_PERFORMANCE_PROJECTION ? undefined : original,
+  }))
+  const html = render()
+  assert.match(html, /169000/)
+  assert.match(html, /decodeTokens&quot;:0/)
+  assert.match(html, /decodeMs&quot;:0/)
+  assert.match(html, /ttftMs&quot;:0/)
+  assert.match(html, /ttftSteps&quot;:0/)
+  dispose()
+  root()
+})
+
 test('Grok context uses provider occupancy while preserving the native composer and its child slots', async () => {
   const slots = createPresentationSlots()
   const root = slots.register({ name: 'root', children: { 'conversation.composer.bar': { kind: 'single', scope: 'session-maybe' } } }, (() => null) as never)
