@@ -45,6 +45,7 @@ type PageTab = 'overview' | 'providers' | 'groups' | 'usage'
 type UsageTab = 'quotas' | 'sessions' | 'requests'
 
 type ChartMetric = 'calls' | 'tokens' | 'cost'
+export type UsageSortMetric = 'cost' | 'tokens'
 export type ModelBreakdownMode = 'aggregate' | 'account'
 type MagpiePageProps = {
   readonly rpc: CodingNsRpcClient
@@ -182,6 +183,7 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
   const [quotaResetResult, setQuotaResetResult] = useState<CliSubscriptionResetOutcome | null>(null)
   const [quotaResetFailed, setQuotaResetFailed] = useState(false)
   const [chartMetric, setChartMetric] = useState<ChartMetric>('calls')
+  const [usageSortMetric, setUsageSortMetric] = useState<UsageSortMetric>('cost')
   const [sessionSearch, setSessionSearch] = useState('')
   const [selectedSession, setSelectedSession] = useState<MagpieUsageSession | null>(null)
   const [requestPage, setRequestPage] = useState<MagpieUsageRequestPage | null>(null)
@@ -560,9 +562,9 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
           }, t(entry.label))),
         ),
       ),
-      // 口径切换只作用于「订阅」页的额度卡；其他用量报表没有"剩余"这个概念。
-      section === 'quotas' && createElement('div', { className: 'codingns-magpie-toolbar-right' },
-        createElement(QuotaViewSwitch, {
+      ((section === 'quotas' || section === 'sessions') && createElement('div', { className: 'codingns-magpie-toolbar-right' },
+        // 口径切换只作用于「订阅」页的额度卡；其他用量报表没有"剩余"这个概念。
+        section === 'quotas' && createElement(QuotaViewSwitch, {
           value: quotaView,
           // 没有设置存储（测试/静态预览）时控件只展示、不写回，因此不禁用。
           disabled: settings === undefined ? false : !quotaViewWritable,
@@ -570,7 +572,12 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
           onChange: selectQuotaView,
           t,
         }),
-      ),
+        section === 'sessions' && createElement(UsageMetricSwitch, {
+          value: usageSortMetric,
+          onChange: setUsageSortMetric,
+          t,
+        }),
+      )),
     ),
     createElement('main', { className: 'codingns-magpie-main' },
       section === 'providers' || section === 'groups'
@@ -591,10 +598,10 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
               ? createElement(EmptyState, { message: t('magpie.unavailable') })
               : section === 'overview'
                 ? createElement(OverviewPage, {
-                  dashboard, loading: dashboardLoading, error: dashboardError, chartMetric, onChartMetricChange: setChartMetric, t, onOpenSession: openSession,
+                  dashboard, loading: dashboardLoading, error: dashboardError, chartMetric, onChartMetricChange: setChartMetric, usageSortMetric, onUsageSortMetricChange: setUsageSortMetric, t, onOpenSession: openSession,
                 })
                 : section === 'sessions'
-                  ? createElement(SessionsPage, { dashboard, sessions: filteredSessions, search: sessionSearch, onSearch: setSessionSearch, onOpenSession: openSession, t })
+                  ? createElement(SessionsPage, { dashboard, sessions: filteredSessions, search: sessionSearch, onSearch: setSessionSearch, usageSortMetric, onOpenSession: openSession, t })
                   : section === 'requests'
                     ? createElement(RequestsPage, { page: requestPage, loading: requestLoading, error: requestError, selectedSession, offset: requestOffset, onOffsetChange: setRequestOffset, onClearSession: clearSession, t })
                     : createElement(QuotasPage, {
@@ -623,12 +630,14 @@ export function MagpieManagementPage({ rpc, locale, initialPageTab = 'overview',
   )
 }
 
-export function OverviewPage({ dashboard, loading, error, chartMetric, onChartMetricChange, t, onOpenSession }: {
+export function OverviewPage({ dashboard, loading, error, chartMetric, onChartMetricChange, usageSortMetric = 'cost', onUsageSortMetricChange = () => undefined, t, onOpenSession }: {
   readonly dashboard: MagpieUsageDashboard | null
   readonly loading: boolean
   readonly error: boolean
   readonly chartMetric: ChartMetric
   readonly onChartMetricChange: (value: ChartMetric) => void
+  readonly usageSortMetric?: UsageSortMetric
+  readonly onUsageSortMetricChange?: (value: UsageSortMetric) => void
   readonly t: (key: string, params?: Record<string, string | number>) => string
   readonly onOpenSession: (session: MagpieUsageSession) => void
 }): ReactElement {
@@ -661,10 +670,14 @@ export function OverviewPage({ dashboard, loading, error, chartMetric, onChartMe
       ),
       createElement(BarChart, { points: dashboard.series, metric: chartMetric, label: t(`magpie.chart.${chartMetric}`) }),
     ),
-    createElement(ProgressSection, { title: t('magpie.byAgent'), rows: dashboard.agents, t }),
-    createElement(ModelProgressSection, { rows: dashboard.models, mode: modelBreakdownMode, onModeChange: setModelBreakdownMode, t }),
+    createElement('div', { className: 'codingns-magpie-usage-sortbar' },
+      createElement(UsageMetricSwitch, { value: usageSortMetric, onChange: onUsageSortMetricChange, t }),
+    ),
+    createElement(ProgressSection, { title: t('magpie.byAgent'), rows: dashboard.agents, metric: usageSortMetric, t }),
+    createElement(ModelProgressSection, { rows: dashboard.models, mode: modelBreakdownMode, onModeChange: setModelBreakdownMode, metric: usageSortMetric, t }),
     dashboard.sessions.length > 0 && createElement(ProgressSection, {
       title: t('magpie.topSessions'),
+      metric: usageSortMetric,
       rows: dashboard.sessions.map((session) => ({
         ...session,
         id: `${session.agent}:${session.id}`,
@@ -818,12 +831,14 @@ function MagpieUpdatePanel({ status, notes, loading, error, confirming, notice, 
   )
 }
 
-export function ModelProgressSection({ rows, mode, onModeChange, t }: {
+export function ModelProgressSection({ rows, mode, onModeChange, metric, t }: {
   readonly rows: readonly MagpieUsageGroup[]
   readonly mode: ModelBreakdownMode
   readonly onModeChange: (mode: ModelBreakdownMode) => void
+  readonly metric?: UsageSortMetric
   readonly t: (key: string, params?: Record<string, string | number>) => string
 }): ReactElement {
+  const sortMetric = metric ?? 'cost'
   const controls = createElement('div', { className: 'codingns-magpie-chart-switch', role: 'group', 'aria-label': t('magpie.modelBreakdown') },
     ...(['aggregate', 'account'] as const).map((value) => createElement('button', {
       key: value,
@@ -840,23 +855,26 @@ export function ModelProgressSection({ rows, mode, onModeChange, t }: {
     key: `model-breakdown-${mode}`,
     title: t('magpie.byModel'),
     rows: displayRows,
+    metric: sortMetric,
     t,
     header: controls,
     ...(mode === 'aggregate' ? { limit: 8 } : {}),
   })
 }
 
-export function SessionsPage({ dashboard, sessions, search, onSearch, onOpenSession, t }: {
+export function SessionsPage({ dashboard, sessions, search, onSearch, usageSortMetric = 'cost', onOpenSession, t }: {
   readonly dashboard: MagpieUsageDashboard | null
   readonly sessions: readonly MagpieUsageSession[]
   readonly search: string
   readonly onSearch: (value: string) => void
+  readonly usageSortMetric?: UsageSortMetric
   readonly onOpenSession: (session: MagpieUsageSession) => void
   readonly t: (key: string, params?: Record<string, string | number>) => string
 }): ReactElement {
   const [agentFilter, setAgentFilter] = useState<string>('')
   const agentNames = useMemo(() => [...new Set(sessions.map((session) => session.agent))].sort(), [sessions])
   const visible = agentFilter === '' ? sessions : sessions.filter((session) => session.agent === agentFilter)
+  const sortedVisible = useMemo(() => sortUsageRows(visible, usageSortMetric), [usageSortMetric, visible])
   const aggregate = sumSessions(visible)
   const metrics = dashboard?.aggregate
   const stats: readonly { readonly label: string; readonly value: string; readonly detail?: string | undefined }[] = [
@@ -890,7 +908,7 @@ export function SessionsPage({ dashboard, sessions, search, onSearch, onOpenSess
       ? createElement(EmptyState, { message: t(search === '' && agentFilter === '' ? 'magpie.noSessions' : 'magpie.noRequests') })
       : createElement('section', { className: 'codingns-magpie-panel codingns-magpie-toplist-panel' },
         createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('h2', undefined, t('magpie.topSessions'))),
-        ...visible.slice(0, 40).map((session) => createElement('button', {
+        ...sortedVisible.slice(0, 40).map((session) => createElement('button', {
           key: `${session.agent}:${session.id}`,
           type: 'button',
           className: 'codingns-magpie-toprow',
@@ -1183,6 +1201,25 @@ export function QuotaViewSwitch({ value, disabled, failed, onChange, t }: {
   )
 }
 
+export function UsageMetricSwitch({ value, onChange, t }: {
+  readonly value: UsageSortMetric
+  readonly onChange: (next: UsageSortMetric) => void
+  readonly t: (key: string, params?: Record<string, string | number>) => string
+}): ReactElement {
+  return createElement('div', { className: 'codingns-magpie-usage-metric', role: 'group', 'aria-label': t('magpie.sortMetric') },
+    createElement('span', { className: 'codingns-magpie-usage-metric-label' }, t('magpie.sortMetric')),
+    createElement('div', { className: 'codingns-magpie-chart-switch' },
+      ...(['cost', 'tokens'] as const).map((metric) => createElement('button', {
+        key: metric,
+        type: 'button',
+        className: value === metric ? 'is-active' : '',
+        'aria-pressed': value === metric,
+        onClick: () => onChange(metric),
+      }, metric === 'cost' ? t('magpie.metricCost') : t('magpie.tokens'))),
+    ),
+  )
+}
+
 /** 口径控件左侧的圆形图标：半实心圆表示"部分已用"，与进度条的语义一致。 */
 function QuotaViewIcon(): ReactElement {
   return createElement('svg', {
@@ -1271,25 +1308,46 @@ function BarChart({ points, metric, label }: { readonly points: readonly MagpieU
   )
 }
 
-function ProgressSection({ title, rows, t, onOpen, header, limit = 8 }: {
+type UsageSortableRow = Pick<MagpieUsageMetrics, 'calls' | 'cost' | 'inputTokens' | 'outputTokens'>
+
+export function usageMetricValue(row: UsageSortableRow, metric: UsageSortMetric): number | null {
+  return metric === 'cost' ? row.cost : sumNullable(row.inputTokens, row.outputTokens)
+}
+
+export function sortUsageRows<T extends UsageSortableRow>(rows: readonly T[], metric: UsageSortMetric): T[] {
+  return [...rows].sort((left, right) => (
+    compareNullableDescending(usageMetricValue(left, metric), usageMetricValue(right, metric))
+    || compareNullableDescending(left.calls, right.calls)
+  ))
+}
+
+function compareNullableDescending(left: number | null, right: number | null): number {
+  if (left === null && right === null) return 0
+  if (left === null) return 1
+  if (right === null) return -1
+  return right - left
+}
+
+function ProgressSection({ title, rows, metric, t, onOpen, header, limit = 8 }: {
   readonly title: string
   readonly rows: readonly (MagpieUsageGroup & { readonly label?: string })[]
+  readonly metric: UsageSortMetric
   readonly t: (key: string, params?: Record<string, string | number>) => string
   readonly onOpen?: (row: MagpieUsageGroup) => void
   readonly header?: ReactElement
   readonly limit?: number
 }): ReactElement {
-  const sorted = [...rows].sort((left, right) => (right.cost ?? -1) - (left.cost ?? -1) || (right.calls ?? -1) - (left.calls ?? -1))
+  const sorted = sortUsageRows(rows, metric)
   const display = limit === undefined ? sorted : sorted.slice(0, limit)
-  const hasCost = display.some((row) => row.cost !== null)
-  const max = Math.max(1, ...display.map((row) => hasCost ? row.cost ?? 0 : sumNullable(row.inputTokens, row.outputTokens) ?? 0))
+  const displayMetric = metric === 'cost' && display.some((row) => row.cost !== null) ? 'cost' : 'tokens'
+  const max = Math.max(1, ...display.map((row) => usageMetricValue(row, displayMetric) ?? 0))
   return createElement('section', { className: 'codingns-magpie-panel codingns-magpie-progress-panel' },
     createElement('div', { className: 'codingns-magpie-panel-head' }, createElement('h2', undefined, title), header),
     display.length === 0
       ? createElement('div', { className: 'codingns-magpie-inline-empty' }, '—')
       : createElement('div', { className: 'codingns-magpie-progress-list' }, ...display.map((row) => {
         const label = row.label ?? row.name ?? row.model ?? row.account ?? row.provider ?? row.agent ?? row.id
-        const weight = Math.max(0, (hasCost ? row.cost ?? 0 : sumNullable(row.inputTokens, row.outputTokens) ?? 0))
+        const weight = Math.max(0, usageMetricValue(row, displayMetric) ?? 0)
         const body = createElement('div', { className: 'codingns-magpie-progress-row' },
           createElement('div', { className: 'codingns-magpie-progress-head' },
             createElement('span', { className: 'codingns-magpie-provider-inline' },
@@ -1298,7 +1356,7 @@ function ProgressSection({ title, rows, t, onOpen, header, limit = 8 }: {
                 createElement('span', { className: 'codingns-magpie-progress-name', title: label }, label),
                 (row.account ?? row.provider) !== null && createElement('small', { className: 'codingns-magpie-progress-context', title: row.account ?? row.provider ?? '' }, row.account ?? row.provider)),
             ),
-            createElement('strong', { className: 'codingns-magpie-progress-value' }, hasCost ? formatValue(row.cost) : formatCompact(sumNullable(row.inputTokens, row.outputTokens))),
+            createElement('strong', { className: 'codingns-magpie-progress-value' }, displayMetric === 'cost' ? formatValue(row.cost) : formatCompact(sumNullable(row.inputTokens, row.outputTokens))),
           ),
           createElement('div', { className: 'codingns-magpie-progress-track' },
             createElement('span', { style: { width: `${Math.max(2, (weight / max) * 100)}%` } }),
@@ -1874,6 +1932,8 @@ const MAGPIE_PAGE_CSS = `
 /* Pin the usage-view switch to the toolbar's right edge so the icon and the
    segmented control stay together instead of wrapping with the left tabs. */
 .codingns-magpie-toolbar-right{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex:0 0 auto;margin-left:auto;min-width:0}
+.codingns-magpie-usage-metric{display:flex;align-items:center;gap:8px;flex:0 0 auto;min-width:0;color:var(--mp-muted);font-size:${uiFontSize(13)}}
+.codingns-magpie-usage-sortbar{display:flex;justify-content:flex-end;margin:14px 0 12px}
 .codingns-magpie-quota-view{display:flex;align-items:center;gap:8px;flex:0 0 auto;min-width:0;color:var(--mp-muted);font-size:${uiFontSize(13)}}
 .codingns-magpie-quota-view-icon{display:grid;place-items:center;flex:0 0 auto;width:22px;height:22px;color:var(--mp-muted)}
 .codingns-magpie-quota-view-icon-svg{display:block}

@@ -6,7 +6,7 @@ import { DSH_VERSION } from '../src/shared/contracts/version.js'
 import { createDshCapabilityRegistry } from '../src/dsh-capabilities/routes.js'
 import { createGlobalPanelAdapter } from '../src/dsh-capabilities/client/global-panel-adapter.js'
 import type { CodingNsLocale } from '../src/client/locale.js'
-import { aggregateModelUsageRows, MagpieManagementPage, modelBreakdownRows, ModelProgressSection } from '../src/client/features/magpie-management-page.js'
+import { aggregateModelUsageRows, MagpieManagementPage, modelBreakdownRows, ModelProgressSection, sortUsageRows, UsageMetricSwitch } from '../src/client/features/magpie-management-page.js'
 import { magpieManagementFeature } from '../src/client/features/magpie-management.js'
 import { formatContextTokens, GroupModelPicker, MagpieGroupsPage, MagpieProvidersPage, magpiePolicyLabel, parseContextTokens, reorderModels } from '../src/client/features/magpie-management-controls.js'
 import { MagpieProviderLogo } from '../src/client/features/magpie-provider-logo.js'
@@ -249,6 +249,37 @@ test('Magpie model overview can aggregate rows or show each account row', () => 
   assert.doesNotMatch(grouped, /Account A/u)
   assert.doesNotMatch(grouped, /Account B/u)
   assert.match(grouped, /汇总/u)
+})
+
+test('Magpie usage rows can switch between cost and combined input/output token ordering', () => {
+  const rows: MagpieUsageGroup[] = [
+    {
+      id: 'expensive', name: 'Expensive', provider: null, model: null, account: null, agent: 'dsh',
+      calls: 2, errors: 0, retried: 0, inputTokens: 100, outputTokens: 10,
+      cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, cost: 10, unpriced: 0,
+      credits: null, credited: null, timed: null, ttftMs: null, decodeMs: null, decodeTokens: null, decodeCount: null,
+    },
+    {
+      id: 'large', name: 'Large', provider: null, model: null, account: null, agent: 'dsh',
+      calls: 1, errors: 0, retried: 0, inputTokens: 1_000, outputTokens: 200,
+      cacheReadTokens: 0, cacheWriteTokens: 0, reasoningTokens: 0, cost: 1, unpriced: 0,
+      credits: null, credited: null, timed: null, ttftMs: null, decodeMs: null, decodeTokens: null, decodeCount: null,
+    },
+  ]
+
+  assert.deepEqual(sortUsageRows(rows, 'cost').map((row) => row.id), ['expensive', 'large'])
+  assert.deepEqual(sortUsageRows(rows, 'tokens').map((row) => row.id), ['large', 'expensive'])
+
+  const translator = resolveCodingNsTranslator()
+  const t = (key: string, params?: Record<string, string | number>) => translator(key, params)
+  const markup = renderToStaticMarkup(createElement(UsageMetricSwitch, {
+    value: 'tokens',
+    onChange: () => undefined,
+    t,
+  }))
+  assert.match(markup, /aria-label="排序指标"/u)
+  assert.match(markup, /aria-pressed="true">输入 \+ 输出 Token<\/button>/u)
+  assert.match(markup, /aria-pressed="false">报告费用<\/button>/u)
 })
 
 test('Magpie management nests primary and secondary accounts under providers', () => {
