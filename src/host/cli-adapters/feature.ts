@@ -254,7 +254,10 @@ export function createCliAdaptersFeature(options: {
       if (dshContext?.on) {
         const stopCreated = dshContext.on('agent/created' as never, ((payload: unknown) => {
           const agent = asRecord(payload)?.agent
-          if (agent && typeof agent.id === 'string') teamDispatcher.initializeNativeChild(agent as TeamAgent)
+          if (agent && typeof agent.id === 'string') {
+            teamDispatcher.initializeNativeChild(agent as TeamAgent)
+            selectExternalModelForAgent(agent, undefined, registry)
+          }
         }) as never, { global: true } as never)
         if (typeof stopCreated === 'function') context.resources.add(stopCreated as () => void)
       }
@@ -391,6 +394,7 @@ export function createCliAdaptersFeature(options: {
             const previous = registry.getSession(sessionId)
             const config = readSessionConfig(payload)
             const saved = registry.setSession(sessionId, config)
+            selectExternalModelForSession(dshContext, sessionId, saved)
             if (config.translationEnabled === false || previous.adapterId !== config.adapterId) translationRecovery.cancelSession(sessionId)
             return saved
           }
@@ -1018,6 +1022,7 @@ function registerDelegationAgentHooks(
   register('agent/pre-step', async (payload: unknown, next: () => Promise<unknown>) => {
     const record = asRecord(payload)
     const sessionId = readAgentSessionId(record?.agent)
+    selectExternalModelBeforeStep(record?.agent, sessionId, registry)
     let messages = Array.isArray(record?.messages) ? record.messages.filter(isMessage) : []
     let delegation: ReturnType<typeof rewriteDelegationMessages> | undefined
     if (containsDelegationCarrier(messages)) {
@@ -1133,6 +1138,58 @@ function readAgentSessionId(value: unknown): string {
   if (typeof session?.id === 'string' && session.id.trim() !== '') return session.id.trim()
   const header = asRecord(session?.header)
   return typeof header?.id === 'string' ? header.id.trim() : ''
+}
+
+/** Select an external route before DSH freezes the current step's native model choice. */
+function selectExternalModelBeforeStep(agent: unknown, sessionId: string, registry: CodingNsCliAdapterRegistry): void {
+  if (sessionId === '') return
+  let session: CodingNsCliSessionConfig
+  try {
+    session = registry.getSession(sessionId)
+  } catch {
+    return
+  }
+  selectExternalModelForAgent(agent, session, registry)
+}
+
+/** Apply the external route to the live DSH Agent before its next step is prepared. */
+function selectExternalModelForAgent(
+  agent: unknown,
+  session?: CodingNsCliSessionConfig,
+  registry?: CodingNsCliAdapterRegistry,
+): void {
+  const agentRecord = asRecord(agent)
+  const sessionId = typeof agentRecord?.id === 'string' ? agentRecord.id.trim() : ''
+  if (sessionId === '') return
+  let resolved = session
+  if (resolved === undefined && registry !== undefined) {
+    try { resolved = registry.getSession(sessionId) } catch { return }
+  }
+  if (resolved === undefined || resolved.adapterId === 'dsh' || registry !== undefined && !registry.isEnabled(resolved.adapterId)) return
+  const modelOwner = asRecord(agentRecord?.model)
+  const select = modelOwner?.select
+  if (typeof select !== 'function') return
+  select.call(modelOwner, {
+    provider: toCliProviderId(resolved.adapterId),
+    model: resolved.modelId?.trim() || 'provider-default',
+  })
+}
+
+/** Select a route immediately after the Client binds an external adapter to a live Session. */
+function selectExternalModelForSession(
+  dshContext: CodingNsHostServices['dshContext'],
+  sessionId: string,
+  session: CodingNsCliSessionConfig,
+): void {
+  if (dshContext === undefined || sessionId.trim() === '' || session.adapterId === 'dsh') return
+  try {
+    const agents = asRecord(dshContext.get('agents'))
+    const get = agents?.get
+    if (typeof get !== 'function') return
+    selectExternalModelForAgent(get.call(agents, sessionId), session)
+  } catch {
+    // A cold Session may not have a live Agent yet; agent/created retries the selection.
+  }
 }
 
 /** DSH Context 可能在测试或嵌入式宿主里缺少目标服务；缺失时按不可用处理。 */

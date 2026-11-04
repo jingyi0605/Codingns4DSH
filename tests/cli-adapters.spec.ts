@@ -2706,6 +2706,57 @@ test('外部 Agent 路由不继承 DSH 原生思考强度', async () => {
   await features.disable('cliAdapters')
 })
 
+test('外部 Agent 在 DSH 准备首个 step 前选择自己的模型路由', async () => {
+  const table = new CodingNsRpcTable()
+  let preStepListener: ((payload: unknown, next: () => Promise<unknown>) => Promise<unknown>) | undefined
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'claude-code', name: 'Claude Code' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'claude' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() {
+      yield { type: 'text-delta', text: 'Done' }
+      yield { type: 'finish', reason: 'stop' }
+    },
+  }])
+  const calls: unknown[] = []
+  const agent = {
+    id: 'claude-first-step',
+    model: {
+      select(selection: unknown) { calls.push(['select', selection]) },
+    },
+  }
+  const agents = { get(sessionId: string) { return sessionId === agent.id ? agent : undefined } }
+  const dshContext = {
+    get(name: string) { return name === 'agents' ? agents : undefined },
+    on(name: string, listener: (...args: any[]) => any) {
+      if (name === 'agent/pre-step') preStepListener = listener as typeof preStepListener
+      return () => undefined
+    },
+  }
+  const features = new FeatureRegistry({
+    rpc: table,
+    events: { on() { return () => undefined } },
+    dshContext: dshContext as never,
+  })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  const rpc = table.resolve('cli/session/set')!
+  await rpc.handler('session/set', { sessionId: agent.id, adapterId: 'claude-code', modelId: 'kiro/claude-sonnet-5.5' })
+  assert.deepEqual(calls, [
+    ['select', { provider: 'codingns-cli-claude-code', model: 'kiro/claude-sonnet-5.5' }],
+  ])
+  calls.length = 0
+  await preStepListener!({ agent, messages: [] }, async () => {
+    calls.push(['next'])
+    return { kind: 'enter', messages: [] }
+  })
+  assert.deepEqual(calls, [
+    ['select', { provider: 'codingns-cli-claude-code', model: 'kiro/claude-sonnet-5.5' }],
+    ['next'],
+  ])
+  await features.disable('cliAdapters')
+})
+
 test('翻译 LLM 请求旁路外部 Agent 接管', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
