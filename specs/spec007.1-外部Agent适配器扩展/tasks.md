@@ -313,3 +313,14 @@
   - 状态：DONE
   - 结果：`agy models` 改用异步子进程；Host 启动后按驱动声明后台预热模型目录；静态回退目录按短周期重试，避免错误缓存真实模型列表。
   - 验证：Antigravity 驱动真实模型目录回放返回 8 个模型；`pnpm test`（1079 项通过）。
+- [x] 4.7 WorkBuddy 默认直接启动内置 ACP CLI（2026-11-05）
+  - 结果：每轮启动同安装 Electron 与内置 CLI，通过 stdio ACP 创建或恢复原生会话；不再默认依赖桌面 sidecar 或桌面首条消息。旧 sidecar 仅保留为显式兼容选项。
+  - 认证：使用 WorkBuddy 原有登录态；字段加密初始化在原生子进程内完成，Host 不接收密钥或登录令牌。配置根保持 `.workbuddy`，不继承独立 CodeBuddy 的 `CODEBUDDY_CONFIG_DIR`。
+  - 版本差异：本机 WorkBuddy 5.9.3.0 / CLI 2.165.0 同时携带多套 bundle；full/headless 的 `required` / `mode` 与 lite 的 `fields` / `policy` 认证协议不同。存在 `codebuddy-lite-wb.mjs` 时优先使用它，并完成原生 `session.ready` 握手；仅监听本机随机端口，使用随机网关密码。
+  - 实机验证：Windows 上使用真实驱动与已登录的内置 CLI，桌面未运行；首轮记住随机标记，第二轮以新进程 `session/load` 后正确复述，两轮均正常结束且未调用工具。
+  - Stage0 验证：复用独立 Home `~/.dsh-stage0-020` 下已运行的 DSH `0.2.1-rc.5`（`127.0.0.1:17891`），源码 junction 指向本仓库，已有编译监听生成并热加载本分支产物；未重启现有服务。通过真实认证 HTTP RPC 完成首轮、恢复续聊、原生 `Read` 读取独立测试文件三轮，均为 `completed`、无错误，并保持同一 WorkBuddy 会话标识；客户端插件资源 HTTP 200。
+  - Stage0 证据：验收会话 `session-eee11d7c-0906-4926-8349-18eb44d2f916`，标题“WorkBuddy 直连验收：首轮、续聊、工具读取”；本机报告 `~/.config/codingns4dsh/stage0-020/workbuddy-stage0-verification-1793850263774.json`，仅包含验收摘要，不含登录令牌。登录快捷入口只保存在本机；普通根地址在无 cookie 时返回 401，原生登录重定向为 303，登录后首页为 200。
+  - 源码验证：直连、凭据初始化、Windows 发现、ACP 提问与命令发现的定向测试 41/41 通过；另覆盖取消、并发、权限拒绝、结构化问题及含中文、空格、`&` 路径的真实子进程启动。类型、版本、能力检查通过；i18n 检查 0 阻断、125 条原有告警。
+  - 回归对照：相同 Windows 环境下，适配器范围回归当前分支 590 通过、39 失败、7 跳过；`main`（`9337ce55`）579 通过、40 失败、7 跳过。当前 39 项失败均在基线复现；额外修正了原有 WorkBuddy 测试写死 `/tmp` 的路径问题，未扩大修复其他适配器。
+  - 命令：`node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit`、`node scripts/check-version-sync.mjs`、`node scripts/check-capability-retirement.mjs`、`node scripts/check-client-i18n.mjs`，以及 `node --import ./tests/register-source-loader.mjs --test` 指定相关测试。未运行完整 `pnpm build` 或发布；Stage0 使用已有编译监听产物。
+  - 尚未验证：浏览器实际点击、macOS 实机以及其他 WorkBuddy 版本。Stage0 日志中已有独立凭据模块的 `CREDENTIAL_BROKER_UNAVAILABLE` 告警，本次未使用该凭据库的 WorkBuddy 三轮验收未受影响；未扩大修改该模块。

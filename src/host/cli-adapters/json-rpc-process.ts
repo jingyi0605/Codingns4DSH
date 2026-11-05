@@ -35,6 +35,8 @@ export interface JsonRpcProcessOptions {
   readonly cwd?: string | undefined
   readonly env?: Readonly<Record<string, string | undefined>>
   readonly spawn?: typeof spawn
+  /** 原生可执行文件可显式禁用 Windows 默认 shell，保留 argv 中的脚本与路径。 */
+  readonly shell?: boolean
   /** Codex 需要显式构造 cmd.exe `/c`，避免 shell:true 拼接带 TOML 的 argv。 */
   readonly explicitWindowsShell?: boolean
   /** 进程级默认信封；单次请求可覆盖。 */
@@ -207,7 +209,7 @@ export class JsonRpcProcess {
         : { ...commandEnvironment(this.options.command), ...(this.options.env ?? {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
-      shell: WINDOWS && !useExplicitWindowsShell,
+      shell: this.options.shell ?? (WINDOWS && !useExplicitWindowsShell),
       ...(useExplicitWindowsShell ? { windowsVerbatimArguments: true } : {}),
       // CLI 可能是 Node 包装脚本，直接 kill 包装进程不会连带真正的 Node 子进程。
       // POSIX 下单独进程组后才能可靠地一次清理整棵进程树。
