@@ -20,7 +20,7 @@ import type {
   CodingNsCliSessionProbeInput,
   CodingNsCliSessionProbeResult,
 } from './driver.js'
-import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage } from './json-rpc-process.js'
+import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage, type JsonRpcProcessOptions } from './json-rpc-process.js'
 import { emptyCatalog, isRecord, streamRpcRequest, textValue, usageChunk } from './rpc-driver-utils.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
 import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
@@ -31,6 +31,7 @@ import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSeg
 import { commandEnvironment, resolveCommandPath, WINDOWS } from './process-utils.js'
 import { isProviderDefaultModel } from './model-catalog.js'
 import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
+import { WORKBUDDY_CREDENTIAL_PRELOAD } from './workbuddy-credential-bootstrap.js'
 
 /** WorkBuddy 将 Auto 拆成三个模型 ID，但它们实际是 Auto 的思考档位。 */
 const WORKBUDDY_AUTO_TIER_MODELS = [
@@ -82,7 +83,7 @@ export interface CodeBuddyDriverOptions {
   readonly modelCatalogPaths?: readonly string[]
   readonly readFileSync?: typeof readFileSync
   readonly profile?: CodeBuddyRuntimeProfile
-  /** WorkBuddy 是否通过桌面 sidecar 启动受控 HTTP ACP；测试可显式关闭。 */
+  /** 显式使用旧的桌面 sidecar HTTP ACP；默认直接启动内置 CLI。 */
   readonly useSidecar?: boolean
   /** 覆盖 WorkBuddy sidecar 控制 socket，便于诊断和测试。 */
   readonly sidecarSocketPath?: string
@@ -144,6 +145,7 @@ export const WORKBUDDY_PROFILE: CodeBuddyRuntimeProfile = {
   adapterId: 'workbuddy',
   displayName: 'WorkBuddy',
   configRootEnvVars: ['WORKBUDDY_CONFIG_DIR', 'CODEBUDDY_CONFIG_DIR'],
+  configRootLookupEnvVars: ['WORKBUDDY_CONFIG_DIR'],
   defaultConfigRoot: WORKBUDDY_HOME,
   historyDirRule: 'preserve-case',
   platforms: ['darwin', 'win32'],
@@ -231,7 +233,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
     this.readModelCatalogFile = options.readFileSync ?? readFileSync
     this.sessionRoots = options.sessionRoots ?? [join(this.configRoot, 'projects'), join(this.configRoot, 'sessions')]
     this.fallbackCatalog = options.fallbackCatalog ?? defaultCatalogForProfile(this.profile)
-    this.useSidecar = options.useSidecar ?? (this.profile.adapterId === WORKBUDDY_PROFILE.adapterId && options.spawn === undefined)
+    this.useSidecar = options.useSidecar ?? false
     this.sidecarSocketPath = options.sidecarSocketPath?.trim() || undefined
     this.workbuddyElectronPath = options.workbuddyElectronPath?.trim() || undefined
     this.descriptor = {
@@ -346,11 +348,13 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
       return
     }
 
+    const environment = { ...this.runtimeEnvironment(command), ...(input.runtimeEnv ?? {}) }
+    const invocation = this.profile.adapterId === WORKBUDDY_PROFILE.adapterId
+      ? workBuddyDirectLaunchSpec(command, this.workbuddyElectronPath, this.configRoot, this.platform, environment)
+      : { command, args: ['--acp'], env: environment }
     const rpc = new JsonRpcProcess({
-      command,
-      args: ['--acp'],
+      ...invocation,
       cwd: input.cwd,
-      env: { ...this.runtimeEnvironment(command), ...(input.runtimeEnv ?? {}) },
       spawn: this.runSpawn,
     })
     const processState = { rpc, providerSessionId: '' }
@@ -463,7 +467,7 @@ export class CodeBuddyCliDriver implements CodingNsCliDriver {
     }
   }
 
-  /** WorkBuddy 桌面版必须由 sidecar 启动，普通 Node ACP 不会收到字段加密密钥。 */
+  /** 显式选择旧 sidecar 时，仍复用桌面创建的认证运行时。 */
   private async *executeWorkBuddySidecarTurn(input: CodingNsCliTurnInput, command: string): AsyncIterable<CodingNsAgentEvent> {
     const socketPath = this.sidecarSocketPath ?? discoverWorkBuddySidecarSocket(this.configRoot, this.platform, this.environment)
     if (socketPath === null) {
@@ -1118,6 +1122,52 @@ async function resolveWorkBuddyAcpEndpoint(
 
 function sha1Token(value: string, length: number): string {
   return createHash('sha1').update(value).digest('hex').slice(0, length)
+}
+
+/** 直接启动同安装 Electron；认证初始化与 CLI 均在该子进程内执行。 */
+function workBuddyDirectLaunchSpec(
+  cliCommand: string,
+  electronOverride: string | undefined,
+  configRoot: string,
+  platform: NodeJS.Platform,
+  environment: Readonly<Record<string, string | undefined>>,
+): Pick<JsonRpcProcessOptions, 'command' | 'args' | 'env' | 'shell'> {
+  const appRoot = platform === 'darwin' ? cliCommand.match(/^(.*\.app)\/Contents\/Resources\//u)?.[1] : undefined
+  const electron = platform === 'win32'
+    ? workBuddyWindowsRuntime(cliCommand, electronOverride, environment)
+    : electronOverride || environment.WORKBUDDY_ELECTRON_PATH?.trim() || (appRoot === undefined ? undefined : join(appRoot, 'Contents/MacOS/Electron'))
+  if (electron === undefined) return { command: cliCommand, args: ['--acp'], env: environment }
+
+  const dist = join(dirname(dirname(cliCommand)), 'dist')
+  const isFile = (path: string): boolean => { try { return statSync(path).isFile() } catch { return false } }
+  // 5.9.3 的 full/headless 与桌面使用的 lite 可能携带不同认证协议。
+  // 优先选择桌面随包提供的 WorkBuddy 专用入口，缺少时才沿用完整 ACP。
+  const useLite = isFile(join(dist, 'codebuddy-lite-wb.mjs'))
+  const snapshot = join(configRoot, 'cache/acc-product-config-v3.json')
+  const productConfig = ['ACC_PRODUCT_CONFIG_PATH', 'ACC_PRODUCT_CONFIG_V3', 'ACC_PRODUCT_CONFIG_V2', 'ACC_PRODUCT_CONFIG']
+    .some((name) => environment[name] !== undefined)
+  return {
+    command: electron,
+    args: [
+      '--eval', `${WORKBUDDY_CREDENTIAL_PRELOAD}\nrequire(process.argv[1]);`, cliCommand,
+      '--acp', '--setting-sources', 'user', '--strict-mcp-config',
+      ...(useLite ? ['--serve', '--host', '127.0.0.1', '--port', '0', '--auth', 'password'] : []),
+    ],
+    shell: false,
+    env: {
+      ...environment,
+      ELECTRON_RUN_AS_NODE: '1',
+      WORKBUDDY_CONFIG_DIR: configRoot,
+      CODEBUDDY_CONFIG_DIR: configRoot,
+      ...(!productConfig && isFile(snapshot) ? { ACC_PRODUCT_CONFIG_PATH: snapshot } : {}),
+      ...(useLite ? {
+        CODEBUDDY_FORCE_LITE_WB_BUNDLE: '1',
+        CODEBUDDY_GATEWAY_AUTH: 'password',
+        CODEBUDDY_GATEWAY_PASSWORD: randomUUID(),
+        CODEBUDDY_GATEWAY_BASE_PATH: '',
+      } : {}),
+    },
+  }
 }
 
 function workBuddyLaunchSpec(

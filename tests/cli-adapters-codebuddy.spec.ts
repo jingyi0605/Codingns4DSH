@@ -236,6 +236,7 @@ test('CodeBuddy 支持 Linux，不受 WorkBuddy 平台限制影响', async () =>
 test('WorkBuddy sidecar 创建独立运行时并消费 HTTP ACP SSE 后回收', async () => {
   const harness = await createFakeWorkBuddyHarness(false)
   const driver = new WorkBuddyCliDriver({
+    useSidecar: true,
     platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,
@@ -263,6 +264,7 @@ test('WorkBuddy sidecar 创建独立运行时并消费 HTTP ACP SSE 后回收', 
 test('WorkBuddy sidecar 创建 runtime 但未返回 ACP 地址时仍回收 runtime', async () => {
   const harness = await createFakeWorkBuddyHarness(false, false, true)
   const driver = new WorkBuddyCliDriver({
+    useSidecar: true,
     platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,
@@ -284,6 +286,7 @@ test('WorkBuddy sidecar 创建 runtime 但未返回 ACP 地址时仍回收 runti
 test('WorkBuddy sidecar 缺少 sidecar.pid 时扫描 UUID 控制 socket', { skip: process.platform === 'win32' }, async () => {
   const harness = await createFakeWorkBuddyHarness(false, true)
   const driver = new WorkBuddyCliDriver({
+    useSidecar: true,
     platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     configRoot: harness.configRoot,
@@ -302,8 +305,9 @@ test('WorkBuddy sidecar 缺少 sidecar.pid 时扫描 UUID 控制 socket', { skip
 })
 
 test('WorkBuddy 没有 sidecar 控制 socket 时返回可操作诊断', async () => {
-  const root = mkdtempSync('/tmp/codingns-workbuddy-no-sidecar-')
+  const root = mkdtempSync(join(tmpdir(), 'codingns-workbuddy-no-sidecar-'))
   const driver = new WorkBuddyCliDriver({
+    useSidecar: true,
     platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     configRoot: join(root, 'config'),
@@ -326,6 +330,7 @@ test('WorkBuddy sidecar 中断会取消仍在读取的 HTTP ACP prompt body', as
   const harness = await createFakeWorkBuddyHarness(true)
   const controller = new AbortController()
   const driver = new WorkBuddyCliDriver({
+    useSidecar: true,
     platform: 'darwin',
     commandPath: '/Applications/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy',
     spawnSync: detected,

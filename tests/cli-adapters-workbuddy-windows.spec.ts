@@ -150,7 +150,7 @@ test(`WorkBuddy Windows sidecar ${discovery} 发现并使用同安装运行时�
   await new Promise<void>((resolve, reject) => { server.once('error', reject); server.listen(socketPath, resolve) })
   t.after(() => new Promise<void>((resolve) => server.close(() => resolve())))
   const driver = new WorkBuddyCliDriver({
-    platform: 'win32', commandPath: f.entry, configRoot,
+    platform: 'win32', commandPath: f.entry, configRoot, useSidecar: true,
     ...(discovery === 'override' ? { sidecarSocketPath: socketPath } : {}), spawnSync: detected,
     environment: { WORKBUDDY_APP_PATH: '', WORKBUDDY_RESOURCES_PATH: '', WORKBUDDY_ELECTRON_PATH: '', WORKBUDDY_SIDECAR_SOCKET: '' },
   })
