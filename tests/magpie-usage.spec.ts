@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
 import { setImmediate } from 'node:timers/promises'
 import test from 'node:test'
-import { MagpieUsageService, magpieAgentForAdapter, parseMagpieCliVersion, parseMagpieModelMetadata, parseMagpieModelOutput, parseMagpieQuotas } from '../src/host/cli-adapters/magpie-usage.js'
+import { MagpieUsageService, magpieAgentForAdapter, parseMagpieCliVersion, parseMagpieModelMetadata, parseMagpieModelOutput, parseMagpieQuotaCards, parseMagpieQuotas } from '../src/host/cli-adapters/magpie-usage.js'
 import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js'
 import { MagpieRouteRequests, SUBSCRIPTION_RESPONSIVE_CSS, calculateMagpiePopoverPlacement, registerSubscriptionSlot } from '../src/client/subscription-slot.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
@@ -449,6 +449,23 @@ test('数量窗口的 remaining 是剩余量而不是百分比', () => {
     windows: [{ name: '5 hours', used: 3, remaining: 97 }],
   }])
   assert.equal(percentOnly?.[0]?.windows[0]?.remainingPercent, 97)
+})
+
+test('只报告钱包余额的窗口不会被读成 100% 剩余', () => {
+  // 实测 `magpie accounts --json` 的 TokenRhythm：窗口带占位的 used 0 / remaining 100，
+  // 真正的信息只有 `balance` 与 `display`。
+  const row = {
+    provider: 'tokenrhythm', name: 'TokenRhythm', user: 'API key …MwxQ', balance: '¥16.76',
+    windows: [{ name: '余额', used: 0, remaining: 100, display: '赠送 ¥16.76 · 充值 ¥0.00', unit: 'CNY', balance: 16.76195884 }],
+  }
+  const window = parseMagpieQuotas([row])?.[0]?.windows[0]
+  assert.equal(window?.usedPercent, null)
+  assert.equal(window?.remainingPercent, null)
+  assert.equal(window?.display, '赠送 ¥16.76 · 充值 ¥0.00', 'the upstream breakdown stays available')
+  assert.equal(parseMagpieQuotaCards([row])?.[0]?.windows[0]?.remainingPercent, null)
+  // 带 limit 的窗口仍然是真正的百分比。
+  const counted = parseMagpieQuotas([{ ...row, windows: [{ name: 'Credits', used: 40, remaining: 60, limit: 100, balance: 60 }] }])?.[0]?.windows[0]
+  assert.equal(counted?.remainingPercent, 60)
 })
 
 test('Magpie metadata enriches exact model matches for DSH and every verified external Agent', async () => {

@@ -2111,10 +2111,26 @@ function emptyMagpieDashboard(period: MagpieDashboardPeriod, capturedAt: string)
  * `322 / 2400` 会被读成"剩余 86.57%"，和 `display` 里的数量对不上。
  */
 function quotaUsedPercent(record: Record<string, unknown>): number | null {
+  if (isBalanceOnlyWindow(record)) return null
   return safePercent(record.used)
 }
 
+/**
+ * A window that only reports a wallet balance (TokenRhythm: `balance: 16.76`, `unit: CNY`).
+ *
+ * Magpie still fills in a placeholder `used: 0 / remaining: 100` for it, but without a
+ * `limit` there is nothing to be a share of. Reading that placeholder as a percentage
+ * turns the balance into a full "100%" ring and hides the money. Accounts that report a
+ * plain top-level balance (aicode) have no window at all, which is why they were fine.
+ */
+function isBalanceOnlyWindow(record: Record<string, unknown>): boolean {
+  return safeDecimal(record.balance) !== null
+    && safeDecimal(record.limit) === null
+    && safeDecimal(record.amount) === null
+}
+
 function quotaRemainingPercent(record: Record<string, unknown>): number | null {
+  if (isBalanceOnlyWindow(record)) return null
   const counted = safeDecimal(record.limit) !== null || safeDecimal(record.amount) !== null
   if (counted) {
     const used = quotaUsedPercent(record)
