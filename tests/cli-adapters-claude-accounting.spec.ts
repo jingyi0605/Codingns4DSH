@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -43,7 +44,7 @@ function transcript(options: { parallel?: boolean; aggregate?: boolean; perReque
 function replayDriver(transcripts: readonly (readonly RecordValue[])[]) {
   let spawns = 0
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'], sessionRoots: [],
+    binaries: ['fake-claude.exe'], sessionRoots: [],
     spawnSync: (() => ({ status: 0, stdout: 'claude 2.1.288', stderr: '' })) as never,
     spawn: (() => {
       const stdout = new PassThrough(), stderr = new PassThrough()
@@ -52,7 +53,7 @@ function replayDriver(transcripts: readonly (readonly RecordValue[])[]) {
         for (const row of rows) stdout.write(JSON.stringify(row) + '\n')
         stdout.end(); stderr.end()
       })
-      return { stdout, stderr, kill() { return true } }
+      return Object.assign(new EventEmitter(), { stdout, stderr, kill() { return true } })
     }) as never,
   })
   return { driver, spawns: () => spawns }

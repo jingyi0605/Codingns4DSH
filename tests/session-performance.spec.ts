@@ -8,7 +8,7 @@ import { createSessionPerformanceAdapter } from '../src/dsh-capabilities/host/se
 import { createSessionPerformancePresentation } from '../src/dsh-capabilities/client/session-performance-adapter.js'
 import { MagpieContextMeter } from '../src/client/magpie-context-meter.js'
 import { CODEX_PERFORMANCE_PROJECTION } from '../src/shared/codex-performance.js'
-import { GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION } from '../src/shared/request-performance.js'
+import { CLAUDE_PERFORMANCE_PROJECTION, GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION } from '../src/shared/request-performance.js'
 import { createPresentationSlots } from './fixtures/presentation-slots.ts'
 import { createHookRenderer } from './fixtures/react-hook-renderer.ts'
 import { existsSync } from 'node:fs'
@@ -16,6 +16,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { codexPerformanceProjection } from '../src/host/cli-adapters/codex-performance-projection.js'
+import { claudePerformanceProjection } from '../src/host/cli-adapters/claude-performance-projection.js'
 import { grokContextProjection, grokPerformanceProjection } from '../src/host/cli-adapters/grok-performance-projection.js'
 import { countSessionTurnSteps } from '../src/host/cli-adapters/session-performance-projection.js'
 import { createCodingNsNativeSessionBridge } from '../src/host/native-session-bridge.js'
@@ -76,13 +77,16 @@ test('native activity UI uses corrected Codex statistics and preserves native se
   let corrected: unknown = { ...original, decodeMs: 10_000 }
   const calls: string[] = []
   const render = () => renderToStaticMarkup(createElement(Wrapper, { sessionId: 'test', useProjection: (key: string) => {
-    calls.push(key); return key === CODEX_PERFORMANCE_PROJECTION || key === GROK_PERFORMANCE_PROJECTION ? corrected : original
+    calls.push(key); return [CODEX_PERFORMANCE_PROJECTION, GROK_PERFORMANCE_PROJECTION, CLAUDE_PERFORMANCE_PROJECTION].includes(key) ? corrected : original
   } }))
   assert.match(render(), /10000/)
   assert.deepEqual(calls, ['sessionStats', CODEX_PERFORMANCE_PROJECTION])
   adapter = 'grok'
   assert.match(render(), /10000/)
   assert.deepEqual(calls.slice(-2), ['sessionStats', GROK_PERFORMANCE_PROJECTION])
+  adapter = 'claude-code'
+  assert.match(render(), /10000/)
+  assert.deepEqual(calls.slice(-2), ['sessionStats', CLAUDE_PERFORMANCE_PROJECTION])
   corrected = undefined
   assert.match(render(), /decodeMs&quot;:0/)
   adapter = 'dsh'
@@ -321,4 +325,47 @@ test('real DSH preserves Grok billing, provider context, and source timing throu
     }), true)
     assert.deepEqual(registry.snapshot(session).values[GROK_CONTEXT_PROJECTION], { contextWindow: 500000, pressureTokens: 20000 }, 'A live capacity change is not rewritten by the legacy first-window anchor')
   } finally { for (const dispose of remove) dispose() }
+})
+
+test('real DSH preserves Claude source timing and billing through translated delivery, checkpoints, and cold replay', { skip: !existsSync(registryPath) }, async () => {
+  const [{ Context }, { SessionProjectionRegistry }, { Session }, { TokenMeter }] = await Promise.all([
+    'cordis/lib/index.js', 'dsh-session-projection/lib/index.js', 'dsh-session/lib/index.js', 'dsh-token-meter/lib/index.js',
+  ].map(path => import(pathToFileURL(join(runtime, path)).href)))
+  const ctx = new Context(), registry = new SessionProjectionRegistry(ctx)
+  new TokenMeter(ctx)
+  const remove = createSessionPerformanceAdapter(ctx).install(claudePerformanceProjection)
+  try {
+    const session = new Session('claude-performance-fixture')
+    session.append('turn/start', { turn: 1 }); session.append('step/start', { turn: 1, step: 1 })
+    const bridge = createCodingNsNativeSessionBridge({ get: (key: string) => key === 'sessions' ? { get: () => session, list: () => [session] } : undefined } as never)
+    const batch = { adapterId: 'claude-code' as const, id: 'claude-request', samples: [
+      { id: 'claude-request', startedAt: 0, firstTokenAt: 1000, completedAt: 11_000, outputTokens: 630 },
+    ] }
+    for (let copy = 0; copy < 2; copy++) assert.equal(bridge.appendUsageSample?.(session.id, {
+      inputTokens: 0, outputTokens: 0, requestPerformance: batch,
+    }), true)
+    const usage = { inputTokens: 24_270, outputTokens: 630 }
+    assert.equal(bridge.appendUsageSample?.(session.id, usage), true)
+    session.append('assistant/message', { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'Translated delivery' }] },
+      stream: [{ type: 'text-chunks', time0: Date.now() - 7, index: 0, dt: [], texts: ['Translated delivery'] }], usage,
+    }, { surfaceOp: 'append' })
+    session.append('step/end', { turn: 1, step: 1 })
+    const view = registry.snapshot(session).values
+    assert.equal(view[CLAUDE_PERFORMANCE_PROJECTION].decodeTokens, 630)
+    assert.equal(view[CLAUDE_PERFORMANCE_PROJECTION].decodeMs, 10_000)
+    assert.equal(view[CLAUDE_PERFORMANCE_PROJECTION].decodeTokens / (view[CLAUDE_PERFORMANCE_PROJECTION].decodeMs / 1000), 63)
+    assert.equal(view[CLAUDE_PERFORMANCE_PROJECTION].steps, 1)
+    assert.equal(view.tokenUsage.outputTokens, 630, 'Performance observations are not additional billing')
+    const checkpoint = JSON.parse(JSON.stringify(registry.checkpoint(session)))
+    assert.deepEqual(registry.viewCheckpoint(checkpoint), view)
+    assert.deepEqual(registry.restore({}, session.snapshotEvents(), 0, session.header, 0).snapshot.values, view)
+
+    const legacy = claudePerformanceProjection.apply(claudePerformanceProjection.init(), {
+      type: 'assistant/message', time: 25_791, data: { turn: 1, step: 1, usage,
+        stream: [{ type: 'text-chunks', time0: 25_784, index: 0, dt: [], texts: ['Old translated delivery'] }],
+      },
+    })
+    assert.equal(legacy.decodeMs, 0)
+    assert.equal(legacy.decodeTokens, 0, 'Old histories cannot recover source timing from a translated burst')
+  } finally { remove() }
 })

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import { ClaudeCodeDriver } from '../data/build/dist/host/cli-adapters/claude-driver.js'
@@ -9,7 +10,7 @@ async function replay(events: readonly Record<string, unknown>[]) {
   const calls: Record<string, unknown>[] = []
   const results: Record<string, unknown>[] = []
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: (() => ({ status: 0, stdout: 'claude 2.1.288', stderr: '' })) as never,
     spawn: (() => {
       const stdout = new PassThrough()
@@ -19,7 +20,7 @@ async function replay(events: readonly Record<string, unknown>[]) {
         stdout.end()
         stderr.end()
       })
-      return { stdout, stderr, kill() { return true } }
+      return Object.assign(new EventEmitter(), { stdout, stderr, kill() { return true } })
     }) as never,
   })
   const projector = new CodingNsDshToolHistoryProjector({

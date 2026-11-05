@@ -16,8 +16,10 @@ import { claudeBridgeArgs } from '../cli-bridge/injections.js'
 import { readAgentQuestions } from './interaction-events.js'
 import { scanCompatibleSkills } from './skill-filesystem.js'
 import { usageChunk } from './rpc-driver-utils.js'
+import { ClaudePerformanceTracker } from './claude-performance.js'
 
 export interface ClaudeCodeDriverOptions extends StandardStreamDriverOptions {
+  readonly now?: () => number
   /** 测试或托管环境可显式指定用户级 Skill 根目录。 */
   readonly skillRoots?: readonly string[]
   /** 企业托管配置目录；默认使用 Claude Code 对应平台的原生位置。 */
@@ -89,6 +91,8 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   /** 参数分片按会话和内容块索引隔离，避免并发会话或多个工具互相串入。 */
   private readonly toolInputStates = new Map<string, Map<number, ClaudeToolInputState>>()
   private readonly usageStates = new Map<string, ClaudeUsageState>()
+  private readonly performance = new Map<string, ClaudePerformanceTracker>()
+  private readonly now: () => number
   /**
    * `--effort` 探测结论，绑定到具体的 CLI 路径与版本。
    *
@@ -106,8 +110,18 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     this.discoveryFetch = options.fetch
     this.skillRoots = options.skillRoots
     this.managedSettingsDir = options.managedSettingsDir ?? defaultClaudeManagedSettingsDir()
+    this.now = options.now ?? Date.now
   }
   private readonly interactions = new Map<string, ClaudeInteractionState>()
+
+  protected override eventTime(): number { return this.now() }
+
+  protected override observeEvent = (value: Record<string, unknown>, input: CodingNsCliTurnInput, receivedAt: number): readonly CodingNsAgentEvent[] => {
+    const sample = this.performance.get(input.sessionId)?.observe(value, receivedAt)
+    return sample === undefined ? [] : [{ type: 'usage-observation', requestPerformance: {
+      adapterId: 'claude-code', id: sample.id, samples: [sample],
+    } }]
+  }
 
   /** Claude 的 SDK wire 通过 stdin 接收首条 user 消息并回传 control_response。 */
   protected get usesStdin(): boolean { return true }
@@ -117,6 +131,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   }
 
   protected writeStdin(child: CodingNsChildProcess, input: CodingNsCliTurnInput): void {
+    this.performance.set(input.sessionId, new ClaudePerformanceTracker(this.now()))
     const state = this.interactions.get(input.sessionId)
     if (state === undefined || child.stdin === null) return
     state.write = (data) => { child.stdin?.write(data) }
@@ -263,6 +278,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     } finally {
       this.toolInputStates.delete(input.sessionId)
       this.usageStates.delete(input.sessionId)
+      this.performance.delete(input.sessionId)
       if (this.interactions.get(input.sessionId) === interaction) this.interactions.delete(input.sessionId)
     }
   }
@@ -326,6 +342,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     this.detectedVersion = null
     this.toolInputStates.clear()
     this.usageStates.clear()
+    this.performance.clear()
     this.interactions.clear()
     super.dispose()
   }
