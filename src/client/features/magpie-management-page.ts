@@ -1488,9 +1488,13 @@ function QuotaAccountSection({ quota, quotaView = DEFAULT_SUBSCRIPTION_REPORT_SE
           ),
         )
       }),
-    // 有余额但没有百分比的账号，把重置时间单独留在余额下面。
-    balance !== null && percentWindows.length === 0 && quota.windows.some((window) => window.resetsAt !== null) && createElement('div', { className: 'codingns-magpie-quota-foot' },
-      ...quota.windows.filter((window) => window.resetsAt !== null).map((window) => createElement('span', { key: window.name }, t('magpie.resets', { time: formatTimestamp(window.resetsAt!) }))),
+    // 有余额但没有百分比的账号，把上游的余额明细（如 TokenRhythm 的「赠送 · 充值」）和重置时间留在余额下面。
+    balance !== null && percentWindows.length === 0 && quota.windows.some((window) => window.display !== null || window.resetsAt !== null) && createElement('div', { className: 'codingns-magpie-quota-foot' },
+      ...quota.windows.flatMap((window) => [
+        window.display !== null && window.amount === null && window.limit === null
+          && createElement('span', { key: `${window.name}:display` }, window.display),
+        window.resetsAt !== null && createElement('span', { key: `${window.name}:resets` }, t('magpie.resets', { time: formatTimestamp(window.resetsAt) })),
+      ]),
     ),
     quota.daily.days.length > 1 && createElement('div', { className: 'codingns-magpie-daily-chart' },
       createElement(Sparkline, { values: dailyValues }),
