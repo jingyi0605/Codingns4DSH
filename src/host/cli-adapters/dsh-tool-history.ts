@@ -1,6 +1,7 @@
 import type { CodingNsAgentToolEvent } from '../../shared/contracts/cli-adapter.js'
 import type {
   CodingNsNativeSessionBridge,
+  CodingNsNativeImageAttachmentRef,
   CodingNsNativeToolCallHandle,
 } from '../native-session-bridge.js'
 
@@ -9,6 +10,7 @@ interface ToolRecord {
   toolName: string
   input?: string
   output?: string
+  images?: readonly CodingNsNativeImageAttachmentRef[]
   error?: string
   handle: CodingNsNativeToolCallHandle | null
   failed: boolean
@@ -28,6 +30,7 @@ export interface CodingNsDshExternalToolMarker {
   readonly arguments: string
   readonly status: 'running' | 'completed' | 'failed'
   readonly output?: string
+  readonly images?: readonly CodingNsNativeImageAttachmentRef[]
   readonly error?: string
   readonly adapterId?: string
 }
@@ -78,7 +81,7 @@ export class CodingNsDshToolHistoryProjector {
     })
   }
 
-  observe(event: CodingNsAgentToolEvent): CodingNsDshExternalToolMarker | null {
+  observe(event: CodingNsAgentToolEvent, images?: readonly CodingNsNativeImageAttachmentRef[]): CodingNsDshExternalToolMarker | null {
     const explicitCallId = event.callId?.trim()
     const callId = explicitCallId || this.nextAnonymousCallId()
     const key = explicitCallId ? `id:${explicitCallId}` : `anonymous:${callId}`
@@ -107,6 +110,7 @@ export class CodingNsDshToolHistoryProjector {
       this.assign(record, 'output', event.output, event.outputMode)
     }
     this.assign(record, 'error', event.error, 'snapshot')
+    if (images?.length) record.images = images
     if (event.status === 'failed' || event.error !== undefined) record.failed = true
     this.records.set(key, record)
     if (event.status === 'completed' || event.status === 'failed') {
@@ -127,6 +131,7 @@ export class CodingNsDshToolHistoryProjector {
       status,
       ...(this.adapterId === undefined ? {} : { adapterId: this.adapterId }),
       ...(record.output === undefined ? {} : { output: record.output }),
+      ...(record.images === undefined ? {} : { images: record.images }),
       ...(record.error === undefined ? {} : { error: record.error }),
     }
     record.externalMarker = marker
@@ -221,6 +226,7 @@ export class CodingNsDshToolHistoryProjector {
     try {
       record.resultAppended = appendResult.call(this.nativeSessions, record.handle, {
         output,
+        ...(record.images === undefined ? {} : { images: record.images }),
         isError: record.failed,
         ...(error ? { error } : {}),
         ...toolResultMeta(normalized.name, normalized.arguments),

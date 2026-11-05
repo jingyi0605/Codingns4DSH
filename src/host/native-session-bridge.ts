@@ -58,6 +58,7 @@ export interface CodingNsNativeToolCallHandle {
 /** 公共 CLI 投影层写入 DSH 的工具结果。 */
 export interface CodingNsNativeToolResult {
   readonly output: string
+  readonly images?: readonly CodingNsNativeImageAttachmentRef[]
   readonly isError: boolean
   readonly error?: string
   readonly meta?: unknown
@@ -302,7 +303,10 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
         id: `${handle.callId}-result-${handle.turn}-${handle.step}`,
         role: 'tool',
         toolCallId: handle.callId,
-        content: [{ type: 'text', text: result.output }],
+        content: [
+          ...(result.output !== '' || !result.images?.length ? [{ type: 'text', text: result.output }] : []),
+          ...(result.images ?? []).map(attachment => ({ type: 'image', attachment })),
+        ],
         source: { kind: 'tool', callId: handle.callId },
         ...(result.isError ? { isError: true } : {}),
       },

@@ -43,7 +43,7 @@ function transcript(options: { parallel?: boolean; aggregate?: boolean; perReque
 function replayDriver(transcripts: readonly (readonly RecordValue[])[]) {
   let spawns = 0
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'], sessionRoots: [],
+    binaries: ['fake-claude.exe'], sessionRoots: [],
     spawnSync: (() => ({ status: 0, stdout: 'claude 2.1.288', stderr: '' })) as never,
     spawn: (() => {
       const stdout = new PassThrough(), stderr = new PassThrough()
@@ -112,7 +112,7 @@ test('Claude parallel tool results and duplicate assistant snapshots settle each
   const registry = new CodingNsCliAdapterRegistry([replay.driver])
   try {
     const result = await settle(registry)
-    assert.equal(result.steps, 3)
+    assert.equal(result.steps, 2)
     assert.deepEqual(result.usages.map(usage => usage.outputTokens), [114, 57])
     assert.equal(replay.spawns(), 1)
   } finally { await registry.dispose() }

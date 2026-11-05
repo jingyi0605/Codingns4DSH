@@ -9,7 +9,7 @@ async function replay(events: readonly Record<string, unknown>[]) {
   const calls: Record<string, unknown>[] = []
   const results: Record<string, unknown>[] = []
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: (() => ({ status: 0, stdout: 'claude 2.1.288', stderr: '' })) as never,
     spawn: (() => {
       const stdout = new PassThrough()

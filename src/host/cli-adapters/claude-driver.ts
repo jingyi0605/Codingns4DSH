@@ -2,7 +2,7 @@ import type { SpawnOptions } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsAgentImageArtifact, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
 import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel } from './model-catalog.js'
@@ -521,7 +521,18 @@ function claudeToolResult(item: Record<string, unknown>): ClaudeToolEvent | null
   const callId = firstToolText(item.tool_use_id, item.toolUseId, item.callId)
   if (callId === undefined) return null
   const failed = item.is_error === true || item.isError === true
-  const content = serializeToolValue(item.content ?? item.output ?? item.result)
+  const rawContent: unknown = item.content ?? item.output ?? item.result
+  const images: CodingNsAgentImageArtifact[] = []
+  const textContent = Array.isArray(rawContent) ? rawContent.filter((part: unknown) => {
+    if (!isToolRecord(part) || part.type !== 'image' || !isToolRecord(part.source) || part.source.type !== 'base64' || typeof part.source.data !== 'string') return true
+    const mediaType: unknown = part.source.media_type
+    images.push({
+      type: 'image-artifact', data: part.source.data,
+      ...(mediaType === 'image/png' || mediaType === 'image/jpeg' || mediaType === 'image/webp' || mediaType === 'image/gif' ? { mediaType } : {}),
+    })
+    return false
+  }) : rawContent
+  const content = serializeToolValue(images.length > 0 && Array.isArray(textContent) && textContent.length === 0 ? '' : textContent)
   const agentId = firstToolText(item.agentId, item.agent_id)
   const detail = serializeToolValue(item.detail)
   return {
@@ -529,6 +540,7 @@ function claudeToolResult(item: Record<string, unknown>): ClaudeToolEvent | null
     toolName: firstToolText(item.name, item.toolName) ?? 'tool',
     callId,
     status: failed ? 'failed' : 'completed',
+    ...(images.length > 0 ? { outputImages: images } : {}),
     ...(failed ? (content === undefined ? {} : { error: content }) : (content === undefined ? {} : { output: content })),
     ...(!failed && content !== undefined ? { outputMode: 'snapshot' as const } : {}),
     ...(agentId ? { agentId } : {}),
