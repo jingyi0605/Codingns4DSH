@@ -7,6 +7,7 @@ import {
 } from './workspace-session-archive-dom.js'
 import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import type { NativeWorkspaceSnapshot } from './native-workspace-store.js'
+import type { DshContextMenuAdapter } from '../dsh-capabilities/client/context-menu-adapter.js'
 
 /** 工作区隐藏注入节点的标记，便于重复扫描和停用时完整清理。 */
 export const WORKSPACE_SESSION_HIDDEN_ATTRIBUTE = 'data-codingns-hidden-workspace'
@@ -45,6 +46,8 @@ export interface WorkspaceSessionVisibilityDomOptions {
   readonly onHiddenWorkspaceIdsChange?: (ids: readonly string[]) => Promise<void> | void
   /** DSH 语言运行时；注入到原生菜单里的动作文案从它取词。 */
   readonly locale?: CodingNsLocale
+  /** Alpha.3 structured menu service; older hosts use the Portal DOM fallback. */
+  readonly contextMenus?: DshContextMenuAdapter
 }
 
 /**
@@ -94,6 +97,21 @@ export function startWorkspaceSessionVisibilityDom(
       scheduleScan()
     })
   }
+  const contextMenuDispose = options.contextMenus?.register({
+    id: 'codingns.workspace-visibility.hide',
+    target: 'workspace',
+    order: 400,
+    resolve: (value) => {
+      const workspaceId = typeof (value as { workspaceId?: unknown })?.workspaceId === 'string'
+        ? (value as { workspaceId: string }).workspaceId : ''
+      if (workspaceId === '') return []
+      return [{
+        id: 'hide',
+        label: t('workspaceVisibility.hide'),
+        run: () => { updateVisibility(workspaceId, true) },
+      }]
+    },
+  })
 
   const refreshData = async (): Promise<void> => {
     if (disposed || options.readNativeWorkspaceSnapshot?.() !== undefined) return
@@ -124,7 +142,7 @@ export function startWorkspaceSessionVisibilityDom(
         const workspaceId = resolveWorkspaceId(header)
         if (workspaceId === undefined) continue
         workspaceIds.add(workspaceId)
-        bindWorkspaceMenuTriggers(header, workspaceId, () => {
+        if (options.contextMenus === undefined) bindWorkspaceMenuTriggers(header, workspaceId, () => {
           activeMenuWorkspaceId = workspaceId
           activeFilterTrigger = undefined
           activeMenuKind = 'workspace'
@@ -177,7 +195,7 @@ export function startWorkspaceSessionVisibilityDom(
           suppressFilterTrigger = true
           return () => { suppressFilterTrigger = false }
         }), t)
-      } else {
+      } else if (options.contextMenus === undefined) {
         injectWorkspaceMenuActions(selectWorkspaceMenus(menus, menuContextFresh, menuWorkspaceIds), dom, menuContextFresh ? activeMenuWorkspaceId : undefined, workspaceIds, menuWorkspaceIds, (workspaceId) => updateVisibility(workspaceId, true), t)
       }
       // 点击触发器与 Portal 菜单挂载不是同一个同步阶段。菜单尚未出现时
@@ -250,6 +268,7 @@ export function startWorkspaceSessionVisibilityDom(
         removeVisibilityEntries(dom)
         removeMenuEntries(dom)
       }
+      contextMenuDispose?.()
     },
   }
 }

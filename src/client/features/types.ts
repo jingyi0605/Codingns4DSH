@@ -10,6 +10,7 @@ import type { HostRouter } from '../host-router.js'
 import type { PeerHostSessionController } from '../peer-host-session-controller.js'
 import type { PwaNotificationClient } from '../pwa-notifications.js'
 import type { FeatureRequirement } from '../feature-requirement.js'
+import type { DshContextMenuAdapter } from '../../dsh-capabilities/client/context-menu-adapter.js'
 
 /** 一次 Codingns4DSH RPC 的结果，与 DSH Connection 的结果形状一致。 */
 export type CodingNsRpcResult =
@@ -67,6 +68,8 @@ export interface CodingNsClientServices {
   readonly notifications?: PwaNotificationClient
   /** 当前 Client Cordis 上下文；只供需要注册 DSH UI Slot 的功能模块使用。 */
   readonly uiContext?: Context
+  /** DSH alpha.3 shared context-menu service; absent on older hosts. */
+  readonly contextMenus?: DshContextMenuAdapter
 }
 
 /** 设置页统一反馈的提示级别。 */

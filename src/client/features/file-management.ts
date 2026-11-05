@@ -6,6 +6,7 @@ import { registerSessionChangedFilesView } from '../session-changed-files-view.j
 import { registerFileViewerCopyPathMenu } from '../file-viewer-copy-path-menu.js'
 import { resolveCodingNsTranslator } from '../locale.js'
 import { startHtmlWorkspaceFiles } from '../html-workspace-files.js'
+import { registerFileManagementContextMenus } from '../file-management-context-menu.js'
 
 /** descriptor 的 label/description 只是词典缺失时的兜底，取内置中文词典。 */
 const fallbackT = resolveCodingNsTranslator()
@@ -18,6 +19,7 @@ export const fileManagementFeature: CodingNsClientFeatureModule = {
     enabledByDefault: false,
     dependencies: [],
     runtime: 'client',
+    requires: [{ capability: 'ui.context-menu', required: false, fallback: 'degrade' }],
     nativeReplacement: {
       dshFeature: 'DSH native file delivery, image upload, and drag-and-drop',
       since: '0.2.2-alpha.2',
@@ -36,9 +38,15 @@ export const fileManagementFeature: CodingNsClientFeatureModule = {
   start(context) {
     const readOptions = () => {
       const value = { ...DEFAULT_FILE_MANAGEMENT_SETTINGS, ...context.services.settings.getSnapshot().value?.fileManagement }
-      return { menuEnhancement: value.menuEnhancement, fileEditor: value.fileEditor, locale: context.services.locale }
+      return {
+        menuEnhancement: value.menuEnhancement,
+        fileEditor: value.fileEditor,
+        locale: context.services.locale,
+        nativeContextMenus: context.services.contextMenus !== undefined,
+      }
     }
     const dom = startFileManagementDom(context.services.rpc, readOptions())
+    const contextMenu = registerFileManagementContextMenus(context.services.rpc, context.services.contextMenus, context.services.locale)
     context.resources.add(startHtmlWorkspaceFiles(context.services.rpc, context.services.locale))
     let disposeSessionView: (() => void) | undefined
     let disposeCopyPathMenu: (() => void) | undefined
@@ -54,24 +62,31 @@ export const fileManagementFeature: CodingNsClientFeatureModule = {
     }
     const syncCopyPathMenu = (): void => {
       const value = { ...DEFAULT_FILE_MANAGEMENT_SETTINGS, ...context.services.settings.getSnapshot().value?.fileManagement }
-      if (value.menuEnhancement && disposeCopyPathMenu === undefined) {
+      if (value.menuEnhancement && context.services.contextMenus === undefined && disposeCopyPathMenu === undefined) {
         disposeCopyPathMenu = registerFileViewerCopyPathMenu(slots, context.services.locale)
       } else if (!value.menuEnhancement && disposeCopyPathMenu !== undefined) {
         disposeCopyPathMenu()
         disposeCopyPathMenu = undefined
       }
     }
+    const syncContextMenu = (): void => {
+      const value = { ...DEFAULT_FILE_MANAGEMENT_SETTINGS, ...context.services.settings.getSnapshot().value?.fileManagement }
+      contextMenu.setEnabled(value.menuEnhancement)
+    }
     syncSessionView()
     syncCopyPathMenu()
+    syncContextMenu()
     const unsubscribe = context.services.settings.subscribe(() => {
       dom.setOptions(readOptions())
       syncSessionView()
       syncCopyPathMenu()
+      syncContextMenu()
     })
     context.resources.add(unsubscribe)
     context.resources.add(dom.dispose)
     context.resources.add(() => disposeSessionView?.())
     context.resources.add(() => disposeCopyPathMenu?.())
+    context.resources.add(contextMenu.dispose)
   },
   settingsPanel: FileManagementPanel,
 }

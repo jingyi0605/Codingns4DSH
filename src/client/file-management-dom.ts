@@ -40,6 +40,8 @@ const TEXT_FILE_NAMES = new Set([
 export interface FileManagementDomOptions {
   readonly menuEnhancement: boolean
   readonly fileEditor: boolean
+  /** Alpha.3 owns the shared menu overlay; older DSH versions use the DOM fallback. */
+  readonly nativeContextMenus?: boolean
   /** DSH 语言运行时；右键菜单、原生对话框和编辑按钮文案都从它取词。 */
   readonly locale?: CodingNsLocale
 }
@@ -111,9 +113,11 @@ export function startFileManagementDom(
     if (isOutsideDismissRoots(event.target, [menu])) closeMenu()
   }
   const onKeyDown = (event: KeyboardEvent): void => { if (event.key === 'Escape') closeMenu() }
-  document.addEventListener('contextmenu', onContextMenu, true)
-  document.addEventListener('pointerdown', onDocumentPointerDown, true)
-  document.addEventListener('keydown', onKeyDown, true)
+  if (initialOptions.nativeContextMenus !== true) {
+    document.addEventListener('contextmenu', onContextMenu, true)
+    document.addEventListener('pointerdown', onDocumentPointerDown, true)
+    document.addEventListener('keydown', onKeyDown, true)
+  }
   if (options.fileEditor) {
     observer?.observe(document.body, { childList: true, subtree: true })
     enhanceEditors()
@@ -125,9 +129,11 @@ export function startFileManagementDom(
     clearEditorEnhancements()
     editor = undefined
     observer?.disconnect()
-    document.removeEventListener('contextmenu', onContextMenu, true)
-    document.removeEventListener('pointerdown', onDocumentPointerDown, true)
-    document.removeEventListener('keydown', onKeyDown, true)
+    if (initialOptions.nativeContextMenus !== true) {
+      document.removeEventListener('contextmenu', onContextMenu, true)
+      document.removeEventListener('pointerdown', onDocumentPointerDown, true)
+      document.removeEventListener('keydown', onKeyDown, true)
+    }
   }
 
   return {

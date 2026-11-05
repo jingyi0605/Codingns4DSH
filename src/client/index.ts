@@ -11,6 +11,7 @@ import type { TypertDisposer, TypertRemoteContribution } from '@deepseek-ai/dsh-
 import type { ConnectionHandle } from '@deepseek-ai/dsh-client-connection/client'
 import type {} from '@deepseek-ai/dsh-api-remotes/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
+import type {} from '@deepseek-ai/dsh-client-ui-context-menu/client'
 import type {} from '@deepseek-ai/dsh-client-ui-input-trigger/client'
 import type {} from '@deepseek-ai/dsh-client-ui-reference/client'
 import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
@@ -43,6 +44,7 @@ import { startCodingNsAccountBar } from './account-bar.js'
 import { assertInjectedDshVersion } from './dsh-runtime-version.js'
 import { isInjectedStage0Runtime } from '../shared/runtime-environment.js'
 import { createDshCapabilityRegistry } from '../dsh-capabilities/index.js'
+import { readContextMenus } from '../dsh-capabilities/client/context-menu-adapter.js'
 import { installFontScale } from './font-scale.js'
 import { installNativeSessionFileLinkRouting } from './session-file-links.js'
 import { TYPERT_REMOTE } from '../typert.remote-client.js'
@@ -171,6 +173,7 @@ export function apply(ctx?: Context): void {
     debugInfo('codingns4dsh: client terminal UI registration ready')
     const hostRouter = new HostRouter()
     const peerHost = createPeerHostScopedClient(connection.rpc)
+    const contextMenus = readContextMenus(settingsCtx)
     const services: CodingNsClientServices = {
       dshVersion,
       stage0: isInjectedStage0Runtime(),
@@ -190,6 +193,7 @@ export function apply(ctx?: Context): void {
       sidebarRight: settingsCtx.sidebarRight,
       notifications: createPwaNotificationClient(),
       uiContext: settingsCtx,
+      ...(contextMenus === undefined ? {} : { contextMenus }),
     }
     debugInfo('codingns4dsh: client account bar registration begin')
     const disposeAccountBar = startCodingNsAccountBar(connection.rpc, undefined, settings, settingsCtx.locale)

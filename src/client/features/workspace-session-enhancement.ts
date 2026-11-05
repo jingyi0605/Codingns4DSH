@@ -30,6 +30,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
     enabledByDefault: false,
     dependencies: ['cliAdapters'],
     runtime: 'client',
+    requires: [{ capability: 'ui.context-menu', required: false, fallback: 'degrade' }],
     nativeReplacement: {
       dshFeature: 'DSH native session list, session search, plugin icons, and working-directory presentation',
       since: '0.2.2-alpha.2',
@@ -89,6 +90,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
           remote: context.services.remote,
           readNativeWorkspaceSnapshot: () => readNativeWorkspaceSnapshot(context.services.uiContext),
           hiddenWorkspaceIds,
+          ...(context.services.contextMenus === undefined ? {} : { contextMenus: context.services.contextMenus }),
           locale: context.services.locale,
           onHiddenWorkspaceIdsChange: async (ids) => {
             await context.services.settings.mutate([{
