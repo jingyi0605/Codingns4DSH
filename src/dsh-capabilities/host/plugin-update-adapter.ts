@@ -13,6 +13,7 @@ export interface PluginManagerOutcome {
   readonly installedVersion: string | null
   readonly packageAccepted: boolean
   readonly restored: boolean
+  readonly restartReason?: string
   readonly errorCode?: string
 }
 
@@ -72,17 +73,26 @@ export function createPluginUpdateManager(context: unknown): PluginUpdateManager
 }
 
 export function normalizePluginManagerOutcome(value: unknown, version: string): PluginManagerOutcome {
-  const result = value as Record<string, unknown> | null
-  const application = ['applied', 'restart-required', 'overridden', 'failed', 'cancelled'].includes(String(result?.application))
-    ? result!.application as PluginManagerOutcome['application'] : 'unknown'
-  const accepted = result?.bundle === CODINGNS_PACKAGE_NAME && result.version === version
-  const error = result?.error as { code?: unknown } | undefined
+  const outer = isRecord(value) ? value : {}
+  const result = isRecord(outer.result) ? outer.result : outer
+  const restore = isRecord(outer.restore) ? outer.restore : undefined
+  const application = ['applied', 'restart-required', 'overridden', 'failed', 'cancelled'].includes(String(result.application))
+    ? result.application as PluginManagerOutcome['application'] : 'unknown'
+  const accepted = (result.bundle === CODINGNS_PACKAGE_NAME && result.version === version)
+    || result.target === `${CODINGNS_PACKAGE_NAME}@${version}`
+  const error = isRecord(result.error) ? result.error : undefined
   const code = typeof error?.code === 'string' && /^[a-z-]{1,64}$/u.test(error.code) ? `UPDATE_MANAGER_${error.code.toUpperCase().replaceAll('-', '_')}` : undefined
   return {
     application, installedVersion: accepted ? version : null, packageAccepted: accepted,
-    // Generic operation-error can also mean restoration failed. Do not infer rollback from changed=false alone.
-    restored: result?.stage === 'install' && result.changed === false && result.packageResult !== undefined
-      && (application === 'cancelled' || (application === 'failed' && error?.code === 'incompatible-version')),
+    // Alpha.3 reports restoration separately; alpha.2 only exposed the failed install record.
+    restored: restore?.application === 'applied' || restore?.application === 'restart-required'
+      || (result.stage === 'install' && result.changed === false && result.packageResult !== undefined
+        && (application === 'cancelled' || (application === 'failed' && error?.code === 'incompatible-version'))),
+    ...(typeof result.restartReason === 'string' ? { restartReason: result.restartReason } : {}),
     ...(code === undefined ? {} : { errorCode: code }),
   }
+}
+
+function isRecord(value: unknown): value is Record<string, any> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }

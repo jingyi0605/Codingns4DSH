@@ -34,6 +34,7 @@ export type DshCapabilityId =
   | 'conversation.message-presentation'
   | 'sidebar.right'
   | 'sidebar.global-panel'
+  | 'ui.context-menu'
   | 'typert.remote'
   | 'typert.context'
   | 'typert.stream'

@@ -255,6 +255,29 @@ test('manager refuses Desktop, packaged shells, absent profiles and HMR self-rep
     packageResult: { output: 'secret', logPath: '/secret/log' },
   }, version)
   assert.equal(failure.restored, true)
+  const alpha3 = normalizePluginManagerOutcome({
+    from: '0.2.2-beta.1',
+    to: version,
+    step: 'install',
+    result: {
+      changed: false,
+      application: 'failed',
+      stage: 'enable',
+      target: CODINGNS_PACKAGE_NAME,
+      restartReason: 'host-module',
+      error: { code: 'operation-error' },
+    },
+    restore: {
+      changed: true,
+      application: 'restart-required',
+      stage: 'install',
+      target: `${CODINGNS_PACKAGE_NAME}@0.2.2-beta.1`,
+      bundle: CODINGNS_PACKAGE_NAME,
+      version: '0.2.2-beta.1',
+    },
+  }, version)
+  assert.equal(alpha3.restored, true)
+  assert.equal(alpha3.restartReason, 'host-module')
   assert.equal(JSON.stringify(failure).includes('secret'), false)
   assert.equal(normalizePluginManagerOutcome({ application: 'failed', stage: 'install', changed: false, packageResult: {}, error: { code: 'operation-error' } }, version).restored, false)
   assert.equal(normalizePluginManagerOutcome({ application: 'applied', version: 'wrong', bundle: CODINGNS_PACKAGE_NAME }, version).packageAccepted, false)

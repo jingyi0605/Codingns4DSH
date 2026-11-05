@@ -47,14 +47,14 @@ test('performance capability routes reject older API generations and probe newer
   }
 })
 
-test('Host projection registration reads optional services through get and disposes registration', () => {
+test('Host projection registration reads optional services through get and disposes registration', async () => {
   let registered: unknown, removed = 0
   const service = { register(value: unknown) { registered = value; return () => { removed++ } } }
   const context = { get: (key: string) => key === 'sessionProjections' ? service : undefined }
   const definition = { key: 'test' }
-  const dispose = createSessionPerformanceAdapter(context).install(definition)
+  const dispose = await createSessionPerformanceAdapter(context).install(definition)
   assert.equal(registered, definition)
-  dispose()
+  await dispose()
   assert.equal(removed, 1)
 })
 
@@ -265,7 +265,7 @@ test('real DSH admits performance metadata and restores the same whole-session a
   ])
   const ctx = new Context()
   const registry = new SessionProjectionRegistry(ctx)
-  const remove = createSessionPerformanceAdapter(ctx).install(codexPerformanceProjection)
+  const remove = await createSessionPerformanceAdapter(ctx).install(codexPerformanceProjection)
   try {
     const session = new Session('performance-fixture')
     session.append('turn/start', { turn: 1 })
@@ -285,7 +285,7 @@ test('real DSH admits performance metadata and restores the same whole-session a
     const events = session.snapshotEvents()
     const restored = registry.restore({}, events, 0, session.header, 0)
     assert.deepEqual(restored.snapshot.values[CODEX_PERFORMANCE_PROJECTION], view)
-  } finally { remove() }
+  } finally { await remove() }
 })
 
 test('real DSH preserves Grok billing, provider context, and source timing through cold replay', { skip: !existsSync(registryPath) }, async () => {
@@ -296,7 +296,7 @@ test('real DSH preserves Grok billing, provider context, and source timing throu
   ])
   const ctx = new Context(), registry = new SessionProjectionRegistry(ctx)
   new TokenMeter(ctx)
-  const remove = [grokPerformanceProjection, grokContextProjection].map(projection => createSessionPerformanceAdapter(ctx).install(projection))
+  const remove = await Promise.all([grokPerformanceProjection, grokContextProjection].map(projection => createSessionPerformanceAdapter(ctx).install(projection)))
   try {
     const session = new Session('grok-performance-fixture')
     session.append('turn/start', { turn: 1 }); session.append('step/start', { turn: 1, step: 1 })
@@ -342,5 +342,5 @@ test('real DSH preserves Grok billing, provider context, and source timing throu
       contextObservation: { contextModelId: 'grok-fast', contextWindow: 500000, contextTokens: 20000 },
     }), true)
     assert.deepEqual(registry.snapshot(session).values[GROK_CONTEXT_PROJECTION], { contextWindow: 500000, pressureTokens: 20000 }, 'A live capacity change is not rewritten by the legacy first-window anchor')
-  } finally { for (const dispose of remove) dispose() }
+  } finally { for (const dispose of remove) await dispose() }
 })

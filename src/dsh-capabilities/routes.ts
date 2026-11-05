@@ -18,6 +18,7 @@ import { createSessionPerformanceAdapter, supportsSessionPerformance } from './h
 import { createSessionPerformancePresentation, supportsSessionPerformancePresentation } from './client/session-performance-adapter.js'
 import { createAgentTeamAdapter, supportsExternalAgentTeam } from './host/agent-team-adapter.js'
 import { createGlobalPanelAdapter, supportsGlobalPanel } from './client/global-panel-adapter.js'
+import { readContextMenus, supportsContextMenus } from './client/context-menu-adapter.js'
 import { createPluginUpdateManager, supportsPluginUpdateManager } from './host/plugin-update-adapter.js'
 import { CODINGNS_VERSION } from '../shared/contracts/version.js'
 
@@ -89,6 +90,8 @@ export function createDshCapabilityRegistry(
       status: 'supported', introducedIn: '0.2.0-rc.2', detect: () => false, create: () => undefined })
     add({ id: 'sidebar-panellist-main-020', capability: 'sidebar.global-panel', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: supportsGlobalPanel, create: createGlobalPanelAdapter })
+    add({ id: 'ui-context-menu-022', capability: 'ui.context-menu', supportedDsh: '>=0.2.2-alpha.3', runtime, priority: 20,
+      status: 'supported', introducedIn: '0.2.2-alpha.3', detect: supportsContextMenus, create: readContextMenus })
     add({ id: 'session-performance-presentation-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformancePresentation, create: createSessionPerformancePresentation })
     add({ id: 'sidebar-footer-action-021', capability: 'sidebar.footer-action', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
       detect: ctx => supportsQuickAppFooter(read(ctx, 'slots')), create: ctx => read(ctx, 'slots') })

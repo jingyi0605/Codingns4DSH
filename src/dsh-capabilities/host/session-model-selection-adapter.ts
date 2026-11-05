@@ -12,6 +12,10 @@ interface SelectionOwner {
   selectionFor(agent: { readonly id: string }): SelectionRef
 }
 
+interface AgentRegistry {
+  get(id: string): unknown
+}
+
 // Cordis creates fresh method proxies. Symbol properties survive those proxies
 // and retain the native accessor across plugin reloads.
 const NATIVE_ACCESSOR = Symbol.for('codingns4dsh.native-model-selection')
@@ -37,8 +41,13 @@ function selectionOwner(controller: unknown): SelectionOwner | undefined {
   return typeof owner?.selectionFor === 'function' ? owner as SelectionOwner : undefined
 }
 
+function agentRegistry(controller: unknown): AgentRegistry | undefined {
+  const agents = (controller as { agents?: Partial<AgentRegistry> } | undefined)?.agents
+  return typeof agents?.get === 'function' ? agents as AgentRegistry : undefined
+}
+
 export function supportsSessionModelSelection(controller: unknown): boolean {
-  return selectionOwner(controller) !== undefined
+  return selectionOwner(controller) !== undefined || agentRegistry(controller) !== undefined
 }
 
 /** Read DSH's own route without re-entering our external session resolver. */
@@ -59,7 +68,11 @@ export function readNativeSessionModelSelection(controller: unknown, agent: { re
  * Keep this internal accessor behind the bounded, structurally probed route.
  */
 export function createSessionModelSelectionAdapter(controller: unknown): SessionModelSelectionAdapter {
-  const owner = selectionOwner(controller)!
+  const owner = selectionOwner(controller)
+  // RC.1 exposes the live choice as agent.model. The CLI feature selects that
+  // object before each step; this adapter remains a no-op for that route while
+  // preserving the legacy selectionFor overlay used by older DSH releases.
+  if (owner === undefined) return { install: () => () => undefined }
   return {
     install(resolve) {
       const original = owner.selectionFor

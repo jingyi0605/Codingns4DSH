@@ -29,6 +29,8 @@ test('external selection capability probes newer hosts and still requires native
     const profile = createDshCapabilityRegistry('0.2.1-alpha.3', 'host', context).getProfile(context)
     assert.equal(profile.capabilities.get('session.external-model-selection')?.status, 'unavailable')
   }
+  const rc1Context = { sessionController: { agents: { get() { return { model: { current() {}, select() {} } } } } } }
+  assert.equal(createDshCapabilityRegistry('0.2.2-rc.1', 'host', rc1Context).getProfile(rc1Context).capabilities.get('session.external-model-selection')?.status, 'ready')
 })
 
 test('external selection view preserves native choices, setters, other sessions and disposal', () => {

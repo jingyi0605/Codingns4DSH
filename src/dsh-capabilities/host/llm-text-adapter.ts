@@ -56,6 +56,7 @@ export function createNativeLlmTextAdapter(ctx: unknown, dshVersion: string): Na
       const joined = (): string => [...blocks.entries()].sort(([a], [b]) => a - b).map(([, block]) => block.text).join('\n')
       const options = {
         provider: model.provider, model: model.model, system, signal, maxTokens: limits?.maxTokens ?? 2048,
+        purpose: 'private-operation',
         ...(limits?.reasoningEffort === undefined ? {} : { reasoningEffort: limits.reasoningEffort }),
         messages: messages.map((message) => ({
           role: message.role, content: [{ type: 'text', text: message.text }],

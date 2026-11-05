@@ -445,7 +445,8 @@ test('真实 Cordis 服务探测和 waterfall 保留其他中间件，嵌套调�
     listProviders: () => [], listModels: async () => [],
     registerAdapter(_providers: string[], value: unknown) { virtualAdapter = value; return () => { virtualAdapter = undefined } },
     stream(options: any): AsyncIterable<any> {
-      return (app as any).waterfall(llm, 'llm/stream', options, async function* (request: any) {
+      return (app as any).waterfall(llm, 'llm/stream', options, async function* () {
+        const request = options
         if (request.provider === 'codingns-cli-claude-code') { yield* virtualAdapter.stream(request); return }
         calls.push(request)
         yield { type: 'text-delta', index: 0, text: '优化工作区会话标题生成' }

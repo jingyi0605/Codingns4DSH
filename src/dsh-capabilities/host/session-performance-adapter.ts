@@ -1,5 +1,5 @@
 export interface SessionPerformanceAdapter {
-  install(definition: unknown): () => void
+  install(definition: unknown): Promise<() => Promise<void>>
 }
 
 export function supportsSessionPerformance(context: unknown): boolean {
@@ -16,5 +16,14 @@ function projections(context: unknown): { register(definition: unknown): () => v
 /** Registration owns schema admission, cold replay, checkpoints, and live projection delivery. */
 export function createSessionPerformanceAdapter(context: unknown): SessionPerformanceAdapter {
   const service = projections(context)!
-  return { install: definition => service.register(definition) }
+  return {
+    async install(definition) {
+      const registered = service.register(definition)
+      if (typeof registered === 'function') {
+        return async () => { registered() }
+      }
+      const handle = await registered as { dispose?: () => void | Promise<void> }
+      return async () => { await handle.dispose?.() }
+    },
+  }
 }

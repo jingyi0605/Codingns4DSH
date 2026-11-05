@@ -87,6 +87,17 @@ test('newer hosts retain shared capabilities when structural probes succeed', ()
   }
 })
 
+test('alpha.3 and rc.1 context menus use the structured route and older hosts remain unavailable', () => {
+  const context = { contextMenus: { register() { return () => undefined }, notify() {} } }
+  for (const version of ['0.2.2-alpha.3', '0.2.2-rc.1']) {
+    const current = createDshCapabilityRegistry(version, 'client', context).getProfile(context)
+    assert.equal(current.capabilities.get('ui.context-menu')?.routeId, 'ui-context-menu-022', version)
+    assert.equal(current.capabilities.get('ui.context-menu')?.status, 'ready', version)
+  }
+  const legacy = createDshCapabilityRegistry('0.2.2-alpha.2', 'client', context).getProfile(context)
+  assert.equal(legacy.capabilities.get('ui.context-menu')?.status, 'unavailable')
+})
+
 test('PeerHost 八项能力已进入矩阵并覆盖支持版本', () => {
   const capabilities = [
     'peer-host.store', 'peer-host.handshake', 'peer-host.http-proxy', 'peer-host.ws-proxy',

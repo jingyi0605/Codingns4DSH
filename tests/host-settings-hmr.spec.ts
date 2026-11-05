@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createRequire } from 'node:module'
-import { pathToFileURL } from 'node:url'
 import { Context } from '@deepseek-ai/cordis'
 import SettingsForms from '@deepseek-ai/dsh-settings'
 import { CodingNsConfigSchema, CodingNsSettingsSchema, registerCodingNsSettings } from '../data/build/dist/host/settings.js'
@@ -10,11 +9,6 @@ import { DEFAULT_CODINGNS_SETTINGS } from '../data/build/dist/shared/contracts/c
 import { createCodingNsSettingsRpcHandler } from '../src/host/rpc.js'
 import { resolveSessionTranslationOptions } from '../src/shared/contracts/session-translation.js'
 
-// 与原生 Loader 一样更新 volatile（实时配置）引用，不引入额外持久化实现。
-const require = createRequire(import.meta.url)
-const { updateVolatile } = await import(pathToFileURL(require.resolve('@deepseek-ai/cosmokit', {
-  paths: [require.resolve('@deepseek-ai/schemastery')],
-})).href)
 const namespace = '@jingyi0605/codingns4dsh'
 
 /** 真实 SettingsForms 和插件生命周期，配置编辑仅落在测试内存中。 */
@@ -28,25 +22,43 @@ async function fixture(raw = {
   const ctx = new Context()
   const entry: any = { id: 'fixture-entry', options: { id: namespace, config: raw } }
   const edits: string[] = []
+  entry.write = (next: object): void => {
+    entry.options.config = next
+    if (entry.fiber !== undefined) {
+      const raw = structuredClone(next)
+      entry.options.config = raw
+      const config = CodingNsConfigSchema(raw as never)
+      const plain = structuredClone(config.get())
+      entry.fiber.config = plain
+      entry.fiber._effectiveConfig = plain
+    }
+  }
+  const attachFiber = (fiber: any): void => {
+    entry.fiber = fiber.ctx.fiber
+    const raw = structuredClone(entry.options.config)
+    const config = CodingNsConfigSchema(raw as never)
+    const plain = structuredClone(config.get())
+    entry.fiber.config = plain
+    entry.fiber._effectiveConfig = plain
+  }
   ctx.provide('loader', { await: () => Promise.resolve() })
   ctx.provide('profileContext', { home: '/nonexistent-codingns-hmr-fixture', name: 'fixture' })
   ctx.provide('configEditor', {
     documentPath: '/fixture/profile.patch.yml',
     entries: () => [entry],
-    configuration: () => [{ entry, inherited: {}, override: entry.options.config }],
+    configuration: () => [{ entry, inherited: {}, override: entry.fiber?._effectiveConfig ?? entry.options.config }],
     async edit(target: typeof entry, change: (config: object, inherited: object) => object) {
       edits.push(target.options.id)
       const next = change(target.options.config, {})
-      target.options.config = next
-      updateVolatile(target.fiber.config, CodingNsConfigSchema(next as never))
+      target.write(next)
     },
   })
   const formsFiber = await ctx.plugin(SettingsForms)
-  return { ctx, entry, edits, formsFiber }
+  return { ctx, entry, edits, formsFiber, attachFiber }
 }
 
 test('原生加载态和连续 Host 重载均读取已保存的开关、偏好和会话索引', async () => {
-  const { ctx, entry, formsFiber } = await fixture()
+  const { ctx, entry, formsFiber, attachFiber } = await fixture()
   try {
     for (let generation = 0; generation < 3; generation += 1) {
       const enabled = generation !== 1
@@ -71,9 +83,9 @@ test('原生加载态和连续 Host 重载均读取已保存的开关、偏好�
           })
         },
       }
-      const fiber = ctx.plugin(plugin, entry.options.config)
+      const fiber = ctx.plugin(plugin, structuredClone(entry.options.config))
       // 与原生 HMR 一致，创建新 Fiber 后将其挂回原配置条目。
-      entry.fiber = fiber.ctx.fiber
+      attachFiber(fiber)
       await fiber
       await injected
       assert.equal(mode, enabled ? 'enhanced' : 'baseline')
@@ -87,7 +99,7 @@ test('原生加载态和连续 Host 重载均读取已保存的开关、偏好�
 })
 
 test('重载后仍通过原生 namespace 编辑设置并通知监听器', async () => {
-  const { ctx, entry, edits, formsFiber } = await fixture()
+  const { ctx, entry, edits, formsFiber, attachFiber } = await fixture()
   let injected: any
   let scope: ReturnType<typeof registerCodingNsSettings>
   let notifications = 0
@@ -103,8 +115,8 @@ test('重载后仍通过原生 namespace 编辑设置并通知监听器', async 
       })
     },
   }
-  const fiber = ctx.plugin(plugin, entry.options.config)
-  entry.fiber = fiber.ctx.fiber
+  const fiber = ctx.plugin(plugin, structuredClone(entry.options.config))
+  attachFiber(fiber)
   try {
     await fiber
     await injected
@@ -128,7 +140,7 @@ test('重载后仍通过原生 namespace 编辑设置并通知监听器', async 
 })
 
 test('per-agent translation options persist through native SettingsForms mutations and host reload', async () => {
-  const { ctx, entry, formsFiber } = await fixture()
+  const { ctx, entry, formsFiber, attachFiber } = await fixture()
   const expected = {
     codex: { inputEnabled: false, reasoningEnabled: true, assistantEnabled: false },
     'claude-code': { inputEnabled: true, reasoningEnabled: false, assistantEnabled: true },
@@ -145,8 +157,8 @@ test('per-agent translation options persist through native SettingsForms mutatio
             scope = registerCodingNsSettings(inner, () => owner.fiber.config)
           })
         },
-      }, entry.options.config)
-      entry.fiber = fiber.ctx.fiber
+      }, structuredClone(entry.options.config))
+      attachFiber(fiber)
       try {
         await fiber
         await injected

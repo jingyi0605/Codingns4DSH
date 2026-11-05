@@ -58,7 +58,7 @@ export interface SessionTranslationService {
   deactivate(): void
   onDeactivate?(listener: () => void): () => void
   configure(settings: SessionTranslationSettings | undefined): void
-  translateInput(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean, protection?: TextProtectionOptions): Promise<string>
+  translateInput(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean, protection?: TextProtectionOptions, sessionId?: string): Promise<string>
   /** 输入翻译的可审计结果；旧调用方仍可使用 translateInput。 */
   translateInputDetailed?(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean, protection?: TextProtectionOptions): Promise<SessionTranslationMetrics & {
     readonly translated: string
@@ -68,7 +68,7 @@ export interface SessionTranslationService {
     readonly failed?: boolean
     readonly failure?: SessionTranslationFailure
   }>
-  translateOutput(adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationRecord | null>
+  translateOutput(adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean, sessionId?: string): Promise<SessionTranslationRecord | null>
   dispose(): void
 }
 
@@ -124,6 +124,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     protectedText: ReturnType<typeof protectText>,
     targetLanguage: SessionTranslationLanguage,
     signal?: AbortSignal,
+    sessionId?: string,
   ): Promise<SessionTranslationMetrics & { readonly translated: string; readonly model?: SessionTranslationModel; readonly failed?: boolean; readonly failure?: SessionTranslationFailure }> => {
     const startedAt = performance.now()
     const system = translationSystem(targetLanguage, kind, settings.translationRules ?? [])
@@ -155,6 +156,8 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
               provider: candidate.provider,
               model: candidate.model,
               signal: combined,
+              purpose: 'private-operation',
+              ...(sessionId === undefined ? {} : { sessionId }),
               codingnsTranslation: true,
               ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
               temperature: 0,
@@ -192,7 +195,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     return { translated: text, failed: true, failure, ...(selected === undefined ? {} : { model: selected }), ...metrics() }
   }
 
-  const translate = async (adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean): Promise<SessionTranslationRecord | null> => {
+  const translate = async (adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean, sessionId?: string): Promise<SessionTranslationRecord | null> => {
     const value = text
     if (!active || disposed || value.trim() === '') return null
     if (!canTranslateAdapter(adapterId, sessionEnabled) || !outputEnabled(adapterId, kind)) return null
@@ -212,7 +215,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
         totalTokens: 0,
       }
     }
-    const result = await translateWithModels(adapterId, kind, value, protectedText, targetLanguage, signal)
+    const result = await translateWithModels(adapterId, kind, value, protectedText, targetLanguage, signal, sessionId)
     return {
       original: value,
       ...result,
@@ -264,18 +267,18 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
       settings = normalizeSettings(next)
       nativeFallbackModel = undefined
     },
-    async translateInput(adapterId, text, signal, sessionEnabled, protection) {
-      const result = await translateInputDetailed(adapterId, text, signal, sessionEnabled, protection)
+    async translateInput(adapterId, text, signal, sessionEnabled, protection, sessionId) {
+      const result = await translateInputDetailed(adapterId, text, signal, sessionEnabled, protection, sessionId)
       return result.translated
     },
     translateInputDetailed,
-    async translateOutput(adapterId, kind, text, signal, sessionEnabled) {
-      return translate(adapterId, kind, text, signal, sessionEnabled)
+    async translateOutput(adapterId, kind, text, signal, sessionEnabled, sessionId) {
+      return translate(adapterId, kind, text, signal, sessionEnabled, sessionId)
     },
     dispose: deactivate,
   }
 
-  async function translateInputDetailed(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean, protection?: TextProtectionOptions): Promise<SessionTranslationMetrics & {
+  async function translateInputDetailed(adapterId: string, text: string, signal?: AbortSignal, sessionEnabled?: boolean, protection?: TextProtectionOptions, sessionId?: string): Promise<SessionTranslationMetrics & {
     readonly translated: string
     readonly sourceLanguage?: SessionTranslationLanguage
     readonly alreadyTargetLanguage?: boolean
@@ -291,7 +294,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
       if (sourceLanguage === targetLanguage && !settings.translationRules?.length) {
         return { translated: text, sourceLanguage, alreadyTargetLanguage: true, durationMs: 0, totalTokens: 0 }
       }
-      const result = await translateWithModels(adapterId, 'input', text, protectedText, targetLanguage, signal)
+      const result = await translateWithModels(adapterId, 'input', text, protectedText, targetLanguage, signal, sessionId)
       return { ...result, ...(sourceLanguage === undefined ? {} : { sourceLanguage }) }
   }
 

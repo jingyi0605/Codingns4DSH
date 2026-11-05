@@ -189,7 +189,7 @@ export function createCliAdaptersFeature(options: {
           .getProfile(context.services.dshContext).capabilities.get('session.external-performance')?.value as SessionPerformanceAdapter | undefined
         if (performance !== undefined) {
           for (const projection of [codexPerformanceProjection, grokPerformanceProjection, grokContextProjection]) {
-            context.resources.add(performance.install(projection))
+            context.resources.add(await performance.install(projection))
           }
         }
       }
@@ -983,6 +983,9 @@ function registerDelegationAgentHooks(
     const resolved = await next()
     const config = asRecord(resolved)
     if (config === null) return resolved
+    // RC.1 freezes provider/model selection before this deprecated waterfall.
+    // The pre-step hook already selected the route through agent.model.select().
+    if (supportsAgentModelSelection(asRecord(payload)?.agent)) return config
     const sessionId = readAgentSessionId(asRecord(payload)?.agent)
     if (sessionId === '') return config
 
@@ -1172,7 +1175,13 @@ function selectExternalModelForAgent(
   select.call(modelOwner, {
     provider: toCliProviderId(resolved.adapterId),
     model: resolved.modelId?.trim() || 'provider-default',
+    ...(resolved.effortId === undefined ? {} : { reasoningEffort: resolved.effortId }),
   })
+}
+
+function supportsAgentModelSelection(agent: Record<string, any> | null): boolean {
+  const model = asRecord(agent?.model)
+  return typeof model?.current === 'function' && typeof model?.select === 'function'
 }
 
 /** Select a route immediately after the Client binds an external adapter to a live Session. */

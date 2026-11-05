@@ -236,7 +236,11 @@ export async function apply(ctx?: Context): Promise<void> {
       settingsProvider: settingsContext.settings,
       dshWebPort: webServerPort,
       dshWebAuthenticatedUrl: hostCtx.connection.authenticatedUrl(`http://127.0.0.1:${String(webServerPort)}`),
-      events: { on: hostCtx.on.bind(hostCtx), emit: hostCtx.emit.bind(hostCtx) },
+      events: {
+        on: (name: string, listener: (...args: any[]) => any, options?: unknown): unknown =>
+          hostCtx.on(name as never, listener as never, options as never),
+        emit: hostCtx.emit.bind(hostCtx),
+      },
       nativeSessions: createCodingNsNativeSessionBridge(hostCtx, dshVersion),
       ...(sessionTranslation === undefined ? {} : { sessionTranslation }),
       credentials: credentialService,

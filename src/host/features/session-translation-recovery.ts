@@ -66,7 +66,7 @@ export function createSessionTranslationRecovery(
           try {
             record = await withTranslationAbort(async () => ({ ...fallback, ...(service.translateInputDetailed
               ? await service.translateInputDetailed(adapterId, text, signal, true, protection)
-              : { translated: await service.translateInput(adapterId, text, signal, true, protection) }) }), signal)
+              : { translated: await service.translateInput(adapterId, text, signal, true, protection, sessionId) }) }), signal)
           } catch (error) {
             record = { ...fallback, failed: true, failure: translationFailure(error, signal) }
           }
@@ -96,7 +96,7 @@ export function createSessionTranslationRecovery(
       const fallback: SessionTranslationRecord = { original: value.original, translated: value.original, outputKind: value.outputKind,
         targetLanguage: service.outputLanguage ?? 'zh', bilingual: service.bilingual === true }
       try {
-        return await withTranslationAbort(async () => await service.translateOutput(config.adapterId, fallback.outputKind!, fallback.original, signal, true) ?? fallback, signal)
+        return await withTranslationAbort(async () => await service.translateOutput(config.adapterId, fallback.outputKind!, fallback.original, signal, true, sessionId) ?? fallback, signal)
       } catch (error) {
         signal.throwIfAborted()
         return { ...fallback, failed: true, failure: translationFailure(error, signal) }
