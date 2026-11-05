@@ -1173,10 +1173,12 @@ function selectExternalModelForAgent(
   const modelOwner = asRecord(agentRecord?.model)
   const select = modelOwner?.select
   if (typeof select !== 'function') return
+  // 外部 CLI 的虚拟 Provider 不声明任何思考强度，DSH 收到 reasoningEffort 会以
+  // UNSUPPORTED_REASONING_EFFORT 拒绝整轮。实际强度由适配器的 effortId 另行传给 CLI，
+  // 所以这里只选择 provider/model，不携带 reasoningEffort。
   select.call(modelOwner, {
     provider: toCliProviderId(resolved.adapterId),
     model: resolved.modelId?.trim() || 'provider-default',
-    ...(resolved.effortId === undefined ? {} : { reasoningEffort: resolved.effortId }),
   })
 }
 
