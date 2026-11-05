@@ -29,6 +29,7 @@ test('package manifest declares the DSH bundle and client entry', () => {
       '@deepseek-ai/dsh-client-connection',
       '@deepseek-ai/dsh-api-session-controller',
       '@deepseek-ai/dsh-client-ui-conversation',
+      '@deepseek-ai/dsh-client-ui-context-menu',
       '@deepseek-ai/dsh-client-ui-input-trigger',
       '@deepseek-ai/dsh-client-ui-reference',
       '@deepseek-ai/dsh-client-ui-tool',
@@ -55,12 +56,12 @@ test('package manifest declares the DSH bundle and client entry', () => {
   assert.equal(manifest.exports['./remote'].types, './data/build/dist/typert.remote-client.d.ts')
   assert.equal(manifest.exports['./bootstrap'].default, './data/build/dist/bootstrap/index.js')
   assert.equal(manifest.engines.dsh, SUPPORTED_DSH_COMPATIBILITY)
-  for (const version of ['4.0.6-alpha.1']) {
+  for (const version of ['4.1.0']) {
     assert.ok(semver.satisfies(version, manifest.peerDependencies['@deepseek-ai/cordis']), `Cordis ${version} must remain supported`)
   }
   assert.equal(manifest.peerDependencies['@deepseek-ai/dsh'], SUPPORTED_DSH_COMPATIBILITY)
   // Host 入口在独立 npm Profile 中运行，不能依赖发布包的 devDependencies。
-  for (const version of ['3.18.6-alpha.1']) {
+  for (const version of ['3.19.0']) {
     assert.ok(semver.satisfies(version, manifest.dependencies['@deepseek-ai/schemastery']), `Schemastery ${version} must remain supported`)
   }
   assert.equal(manifest.dependencies['@deepseek-ai/dsh-typert-protocol'], SUPPORTED_DSH_VERSION)
@@ -93,7 +94,7 @@ test('DSH native manifest validation enforces only the minimum, including future
   for (const version of ['0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1']) {
     assert.ok(evaluatePluginCompatibility(manifest, {}, version), version)
   }
-  for (const version of ['0.2.1-alpha.2', '0.2.1-rc.4', '0.2.1-rc.10', '0.2.1', '0.2.2-alpha.2', '0.3.0-alpha.1', '1.0.0']) {
+  for (const version of ['0.2.1-alpha.2', '0.2.1-rc.4', '0.2.1-rc.10', '0.2.1', '0.2.2-alpha.2', '0.2.2-alpha.3', '0.2.2-rc.1', '0.3.0-alpha.1', '1.0.0']) {
     assert.equal(evaluatePluginCompatibility(manifest, {}, version), undefined, version)
     assert.ok(semver.satisfies(version, manifest.peerDependencies['@deepseek-ai/dsh'], { includePrerelease: true }), version)
   }
