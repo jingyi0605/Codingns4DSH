@@ -97,7 +97,7 @@ test('native activity UI uses corrected Codex statistics and preserves native se
   await Promise.resolve()
 })
 
-test('Claude Code hides delivery timing that would fabricate a decode speed', () => {
+test('Claude Code uses source timing when the Claude performance projection is available', () => {
   const slots = createPresentationSlots()
   const root = slots.register({ name: 'root', children: { 'conversation.composer.dock': { kind: 'list', scope: 'session' } } }, (() => null) as never)
   const Native = (props: any) => createElement('span', undefined, JSON.stringify(props.useProjection('sessionStats')))
@@ -105,16 +105,17 @@ test('Claude Code hides delivery timing that would fabricate a decode speed', ()
   const dispose = createSessionPerformancePresentation({ slots }).install(() => 'claude-code', createElement, { useMemo, useSyncExternalStore })
   const Wrapper = slots.core.entriesOfSlot('conversation.composer.dock')[0]!.component as any
   const original = { turns: 1, steps: 2, toolMs: 2100, llmMs: 169000, decodeTokens: 3108, decodeMs: 2, ttftMs: 114446, ttftSteps: 1 }
+  const source = { ...original, decodeTokens: 630, decodeMs: 10_000, ttftMs: 1_000, ttftSteps: 1 }
   const render = () => renderToStaticMarkup(createElement(Wrapper, {
     sessionId: 'claude-session',
-    useProjection: (key: string) => key === CODEX_PERFORMANCE_PROJECTION ? undefined : original,
+    useProjection: (key: string) => key === CLAUDE_PERFORMANCE_PROJECTION ? source : key === 'sessionStats' ? original : undefined,
   }))
   const html = render()
   assert.match(html, /169000/)
-  assert.match(html, /decodeTokens&quot;:0/)
-  assert.match(html, /decodeMs&quot;:0/)
-  assert.match(html, /ttftMs&quot;:0/)
-  assert.match(html, /ttftSteps&quot;:0/)
+  assert.match(html, /decodeTokens&quot;:630/)
+  assert.match(html, /decodeMs&quot;:10000/)
+  assert.match(html, /ttftMs&quot;:1000/)
+  assert.match(html, /ttftSteps&quot;:1/)
   dispose()
   root()
 })
