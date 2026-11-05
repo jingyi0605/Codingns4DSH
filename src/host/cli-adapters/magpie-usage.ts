@@ -1400,8 +1400,13 @@ function readTotals(value: unknown): MagpieUsageTotals | null {
   const errors = safeCount(record.errors)
   const inputTokens = safeCount(record.input)
   const outputTokens = safeCount(record.output)
-  const cacheReadTokens = safeCount(record.cache_read)
-  const cacheWriteTokens = safeCount(record.cache_write)
+  // Magpie uses zero placeholders when an upstream (such as Kiro) omits cache
+  // accounting. A mixed aggregate is also incomplete if any calls are unknown.
+  const cacheUnknown = record.cache_unknown === true
+    || (safeCount(record.cache_unknown) ?? 0) > 0
+    || (safeCount(record.cache_unknown_calls) ?? 0) > 0
+  const cacheReadTokens = cacheUnknown ? null : safeCount(record.cache_read)
+  const cacheWriteTokens = cacheUnknown ? null : safeCount(record.cache_write)
   const costUsd = safeCost(record.cost)
   if ([calls, errors, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd].every((item) => item === null)) return null
   return { calls, errors, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd }
