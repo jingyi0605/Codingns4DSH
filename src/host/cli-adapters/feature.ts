@@ -70,6 +70,7 @@ import { attachmentFileNotice } from '../../shared/attachment-prompts.js'
 import { sessionPromptScope, type SessionPromptAdapter } from '../../dsh-capabilities/host/session-prompt-adapter.js'
 import { createSessionPromptTranslation } from '../features/session-prompt-translation.js'
 import { codexPerformanceProjection } from './codex-performance-projection.js'
+import { claudePerformanceProjection } from './claude-performance-projection.js'
 import { grokContextProjection, grokPerformanceProjection } from './grok-performance-projection.js'
 import { countSessionTurnSteps } from './session-performance-projection.js'
 import type { SessionPerformanceAdapter } from '../../dsh-capabilities/host/session-performance-adapter.js'
@@ -188,7 +189,7 @@ export function createCliAdaptersFeature(options: {
         const performance = createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext)
           .getProfile(context.services.dshContext).capabilities.get('session.external-performance')?.value as SessionPerformanceAdapter | undefined
         if (performance !== undefined) {
-          for (const projection of [codexPerformanceProjection, grokPerformanceProjection, grokContextProjection]) {
+          for (const projection of [codexPerformanceProjection, claudePerformanceProjection, grokPerformanceProjection, grokContextProjection]) {
             context.resources.add(await performance.install(projection))
           }
         }

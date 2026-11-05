@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react'
 import { CODEX_PERFORMANCE_PROJECTION } from '../../shared/codex-performance.js'
-import { GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION } from '../../shared/request-performance.js'
+import { CLAUDE_PERFORMANCE_PROJECTION, GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION } from '../../shared/request-performance.js'
 import type { MagpieContextSession } from '../../shared/contracts/magpie-management.js'
 import { installComposerPresentation, type ComposerPresentationHooks } from './composer-presentation-adapter.js'
 import { followPresentationEntry, type PresentationSlots, type RenderElement } from './slot-presentation-mirror.js'
@@ -32,15 +32,6 @@ export function supportsSessionPerformancePresentation(context: unknown): boolea
   return slots !== undefined && ['inject', 'register', 'entries', 'subscribe'].every(key => typeof slots[key as keyof PresentationSlots] === 'function')
 }
 
-function hasProviderTiming(adapter: string | undefined): boolean {
-  return adapter === 'codex' || adapter === 'grok'
-}
-
-/** Native DSH timing for translated Claude messages measures delivery, not model decoding. */
-function withoutUnverifiedProviderTiming(stats: any): any {
-  return { ...stats, ttftMs: 0, ttftSteps: 0, decodeTokens: 0, decodeMs: 0 }
-}
-
 /** Reuse the native activity pill, dialog, localization, settings, and session binding. */
 export function createSessionPerformancePresentation(context: unknown): SessionPerformancePresentation {
   const slots = (context as { slots: PresentationSlots }).slots
@@ -59,9 +50,9 @@ export function createSessionPerformancePresentation(context: unknown): SessionP
                 const original = props.useProjection(key, ...args)
                 if (key !== 'sessionStats') return original
                 // Read both sources on every render, including adapter changes and cold loading.
-                const value = props.useProjection(adapter === 'grok' ? GROK_PERFORMANCE_PROJECTION : CODEX_PERFORMANCE_PROJECTION, ...args)
-                if (adapter === 'claude-code') return withoutUnverifiedProviderTiming(original)
-                if (!hasProviderTiming(adapter)) return original
+                const value = props.useProjection(adapter === 'grok' ? GROK_PERFORMANCE_PROJECTION
+                  : adapter === 'claude-code' ? CLAUDE_PERFORMANCE_PROJECTION : CODEX_PERFORMANCE_PROJECTION, ...args)
+                if (adapter !== 'codex' && adapter !== 'grok' && adapter !== 'claude-code') return original
                 // Old histories have no recoverable source timing. Keep counts but omit a fabricated speed.
                 return value ?? { turns: 0, steps: 0, toolMs: 0, ...original, llmMs: 0, decodeTokens: 0, decodeMs: 0, ttftMs: 0, ttftSteps: 0 }
               },

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { ClaudeCodeDriver } from '../src/host/cli-adapters/claude-driver.js'
 import { createSubagentBridgeRuntime, getSubagentBridge, setSubagentBridge } from '../src/host/cli-bridge/bridge-holder.js'
@@ -19,7 +20,7 @@ function replay(afterRetry: (send: (value: object) => void, close: () => void) =
   const sent: object[] = []
   const input: Record<string, unknown>[] = []
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: (() => ({ status: 0, stdout: 'claude 2.1.301', stderr: '' })) as never,
     spawn: ((_command: string, argv: readonly string[]) => {
       launches++
@@ -34,7 +35,7 @@ function replay(afterRetry: (send: (value: object) => void, close: () => void) =
           if (!killed) afterRetry(send, () => { stdout.end(); stderr.end() })
         })
       })
-      return { stdin, stdout, stderr, kill() { killed = true; stdout.end(); stderr.end(); return true } }
+      return Object.assign(new EventEmitter(), { stdin, stdout, stderr, kill() { killed = true; stdout.end(); stderr.end(); return true } })
     }) as never,
   })
   return { driver, sent, input, launches: () => launches, args: () => args, killed: () => killed }

@@ -41,6 +41,8 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
   protected readonly binaries: readonly string[]
   protected readonly runSpawnSync: typeof spawnSync
   protected readonly runSpawn: typeof spawn
+  /** Optional source measurements receive line-arrival time, even after a consumer pause. */
+  protected observeEvent?: (value: Record<string, unknown>, input: CodingNsCliTurnInput, receivedAt: number) => readonly CodingNsAgentEvent[]
   private readonly versionArgs: readonly string[]
   private readonly modelArgs: readonly string[]
   private cachedBinary: string | null = null
@@ -128,8 +130,12 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     try {
       if (this.usesStdin && !input.signal?.aborted) this.writeStdin(child, input)
       const lines = readline.createInterface({ input: child.stdout })
+      const arrivals: number[] = []
+      const recordArrival = (): void => { arrivals.push(this.eventTime()) }
+      if (this.observeEvent !== undefined) lines.on('line', recordArrival)
       try {
         for await (const line of lines) {
+          const receivedAt = arrivals.shift()
           if (!line.trim()) continue
           const parsed = parseJson(line)
           if (parsed === null) continue
@@ -149,7 +155,8 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
               yield { type: 'session-binding', providerSessionId: providerSessionId.trim() }
             }
           }
-          for (const rawChunk of this.parseEvent(parsed, input)) {
+          const observations = receivedAt === undefined ? [] : this.observeEvent?.(parsed, input, receivedAt) ?? []
+          for (const rawChunk of [...observations, ...this.parseEvent(parsed, input)]) {
             const chunk = segmentState === undefined ? rawChunk : decorateCodingNsSegmentEvent(rawChunk, input, segmentState, this.descriptor.id)
             if (chunk.type === 'finish') emittedFinish = true
             yield chunk
@@ -159,7 +166,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
             if (segmentState !== undefined) advanceCodingNsSegment(chunk, segmentState)
           }
         }
-      } finally { lines.close() }
+      } finally { lines.off('line', recordArrival); lines.close() }
       if (!emittedFinish) {
         if (input.signal?.aborted) yield { type: 'finish', reason: 'cancel' }
         else {
@@ -177,6 +184,8 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
 
   /** 已探测到的 CLI 路径；供子类在同步的 buildArgs 里做参数能力探测。 */
   protected get resolvedBinary(): string | null { return this.cachedBinary }
+
+  protected eventTime(): number { return Date.now() }
 
   /**
    * 已探测命令对应的运行环境。桌面/DSH 进程可能没有登录 Shell 的完整 PATH，
