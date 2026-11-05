@@ -157,8 +157,9 @@ export const CodingNsSettingsSchema = z.object({
     sessionChangedFiles: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.fileManagement.sessionChangedFiles),
   }).default(DEFAULT_CODINGNS_SETTINGS.fileManagement),
   mobileAccess: z.object({
-    hideSidebarOnMobile: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.mobileAccess.hideSidebarOnMobile),
-    optimizeSettingsOnMobile: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.mobileAccess.optimizeSettingsOnMobile),
+    // Legacy layout switches are retained for profile compatibility but always normalize disabled.
+    hideSidebarOnMobile: z.boolean().default(false),
+    optimizeSettingsOnMobile: z.boolean().default(false),
     mobileViewportMaxPx: z.number().step(1)
       .min(MOBILE_VIEWPORT_MAX_PX_LIMITS.min)
       .max(MOBILE_VIEWPORT_MAX_PX_LIMITS.max)
@@ -176,8 +177,8 @@ export const CodingNsSettingsSchema = z.object({
     // 旧像素门槛保留在 schema 里，保证升级后仍能读到并换算成比例；新写入不再使用。
     sidebarGestureThresholdPx: z.union([z.number(), z.const(undefined)]),
   }).default({
-    hideSidebarOnMobile: DEFAULT_CODINGNS_SETTINGS.mobileAccess.hideSidebarOnMobile,
-    optimizeSettingsOnMobile: DEFAULT_CODINGNS_SETTINGS.mobileAccess.optimizeSettingsOnMobile,
+    hideSidebarOnMobile: false,
+    optimizeSettingsOnMobile: false,
     mobileViewportMaxPx: DEFAULT_CODINGNS_SETTINGS.mobileAccess.mobileViewportMaxPx,
   }),
   subscriptionUsage: z.object({

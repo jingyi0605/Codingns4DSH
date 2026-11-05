@@ -337,9 +337,9 @@ export const DEFAULT_FILE_MANAGEMENT_SETTINGS: FileManagementSettings = {
 
 /** 移动端访问增强的独立能力开关；全部只作用于浏览器侧界面。 */
 export interface MobileAccessSettings {
-  /** 窄屏下彻底隐藏左侧边栏，只在原位置保留品牌 logo 作为唤起入口。 */
+  /** 已废弃：保留字段以读取旧配置；当前布局由 DSH 原生移动端实现负责。 */
   hideSidebarOnMobile: boolean
-  /** 是否启用移动端设置界面布局优化。 */
+  /** 已废弃：保留字段以读取旧配置；当前设置弹窗由 DSH 原生移动端实现负责。 */
   optimizeSettingsOnMobile: boolean
   /** 判定“移动端/窄屏”的视口宽度上限（像素）。 */
   mobileViewportMaxPx: number
@@ -357,10 +357,9 @@ export const MOBILE_VIEWPORT_MAX_PX_LIMITS = { min: 480, max: 1280 } as const
 export const DEFAULT_MOBILE_VIEWPORT_MAX_PX = 1024
 
 export const DEFAULT_MOBILE_ACCESS_SETTINGS: MobileAccessSettings = {
-  // 窄屏下 DSH 原生侧栏默认只收起成 56px 图标轨道，仍持续占用横向空间；
-  // 默认开启本模块的隐藏能力，用户可随时在设置里关回原生行为。
-  hideSidebarOnMobile: true,
-  optimizeSettingsOnMobile: true,
+  // Legacy layout switches remain in the schema for old profiles but are disabled permanently.
+  hideSidebarOnMobile: false,
+  optimizeSettingsOnMobile: false,
   mobileViewportMaxPx: DEFAULT_MOBILE_VIEWPORT_MAX_PX,
   ...DEFAULT_SIDEBAR_GESTURE_SETTINGS,
 }
@@ -390,12 +389,8 @@ export function normalizeMobileAccessSettings(value: unknown, legacyGestureValue
     gesture.sidebarGestureThresholdPx = sidebarGestureThresholdPx as number
   }
   return {
-    hideSidebarOnMobile: record.hideSidebarOnMobile === undefined
-      ? DEFAULT_MOBILE_ACCESS_SETTINGS.hideSidebarOnMobile
-      : record.hideSidebarOnMobile === true,
-    optimizeSettingsOnMobile: record.optimizeSettingsOnMobile === undefined
-      ? DEFAULT_MOBILE_ACCESS_SETTINGS.optimizeSettingsOnMobile
-      : record.optimizeSettingsOnMobile === true,
+    hideSidebarOnMobile: false,
+    optimizeSettingsOnMobile: false,
     mobileViewportMaxPx: clampSettingsInteger(
       record.mobileViewportMaxPx,
       MOBILE_VIEWPORT_MAX_PX_LIMITS,
