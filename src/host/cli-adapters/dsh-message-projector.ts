@@ -6,7 +6,7 @@ import type {
   CodingNsAgentPermissionResponse,
   CodingNsCliPermissionState,
 } from '../../shared/contracts/cli-adapter.js'
-import type { CodingNsNativeSessionBridge, CodingNsNativeUsageSample } from '../native-session-bridge.js'
+import type { CodingNsNativeImageAttachmentRef, CodingNsNativeSessionBridge, CodingNsNativeUsageSample } from '../native-session-bridge.js'
 import { CodingNsDshToolHistoryProjector } from './dsh-tool-history.js'
 import {
   CodingNsAgentEventNormalizer,
@@ -208,8 +208,16 @@ export class CodingNsDshMessageProjector {
         // step 边界由 DSH 原生 turn/step 事件表达，不再伪造 Markdown 文本。
         // 伪造的空文本会被 Chat 渲染成额外的空白块，导致相邻 step 间距异常。
         return []
-      case 'tool-event':
-        return this.externalToolChunk(this.toolHistory.observe(event))
+      case 'tool-event': {
+        const images: CodingNsNativeImageAttachmentRef[] = []
+        for (const image of event.outputImages ?? []) {
+          const attachment = await this.options.nativeSessions?.admitImageArtifact?.(image)
+          if (attachment === null || attachment === undefined) continue
+          this.options.nativeSessions?.registerImageReference?.(this.options.sessionId, attachment)
+          images.push(attachment)
+        }
+        return this.externalToolChunk(this.toolHistory.observe(event, images))
+      }
       case 'image-artifact':
         return this.externalImageChunk(event)
       case 'permission-request':

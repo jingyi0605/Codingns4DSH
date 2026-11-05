@@ -113,7 +113,7 @@ test('Claude parallel tool results and duplicate assistant snapshots settle each
   const registry = new CodingNsCliAdapterRegistry([replay.driver])
   try {
     const result = await settle(registry)
-    assert.equal(result.steps, 3)
+    assert.equal(result.steps, 2)
     assert.deepEqual(result.usages.map(usage => usage.outputTokens), [114, 57])
     assert.equal(replay.spawns(), 1)
   } finally { await registry.dispose() }

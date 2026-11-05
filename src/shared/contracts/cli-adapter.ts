@@ -402,6 +402,8 @@ export interface CodingNsAgentToolEvent {
   readonly callId?: string
   readonly input?: string
   readonly output?: string
+  /** 工具返回的图片字节，仅在 Host 内传给附件准入服务，不序列化到结果文本。 */
+  readonly outputImages?: readonly CodingNsAgentImageArtifact[]
   /**
    * output 的线协议语义。delta 表示追加片段，snapshot 表示截至当前的完整快照。
    * 只要提供 output 就必须显式填写。

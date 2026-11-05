@@ -597,6 +597,7 @@ export class CodingNsCliAdapterRegistry {
     // 只有显式交给 segmentedTurns 的流才能跨 DSH step 保留。
     let iterator: AsyncIterator<CodingNsAgentEvent> | undefined
     let nativeSessionReady = false
+    const pendingToolCalls = new Set<string>()
     try {
       const stored = this.sessionStore?.get(input.sessionId)
       if (stored?.status === 'archived') {
@@ -693,6 +694,10 @@ export class CodingNsCliAdapterRegistry {
           if (next.done) { iterator = undefined; break }
         }
         const event = next.value
+        if (event.type === 'tool-event' && event.callId !== undefined) {
+          if (event.status === 'completed' || event.status === 'failed') pendingToolCalls.delete(event.callId)
+          else pendingToolCalls.add(event.callId)
+        }
         if (event.type === 'usage') this.lastUsages.set(input.sessionId, usageSnapshot(event))
         if (event.type === 'session-binding') {
           const providerIdentityChanged = event.providerSessionId !== current.providerSessionId
@@ -749,7 +754,10 @@ export class CodingNsCliAdapterRegistry {
           && driver.supportsSegmentedTurns !== true
           && driver.supportsStreamStepSplitting !== true
           && event.type === 'tool-event'
+          && pendingToolCalls.size === 0
           && (event.status === 'completed' || event.status === 'failed')) {
+          // 并行工具必须整批结算后再分步，否则本步投影器的 finalize 会把
+          // 尚未返回的工具提前写为空成功，下一步又丢失其参数并重复声明。
           // 先保存迭代器再 yield。即使调用方在工具事件后提前关闭流，
           // 下一次 DSH step 仍能从同一个 Provider 进程继续读取正文。
           this.segmentedTurns.set(input.sessionId, {
