@@ -2741,7 +2741,8 @@ test('外部 Agent 在 DSH 准备首个 step 前选择自己的模型路由', as
   features.register(createCliAdaptersFeature({ registry }))
   await features.start('cliAdapters')
   const rpc = table.resolve('cli/session/set')!
-  await rpc.handler('session/set', { sessionId: agent.id, adapterId: 'claude-code', modelId: 'kiro/claude-sonnet-5.5' })
+  await rpc.handler('session/set', { sessionId: agent.id, adapterId: 'claude-code', modelId: 'kiro/claude-sonnet-5.5', effortId: 'medium' })
+  // The external virtual provider declares no reasoning efforts, so DSH must not receive reasoningEffort.
   assert.deepEqual(calls, [
     ['select', { provider: 'codingns-cli-claude-code', model: 'kiro/claude-sonnet-5.5' }],
   ])
