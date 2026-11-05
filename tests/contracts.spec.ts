@@ -74,10 +74,10 @@ test('Codingns4DSH 设置用模块名字典表达开关，结构不随模块数�
 })
 
 test('移动端访问设置缺省回填、越界收敛', () => {
-  // 默认开启：DSH 原生折叠态仍占 56px 轨道，手机上一开始就该收掉。
+  // 旧版布局开关保留在配置契约中，但由当前 DSH 原生移动端布局接管并固定关闭。
   const defaultMobileAccess = {
-    hideSidebarOnMobile: true,
-    optimizeSettingsOnMobile: true,
+    hideSidebarOnMobile: false,
+    optimizeSettingsOnMobile: false,
     mobileViewportMaxPx: 1024,
     sidebarGestures: true,
     sidebarGestureMapping: 'swipe-inward',
@@ -87,7 +87,7 @@ test('移动端访问设置缺省回填、越界收敛', () => {
   assert.deepEqual(DEFAULT_MOBILE_ACCESS_SETTINGS, defaultMobileAccess)
   assert.deepEqual(normalizeMobileAccessSettings(undefined), DEFAULT_MOBILE_ACCESS_SETTINGS)
   assert.deepEqual(normalizeMobileAccessSettings({}), DEFAULT_MOBILE_ACCESS_SETTINGS)
-  assert.deepEqual(normalizeMobileAccessSettings({ hideSidebarOnMobile: false }), { ...defaultMobileAccess, hideSidebarOnMobile: false })
+  assert.deepEqual(normalizeMobileAccessSettings({ hideSidebarOnMobile: true, optimizeSettingsOnMobile: true }), defaultMobileAccess)
   // 越界值收敛到允许范围，非法类型回落到默认值。
   assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 10 }), { ...defaultMobileAccess, mobileViewportMaxPx: 480 })
   assert.deepEqual(normalizeMobileAccessSettings({ mobileViewportMaxPx: 99999 }), { ...defaultMobileAccess, mobileViewportMaxPx: 1280 })
@@ -98,7 +98,7 @@ test('移动端访问设置缺省回填、越界收敛', () => {
   assert.deepEqual(normalizeMobileAccessSettings({ sidebarGestureDistancePercent: 55 }), { ...defaultMobileAccess, sidebarGestureDistancePercent: 55 })
   // 非对象输入不能抛出，也不能把字符串当成真值开关。
   assert.deepEqual(normalizeMobileAccessSettings('on'), defaultMobileAccess)
-  assert.deepEqual(normalizeMobileAccessSettings({ hideSidebarOnMobile: 'yes' }), { ...defaultMobileAccess, hideSidebarOnMobile: false })
+  assert.deepEqual(normalizeMobileAccessSettings({ hideSidebarOnMobile: 'yes', optimizeSettingsOnMobile: 'yes' }), defaultMobileAccess)
   assert.deepEqual(normalizeMobileAccessSettings({}, { sidebarGestures: false, sidebarGestureMapping: 'swap' }), {
     ...defaultMobileAccess,
     sidebarGestures: false,
