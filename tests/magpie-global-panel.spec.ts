@@ -164,6 +164,10 @@ test('Magpie dashboard renders as a flat page region rather than a modal overlay
   assert.match(markup, /codingns-magpie-periods\{flex-direction:row;overflow:auto/u, 'period controls remain usable on narrow screens')
   assert.match(markup, /html\[data-codingns-mobile-sidebar=&quot;on&quot;\] \.codingns-magpie-page\{padding-left:0/u, 'a hidden mobile sidebar keeps the page full width instead of indenting it by the frame leading clearance')
   assert.match(markup, /\.codingns-magpie-topbar\{[^}]*var\(--mp-leading-inset\)/u, 'only the header row clears the floating logo button')
+  const drawerRule = /html \[data-sidebar-drawer\] \.codingns-magpie-page\{([^}]*)\}/u.exec(markup)?.[1] ?? ''
+  assert.ok(drawerRule.includes('padding-left:0'), 'DSH native drawer mode must not indent the whole page by its leading clearance')
+  assert.ok(drawerRule.includes('margin-top:calc(-1 * var(--mp-pull))'), 'drawer mode pulls the page into the strip DSH reserves for its toggle button')
+  assert.ok(drawerRule.includes('--mp-leading-inset:max(0px,calc(var(--dsh-frame-leading-clearance,0px) - 12px))'), 'the tab row starts after the toggle button')
   assert.doesNotMatch(markup, /class="codingns-magpie-toolbar(?! has-tabs")/u, 'the empty management toolbar row is no longer rendered at all')
   assert.doesNotMatch(markup, /MAGPIE \/ GATEWAY|MAGPIE WEB API|codingns-magpie-updated/u, 'the gateway caption and update stamp are gone from the toolbar')
   assert.match(markup, /\.codingns-magpie-statstrip\{grid-template-columns:repeat\(2,minmax\(0,1fr\)\)\}/u, 'phone statistic cells collapse to two columns')
