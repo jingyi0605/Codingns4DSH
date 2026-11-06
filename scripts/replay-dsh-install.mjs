@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module'
-import { mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises'
+import { copyFile, mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
@@ -152,11 +152,27 @@ console.log(JSON.stringify(report, null, 2))
 console.log(`安装回放通过，报告：${reportPath}`)
 
 function run(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, env: { ...process.env, DSH_HOME: home }, encoding: 'utf8' })
+  const windowsBatch = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(command)
+  const executable = windowsBatch ? (process.env.ComSpec ?? 'cmd.exe') : command
+  const executableArgs = windowsBatch
+    ? ['/d', '/s', '/c', `"${[command, ...args].map(quoteWindowsCommandArgument).join(' ')}"`]
+    : args
+  const result = spawnSync(executable, executableArgs, {
+    cwd,
+    env: { ...process.env, DSH_HOME: home },
+    encoding: 'utf8',
+    windowsHide: true,
+    windowsVerbatimArguments: windowsBatch,
+    timeout: 180_000,
+  })
   if (result.status !== 0) {
     throw new Error(`${command} ${args.join(' ')}\n${result.stdout ?? ''}\n${result.stderr ?? ''}`)
   }
   return result
+}
+
+function quoteWindowsCommandArgument(value) {
+  return `"${String(value).replaceAll('"', '""')}"`
 }
 
 function resolvePackageManifest(packageName, anchors) {
@@ -175,5 +191,21 @@ async function linkRuntimePackage(packageName) {
   const destination = join(profile, 'node_modules', packageName)
   if (!existsSync(target) || existsSync(destination)) return
   await mkdir(dirname(destination), { recursive: true })
-  await symlink(target, destination, 'dir')
+  try {
+    await symlink(target, destination, 'dir')
+  } catch (error) {
+    if (process.platform !== 'win32' || !['EPERM', 'EACCES'].includes(error?.code)) throw error
+    await copyDirectory(target, destination)
+  }
+}
+
+async function copyDirectory(source, destination) {
+  await mkdir(destination, { recursive: true })
+  for (const entry of await readdir(source, { withFileTypes: true })) {
+    const from = join(source, entry.name)
+    const to = join(destination, entry.name)
+    if (entry.isDirectory()) await copyDirectory(from, to)
+    else if (entry.isFile()) await copyFile(from, to)
+    else throw new Error(`无法复制运行时包中的非普通文件：${from}`)
+  }
 }
