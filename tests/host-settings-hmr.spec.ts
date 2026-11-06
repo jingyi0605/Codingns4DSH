@@ -183,6 +183,75 @@ test('per-agent translation options persist through native SettingsForms mutatio
   } finally { await formsFiber.dispose() }
 })
 
+test('cached reads avoid Profile rebuilds and document events refresh the snapshot', () => {
+  let saved = { ...DEFAULT_CODINGNS_SETTINGS, modules: { terminalEnhancement: true } }
+  let describes = 0
+  let updated: ((namespace: string) => void) | undefined
+  const ctx = {
+    settings: { describe: () => {
+      describes += 1
+      return [{ ns: namespace, value: saved, revision: describes }]
+    } },
+    on: (_event: string, listener: (namespace: string) => void) => {
+      updated = listener
+      return () => { updated = undefined }
+    },
+    effect: () => undefined,
+  } as unknown as Context
+  const scope = registerCodingNsSettings(ctx)
+  for (let index = 0; index < 100; index++) assert.equal(scope.get(), saved)
+  assert.equal(describes, 1)
+  saved = { ...saved, modules: { terminalEnhancement: false } }
+  updated?.(namespace)
+  assert.equal(scope.get().modules.terminalEnhancement, false)
+  assert.equal(describes, 2)
+})
+
+for (const volatile of [false, true]) test(`hidden form reads current runtime config without an update event (volatile=${volatile})`, () => {
+  let config = { ...DEFAULT_CODINGNS_SETTINGS, modules: { terminalEnhancement: true } }
+  const wrapper = { get: () => config }
+  let describes = 0
+  const ctx = {
+    settings: { describe: () => { describes++; return [] } },
+    on: () => () => undefined,
+    effect: () => undefined,
+  } as unknown as Context
+  const scope = registerCodingNsSettings(ctx, () => volatile ? wrapper : config)
+  for (let index = 0; index < 100; index++) assert.equal(scope.get().modules.terminalEnhancement, true)
+  assert.equal(describes, 1)
+  config = { ...config, modules: { terminalEnhancement: false } }
+  assert.equal(scope.get().modules.terminalEnhancement, false)
+  assert.equal(describes, 2)
+  for (let index = 0; index < 100; index++) scope.get()
+  assert.equal(describes, 2)
+})
+
+test('document events refresh the volatile identity once and ignore other namespaces', () => {
+  let config = { ...DEFAULT_CODINGNS_SETTINGS, modules: { terminalEnhancement: true } }
+  const wrapper = { get: () => config }
+  let describes = 0
+  let updated: ((namespace: string) => void) | undefined
+  const ctx = {
+    settings: { describe: () => { describes++; return [] } },
+    on: (_event: string, listener: (namespace: string) => void) => {
+      updated = listener
+      return () => { updated = undefined }
+    },
+    effect: () => undefined,
+  } as unknown as Context
+  const scope = registerCodingNsSettings(ctx, () => wrapper)
+  const observed: Array<[boolean | undefined, boolean | undefined]> = []
+  scope.watch((next, previous) => { observed.push([next.modules.terminalEnhancement, previous.modules.terminalEnhancement]) })
+  updated?.('unrelated-plugin')
+  assert.equal(describes, 1)
+  assert.deepEqual(observed, [])
+  config = { ...config, modules: { terminalEnhancement: false } }
+  updated?.(namespace)
+  for (let index = 0; index < 100; index++) assert.equal(scope.get().modules.terminalEnhancement, false)
+  assert.equal(describes, 2)
+  assert.deepEqual(observed, [[false, true]])
+})
+
 test('未提供入口配置的现代设置调用和旧版 register 路径保持兼容', () => {
   const saved = { ...DEFAULT_CODINGNS_SETTINGS, modules: { terminalEnhancement: true } }
   const ctx = {
