@@ -1,5 +1,6 @@
 import { createElement, useEffect, useLayoutEffect, useRef, useState } from 'react'
-import type { ReactElement } from 'react'
+import type { ReactElement, ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { InputActions, InputState } from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SnapshotSelectorHook } from '@deepseek-ai/dsh-client-ui-slots'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
@@ -217,7 +218,7 @@ function QuickPhraseSlot(props: QuickPhraseSlotProps): ReactElement | null {
       createElement('path', { d: 'M7 16h5' }),
       createElement('path', { d: 'M5 5h14v14H9l-4 4V5z' }),
     )),
-    open && createElement('div', {
+    open && renderInBody(createElement('div', {
       className: 'codingns4dsh-quick-phrase-overlay',
       role: 'dialog',
       'aria-label': t('workspace.quickPhrasesDialogLabel'),
@@ -290,8 +291,8 @@ function QuickPhraseSlot(props: QuickPhraseSlotProps): ReactElement | null {
           }, '×'),
         )),
       ),
-    )),
-    addOpen && createElement('div', {
+    ))),
+    addOpen && renderInBody(createElement('div', {
       className: 'codingns4dsh-quick-phrase-overlay',
       role: 'dialog',
       'aria-label': t('workspace.quickPhrasesAddDialogLabel'),
@@ -346,8 +347,16 @@ function QuickPhraseSlot(props: QuickPhraseSlotProps): ReactElement | null {
           style: quickPhraseAddButtonStyle,
         }, t('workspace.quickPhrasesAdd')),
       ),
-    )),
+    ))),
   )
+}
+
+/**
+ * 弹层挂到 body 下。宿主工具栏行带 `container-type: inline-size`（布局包含），
+ * 会让 position:fixed 的后代相对该行定位而不是视口，导致弹层位置漂移。
+ */
+function renderInBody(node: ReactElement): ReactNode {
+  return typeof document === 'undefined' ? node : createPortal(node, document.body)
 }
 
 function findAddButton(root: HTMLElement): HTMLButtonElement | null {
