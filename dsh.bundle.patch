@@ -7,16 +7,8 @@
 - id: ui-sidebar-terminal
   name: '@deepseek-ai/dsh-client-ui-sidebar-terminal'
   disabled: true
-# 远程访问必须始终使用网页模态框。默认的 auto 会按 Host 环境切换到原生系统选择器，
-# 这对远程浏览器不可达，而且会让同一个“添加工作区”入口出现两套交互。
-- id: directory-picker
-  name: '@deepseek-ai/dsh-host-directory-picker-auto'
-  disabled: true
-- insert:
-    - id: directory-picker-browse
-      name: '@deepseek-ai/dsh-host-directory-picker-browse'
-    - id: ui-directory-picker-browse
-      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
+# DSH owns the adaptive directory-picker pair. It selects exactly one matching
+# Host backend and Client surface for local or remote deployments.
 - insert:
     - id: '@jingyi0605/codingns4dsh'
       name: '@jingyi0605/codingns4dsh'

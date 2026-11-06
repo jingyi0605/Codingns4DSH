@@ -6,8 +6,9 @@ import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator
 /**
  * 在 DSH 原生"添加工作区"对话框里追加一个"远程 HOST"标签页。
  *
- * 原生对话框由 `@deepseek-ai/dsh-client-ui-directory-picker-browse` 通过
- * `sidebar.workspaces.directoryFlow`（single 插槽）渲染。single 插槽只能有一个
+ * When the adaptive picker resolves to the browse surface,
+ * `@deepseek-ai/dsh-client-ui-directory-picker-browse` renders the dialog through
+ * `sidebar.workspaces.directoryFlow` (the single slot). That slot can have only one
  * 胜出者，抢占它等于整个替换原生组件——而用户要的是**原生主体保持不变**，只多
  * 一个入口。因此这里不碰插槽，改为在原生对话框的 DOM 上就地追加标签页：
  *
