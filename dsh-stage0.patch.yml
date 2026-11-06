@@ -7,6 +7,17 @@
 - id: ui-sidebar-terminal
   name: '@deepseek-ai/dsh-client-ui-sidebar-terminal'
   disabled: true
+# Stage0 runs the Web UI on the same macOS host as DSH. Pin its workspace
+# chooser to the in-app browse surface so the development profile does not
+# depend on the native Desktop picker flow.
+- id: directory-picker
+  name: '@deepseek-ai/dsh-host-directory-picker-auto'
+  disabled: true
+- insert:
+    - id: directory-picker-browse
+      name: '@deepseek-ai/dsh-host-directory-picker-browse'
+    - id: ui-directory-picker-browse
+      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
 - id: client-hmr
   name: '@deepseek-ai/dsh-client-hmr'
   # 官方 Client 会局部替换模块并遗留终端注册。Stage0 Host 单独复用官方

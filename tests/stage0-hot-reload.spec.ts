@@ -224,6 +224,7 @@ test('Stage0 patch 经原生 patch 算法后保留终端隔离并监听 Host 产
   const entries = [
     { id: 'terminal-controller', name: '@deepseek-ai/dsh-api-terminal-controller' },
     { id: 'ui-sidebar-terminal', name: '@deepseek-ai/dsh-client-ui-sidebar-terminal' },
+    { id: 'directory-picker', name: '@deepseek-ai/dsh-host-directory-picker-auto' },
     { id: 'client-hmr', name: '@deepseek-ai/dsh-client-hmr' },
     { id: 'hmr', name: '@deepseek-ai/dsh-hmr', config: { root: [] } },
   ]
@@ -233,6 +234,9 @@ test('Stage0 patch 经原生 patch 算法后保留终端隔离并监听 Host 产
   for (const id of ['terminal-controller', 'ui-sidebar-terminal', 'client-hmr']) {
     assert.equal(result.find((entry) => entry.id === id)?.disabled, true)
   }
+  assert.equal(result.find((entry) => entry.id === 'directory-picker')?.disabled, true)
+  assert.equal(result.find((entry) => entry.id === 'directory-picker-browse')?.name, '@deepseek-ai/dsh-host-directory-picker-browse')
+  assert.equal(result.find((entry) => entry.id === 'ui-directory-picker-browse')?.name, '@deepseek-ai/dsh-client-ui-directory-picker-browse')
   const config = result.find((entry) => entry.id === 'hmr')?.config
   assert.deepEqual(config.root, ['data/build/dist'])
   assert.ok(config.ignored.includes('data/build/dist/client/**'))
