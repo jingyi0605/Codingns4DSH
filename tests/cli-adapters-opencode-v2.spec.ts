@@ -26,8 +26,10 @@ function harness(options: {
   models?: unknown[]
   providers?: unknown[]
   sessionDirectory?: string
+  activationFailures?: number
 } = {}) {
   const requests: Array<{ path: string; query: URLSearchParams; body: any; headers: Headers }> = []
+  let activationPending = options.activationFailures ?? 0
   let controller: ReadableStreamDefaultController<Uint8Array> | undefined
   let ended = false
   let ready = false
@@ -42,6 +44,10 @@ function harness(options: {
     const path = url.pathname
     const body = init.body ? JSON.parse(String(init.body)) : undefined
     requests.push({ path, query: url.searchParams, body, headers: new Headers(init.headers) })
+    if (url.searchParams.has('location[directory]') && activationPending > 0) {
+      activationPending -= 1
+      return json({ _tag: 'ServiceUnavailableError', message: 'Location plugins did not finish activating', service: 'plugin' }, 503)
+    }
     if (path === '/api/info') return json({ version: '2.0.24', pid: 123, urls: [], paths: { tmp: '/tmp' } })
     if (path === '/api/model') return envelope(options.models ?? [model])
     if (path === '/api/provider') return envelope(options.providers ?? [provider, { id: 'disabled', name: '已禁用', activation: 'disabled' }])
@@ -145,6 +151,93 @@ test('OpenCode V2 非空的内置模型快照也要等待配置模型和默认�
   assert.equal(catalog.currentModel, 'custom/alias/review')
   assert.deepEqual(catalog.groups.map((group) => group.id), ['custom'])
   driver.dispose()
+})
+
+test('OpenCode V2 模型目录在 location 插件激活期间自动重试', async () => {
+  const { driver } = harness({ activationFailures: 2 })
+  try {
+    assert.equal((await driver.listModels()).currentModel, 'custom/alias/review')
+  } finally { driver.dispose() }
+})
+
+test('OpenCode V2 新一轮对话在 MCP 注册遇到激活中 503 时重试', async () => {
+  setSubagentBridge(createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:1', token: 'test-token' }))
+  const { driver, requests } = harness({ activationFailures: 1, events: [done] })
+  try {
+    const events = []
+    for await (const event of driver.executeTurn(input)) events.push(event)
+    assert.equal(events.at(-1)?.type, 'finish')
+    assert.ok(requests.some((request) => /^\/api\/experimental\/mcp\/codingns_[0-9a-f]{8}$/u.test(request.path)))
+  } finally {
+    driver.dispose()
+    setSubagentBridge(undefined)
+  }
+})
+
+test('OpenCode V2 与插件激活无关的 503 仍然直接失败', async () => {
+  let failures = 0
+  const driver = new OpenCodeDriver({ binaries: [], serverUrls: ['http://opencode.test'], fetch: async (url: string) => {
+    if (new URL(url).pathname === '/api/info') return json({ version: '2.0.24' })
+    failures += 1
+    return json({ message: 'upstream unavailable' }, 503)
+  } })
+  try {
+    await assert.rejects(driver.listModels(), /upstream unavailable/u)
+    assert.equal(failures, 3)
+  }
+  finally { driver.dispose() }
+})
+
+test('OpenCode V2 Skill 目录在 location 激活完成后恢复', async () => {
+  const { driver, requests } = harness({ activationFailures: 2, skills: [{ id: 'team/review', name: 'review' }] })
+  try {
+    assert.deepEqual(await driver.listSkills({ sessionId: input.sessionId, cwd }), [{ id: 'team/review', name: 'review', description: '', enabled: true }])
+    assert.equal(requests.filter((request) => request.path === '/api/skill').length, 3)
+  } finally { driver.dispose() }
+})
+
+test('OpenCode V2 service_starting 激活状态也可重试', async () => {
+  let reads = 0
+  const driver = new OpenCodeDriver({ binaries: [], serverUrls: ['http://opencode.test'], fetch: async (url: string) => {
+    if (new URL(url).pathname === '/api/info') return json({ version: '2.0.24' })
+    reads += 1
+    return reads === 1 ? json({ code: 'service_starting' }, 503) : envelope([])
+  } })
+  try {
+    assert.deepEqual(await driver.listSkills({ sessionId: input.sessionId, cwd }), [])
+    assert.equal(reads, 2)
+  } finally { driver.dispose() }
+})
+
+test('OpenCode V2 激活重试达到 30 秒上限后保留真实错误', async (context) => {
+  let now = Date.now()
+  context.mock.method(Date, 'now', () => now)
+  let reads = 0
+  const driver = new OpenCodeDriver({ binaries: [], serverUrls: ['http://opencode.test'], fetch: async (url: string) => {
+    if (new URL(url).pathname === '/api/info') return json({ version: '2.0.24' })
+    reads += 1
+    now += 15_000
+    return json({ message: 'Location plugins did not finish activating' }, 503)
+  } })
+  try {
+    await assert.rejects(driver.listSkills({ sessionId: input.sessionId, cwd }), /Location plugins did not finish activating/u)
+    assert.equal(reads, 2)
+  } finally { driver.dispose() }
+})
+
+test('OpenCode V2 激活重试响应取消且不再发出请求', async () => {
+  const controller = new AbortController()
+  let reads = 0
+  const driver = new OpenCodeDriver({ binaries: [], serverUrls: ['http://opencode.test'], fetch: async (url: string) => {
+    if (new URL(url).pathname === '/api/info') return json({ version: '2.0.24' })
+    reads += 1
+    setTimeout(() => controller.abort(), 10)
+    return json({ message: 'Location plugins did not finish activating' }, 503)
+  } })
+  try {
+    await assert.rejects(driver.listSkills({ sessionId: input.sessionId, cwd, signal: controller.signal }), { name: 'AbortError' })
+    assert.equal(reads, 1)
+  } finally { driver.dispose() }
 })
 
 test('OpenCode V2 原生 service 登记提供认证，拒绝复用 PID 不匹配的旧登记', async () => {
