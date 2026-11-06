@@ -2029,7 +2029,14 @@ const MAGPIE_PAGE_CSS = `
 .codingns-magpie-page{--mp-topbar-pad-x:16px;--mp-topbar-pad-y:0px;--mp-leading-inset:0px;padding-left:var(--dsh-frame-leading-clearance,0px)}
 .codingns-magpie-topbar{padding-right:var(--mp-topbar-pad-x);padding-left:calc(var(--mp-topbar-pad-x) + var(--mp-leading-inset))}
 html[data-codingns-mobile-sidebar="on"] .codingns-magpie-page{padding-left:0;--mp-leading-inset:max(0px,calc(var(--dsh-frame-leading-clearance,0px) - 20px))}
-@media(max-width:900px){.codingns-magpie-topbar{--mp-topbar-pad-x:14px;--mp-topbar-pad-y:9px}.codingns-magpie-topbar-left{margin-left:calc(-1 * var(--mp-leading-inset))}}
+/* DSH 0.2.2 narrow-screen drawer mode: the sidebar is an overlay drawer, and DSH pads a
+   global panel's top by 48px (minus the window top clearance) so content starts below its
+   floating toggle button. Instead of leaving that strip empty, pull the page up into it so
+   the tab bar shares the toggle button's row, and start that row after the button via the
+   leading clearance DSH publishes (--mp-leading-inset = clearance - topbar padding). The
+   page is not indented as a whole. Kept after the rule above (same specificity) so it wins
+   when both modes are active. */
+html [data-sidebar-drawer] .codingns-magpie-page{--mp-pull:max(0px,calc(48px - var(--dsh-frame-top-clearance,0px)));--mp-leading-inset:max(0px,calc(var(--dsh-frame-leading-clearance,0px) - 12px));padding-left:0;margin-top:calc(-1 * var(--mp-pull));height:calc(100% + var(--mp-pull))}@media(max-width:900px){.codingns-magpie-topbar{--mp-topbar-pad-x:14px;--mp-topbar-pad-y:9px}.codingns-magpie-topbar-left{margin-left:calc(-1 * var(--mp-leading-inset))}}
 @media(max-width:650px){.codingns-magpie-topbar{--mp-topbar-pad-x:12px;--mp-topbar-pad-y:8px}.codingns-magpie-icon-button{width:36px;height:36px}.codingns-magpie-toolbar:not(.has-tabs){display:none}.codingns-magpie-view{padding:14px 12px 30px}.codingns-magpie-statstrip{grid-template-columns:repeat(2,minmax(0,1fr))}.codingns-magpie-statcell{padding:13px;border-left:0}.codingns-magpie-statcell:nth-child(2n){border-left:.5px solid var(--mp-line)}.codingns-magpie-statcell:nth-child(n+3){border-top:.5px solid var(--mp-line)}.codingns-magpie-statcell:last-child:nth-child(odd){grid-column:1/-1}.codingns-magpie-statcell-value{font-size:${uiFontSize(22)}}.codingns-magpie-barchart-plot{height:132px}.codingns-magpie-barchart-axis{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(0,1fr);gap:0;overflow:hidden;font-size:${uiFontSize(9)}}.codingns-magpie-barchart-tick{overflow:hidden;text-overflow:clip}}
 .codingns-magpie-reqlist{display:none}
 .codingns-magpie-reqcard{display:flex;flex-direction:column;gap:5px;padding:11px 14px;border-top:.5px solid var(--mp-line)}
