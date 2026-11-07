@@ -641,7 +641,10 @@ function readClaudeUsage(
   const contextWindow = readClaudeContextWindow(value, event, modelId)
     ?? positiveNumber(rawUsage.contextWindow ?? rawUsage.context_window)
     ?? state.contextWindow
-  const parsed = usageChunk(contextWindow === undefined ? rawUsage : { ...rawUsage, contextWindow })
+  const usageInput = value.type === 'result'
+    ? mergeClaudeModelUsageCache(rawUsage, value, event, modelId)
+    : rawUsage
+  const parsed = usageChunk(contextWindow === undefined ? usageInput : { ...usageInput, contextWindow })
   if (parsed?.type !== 'usage') return null
   if (contextWindow !== undefined) state.contextWindow = contextWindow
   if (parsed.contextTokens !== undefined) state.contextTokens = parsed.contextTokens
@@ -653,6 +656,94 @@ function readClaudeUsage(
   }
   const usage = value.type === 'result' && state.settled !== undefined ? remainingClaudeUsage(parsed, state.settled) : parsed
   return enrichClaudeUsage(usage, state)
+}
+
+/**
+ * Some Claude Code versions put the cumulative cache buckets on `modelUsage`
+ * while leaving the result-level `usage` with only input/output totals.
+ * Preserve those buckets before the common parser builds the DSH usage event;
+ * otherwise the terminal result replaces the richer per-step sample with a
+ * cache-less snapshot.
+ */
+function mergeClaudeModelUsageCache(
+  usage: Record<string, unknown>,
+  value: Record<string, unknown>,
+  event: Record<string, unknown>,
+  modelId: string | undefined,
+): Record<string, unknown> {
+  const model = readClaudeModelUsage(value, event, modelId)
+  if (model === null) return usage
+  const resultCacheRead = firstNumber(
+    usage.cacheReadTokens,
+    usage.cachedReadTokens,
+    usage.cache_read_tokens,
+    usage.cached_read_tokens,
+    usage.cache_read_input_tokens,
+    usage.cacheReadInputTokens,
+  )
+  const resultCacheWrite = firstNumber(
+    usage.cacheWriteTokens,
+    usage.cacheCreationTokens,
+    usage.cache_write_tokens,
+    usage.cache_creation_tokens,
+    usage.cache_write_input_tokens,
+    usage.cache_creation_input_tokens,
+    usage.cacheCreationInputTokens,
+  )
+  return {
+    ...usage,
+    ...(model.cacheReadTokens !== undefined
+      ? {
+          cacheReadTokens: model.cacheReadTokens,
+          cacheReadInputTokens: model.cacheReadTokens,
+          cache_read_input_tokens: model.cacheReadTokens,
+        }
+      : resultCacheRead === undefined ? {} : { cacheReadInputTokens: resultCacheRead }),
+    ...(model.cacheWriteTokens !== undefined
+      ? {
+          cacheWriteTokens: model.cacheWriteTokens,
+          cacheCreationInputTokens: model.cacheWriteTokens,
+          cache_creation_input_tokens: model.cacheWriteTokens,
+        }
+      : resultCacheWrite === undefined ? {} : { cacheCreationInputTokens: resultCacheWrite }),
+  }
+}
+
+function readClaudeModelUsage(
+  value: Record<string, unknown>,
+  event: Record<string, unknown>,
+  modelId: string | undefined,
+): { readonly cacheReadTokens?: number; readonly cacheWriteTokens?: number } | null {
+  for (const source of [value.modelUsage, event.modelUsage]) {
+    if (!isRecord(source)) continue
+    const entries = Object.entries(source)
+    const selected = (modelId === undefined ? undefined : source[modelId])
+      ?? (entries.length === 1 ? entries[0]?.[1] : undefined)
+    if (!isRecord(selected)) continue
+    const cacheReadTokens = firstNumber(
+      selected.cacheReadInputTokens,
+      selected.cache_read_input_tokens,
+      selected.cacheReadTokens,
+      selected.cache_read_tokens,
+    )
+    const cacheWriteTokens = firstNumber(
+      selected.cacheCreationInputTokens,
+      selected.cache_creation_input_tokens,
+      selected.cacheWriteTokens,
+      selected.cache_write_tokens,
+    )
+    if (cacheReadTokens !== undefined || cacheWriteTokens !== undefined) {
+      return {
+        ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
+        ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
+      }
+    }
+  }
+  return null
+}
+
+function firstNumber(...values: readonly unknown[]): number | undefined {
+  return values.find((value): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0)
 }
 
 /** Only provider facts may anchor native usage; catalog hints stay in request/context. */

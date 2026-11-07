@@ -177,6 +177,69 @@ test('Claude Code 优先使用 result.modelUsage 报告的上下文窗口', () =
   }
 })
 
+test('Claude result.modelUsage supplies cache buckets when result.usage omits them', () => {
+  const driver = new ClaudeCodeDriver({ binaries: ['fake-claude'] })
+  try {
+    assert.deepEqual(parse(driver, {
+      type: 'result',
+      usage: { input_tokens: 300, output_tokens: 171 },
+      modelUsage: {
+        'claude-sonnet-4-6': {
+          inputTokens: 300,
+          outputTokens: 171,
+          cacheReadInputTokens: 100,
+          cacheCreationInputTokens: 15,
+        },
+      },
+    }), [{
+      type: 'usage',
+      inputTokens: 300,
+      outputTokens: 171,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 15,
+      uncachedInputTokens: 300,
+      totalTokens: 586,
+      cacheHitRate: 24.0964,
+    }, { type: 'finish', reason: 'stop' }])
+  } finally {
+    driver.dispose()
+  }
+})
+
+test('Claude result.modelUsage overrides zero cache placeholders in result.usage', () => {
+  const driver = new ClaudeCodeDriver({ binaries: ['fake-claude'] })
+  try {
+    assert.deepEqual(parse(driver, {
+      type: 'result',
+      usage: {
+        input_tokens: 300,
+        output_tokens: 171,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+      },
+      modelUsage: {
+        'claude-sonnet-4-6': {
+          inputTokens: 300,
+          outputTokens: 171,
+          cacheReadInputTokens: 100,
+          cacheCreationInputTokens: 15,
+        },
+      },
+    }), [{
+      type: 'usage',
+      inputTokens: 300,
+      outputTokens: 171,
+      cacheReadTokens: 100,
+      cacheWriteTokens: 15,
+      uncachedInputTokens: 300,
+      totalTokens: 586,
+      cacheHitRate: 24.0964,
+    }, { type: 'finish', reason: 'stop' }])
+  } finally {
+    driver.dispose()
+  }
+})
+
 test('Claude Code 新会话在首个 usage 前写入已知上下文窗口', async () => {
   const contexts: unknown[] = []
   const registry = new CodingNsCliAdapterRegistry([{
