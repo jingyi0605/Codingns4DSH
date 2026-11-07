@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { Children, createElement, isValidElement, type ComponentType, type ReactElement, type ReactNode } from 'react'
+import { Children, createElement, isValidElement, useState, type ComponentType, type ReactElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { AssistantReasoningContent, TranslationAction, registerSessionTranslationChatUi } from '../src/client/session-translation-chat.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
@@ -98,7 +98,7 @@ test('alpha.3 renders ordinary and translated user content through native factor
   assert.equal(probe.registered.size, 0)
 })
 
-test('alpha.3 translation follows late factory declarations, reloads and disposal', () => {
+test('alpha.3 translation follows late factory declarations, reloads and disposal', async () => {
   const slots = createPresentationSlots()
   const removeRoot = slots.register({ name: 'root', children: {
     'conversation.chat.node': { kind: 'keyed', scope: 'session' },
@@ -106,31 +106,45 @@ test('alpha.3 translation follows late factory declarations, reloads and disposa
   } } as any, () => null)
   const native = () => null
   const removeNative = slots.register({ name: 'conversation.chat.node', key: 'user' } as any, native)
+  const presentation = { getSnapshot: () => ({ foldedReplies: 'all' }), subscribe: () => () => undefined }
+  const removeAssistant = () => slots.register({ name: 'conversation.chat.node', key: 'assistant-step',
+    inject: () => ({ hooks: { presentation } }),
+  } as any, native)
+  let removeNativeAssistant = removeAssistant()
   const dispose = registerSessionTranslationChatUi({ ...createServices(slots as any), dshVersion: '0.2.1-alpha.3' })
   const renderers = () => slots.entries('conversation.chat.node' as never)
-  assert.equal(renderers().length, 1, 'native renderer survives while factories are unavailable')
+  assert.equal(renderers().length, 2, 'native renderers survive while factories are unavailable')
   const text = () => slots.registerFactory({ name: 'conversation.user.text', scope: 'session',
     children: { 'conversation.user.text.node': { kind: 'keyed', scope: 'session' } } } as any, () => null)
   const removeText = text()
-  assert.equal(renderers().length, 1)
+  assert.equal(renderers().length, 2)
   const content = () => slots.registerFactory({ name: 'conversation.chat.user.content', scope: 'session',
     children: { 'conversation.chat.user.images': { kind: 'single', scope: 'session' } } } as any, () => null)
   const removeContent = content()
-  assert.equal(renderers().length, 4, 'text translation does not wait for the optional image gallery')
+  assert.equal(renderers().length, 5, 'text translation does not wait for the optional image gallery')
+  const assistantEntry = () => renderers().find(entry => entry.options.key === 'assistant-step' && entry.options.priority === -100)!
+  assert.equal((assistantEntry().inject as any)('session').hooks.presentation, presentation, 'inherit the live native presentation source')
+  removeNativeAssistant()
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(renderers().length, 3, 'native renderer removal also removes its translation override')
+  removeNativeAssistant = removeAssistant()
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.equal(renderers().length, 5)
+  assert.equal((assistantEntry().inject as any)('session').hooks.presentation, presentation)
   removeContent()
-  assert.equal(renderers().length, 1)
+  assert.equal(renderers().length, 2)
   const removeReplacement = content()
-  assert.equal(renderers().length, 4)
+  assert.equal(renderers().length, 5)
   removeText()
-  assert.equal(renderers().length, 1)
+  assert.equal(renderers().length, 2)
   const removeTextReplacement = text()
-  assert.equal(renderers().length, 4)
+  assert.equal(renderers().length, 5)
   dispose()
-  assert.equal(renderers().length, 1)
+  assert.equal(renderers().length, 2)
   removeTextReplacement()
   const removeAfterStop = text()
-  assert.equal(renderers().length, 1, 'disposed feature must not remount on later factory changes')
-  removeAfterStop(); removeReplacement(); removeNative(); removeRoot()
+  assert.equal(renderers().length, 2, 'disposed feature must not remount on later factory changes')
+  removeAfterStop(); removeReplacement(); removeNativeAssistant(); removeNative(); removeRoot()
 })
 
 function render(component: ComponentType<any>, props: Record<string, unknown>): string {
@@ -555,6 +569,70 @@ const markdownLabels = {
   },
   footnotes: chatT('markdown.footnotes'),
 }
+
+test('整轮折叠遵循保留全部回复与仅保留最终回复策略，展开后恢复思考', () => {
+  const view = captureRenderers().get('assistant-step')!.component
+  for (const foldedReplies of ['all', 'final']) {
+    for (const step of [1, 2]) {
+      for (const open of [false, true]) {
+        for (const foldable of [false, true]) {
+          const node = { data: { status: 'settled', turn: 1, step, blocks: [
+            { kind: 'reasoning', text: reasoningRecord.original, codingnsTranslation: reasoningRecord },
+            { kind: 'text', text: 'Visible reply' },
+          ] } }
+          const root = createHookRenderer(view as (props: any) => ReactElement, {
+            node, services: {}, t: chatT, translationT,
+            usePresentation: (select: (policy: { foldedReplies: string }) => unknown) => select({ foldedReplies }),
+            turnProcess: { foldable, open, spec: { answerStep: 2, inlineReasoning: true } },
+          })
+          try {
+            const tree = root.render()
+            const reasoning = elements(tree).find(element => element.props.text === reasoningRecord.original)!
+            assert.equal(reasoning.props.hidden, foldable && !open && (foldedReplies === 'all' || step === 2),
+              JSON.stringify({ foldedReplies, step, open, foldable }))
+            assert.match(renderToStaticMarkup(tree), /Visible reply/u)
+          } finally { root.dispose() }
+        }
+      }
+    }
+  }
+  const html = render(view, {
+    node: { data: { status: 'settled', turn: 1, step: 1, blocks: [
+      { kind: 'reasoning', text: reasoningRecord.original }, { kind: 'text', text: 'Separate response' },
+    ] } },
+    groupPart: 'reasoning',
+    usePresentation: (select: (policy: { foldedReplies: string }) => unknown) => select({ foldedReplies: 'all' }),
+    turnProcess: { foldable: true, open: false, spec: { answerStep: 1, inlineReasoning: true } },
+  })
+  assert.doesNotMatch(html, /hidden=""|Separate response/u, 'a separate reasoning group is hidden by its owning group seat')
+})
+
+test('思考块使用 DSH 的展开 Hook，整轮收起重置后不再保留展开正文', () => {
+  const view = captureRenderers().get('assistant-step')!.component
+  let resetVersion = 0
+  const useDisclosure = () => {
+    const [openedVersion, setOpenedVersion] = useState<number | null>(null)
+    return { expanded: openedVersion === resetVersion, toggle: () => setOpenedVersion(value => value === resetVersion ? null : resetVersion) }
+  }
+  const root = createHookRenderer(view as (props: any) => ReactElement, {
+    services: {}, t: chatT, translationT, useDisclosure,
+    node: { data: { status: 'settled', turn: 1, step: 1, blocks: [
+      { kind: 'reasoning', text: reasoningRecord.original, codingnsTranslation: reasoningRecord },
+    ] } },
+  })
+  const element = elements(root.render()).find(element => element.props.text === reasoningRecord.original)!
+  const block = createHookRenderer(element.type as (props: any) => ReactElement, element.props)
+  try {
+    const disclosure = () => elements(block.render()).find(element => typeof element.props.onToggle === 'function')!
+    assert.equal(disclosure().props.open, false)
+    disclosure().props.onToggle()
+    assert.equal(disclosure().props.open, true)
+    assert.match(renderToStaticMarkup(block.render()), /data-codingns-translation-action/u)
+    resetVersion += 1
+    assert.equal(disclosure().props.open, false)
+    assert.doesNotMatch(renderToStaticMarkup(block.render()), /data-codingns-translation-action/u)
+  } finally { block.dispose(); root.dispose() }
+})
 
 test('思考块展开后必须渲染译文正文，不能只留下翻译入口', () => {
   const renderers = captureRenderers()

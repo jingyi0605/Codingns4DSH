@@ -611,10 +611,10 @@ function AssistantTranslationNodeView(props: any): ReactElement | null {
     : undefined
   const mentions = fileOwner === undefined || typeof props.fileMentions !== 'function' ? undefined : props.fileMentions(fileOwner)
   const turnProcess = props.turnProcess
+  const keepReplies = props.usePresentation?.((policy: { foldedReplies: string }) => policy.foldedReplies === 'all') === true
   const reasoningHidden = turnProcess !== undefined
     && turnProcess.foldable === true
-    && turnProcess.spec?.answerStep === data.step
-    && turnProcess.spec?.inlineReasoning === true
+    && (keepReplies ? props.groupPart !== 'reasoning' : turnProcess.spec?.answerStep === data.step && turnProcess.spec?.inlineReasoning === true)
     && turnProcess.open !== true
   const rendered: ReactNode[] = []
   const last = blocks.length - 1
@@ -659,6 +659,7 @@ function AssistantTranslationNodeView(props: any): ReactElement | null {
         hidden: reasoningHidden,
         reveal: () => turnProcess?.setOpen?.(true),
         useGroupAction: props.useGroupAction,
+        useDisclosure: props.useDisclosure,
         renderFactorySlot: props.renderFactorySlot,
         markdownLabels,
         pathImages,
@@ -726,6 +727,7 @@ interface AssistantReasoningBlockProps {
   readonly hidden: boolean
   readonly reveal: () => void
   readonly useGroupAction?: (hidden: boolean, reveal: () => void) => React.RefObject<HTMLDivElement>
+  readonly useDisclosure?: () => { readonly expanded: boolean; readonly toggle: () => void }
   readonly renderFactorySlot?: TranslationFactorySlot
   readonly markdownLabels: MarkdownTranslationLabels
   readonly pathImages: { resolve(value: string): string | undefined }
@@ -733,7 +735,7 @@ interface AssistantReasoningBlockProps {
 }
 
 function AssistantReasoningBlock(props: AssistantReasoningBlockProps): ReactElement {
-  const [expanded, setExpanded] = useState(false)
+  const { expanded, toggle } = (props.useDisclosure ?? useReasoningDisclosure)()
   const groupRef = props.useGroupAction?.(props.hidden, props.reveal)
   const { record } = useOutputTranslation({ ...props, outputKind: 'reasoning', record: props.translationRecord })
   const displayText = record?.translated ?? props.text
@@ -750,7 +752,7 @@ function AssistantReasoningBlock(props: AssistantReasoningBlockProps): ReactElem
     expandable: true,
     expandOnRowClick: true,
     running: props.running,
-    onToggle: () => setExpanded((value) => !value),
+    onToggle: toggle,
     collapsedContent: createElement('span', {
       style: { minWidth: 0, overflow: 'hidden', color: dshThemeColor.labelSecondary, fontSize: 'var(--dsh-content-font-size-secondary, 13px)', textOverflow: 'ellipsis', whiteSpace: 'nowrap' },
     }, createElement(TextShimmer, { active: props.running, children: summary })),
@@ -768,6 +770,11 @@ function AssistantReasoningBlock(props: AssistantReasoningBlockProps): ReactElem
     ...(props.renderFactorySlot === undefined ? {} : { renderFactorySlot: props.renderFactorySlot }),
   }) : null),
   )
+}
+
+function useReasoningDisclosure(): { readonly expanded: boolean; readonly toggle: () => void } {
+  const [expanded, setExpanded] = useState(false)
+  return { expanded, toggle: () => setExpanded(value => !value) }
 }
 
 interface AssistantReasoningContentProps {
@@ -874,7 +881,6 @@ export function registerSessionTranslationChatUi(services: CodingNsClientService
     const renderers: readonly [string, (props: any) => ReactElement | null][] = [
       ['user', props => UserMessageNodeView({ ...props, presentation })],
       ['steering', props => UserMessageNodeView({ ...props, presentation })],
-      ['assistant-step', props => AssistantTranslationNodeView({ ...props, presentation })],
     ]
     const removers: (() => void)[] = []
     try {
@@ -887,6 +893,12 @@ export function registerSessionTranslationChatUi(services: CodingNsClientService
           inject: (sessionId: string) => ({ services, sessionId, translationT }),
         }, component)))
       }
+      removers.push(presentation.mountAssistant(nativeInject => slots.inject!('conversation.chat.node', () => slots.register!({
+        name: 'conversation.chat.node', key: 'assistant-step', priority: -100, locale: 'chat',
+        // Inherit reactive policies without adopting native renderer callbacks
+        // whose argument contracts differ from this translation renderer.
+        inject: (sessionId: string) => ({ hooks: nativeInject?.(sessionId).hooks, services, sessionId, translationT }),
+      }, props => AssistantTranslationNodeView({ ...props, presentation })))))
     } catch (error) {
       for (const remove of removers.reverse()) remove()
       throw error
