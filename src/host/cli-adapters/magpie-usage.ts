@@ -676,27 +676,37 @@ export class MagpieUsageService {
     const sessionUsage = primarySession ?? fallbackSession ?? todaySession
     const resolvedSessionId = sessionUsage?.id ?? magpieSessionId
     if (sessionUsage === null && (!allowPendingSession || aggregate === null)) return null
-    const canReadRoute = sessionUsage !== null && includeRoute && resolvedSessionId !== null && resolvedSessionId.length <= 128
-    const routeHistoryResult = canReadRoute
+    const needsSessionCache = sessionUsage !== null
+      && (sessionUsage.cacheReadTokens === null || sessionUsage.cacheWriteTokens === null)
+      && sessionUsage.cacheUnknownTokens === undefined
+      && sessionUsage.cacheUnknownCalls === undefined
+    const canReadSessionLedger = sessionUsage !== null
+      && resolvedSessionId !== null
+      && resolvedSessionId.length <= 128
+      && includeRoute
+    const routeHistoryResult = canReadSessionLedger
       ? await this.readWebJson(`/api/usage/requests?period=all&offset=0&limit=100&q=${encodeURIComponent(resolvedSessionId)}`, signal)
       : { ok: false as const }
     const routeRows = routeHistoryResult.ok ? asRecord(routeHistoryResult.value)?.rows : null
     const routeHistoryValid = Array.isArray(routeRows) && routeRows.length <= 500
+    const sessionUsageWithCache = sessionUsage === null || resolvedSessionId === null || !needsSessionCache || !routeHistoryResult.ok
+      ? sessionUsage
+      : mergeSessionCacheFromRequests(sessionUsage, routeHistoryResult.value, agent, resolvedSessionId)
     const providerRecords = agent === 'codex' && routeHistoryValid
       && routeRows.some((row) => routeText(asRecord(row)?.agent) === 'codex')
       ? await this.readProviderCatalog(signal)
       : []
-    const routeHistory = routeHistoryResult.ok && routeHistoryValid && resolvedSessionId !== null
+    const routeHistory = includeRoute && routeHistoryResult.ok && routeHistoryValid && resolvedSessionId !== null
       ? readSessionRouteHistory(routeHistoryResult.value, agent, resolvedSessionId, providerRecords)
       : []
     const route = routeHistory[0]?.route ?? null
     const routeStatus = route !== null
       ? 'available' as const
-      : sessionUsage === null || resolvedSessionId === null
+      : sessionUsageWithCache === null || resolvedSessionId === null
         ? 'session-unavailable' as const
         : !includeRoute
           ? 'not-requested' as const
-          : !canReadRoute || !routeHistoryValid
+          : !canReadSessionLedger || !routeHistoryValid
             ? 'unavailable' as const
             : 'no-route' as const
     const allQuotas = quotaResult.ok
@@ -706,7 +716,7 @@ export class MagpieUsageService {
       providerFromRoute(route),
       ...routeHistory.map((record) => record.provider),
     ].filter((provider): provider is string => provider !== null))]
-    const upstreamProviders = sessionUsage === null ? [] : routeProviders.length > 0
+    const upstreamProviders = sessionUsageWithCache === null ? [] : routeProviders.length > 0
       ? routeProviders
       : [providerFromModelId(modelId, agent)].filter((provider): provider is string => provider !== null)
     const upstreamProvider = upstreamProviders[0] ?? null
@@ -726,9 +736,9 @@ export class MagpieUsageService {
       capturedAt,
       usageStatus: aggregate === null ? 'unavailable' : 'available',
       aggregate,
-      sessionId: sessionId ?? (sessionUsage === null ? null : resolvedSessionId),
+      sessionId: sessionId ?? (sessionUsageWithCache === null ? null : resolvedSessionId),
       ...(resolvedSessionId === null ? {} : { requestSessionId: resolvedSessionId }),
-      session: sessionUsage,
+      session: sessionUsageWithCache,
       ...(todaySession === null ? {} : { sessionPeriod: 'today' as const }),
       routeStatus,
       route,
@@ -1439,6 +1449,62 @@ function readSession(value: unknown, agent: MagpieAgent, sessionId: string): Mag
   const totals = readTotals(record)
   const usageAgent = cleanText(record?.agent)
   return record !== null && usageAgent !== null && totals !== null ? { id: sessionId, agent: usageAgent, ...totals } : null
+}
+
+function mergeSessionCacheFromRequests(
+  session: MagpieSessionUsage,
+  value: unknown,
+  agent: MagpieAgent,
+  sessionId: string,
+): MagpieSessionUsage {
+  const breakdown = readSessionCacheFromRequests(value, agent, sessionId, session.calls)
+  if (breakdown === null) return session
+  return {
+    ...session,
+    ...(session.cacheReadTokens === null && breakdown.cacheReadTokens !== null
+      ? { cacheReadTokens: breakdown.cacheReadTokens }
+      : {}),
+    ...(session.cacheWriteTokens === null && breakdown.cacheWriteTokens !== null
+      ? { cacheWriteTokens: breakdown.cacheWriteTokens }
+      : {}),
+  }
+}
+
+function readSessionCacheFromRequests(
+  value: unknown,
+  agent: MagpieAgent,
+  sessionId: string,
+  expectedCalls: number | null,
+): { readonly cacheReadTokens: number | null; readonly cacheWriteTokens: number | null } | null {
+  const root = asRecord(value)
+  const rows = root?.rows
+  if (!Array.isArray(rows) || rows.length > 500) return null
+  const usageAgents = MAGPIE_USAGE_AGENT_ALIASES[agent] ?? [agent]
+  const matching = rows.flatMap((item) => {
+    const record = asRecord(item)
+    const rowAgent = cleanText(record?.agent)
+    const rowSession = cleanText(record?.session)
+    const nativeSession = cleanText(record?.native_session)
+    return record !== null && rowAgent !== null && usageAgents.includes(rowAgent)
+      && (rowSession === sessionId || nativeSession === sessionId)
+      ? [record]
+      : []
+  })
+  if (matching.length === 0 || (expectedCalls !== null && matching.length < expectedCalls)) return null
+  return {
+    cacheReadTokens: sumRequestCacheBucket(matching, ['cache_read', 'cacheReadTokens', 'cache_read_tokens']),
+    cacheWriteTokens: sumRequestCacheBucket(matching, ['cache_write', 'cacheWriteTokens', 'cache_write_tokens']),
+  }
+}
+
+function sumRequestCacheBucket(rows: readonly Record<string, unknown>[], keys: readonly string[]): number | null {
+  let total = 0
+  for (const row of rows) {
+    const value = keys.map((key) => safeCount(row[key])).find((item): item is number => item !== null)
+    if (value === undefined) return null
+    total += value
+  }
+  return total
 }
 
 /** Magpie 0.1.14xx can wrap usage payloads in `data`; older versions do not. */

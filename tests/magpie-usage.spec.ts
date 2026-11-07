@@ -950,6 +950,40 @@ test('Magpie compact usage retains an explicitly reported zero cache breakdown',
   assert.equal(result?.session?.cacheWriteTokens, 0)
 })
 
+test('Magpie session cache fields fall back to exact request rows when the summary omits them', async () => {
+  const sessionId = 'claude-cache-session'
+  const paths: string[] = []
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      paths.push(path)
+      if (path === '/api/usage/quotas') return []
+      if (path === '/api/usage?period=today') return {
+        calls: 1, input: 24_258, output: 462, cache_read: 112_700_000, cache_write: 0, cost: 0.05,
+        sessions: [],
+      }
+      if (path === '/api/usage?period=all') return {
+        calls: 1, input: 24_258, output: 462, cost: 0.05,
+        sessions: [{ id: sessionId, agent: 'claude', calls: 1, input: 24_258, output: 462, cost: 0.05 }],
+      }
+      if (path.startsWith('/api/usage/requests?')) return { total: 1, rows: [{
+        route_id: 1, t: '2026-11-08T01:51:00Z', agent: 'claude', session: sessionId,
+        provider: 'example-provider', req: 'example-provider/model-one',
+        in: 24_258, out: 462, cache_read: 112_700_000, cache_write: 0, status: 200,
+      }] }
+      throw new Error(`Unexpected Magpie Web API path: ${path}`)
+    } },
+  })
+
+  const result = await service.read({
+    adapterId: 'claude-code', modelId: 'example-provider/model-one', providerSessionId: sessionId,
+  }, undefined, true)
+  assert.deepEqual(result?.session, {
+    id: sessionId, agent: 'claude', calls: 1, errors: null, inputTokens: 24_258, outputTokens: 462,
+    cacheReadTokens: 112_700_000, cacheWriteTokens: 0, costUsd: 0.05,
+  })
+  assert.equal(paths.at(-1), `/api/usage/requests?period=all&offset=0&limit=100&q=${sessionId}`)
+})
+
 test('Magpie session usage includes earlier dates while gateway usage stays daily', async () => {
   for (const activeToday of [true, false]) {
     const paths: string[] = []
