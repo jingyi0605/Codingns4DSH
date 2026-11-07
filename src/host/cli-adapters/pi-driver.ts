@@ -14,6 +14,7 @@ import { commandEnvironment, WINDOWS } from './process-utils.js'
 import { buildPiImages, promptWithAttachmentPaths } from './attachment-utils.js'
 import { reasoningText } from './reasoning-content.js'
 import { piBridgeArgs, piBridgeEnvironment } from '../cli-bridge/injections.js'
+import { PiPerformanceTracker } from './pi-performance.js'
 
 export interface PiAgentDriverOptions {
   readonly binaries?: readonly string[]
@@ -124,11 +125,12 @@ export class PiAgentDriver implements CodingNsCliDriver {
       }
       yield { type: 'session-binding', providerSessionId: session.providerSessionId }
       const images = await buildPiImages(input.attachments ?? [])
+      const performance = new PiPerformanceTracker()
       const stream = streamPiPrompt(rpc, {
         // 图片已通过原生 images 字段传递，不再引导模型把无后缀图片当普通文件读取。
         message: promptWithAttachmentPaths(input.prompt, (input.attachments ?? []).filter((attachment) => attachment.kind === 'file'), input.translationLanguage),
         ...(images.length > 0 ? { images } : {}),
-      }, input.signal)
+      }, input.signal, (message, receivedAt) => performance.observe(message, receivedAt))
       let finishResult: { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }
       let latestUsage: Extract<CodingNsAgentEvent, { type: 'usage' }> | null = null
       while (true) {
@@ -137,13 +139,23 @@ export class PiAgentDriver implements CodingNsCliDriver {
           finishResult = item.value
           break
         }
-        const discoveredId = readSessionId(item.value)
+        const discoveredId = readSessionId(item.value.message)
         if (discoveredId) session.providerSessionIdKnown = true
         if (discoveredId && discoveredId !== session.providerSessionId) {
           session.providerSessionId = discoveredId
           yield { type: 'session-binding', providerSessionId: discoveredId }
         }
-        for (const chunk of piMessageToChunks(item.value)) {
+        if (item.value.performance !== undefined) {
+          yield {
+            type: 'usage-observation',
+            requestPerformance: {
+              adapterId: 'pi',
+              id: item.value.performance.id,
+              samples: [item.value.performance],
+            },
+          }
+        }
+        for (const chunk of piMessageToChunks(item.value.message)) {
           if (chunk.type === 'usage') {
             // Pi 的 message_update 用量是同一轮的滚动快照，先保留最后一份，
             // 等 get_session_stats 补齐上下文后只投影一次，避免重复采样。
@@ -151,7 +163,9 @@ export class PiAgentDriver implements CodingNsCliDriver {
           } else yield chunk
         }
       }
-      const statsUsage = await readPiSessionStats(rpc, input.signal, session.modelContextWindow)
+      const statsUsage = input.signal?.aborted
+        ? null
+        : await readPiSessionStats(rpc, input.signal, session.modelContextWindow)
       const enrichedUsage = enrichPiUsage(latestUsage, statsUsage, session.modelContextWindow)
       if (enrichedUsage !== null) yield enrichedUsage
       if (finishResult.reason === 'cancel') {
@@ -249,15 +263,18 @@ async function* streamPiPrompt(
   rpc: JsonRpcProcess,
   prompt: Record<string, unknown>,
   signal: AbortSignal | undefined,
-): AsyncGenerator<JsonRpcMessage, { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }, void> {
-  const queue: JsonRpcMessage[] = []
+  observe?: (message: JsonRpcMessage, receivedAt: number) => import('../../shared/request-performance.js').RequestPerformance | undefined,
+): AsyncGenerator<{ message: JsonRpcMessage; performance?: import('../../shared/request-performance.js').RequestPerformance }, { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }, void> {
+  const queue: Array<{ message: JsonRpcMessage; performance?: import('../../shared/request-performance.js').RequestPerformance }> = []
   let wake: (() => void) | undefined
   let promptSettled = false
   let terminalReason: 'stop' | 'cancel' | 'error' | null = null
   let failure: { message: string; code?: string } | undefined
   const notify = (): void => { wake?.(); wake = undefined }
   const listener = (message: JsonRpcMessage): void => {
-    queue.push(message)
+    const receivedAt = Date.now()
+    const performance = observe?.(message, receivedAt)
+    queue.push({ message, ...(performance === undefined ? {} : { performance }) })
     const type = piEventType(message)
     if (type === 'error' || type === 'agent_error' || type === 'agent_failed' || piEventHasError(message)) {
       terminalReason = 'error'
