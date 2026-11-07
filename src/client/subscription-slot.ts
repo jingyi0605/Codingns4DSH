@@ -632,7 +632,12 @@ function MagpieUsagePopover({ rpc, usage, t, onPolicyChange = () => {}, policyPe
     [t('usage.magpieCacheReadTokens'), formatMagpieTokenCount(usage.aggregate.cacheReadTokens) ?? t('usage.upstreamNotProvided')],
     [t('usage.magpieCacheWriteTokens'), formatMagpieTokenCount(usage.aggregate.cacheWriteTokens) ?? t('usage.upstreamNotProvided')],
     [t('usage.magpieTotalTokens'), formatMagpieTokenCount(sumKnownCounts(usage.aggregate.inputTokens, usage.aggregate.outputTokens))],
-    [t('usage.magpieCacheHitRate'), formatMagpieCacheHitRate(usage.aggregate.inputTokens, usage.aggregate.cacheReadTokens) ?? t('usage.upstreamNotProvided')],
+    [t('usage.magpieCacheHitRate'), formatMagpieCacheHitRate(
+      usage.aggregate.inputTokens,
+      usage.aggregate.cacheReadTokens,
+      usage.aggregate.cacheWriteTokens,
+      usage.aggregate.cacheUnknownTokens,
+    ) ?? t('usage.upstreamNotProvided')],
     [t('usage.magpieCost'), formatMagpieCost(usage.aggregate.costUsd)],
   ] as const
   const sessionRows = usage.session === null ? [] : [
@@ -643,7 +648,12 @@ function MagpieUsagePopover({ rpc, usage, t, onPolicyChange = () => {}, policyPe
     [t('usage.magpieCacheReadTokens'), formatMagpieTokenCount(usage.session.cacheReadTokens) ?? t('usage.upstreamNotProvided')],
     [t('usage.magpieCacheWriteTokens'), formatMagpieTokenCount(usage.session.cacheWriteTokens) ?? t('usage.upstreamNotProvided')],
     [t('usage.magpieTotalTokens'), formatMagpieTokenCount(sumKnownCounts(usage.session.inputTokens, usage.session.outputTokens))],
-    [t('usage.magpieCacheHitRate'), formatMagpieCacheHitRate(usage.session.inputTokens, usage.session.cacheReadTokens) ?? t('usage.upstreamNotProvided')],
+    [t('usage.magpieCacheHitRate'), formatMagpieCacheHitRate(
+      usage.session.inputTokens,
+      usage.session.cacheReadTokens,
+      usage.session.cacheWriteTokens,
+      usage.session.cacheUnknownTokens,
+    ) ?? t('usage.upstreamNotProvided')],
     [t('usage.magpieCost'), formatMagpieCost(usage.session.costUsd)],
   ] as const
   const quotas = usage.quotas ?? []
@@ -1234,9 +1244,15 @@ function formatMagpieCost(value: number | null): string | null {
   return value === null ? null : `$${value.toFixed(value >= 0.01 ? 2 : 4)}`
 }
 
-function formatMagpieCacheHitRate(inputTokens: number | null, cacheReadTokens: number | null): string | null {
-  if (inputTokens === null || cacheReadTokens === null) return null
-  const totalPromptTokens = inputTokens + cacheReadTokens
+function formatMagpieCacheHitRate(
+  inputTokens: number | null,
+  cacheReadTokens: number | null,
+  cacheWriteTokens: number | null,
+  cacheUnknownTokens: number | null | undefined,
+): string | null {
+  if (inputTokens === null || cacheReadTokens === null || cacheWriteTokens === null
+    || cacheUnknownTokens === null) return null
+  const totalPromptTokens = inputTokens + cacheReadTokens + cacheWriteTokens - (cacheUnknownTokens ?? 0)
   return totalPromptTokens <= 0 ? null : formatSub2ApiPercent(cacheReadTokens / totalPromptTokens * 100)
 }
 

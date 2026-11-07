@@ -886,8 +886,24 @@ test('Magpie compact usage reads only Web API usage and exact session ledger dat
   assert.doesNotMatch(JSON.stringify(result), /Bearer|Authorization|prompt|response body/u)
 })
 
-test('Magpie compact usage preserves unknown cache accounting instead of reporting zero', async () => {
-  for (const marker of [{ cache_unknown: 120 }, { cache_unknown: true }, { cache_unknown_calls: 1 }]) {
+test('Magpie compact usage preserves counted cache totals beside unknown-cache calls', async () => {
+  for (const [marker, expectedAggregate, expectedSession] of [
+    [
+      { cache_unknown: 120, cache_unknown_calls: 1 },
+      { cacheReadTokens: 20, cacheWriteTokens: 8, cacheUnknownTokens: 120, cacheUnknownCalls: 1 },
+      { cacheReadTokens: null, cacheWriteTokens: null, cacheUnknownTokens: 120, cacheUnknownCalls: 1 },
+    ],
+    [
+      { cache_unknown: true },
+      { cacheReadTokens: null, cacheWriteTokens: null, cacheUnknownTokens: null, cacheUnknownCalls: null },
+      { cacheReadTokens: null, cacheWriteTokens: null, cacheUnknownTokens: null, cacheUnknownCalls: null },
+    ],
+    [
+      { cache_unknown_calls: 1 },
+      { cacheReadTokens: null, cacheWriteTokens: null, cacheUnknownTokens: null, cacheUnknownCalls: 1 },
+      { cacheReadTokens: null, cacheWriteTokens: null, cacheUnknownTokens: null, cacheUnknownCalls: 1 },
+    ],
+  ] as const) {
     const service = createWebUsageService({
       fetch: (async (input) => {
         if (new URL(String(input)).pathname === '/api/usage/quotas') return Response.json({ data: [] })
@@ -902,12 +918,19 @@ test('Magpie compact usage preserves unknown cache accounting instead of reporti
     assert.equal(result?.usageStatus, 'available')
     assert.equal(result?.aggregate?.inputTokens, 300)
     assert.equal(result?.aggregate?.costUsd, 0.0325)
-    // Even a mixed-provider aggregate has no complete cache breakdown.
-    assert.equal(result?.aggregate?.cacheReadTokens, null)
-    assert.equal(result?.aggregate?.cacheWriteTokens, null)
+    assert.deepEqual({
+      cacheReadTokens: result?.aggregate?.cacheReadTokens,
+      cacheWriteTokens: result?.aggregate?.cacheWriteTokens,
+      cacheUnknownTokens: result?.aggregate?.cacheUnknownTokens ?? null,
+      cacheUnknownCalls: result?.aggregate?.cacheUnknownCalls ?? null,
+    }, expectedAggregate)
     assert.equal(result?.session?.inputTokens, 120)
-    assert.equal(result?.session?.cacheReadTokens, null)
-    assert.equal(result?.session?.cacheWriteTokens, null)
+    assert.deepEqual({
+      cacheReadTokens: result?.session?.cacheReadTokens,
+      cacheWriteTokens: result?.session?.cacheWriteTokens,
+      cacheUnknownTokens: result?.session?.cacheUnknownTokens ?? null,
+      cacheUnknownCalls: result?.session?.cacheUnknownCalls ?? null,
+    }, expectedSession)
   }
 })
 

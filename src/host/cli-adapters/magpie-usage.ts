@@ -1400,16 +1400,30 @@ function readTotals(value: unknown): MagpieUsageTotals | null {
   const errors = safeCount(record.errors)
   const inputTokens = safeCount(record.input)
   const outputTokens = safeCount(record.output)
-  // Magpie uses zero placeholders when an upstream (such as Kiro) omits cache
-  // accounting. A mixed aggregate is also incomplete if any calls are unknown.
-  const cacheUnknown = record.cache_unknown === true
-    || (safeCount(record.cache_unknown) ?? 0) > 0
-    || (safeCount(record.cache_unknown_calls) ?? 0) > 0
-  const cacheReadTokens = cacheUnknown ? null : safeCount(record.cache_read)
-  const cacheWriteTokens = cacheUnknown ? null : safeCount(record.cache_write)
+  const rawCacheReadTokens = safeCount(record.cache_read)
+  const rawCacheWriteTokens = safeCount(record.cache_write)
+  const rawCacheUnknownTokens = record.cache_unknown === true ? null : safeCount(record.cache_unknown)
+  const cacheUnknownCalls = safeCount(record.cache_unknown_calls)
+  const cacheUnknown = rawCacheUnknownTokens !== null
+    ? rawCacheUnknownTokens > 0
+    : record.cache_unknown === true || (cacheUnknownCalls ?? 0) > 0
+  const knownPromptTokens = inputTokens === null || rawCacheReadTokens === null || rawCacheWriteTokens === null || rawCacheUnknownTokens === null
+    ? null
+    : inputTokens + rawCacheReadTokens + rawCacheWriteTokens - rawCacheUnknownTokens
+  // A mixed aggregate still has a valid cache breakdown for its counted calls.
+  // Hide the zero placeholders only when every call is uncounted or the
+  // upstream did not provide enough information to identify the counted part.
+  const cacheBreakdownKnown = !cacheUnknown || (knownPromptTokens !== null && knownPromptTokens > 0)
+  const cacheReadTokens = cacheBreakdownKnown ? rawCacheReadTokens : null
+  const cacheWriteTokens = cacheBreakdownKnown ? rawCacheWriteTokens : null
   const costUsd = safeCost(record.cost)
   if ([calls, errors, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd].every((item) => item === null)) return null
-  return { calls, errors, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd }
+  return {
+    calls, errors, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, costUsd,
+    ...(record.cache_unknown === undefined && record.cache_unknown_calls === undefined
+      ? {}
+      : { cacheUnknownTokens: rawCacheUnknownTokens, cacheUnknownCalls }),
+  }
 }
 
 function readSession(value: unknown, agent: MagpieAgent, sessionId: string): MagpieSessionUsage | null {

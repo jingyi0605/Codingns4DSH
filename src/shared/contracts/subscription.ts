@@ -95,6 +95,10 @@ export interface MagpieUsageTotals {
   readonly outputTokens: number | null
   readonly cacheReadTokens: number | null
   readonly cacheWriteTokens: number | null
+  /** Prompt tokens from calls whose vendor did not report cache accounting. */
+  readonly cacheUnknownTokens?: number | null
+  /** Calls whose vendor did not report cache accounting. */
+  readonly cacheUnknownCalls?: number | null
   readonly costUsd: number | null
 }
 
