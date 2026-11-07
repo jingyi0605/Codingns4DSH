@@ -195,6 +195,28 @@ test('an entry that exists but cannot run is reported as installed-but-unusable'
   assert.equal(MagpieInstallDetectionService.isUsable(detection), false, 'only a runnable entry with a version may enable the module')
 })
 
+test('a successful version probe ignores unrelated diagnostics on stderr', async () => {
+  const service = serviceFor({
+    platform: 'darwin',
+    environment: { HOME: '/Users/dev' },
+    pathHit: '/Users/dev/.local/bin/magpie',
+    files: ['/Users/dev/.local/bin/magpie'],
+    runs: {
+      '/Users/dev/.local/bin/magpie': {
+        status: 0,
+        stdout: 'magpie 0.1.3251\n',
+        stderr: '2026/11/07 plugin: host starts with HTTPS_PROXY=http://127.0.0.1:7897\n',
+        timedOut: false,
+      },
+    },
+  })
+  const detection = await service.detect()
+  assert.equal(detection.installed, true)
+  assert.equal(detection.version, '0.1.3251')
+  assert.equal(detection.reason, null)
+  assert.equal(MagpieInstallDetectionService.isUsable(detection), true)
+})
+
 test('detection reports missing when neither PATH nor common locations contain Magpie', async () => {
   const service = serviceFor({ platform: 'win32', environment: WINDOWS_ENVIRONMENT, pathHit: null })
   const detection = await service.detect()

@@ -227,16 +227,21 @@ export function normalizeCustomCommand(commandPath: string | undefined): string 
 }
 
 /**
- * 解析 `magpie --version` 的输出。
+ * Parse `magpie --version` output.
  *
- * 只接受 256 字节以内的输出和「magpie <semver>」这一种形态：Magpie 目前输出纯版本号，
- * 解析失败时按“版本不支持”拒绝启用，而不是猜测。
+ * Each output stream independently accepts only a `magpie <semver>` line up to 256 bytes.
+ * Magpie may write startup diagnostics to stderr even when the version probe succeeds,
+ * so unrelated text in one stream must not invalidate a valid version in the other.
  */
 export function parseMagpieVersion(status: number | null, stdout: string, stderr: string): string | null {
   if (status !== 0) return null
-  const combined = `${stdout}\n${stderr}`.trim()
-  if (Buffer.byteLength(combined, 'utf8') > MAX_VERSION_OUTPUT_BYTES) return null
-  return combined.match(/^magpie\s+v?(\d+\.\d+\.\d+)$/u)?.[1] ?? null
+  for (const output of [stdout, stderr]) {
+    const value = output.trim()
+    if (Buffer.byteLength(value, 'utf8') > MAX_VERSION_OUTPUT_BYTES) continue
+    const version = value.match(/^magpie\s+v?(\d+\.\d+\.\d+)$/u)?.[1]
+    if (version !== undefined) return version
+  }
+  return null
 }
 
 function parseAnyVersion(output: string): string | null {
