@@ -1,9 +1,12 @@
 import type { ReactNode } from 'react'
+import { followPresentationEntry, type PresentationSlots as ObservablePresentationSlots } from './slot-presentation-mirror.js'
 
 type ProjectText = (text: string, labels: readonly string[], skills: readonly string[], skillLabel: string, actions?: { openFile: (...args: any[]) => unknown; openSkill: (...args: any[]) => unknown }) => ReactNode
+type MessageNodeInject = (sessionId: string) => Record<string, unknown>
 export interface MessagePresentation {
   readonly kind: 'legacy' | 'factory'
   mount(register: () => () => void): () => void
+  mountAssistant(register: (inject?: MessageNodeInject) => () => void): () => void
   projectText: ProjectText
   userContent(owner: any, content: Record<string, unknown>, facts: Record<string, unknown>): ReactNode
   images(owner: any, props: Record<string, unknown>): ReactNode
@@ -35,6 +38,7 @@ export function createLegacyMessagePresentation(exports: unknown): MessagePresen
   return {
     kind: 'legacy',
     mount: register => register(),
+    mountAssistant: register => register(),
     projectText: (exports as { projectUserText: ProjectText }).projectUserText,
     userContent: () => null,
     images: (owner, props) => owner.renderMessageImages(props),
@@ -51,6 +55,15 @@ export function createFactoryMessagePresentation(context: unknown): MessagePrese
     // reacts to image-factory registration, so it need not delay text rendering.
     mount: register => slots.inject!('conversation.user.text.node', () =>
       slots.inject!('conversation.chat.user.images', register)),
+    // Preserve the native policy source; the overriding entry otherwise loses
+    // usePresentation and cannot follow the folded-replies preference.
+    mountAssistant: register => {
+      const registry = slots as ObservablePresentationSlots
+      if (typeof registry.entries !== 'function' || typeof registry.subscribe !== 'function') return register()
+      return followPresentationEntry(registry, 'conversation.chat.node',
+        entry => entry.options.key === 'assistant-step' && (entry.options.priority ?? 0) >= 0,
+        entry => register(entry.inject as MessageNodeInject | undefined))
+    },
     projectText: () => null,
     userContent: (owner, content, facts) => owner.renderFactorySlot('conversation.chat.user.content', {
       content, facts, loadImage: owner.loadImage, interactive: true,
