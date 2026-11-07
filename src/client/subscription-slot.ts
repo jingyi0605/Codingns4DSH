@@ -13,7 +13,7 @@ import { callCliRpc } from './cli-catalog.js'
 import { resolveCodingNsTranslator, useCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { providerIconUrl } from './provider-icons.js'
 import { MagpieProviderLogo } from './features/magpie-provider-logo.js'
-import { MAGPIE_REQUESTS_PAGE_SIZE, RequestsPage, installMagpiePageStyles } from './features/magpie-management-page.js'
+import { MAGPIE_REQUESTS_PAGE_SIZE, RequestsPage, callMagpieRpc, installMagpiePageStyles } from './features/magpie-management-page.js'
 import {
   createQuotaAccountBlock,
   createQuotaGroupHeader,
@@ -412,7 +412,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
                 adapterId,
                 ...(providerId === null ? {} : { providerId }),
               })
-          : await callCliRpc<CliSubscriptionResetResult>(props.rpc, 'magpie/usage/reset', { user: resetTargetUser })
+          : await callMagpieRpc<CliSubscriptionResetResult>(props.rpc, 'usage/reset', { user: resetTargetUser })
         if (result === null) throw new Error(t('usage.resetFailed'))
         setResetResult(result.outcome)
         // 重置改变了窗口与次数，必须绕过进程内缓存重新读取。
@@ -438,7 +438,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
     const key = `${user}:${policy}`
     if (magpiePolicyPending !== null) return
     setMagpiePolicyPending(key)
-    void callCliRpc(props.rpc, 'magpie/usage/account/update', { user, policy, enabled })
+    void callMagpieRpc(props.rpc, 'usage/account/update', { user, policy, enabled })
       .then(() => refreshRef.current?.())
       .catch(() => undefined)
       .finally(() => setMagpiePolicyPending(null))

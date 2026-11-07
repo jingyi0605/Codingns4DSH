@@ -47,6 +47,13 @@ test('Magpie usage popover stays within viewport and shifts left of an open righ
   assert.deepEqual(calculateMagpiePopoverPlacement(16, 1280, null), { left: 0, width: 400 })
 })
 
+test('embedded Magpie reset and policy mutations use the Magpie RPC namespace', async () => {
+  const source = await readFile(new URL('../src/client/subscription-slot.ts', import.meta.url), 'utf8')
+  assert.match(source, /callMagpieRpc<CliSubscriptionResetResult>\(props\.rpc, 'usage\/reset'/u)
+  assert.match(source, /callMagpieRpc\(props\.rpc, 'usage\/account\/update'/u)
+  assert.doesNotMatch(source, /callCliRpc(?:<[^>]+>)?\(props\.rpc, 'magpie\/usage\//u)
+})
+
 test('移动端用量弹层高度不超过浏览器可视高度的 75%，超出部分内部滚动', () => {
   const mobileRule = SUBSCRIPTION_RESPONSIVE_CSS.match(/@media \(max-width: 768px\)\{.*?\}\}/u)?.[0]
   assert.ok(mobileRule, '必须保留移动端媒体查询')
