@@ -16,6 +16,8 @@ import { reasoningText } from './reasoning-content.js'
 import { piBridgeArgs, piBridgeEnvironment } from '../cli-bridge/injections.js'
 import { PiPerformanceTracker } from './pi-performance.js'
 
+const PI_ABORT_TIMEOUT_MS = 2_000
+
 export interface PiAgentDriverOptions {
   readonly binaries?: readonly string[]
   readonly sessionRoots?: readonly string[]
@@ -193,8 +195,20 @@ export class PiAgentDriver implements CodingNsCliDriver {
   async interrupt(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (session === undefined) return
-    try { await session.rpc.request('abort', {}, { killOnAbort: false, wireFormat: 'pi' }) }
-    catch { try { session.rpc.notify('abort', {}, 'pi') } catch { /* 进程可能已退出 */ } }
+    try { session.rpc.notify('abort', {}, 'pi') } catch { /* 进程可能已退出 */ }
+    const controller = new AbortController()
+    let timedOut = false
+    const timer = setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, PI_ABORT_TIMEOUT_MS)
+    try {
+      await session.rpc.request('abort', {}, { signal: controller.signal, killOnAbort: false, wireFormat: 'pi' })
+    } catch {
+      if (timedOut) session.rpc.dispose()
+    } finally {
+      clearTimeout(timer)
+    }
   }
 
   dispose(): void {
@@ -272,6 +286,7 @@ async function* streamPiPrompt(
   let failure: { message: string; code?: string } | undefined
   const notify = (): void => { wake?.(); wake = undefined }
   const listener = (message: JsonRpcMessage): void => {
+    if (terminalReason === 'cancel') return
     const receivedAt = Date.now()
     const performance = observe?.(message, receivedAt)
     queue.push({ message, ...(performance === undefined ? {} : { performance }) })
@@ -290,7 +305,13 @@ async function* streamPiPrompt(
     failure = errorMessageFromUnknown(error)
     notify()
   })
-  const onAbort = (): void => { terminalReason = 'cancel'; notify() }
+  const onAbort = (): void => {
+    terminalReason = 'cancel'
+    promptSettled = true
+    queue.length = 0
+    try { rpc.notify('abort', {}, 'pi') } catch { /* 进程可能已退出 */ }
+    notify()
+  }
   if (signal?.aborted) onAbort()
   else signal?.addEventListener('abort', onAbort, { once: true })
 

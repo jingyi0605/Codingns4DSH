@@ -159,7 +159,11 @@ export class JsonRpcProcess {
   cancel(id: number | string, wireFormat: JsonRpcWireFormat = this.pending.get(id)?.wireFormat ?? this.wireFormat): void {
     if (this.closed || this.child === null) return
     try {
-      if (wireFormat === 'zcode') this.write({ method: '$/cancelRequest', params: { id } })
+      // Pi's RPC mode does not implement JSON-RPC cancellation. Its native
+      // abort command is the only cancellation signal that reaches the active
+      // agent turn.
+      if (wireFormat === 'pi') this.write({ type: 'abort' })
+      else if (wireFormat === 'zcode') this.write({ method: '$/cancelRequest', params: { id } })
       else this.write({ jsonrpc: '2.0', method: '$/cancelRequest', params: { id } })
     } catch { /* 尽力取消 */ }
   }

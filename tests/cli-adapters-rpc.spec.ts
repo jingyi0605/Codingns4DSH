@@ -1878,6 +1878,77 @@ test('Pi 在 prompt 响应先到时继续等待文本和 agent_settled', async (
   driver.dispose()
 })
 
+test('Pi cancellation sends abort immediately and disposes an unresponsive turn', async () => {
+  const controller = new AbortController()
+  const requests: Array<{ readonly id?: number; readonly type?: string; readonly method?: string }> = []
+  let killed = false
+  const driver = new PiAgentDriver({
+    binaries: ['fake-pi'],
+    spawnSync: (() => ({ status: 0, stdout: 'pi 1.5.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = {
+        write(data: string): void {
+          const request = JSON.parse(data) as { id?: number; type?: string; method?: string }
+          requests.push(request)
+          const command = request.type ?? request.method
+          if (command === 'get_state') {
+            stdout.write(`${JSON.stringify({ id: request.id, type: 'response', success: true, data: { sessionId: 'pi-cancel' } })}\n`)
+          } else if (command === 'prompt') {
+            // Keep the provider turn active and intentionally do not send a
+            // prompt response or agent_settled event.
+          }
+        },
+      }
+      return {
+        stdout,
+        stderr,
+        stdin,
+        kill() {
+          killed = true
+          stdout.end()
+          stderr.end()
+          return true
+        },
+      }
+    }) as never,
+  })
+
+  const run = (async () => {
+    const chunks = []
+    for await (const chunk of driver.executeTurn({
+      sessionId: 'pi-cancel',
+      messages: [],
+      prompt: '继续运行',
+      signal: controller.signal,
+    })) chunks.push(chunk)
+    return chunks
+  })()
+
+  for (let attempt = 0; attempt < 100 && !requests.some((request) => request.type === 'prompt'); attempt += 1) {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  }
+  assert.equal(requests.some((request) => request.type === 'prompt'), true)
+
+  controller.abort()
+  let timeout: ReturnType<typeof setTimeout> | undefined
+  try {
+    const chunks = await Promise.race([
+      run,
+      new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('Pi cancellation did not settle')), 3_000)
+      }),
+    ])
+    assert.equal(requests.some((request) => request.type === 'abort'), true)
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'cancel' })
+    assert.equal(killed, true)
+  } finally {
+    if (timeout !== undefined) clearTimeout(timeout)
+    driver.dispose()
+  }
+})
+
 test('Pi prompt 被拒绝时结束为 error', async () => {
   const driver = new PiAgentDriver({
     binaries: ['fake-pi'],
