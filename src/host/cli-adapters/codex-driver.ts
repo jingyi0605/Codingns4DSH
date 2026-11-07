@@ -1076,13 +1076,20 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     previous?.rpc.dispose()
     // 子代理托管开启时用 `-c` 覆盖注入 MCP 替身工具；工具由桥接转投成 DSH 原生子会话。
     const bridgeArgs = codexBridgeArgs(input.sessionId, this.descriptor.id)
+    const magpieProvider = readCodexMagpieProvider(this.codexHome, input.runtimeEnv)
+    const magpieArgs = magpieProvider === null
+      ? []
+      : ['-c', `model_providers.${magpieProvider}.env_http_headers.x-magpie-session=${JSON.stringify('CODINGNS_MAGPIE_SESSION')}`]
     // Codex 的 `-c` 覆盖项必须与 app-server 的其余启动参数放在同一侧；
     // 统一置于子命令前，避免不同版本对全局/子命令参数的解析差异。
     const rpc = new JsonRpcProcess({
       command,
-      args: [...bridgeArgs, ...this.appServerArgs()],
+      args: [...bridgeArgs, ...magpieArgs, ...this.appServerArgs()],
       cwd: input.cwd,
-      env: { ...(input.runtimeEnv ?? {}) },
+      env: {
+        ...(input.runtimeEnv ?? {}),
+        ...(magpieProvider === null ? {} : { CODINGNS_MAGPIE_SESSION: input.sessionId }),
+      },
       explicitWindowsShell: true,
       spawn: this.runSpawn,
     })
@@ -1205,6 +1212,79 @@ function prepareCodexSession(session: CodexSession, input: CodingNsCliTurnInput)
 function fingerprintRuntimeEnvironment(environment: Readonly<Record<string, string>> | undefined): string {
   const entries = Object.entries(environment ?? {}).sort(([left], [right]) => left.localeCompare(right))
   return createHash('sha256').update(JSON.stringify(entries), 'utf8').digest('hex')
+}
+
+/**
+ * Return the active Codex provider when it points at a loopback OpenAI-compatible
+ * gateway. The provider override is passed only to that process, so the user's
+ * config file and unrelated remote providers remain unchanged.
+ */
+function readCodexMagpieProvider(
+  codexHome: string,
+  runtimeEnv: Readonly<Record<string, string>> | undefined,
+): string | null {
+  const config = readTextFile(join(codexHome, 'config.toml'))
+  const provider = config === undefined ? 'openai' : readCodexTopLevelString(config, 'model_provider') ?? 'openai'
+  const baseUrl = readCodexProviderBaseUrl(config, provider)
+    ?? (provider === 'openai'
+      ? config === undefined ? undefined : readCodexTopLevelString(config, 'openai_base_url')
+      : undefined)
+    ?? (provider === 'openai' ? runtimeEnv?.OPENAI_BASE_URL ?? process.env.OPENAI_BASE_URL : undefined)
+  if (!isLoopbackV1Url(baseUrl) || !/^[A-Za-z0-9_-]+$/u.test(provider)) return null
+  return provider
+}
+
+function readCodexTopLevelString(config: string, key: string): string | undefined {
+  let section = ''
+  for (const rawLine of config.split(/\r?\n/u)) {
+    const line = rawLine.trim()
+    const sectionMatch = line.match(/^\[([^\]]+)\]$/u)
+    if (sectionMatch !== null) {
+      section = sectionMatch[1]?.trim() ?? ''
+      continue
+    }
+    if (section !== '') continue
+    const match = line.match(new RegExp(`^${escapeRegExp(key)}\\s*=\\s*"([^"]+)"\\s*$`, 'u'))
+    if (match?.[1] !== undefined && match[1].trim() !== '') return match[1].trim()
+  }
+  return undefined
+}
+
+function readCodexProviderBaseUrl(config: string | undefined, provider: string): string | undefined {
+  if (config === undefined) return undefined
+  let section = ''
+  let inProvider = false
+  for (const rawLine of config.split(/\r?\n/u)) {
+    const line = rawLine.trim()
+    const sectionMatch = line.match(/^\[([^\]]+)\]$/u)
+    if (sectionMatch !== null) {
+      section = sectionMatch[1]?.trim() ?? ''
+      inProvider = section === `model_providers.${provider}`
+      continue
+    }
+    if (!inProvider) continue
+    const match = line.match(/^base_url\s*=\s*"([^"]+)"\s*$/u)
+    if (match?.[1] !== undefined && match[1].trim() !== '') return match[1].trim()
+  }
+  return undefined
+}
+
+function isLoopbackV1Url(value: string | undefined): boolean {
+  if (value === undefined) return false
+  try {
+    const url = new URL(value)
+    const loopback = url.hostname === '127.0.0.1' || url.hostname === 'localhost'
+      || url.hostname === '::1' || url.hostname === '[::1]'
+    return (url.protocol === 'http:' || url.protocol === 'https:')
+      && loopback
+      && (url.pathname === '/v1' || url.pathname.startsWith('/v1/'))
+  } catch {
+    return false
+  }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
 }
 
 function parseCodexCatalog(value: unknown): CodingNsCliModelCatalog {

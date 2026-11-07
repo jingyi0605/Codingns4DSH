@@ -70,3 +70,42 @@ test('native DSH llm/stream scopes the session header to its provider request', 
 
   assert.equal(calls[0]?.headers.get('x-magpie-session'), 'native-dsh-session')
 })
+
+test('native DSH llm/stream accepts the newer nested session identity shapes', async () => {
+  const originalFetch = globalThis.fetch
+  const calls: Array<{ readonly url: string; readonly headers: Headers }> = []
+  globalThis.fetch = (async (input, init) => {
+    calls.push({ url: String(input), headers: new Headers(init?.headers) })
+    return Response.json({ ok: true })
+  }) as typeof fetch
+
+  let llmListener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  const features = new FeatureRegistry({
+    rpc: new CodingNsRpcTable(),
+    events: { on(name, listener) {
+      if (name === 'llm/stream') llmListener = listener as typeof llmListener
+      return () => { if (name === 'llm/stream') llmListener = undefined }
+    } },
+  } as never)
+  features.register(createCliAdaptersFeature({ registry: new CodingNsCliAdapterRegistry([]) }))
+
+  try {
+    await features.start('cliAdapters')
+    assert.notEqual(llmListener, undefined)
+    for (const options of [
+      { session: { header: { id: 'nested-dsh-session' } }, messages: [] },
+      { agent: { id: 'agent-object-id', session: { header: { id: 'agent-session' } } }, messages: [] },
+    ]) {
+      for await (const _chunk of llmListener!(options, async function* () {
+        await fetch('http://127.0.0.1:3425/v1/chat/completions')
+        yield { type: 'text-delta', text: 'native response' }
+      })) { /* drain the stream */ }
+    }
+  } finally {
+    await features.disable('cliAdapters')
+    globalThis.fetch = originalFetch
+  }
+
+  assert.equal(calls[0]?.headers.get('x-magpie-session'), 'nested-dsh-session')
+  assert.equal(calls[1]?.headers.get('x-magpie-session'), 'agent-session')
+})

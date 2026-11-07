@@ -656,7 +656,7 @@ export function createCliAdaptersFeature(options: {
             yield* next()
             return
           }
-          const sessionId = typeof value?.sessionId === 'string' ? value.sessionId : ''
+          const sessionId = readAgentSessionId(value)
           if (value?.purpose === 'session-title' || value?.purpose === 'compaction') {
             yield* next()
             return
@@ -1137,11 +1137,14 @@ function isSessionTranslationLlmRequest(value: Record<string, any> | null): bool
 
 function readAgentSessionId(value: unknown): string {
   const record = asRecord(value)
-  if (typeof record?.id === 'string' && record.id.trim() !== '') return record.id.trim()
+  if (typeof record?.sessionId === 'string' && record.sessionId.trim() !== '') return record.sessionId.trim()
   const session = asRecord(record?.session)
   if (typeof session?.id === 'string' && session.id.trim() !== '') return session.id.trim()
   const header = asRecord(session?.header)
-  return typeof header?.id === 'string' ? header.id.trim() : ''
+  if (typeof header?.id === 'string' && header.id.trim() !== '') return header.id.trim()
+  if (typeof record?.id === 'string' && record.id.trim() !== '') return record.id.trim()
+  const agent = asRecord(record?.agent)
+  return agent === null ? '' : readAgentSessionId(agent)
 }
 
 /** Select an external route before DSH freezes the current step's native model choice. */
