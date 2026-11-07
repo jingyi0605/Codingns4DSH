@@ -5,7 +5,7 @@ import { fromCliProviderId } from '../../shared/cli-provider-route.js'
 
 export const grokPerformanceProjection = createSessionPerformanceProjection(GROK_PERFORMANCE_PROJECTION, chunk => {
   const batch = chunk.codingnsRequestPerformance
-  return batch?.adapterId !== 'claude-code' && Array.isArray(batch?.samples) ? batch : undefined
+  return (batch?.adapterId === undefined || batch.adapterId === 'grok') && Array.isArray(batch?.samples) ? batch : undefined
 })
 
 const pressureSchema = z.object({

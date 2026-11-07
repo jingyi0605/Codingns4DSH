@@ -8,7 +8,7 @@ import { createSessionPerformanceAdapter } from '../src/dsh-capabilities/host/se
 import { createSessionPerformancePresentation } from '../src/dsh-capabilities/client/session-performance-adapter.js'
 import { MagpieContextMeter } from '../src/client/magpie-context-meter.js'
 import { CODEX_PERFORMANCE_PROJECTION } from '../src/shared/codex-performance.js'
-import { CLAUDE_PERFORMANCE_PROJECTION, GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION } from '../src/shared/request-performance.js'
+import { CLAUDE_PERFORMANCE_PROJECTION, GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION, PI_PERFORMANCE_PROJECTION } from '../src/shared/request-performance.js'
 import { createPresentationSlots } from './fixtures/presentation-slots.ts'
 import { createHookRenderer } from './fixtures/react-hook-renderer.ts'
 import { existsSync } from 'node:fs'
@@ -116,6 +116,30 @@ test('Claude Code uses source timing when the Claude performance projection is a
   assert.match(html, /decodeMs&quot;:10000/)
   assert.match(html, /ttftMs&quot;:1000/)
   assert.match(html, /ttftSteps&quot;:1/)
+  dispose()
+  root()
+})
+
+test('Pi uses observed source timing when the Pi performance projection is available', () => {
+  const slots = createPresentationSlots()
+  const root = slots.register({ name: 'root', children: { 'conversation.composer.dock': { kind: 'list', scope: 'session' } } }, (() => null) as never)
+  const Native = (props: any) => createElement('span', undefined, JSON.stringify(props.useProjection('sessionStats')))
+  slots.register({ name: 'conversation.composer.dock', id: 'activity' }, Native as never)
+  const dispose = createSessionPerformancePresentation({ slots }).install(() => 'pi', createElement, { useMemo, useSyncExternalStore })
+  const Wrapper = slots.core.entriesOfSlot('conversation.composer.dock')[0]!.component as any
+  const original = { turns: 1, steps: 1, toolMs: 500, llmMs: 1000, decodeTokens: 40, decodeMs: 10, ttftMs: 100, ttftSteps: 1 }
+  const source = { ...original, decodeTokens: 40, decodeMs: 400, ttftMs: 15 }
+  const calls: string[] = []
+  const render = () => renderToStaticMarkup(createElement(Wrapper, {
+    sessionId: 'pi-session',
+    useProjection: (key: string) => {
+      calls.push(key)
+      return key === PI_PERFORMANCE_PROJECTION ? source : key === 'sessionStats' ? original : undefined
+    },
+  }))
+  const html = render()
+  assert.match(html, /decodeMs&quot;:400/)
+  assert.deepEqual(calls, ['sessionStats', PI_PERFORMANCE_PROJECTION])
   dispose()
   root()
 })
