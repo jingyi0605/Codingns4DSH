@@ -658,7 +658,7 @@ test('DSH 原生会话默认关闭且会话未单独开启时逐块直通', asyn
 
 for (const kind of ['assistant', 'reasoning'] as const) {
   test(`native ${kind} retains failure diagnostics and usage through stream serialization`, async t => {
-    const failure = { code: 'invalid-response', retryable: false } as const
+    const failure = { code: 'invalid-response', retryable: false, validation: 'completion' } as const
     const translation = createTranslation()
     translation.translateOutput = async (_adapter, _kind, original) => ({
       original, translated: original, targetLanguage: 'zh', bilingual: false, failed: true, failure,

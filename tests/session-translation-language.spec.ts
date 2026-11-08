@@ -49,6 +49,10 @@ const chineseProse = [
   '已更新 sourceLanguage 字段，相关测试全部通过。',
   '已更新 source_language 字段，相关测试全部通过。',
   '已完成 API、CLI 和 UI 的兼容性检查，相关测试全部通过。',
+  // Reduced from session-84928abd's Chinese update summary, whose names made detection unknown.
+  '已拉取完成，`main` 已更新。\n- 外部 Agent 统计与用量：修复 Claude Code、Magpie 的缓存 Token 统计。\n- Magpie：改用 Magpie RPC 执行订阅卡操作。',
+  '已完成 DeepSeek Harness 与 Visual Studio Code 的兼容性检查，测试通过。',
+  '已修复 **Claude Code** 与 Magpie **RPC** 的用量统计。',
   '已完成 API 检查。\n```ts\nconst english = "Please review this file before merging"\n```',
 ]
 
@@ -115,6 +119,11 @@ test('Chinese context does not hide foreign prose or ambiguous mixed text', asyn
     `${chinese}\nDone`,
     `${chinese}，请确认 do not merge 的提示。`,
     `${chinese}，请确认 Please **review** 的提示。`,
+    `${chinese}，请确认 Please Review 的提示。`,
+    `${chinese}，请确认 Do Not Merge 的提示。`,
+    `${chinese}，请确认 Run Tests 的提示。`,
+    `${chinese}。Claude Code`,
+    `${chinese}，请确认 Please Review This File Before Merging 的提示。`,
     `${chinese}，请确认 veuillez vérifier le fichier 的提示。`,
     `${chinese}，请确认 bitte diese Datei prüfen 的提示。`,
     `${chinese}，AI 返回 Спасибо。`,
@@ -131,6 +140,21 @@ test('Chinese context does not hide foreign prose or ambiguous mixed text', asyn
     assert.equal(record?.translated, '翻译后的内容。')
     assert.equal(record?.failed, undefined)
   }
+})
+
+test('custom rules still process Chinese technical names and preserve detected language', async t => {
+  const original = '已修复 Claude Code 与 Magpie RPC 的缓存统计。'
+  const f = fixture(original)
+  t.after(() => f.service.dispose())
+  f.service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationRules: ['Preserve the exact meaning.'] })
+  for (const kind of ['assistant', 'reasoning'] as const) {
+    const record = await f.service.translateOutput('dsh', kind, original, undefined, true)
+    assert.equal(record?.sourceLanguage, 'zh')
+    assert.equal(record?.alreadyTargetLanguage, undefined)
+    assert.equal(record?.translated, original)
+    assert.equal(record?.failed, undefined)
+  }
+  assert.equal(f.sources.length, 2)
 })
 
 // 真实 Stage0 回归：Codex 只回复 STAGE0_INITIAL_OK 时，模型按保留规则原样返回，

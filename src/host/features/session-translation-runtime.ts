@@ -1,4 +1,12 @@
-import type { SessionTranslationFailure } from '../../shared/contracts/session-translation.js'
+import type { SessionTranslationFailure, SessionTranslationValidation } from '../../shared/contracts/session-translation.js'
+
+/** Carries a stable check category without retaining the model's rejected response. */
+export class TranslationValidationError extends Error {
+  constructor(readonly validation: SessionTranslationValidation, message: string) {
+    super(message)
+    this.name = 'TranslationValidationError'
+  }
+}
 
 /** Only known transient failures qualify for an automatic retry. */
 export function translationFailure(error: unknown, signal?: AbortSignal): SessionTranslationFailure {
@@ -8,6 +16,7 @@ export function translationFailure(error: unknown, signal?: AbortSignal): Sessio
   const status = value?.status ?? value?.statusCode
   if (/timeout|timed out|ETIMEDOUT/iu.test(message)) return { code: 'timeout', retryable: true }
   if (signal?.aborted || value?.name === 'AbortError') return { code: 'cancelled', retryable: false }
+  if (error instanceof TranslationValidationError) return { code: 'invalid-response', retryable: false, validation: error.validation }
   if (status === 429 || /\b429\b|rate.?limit/iu.test(message)) return { code: 'rate-limit', retryable: true }
   if (status !== undefined && status >= 500 && status < 600 || /\b50[0234]\b|service unavailable|overloaded/iu.test(message)) return { code: 'unavailable', retryable: true }
   if (/ECONNRESET|ECONNREFUSED|EAI_AGAIN|ENETUNREACH|EPIPE|fetch failed|network|connection (?:lost|closed|reset)/iu.test(message)) return { code: 'network', retryable: true }

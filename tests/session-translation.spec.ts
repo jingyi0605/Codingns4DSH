@@ -173,7 +173,7 @@ test('translation metrics survive history serialization and external output proj
 
 for (const kind of ['assistant', 'reasoning'] as const) {
   test(`external ${kind} retains failure diagnostics and reported usage in serialized history`, async () => {
-    const failure = { code: 'invalid-response', retryable: false } as const
+    const failure = { code: 'invalid-response', retryable: false, validation: 'protected-text' } as const
     const translation = {
       shouldTranslate: () => true,
       translateOutput: async () => ({ original: 'Hello', translated: 'Hello', targetLanguage: 'zh', bilingual: false,
@@ -208,7 +208,7 @@ test('external translation exceptions retain only a classified failure', async (
 })
 
 test('translation diagnostics survive input history and discard unknown fields and malformed failures', () => {
-  const failure = { code: 'invalid-response', retryable: false } as const
+  const failure = { code: 'invalid-response', retryable: false, validation: 'format' } as const
   const record = { original: 'Hello', translated: 'Hello', targetLanguage: 'zh', failed: true,
     failure: { ...failure, message: 'private-provider-detail' }, totalTokens: 1273 }
   const saved = JSON.parse(JSON.stringify({ codingnsTranslationInput: record }))
@@ -226,6 +226,16 @@ test('translation diagnostics survive input history and discard unknown fields a
     assert.deepEqual(readSessionTranslationDiagnostics({ failure: { code, retryable: true, message: 'private-provider-detail' } }),
       { failure: { code, retryable: true } })
   }
+  for (const validation of ['format', 'language', 'completion', 'protected-text'] as const) {
+    assert.deepEqual(readSessionTranslationDiagnostics({ failure: { ...failure, validation, response: 'private-response' } }),
+      { failure: { ...failure, validation } })
+  }
+  for (const validation of ['unknown', null, {}, 1]) {
+    assert.deepEqual(readSessionTranslationDiagnostics({ failure: { ...failure, validation } }),
+      { failure: { code: 'invalid-response', retryable: false } })
+  }
+  assert.deepEqual(readSessionTranslationDiagnostics({ failure: { code: 'network', retryable: true, validation: 'format' } }),
+    { failure: { code: 'network', retryable: true } })
 })
 
 test('翻译服务失败时输入回退原文，且不会执行工具', async () => {
