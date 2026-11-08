@@ -25,6 +25,7 @@ const OPENCODE_NATIVE_SUBAGENT_DENY = [
 const OPENCODE_EXTERNAL_DIRECTORY_ALLOW = {
   action: 'external_directory', resource: '*', effect: 'allow',
 } as const
+const OPENCODE_LOCATION_ACTIVATION_TIMEOUT_MS = 30_000
 interface TurnTarget {
   readonly server: string
   readonly providerSessionId: string
@@ -66,7 +67,7 @@ export class OpenCodeV2Protocol {
     // 初始快照也可能只有内置免费模型，不能仅凭“非空”就提前缓存。
     let previous: string | undefined
     for (let attempt = 0; ; attempt += 1) {
-      const result = await this.readModelCatalog(server, cwd, signal)
+      const result = await this.retryWhileLocationActivating(() => this.readModelCatalog(server, cwd, signal), signal)
       const signature = JSON.stringify(result.catalog)
       const ready = result.models.length > 0 && (expected === undefined
         ? result.catalog.currentModel !== null
@@ -114,8 +115,24 @@ export class OpenCodeV2Protocol {
     }
   }
 
+  private async retryWhileLocationActivating<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    const deadline = Date.now() + OPENCODE_LOCATION_ACTIVATION_TIMEOUT_MS
+    for (;;) {
+      signal?.throwIfAborted()
+      try {
+        return await operation()
+      } catch (error) {
+        if (!isLocationPluginsActivating(error) || Date.now() >= deadline) throw error
+        await delay(100, undefined, signal === undefined ? {} : { signal })
+      }
+    }
+  }
+
   async listSkills(server: string, input: CodingNsCliSkillListInput): Promise<readonly CodingNsCliSkillDescriptor[]> {
-    const value = await this.request(server, locationPath('/api/skill', input.cwd), undefined, input.signal)
+    const value = await this.retryWhileLocationActivating(
+      () => this.request(server, locationPath('/api/skill', input.cwd), undefined, input.signal),
+      input.signal,
+    )
     if (!Array.isArray(value)) throw new Error('OpenCode V2 Skill 目录格式无效')
     return records(value).flatMap((skill) => typeof skill.id === 'string' && typeof skill.name === 'string' ? [{
       id: skill.id, name: skill.name, description: typeof skill.description === 'string' ? skill.description : '', enabled: true,
@@ -149,9 +166,9 @@ export class OpenCodeV2Protocol {
     // Agent。这样用户要么使用 CodingNS 托管工具，要么得到明确的权限拒绝。
     const permissions = openCodePermissions(input, bridge)
     if (bridge !== undefined) {
-      await this.request(server, locationPath(`/api/experimental/mcp/${encodeURIComponent(bridge.serverName)}`, input.cwd), {
+      await this.retryWhileLocationActivating(() => this.request(server, locationPath(`/api/experimental/mcp/${encodeURIComponent(bridge.serverName)}`, input.cwd), {
         config: bridge.config,
-      }, input.signal, 'PUT')
+      }, input.signal, 'PUT'), input.signal)
     }
     const { catalog, models } = await this.modelCatalog(server, input.cwd, input.signal, isProviderDefaultModel(input.modelId) ? undefined : input.modelId)
     const selected = selectModel(models, isProviderDefaultModel(input.modelId) ? catalog.currentModel : input.modelId)
@@ -719,6 +736,13 @@ class OpenCodeV2HttpError extends Error {
     super(message)
     this.name = 'OpenCodeV2HttpError'
   }
+}
+
+function isLocationPluginsActivating(error: unknown): boolean {
+  if (!(error instanceof OpenCodeV2HttpError) || error.status !== 503) return false
+  let serialized = ''
+  try { serialized = JSON.stringify(error.responseData) ?? '' } catch {}
+  return /Location plugins did not finish activating|service_starting/iu.test(`${serialized}\n${error.responseText}`)
 }
 
 /** 只把 OpenCode V2 明确表示“表单已处理”的 409 当作幂等成功。 */

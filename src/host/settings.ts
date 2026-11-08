@@ -300,7 +300,12 @@ function createConfigSettingsScope(
 ): DshHostSettingsScope<CodingNsSettings> {
   const provider = settings
   const read = (): CodingNsSettings => readConfigSettings(provider, readRuntimeConfig)
+  const runtimeValue = (): unknown => {
+    const config = readRuntimeConfig?.() as { get?: () => unknown } | undefined
+    return typeof config?.get === 'function' ? config.get() : config
+  }
   let previous = read()
+  let previousConfig = runtimeValue()
   const listeners = new Set<(next: CodingNsSettings, prev: CodingNsSettings) => void | Promise<void>>()
   const eventContext = ctx as Context & {
     on?: (name: string, listener: (namespace: string) => void) => () => void
@@ -310,6 +315,7 @@ function createConfigSettingsScope(
     const next = read()
     const prev = previous
     previous = next
+    previousConfig = runtimeValue()
     if (next === prev) return
     for (const listener of [...listeners]) void listener(next, prev)
   })
@@ -317,7 +323,14 @@ function createConfigSettingsScope(
     ctx.effect(() => disposeEvent, 'codingns4dsh: ConfigForm 设置监听')
   }
   return {
-    get: read,
+    get: () => {
+      if (readRuntimeConfig === undefined) return previous
+      const config = runtimeValue()
+      if (config === undefined || config === previousConfig) return previous
+      previousConfig = config
+      previous = read()
+      return previous
+    },
     watch: (listener) => {
       listeners.add(listener)
       return () => listeners.delete(listener)
