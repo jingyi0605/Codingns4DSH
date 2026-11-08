@@ -4039,6 +4039,67 @@ test('stage0 形态：fork 子会话被识别为父会话的外部 Agent，而�
   await features.disable('cliAdapters')
 })
 
+test('native DSH fork immediately persists the source external adapter binding', async () => {
+  const table = new CodingNsRpcTable()
+  const sessionStore = new CodingNsCliSessionStore()
+  const parent = {
+    id: 'fork-source',
+    header: { id: 'fork-source', cwd: '/workspace', isSeeded: false },
+    snapshotEvents: () => [],
+  }
+  const controller = {
+    async fork(request: { readonly sessionId: string }) {
+      assert.equal(request.sessionId, 'fork-source')
+      return { sessionId: 'fork-child' }
+    },
+  }
+  const nativeSessions = {
+    available: true,
+    supportsEvents: false,
+    store: undefined,
+    controller,
+    get(sessionId: string) { return sessionId === 'fork-source' ? parent : undefined },
+    list() { return [parent] },
+    async listRemote() { return [parent] },
+    async ensure() { return null },
+    async flush() {},
+    subscribe() { return () => {} },
+  }
+  sessionStore.upsert('fork-source', {
+    adapterId: 'claude-code',
+    modelId: 'kiro/claude-sonnet-5.5',
+    effortId: 'high',
+    serviceTierId: 'default',
+    translationEnabled: true,
+  })
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'claude-code', name: 'Claude Code' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'claude' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } as const },
+  }], {}, { sessionStore })
+  const features = new FeatureRegistry({ rpc: table, nativeSessions: nativeSessions as never })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  try {
+    assert.deepEqual(await controller.fork({ sessionId: 'fork-source' }), { sessionId: 'fork-child' })
+    assert.deepEqual(sessionStore.get('fork-child'), {
+      dshSessionId: 'fork-child',
+      adapterId: 'claude-code',
+      modelId: 'kiro/claude-sonnet-5.5',
+      effortId: 'high',
+      serviceTierId: 'default',
+      translationEnabled: true,
+      parentSessionId: 'fork-source',
+      status: 'idle',
+      createdAt: sessionStore.get('fork-child')?.createdAt,
+      updatedAt: sessionStore.get('fork-child')?.updatedAt,
+    })
+  } finally {
+    await features.disable('cliAdapters')
+  }
+})
+
 test('委派 RPC 接受空任务并返回派发内核的能力诊断', async () => {
   const table = new CodingNsRpcTable()
   const features = new FeatureRegistry({ rpc: table })

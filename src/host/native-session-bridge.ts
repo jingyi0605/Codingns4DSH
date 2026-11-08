@@ -146,6 +146,7 @@ export type CodingNsNativeCompactionEvent = Extract<CodingNsAgentEvent, { type: 
 
 export interface CodingNsNativeSessionController extends SessionActivationController {
   create?(request: { readonly sessionId?: string; readonly cwd?: string }): Promise<{ readonly sessionId: string }>
+  fork?(request: { readonly sessionId: string; readonly atSeq?: number; readonly allowMigration?: boolean }): Promise<{ readonly sessionId: string }>
   list?(request?: unknown, signal?: AbortSignal): Promise<{ readonly items: readonly unknown[] }>
 }
 

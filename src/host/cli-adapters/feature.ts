@@ -36,7 +36,7 @@ import type { MagpieDetectionRequest } from '../../shared/contracts/magpie-manag
 import { createMagpieSessionRouting } from './magpie-session-routing.js'
 import { normalizeSubagentBridgeSettings, normalizeSubscriptionUsageSettings, type CodingNsSettings } from '../../shared/contracts/config.js'
 import type { CodingNsHostServices } from '../features/types.js'
-import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
+import type { CodingNsNativeSessionBridge, CodingNsNativeSessionController } from '../native-session-bridge.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import { setAdapterRegistry } from './registry-holder.js'
 import { createDshVirtualProviderRegistration } from './dsh-virtual-providers.js'
@@ -221,6 +221,8 @@ export function createCliAdaptersFeature(options: {
         ...(context.services.settings === undefined ? {} : { settings: context.services.settings }),
         ...(context.services.nativeSessions === undefined ? {} : { nativeSessions: context.services.nativeSessions }),
       })
+      const disposeForkAdapterBinding = installForkAdapterBinding(nativeSessions?.controller, nativeSessions, sessionStore, registry)
+      if (disposeForkAdapterBinding !== undefined) context.resources.add(disposeForkAdapterBinding)
       setAdapterRegistry(registry)
       const teamInputs = new TeamInputTracker()
       context.resources.add(() => teamInputs.clear())
@@ -1612,6 +1614,75 @@ function collectMigrationChain(
   }
   // 先迁移祖先再迁移子会话，深层 fork 不依赖下一轮轮询补齐中间父节点。
   return chain.reverse()
+}
+
+/**
+ * DSH's native fork command creates the child with the global native default.
+ * Capture the source binding around that command so the child is immediately
+ * visible to the Client as the same external Agent.
+ */
+function installForkAdapterBinding(
+  controller: CodingNsNativeSessionController | undefined,
+  nativeSessions: CodingNsNativeSessionBridge | undefined,
+  sessionStore: CodingNsCliSessionStore,
+  registry: CodingNsCliAdapterRegistry,
+): (() => void) | undefined {
+  const original = controller?.fork
+  if (controller === undefined || original === undefined) return undefined
+  const originalDescriptor = Object.getOwnPropertyDescriptor(controller, 'fork')
+  const fork = async function (
+    this: CodingNsNativeSessionController,
+    request: { readonly sessionId: string; readonly atSeq?: number; readonly allowMigration?: boolean },
+  ): Promise<{ readonly sessionId: string }> {
+    const sourceSessionId = request.sessionId.trim()
+    let sourceConfig = sourceSessionId === '' ? undefined : registry.getSession(sourceSessionId)
+    if (sourceSessionId !== '' && sourceConfig?.adapterId === 'dsh' && nativeSessions !== undefined) {
+      const source = nativeSessions.get(sourceSessionId)
+      if (source !== undefined) {
+        sessionStore.invalidateLegacySession(source)
+        sessionStore.migrateLegacySessions(collectMigrationChain(nativeSessions, source))
+        sourceConfig = registry.getSession(sourceSessionId)
+      }
+    }
+    const result = await original.call(this, request)
+    const childSessionId = forkedSessionId(result)
+    if (
+      childSessionId !== undefined
+      && sourceSessionId !== ''
+      && sourceConfig !== undefined
+      && sourceConfig.adapterId !== 'dsh'
+      && registry.isEnabled(sourceConfig.adapterId)
+    ) {
+      sessionStore.upsert(childSessionId, {
+        adapterId: sourceConfig.adapterId,
+        ...(sourceConfig.modelId === undefined ? {} : { modelId: sourceConfig.modelId }),
+        ...(sourceConfig.effortId === undefined ? {} : { effortId: sourceConfig.effortId }),
+        ...(sourceConfig.serviceTierId === undefined ? {} : { serviceTierId: sourceConfig.serviceTierId }),
+        ...(sourceConfig.translationEnabled === undefined ? {} : { translationEnabled: sourceConfig.translationEnabled }),
+        parentSessionId: sourceSessionId,
+        status: 'idle',
+      })
+    }
+    return result
+  }
+  try {
+    controller.fork = fork
+  } catch {
+    return undefined
+  }
+  return () => {
+    try {
+      if (originalDescriptor !== undefined) Object.defineProperty(controller, 'fork', originalDescriptor)
+      else controller.fork = original
+    } catch { /* A replaced Host controller owns the current method. */ }
+  }
+}
+
+function forkedSessionId(value: unknown): string | undefined {
+  const record = asRecord(value)
+  return typeof record?.sessionId === 'string' && record.sessionId.trim() !== ''
+    ? record.sessionId.trim()
+    : undefined
 }
 
 function selectExternalAdapter(
