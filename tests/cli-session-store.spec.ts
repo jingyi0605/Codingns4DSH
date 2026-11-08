@@ -171,6 +171,29 @@ test('旧原生外部会话只在日志明确给出适配器时自动迁移，�
   await store.flush()
 })
 
+test('forked sessions recover a namespaced external adapter from model/selection', () => {
+  const store = new CodingNsCliSessionStore()
+  const child = {
+    id: 'claude-fork-child',
+    header: {
+      id: 'claude-fork-child',
+      cwd: '/workspace',
+      isSeeded: true,
+    },
+    snapshotEvents() {
+      return [{
+        type: 'model/selection',
+        data: { provider: 'codingns-cli-claude-code', model: 'kiro/claude-sonnet-5.5' },
+      }]
+    },
+  }
+
+  const migrated = store.migrateLegacySessions([child])
+
+  assert.deepEqual(migrated, { migrated: 1, unresolved: 0 })
+  assert.equal(store.get('claude-fork-child')?.adapterId, 'claude-code')
+})
+
 test('SessionStore 恢复时清理遗留 active，并在 Provider 重绑时丢弃旧探测状态', () => {
   const persisted = [{
     dshSessionId: 'dsh-restarted',

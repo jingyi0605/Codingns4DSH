@@ -40,9 +40,15 @@ export function hasLegacySessionAdapterHint(event: unknown): boolean {
   const data = asRecord(record?.data)
   const source = asRecord(asRecord(data?.message)?.source)
   if (source?.plugin === 'codingns4dsh' || source?.provider === 'codingns-external') return true
-  const provider = firstString(source?.provider, record?.type === 'request/context' ? data?.provider : undefined)
+  const provider = firstString(
+    source?.provider,
+    record?.type === 'request/context' || record?.type === 'model/selection' ? data?.provider : undefined,
+  )
   if (fromCliProviderId(provider) !== undefined) return true
-  const adapterId = firstString(source?.adapterId, record?.type === 'request/context' ? data?.adapterId ?? data?.provider : undefined)
+  const adapterId = firstString(
+    source?.adapterId,
+    record?.type === 'request/context' || record?.type === 'model/selection' ? data?.adapterId ?? data?.provider : undefined,
+  )
   return adapterId !== undefined && (adapterId === 'codebuddy-cn' || KNOWN_CLI_ADAPTER_IDS.has(adapterId))
 }
 
@@ -77,7 +83,10 @@ export function inspectLegacySessionAdapter(value: unknown): LegacySessionAdapte
     const sourceProvider = firstString(source?.adapterId, source?.provider)
     const pluginSource = source?.plugin === 'codingns4dsh'
     if (sourceProvider === 'codingns-external' || pluginSource) external = true
-    const providerAdapter = fromCliProviderId(firstString(source?.provider, eventRecord.type === 'request/context' ? data?.provider : undefined))
+    const providerAdapter = fromCliProviderId(firstString(
+      source?.provider,
+      eventRecord.type === 'request/context' || eventRecord.type === 'model/selection' ? data?.provider : undefined,
+    ))
     if (providerAdapter !== undefined) {
       external = true
       candidates.add(providerAdapter === 'codebuddy-cn' ? 'codebuddy' : providerAdapter)
@@ -89,6 +98,11 @@ export function inspectLegacySessionAdapter(value: unknown): LegacySessionAdapte
     if (eventRecord.type === 'request/context') {
       addCandidate(candidates, firstString(data?.adapterId))
       addCandidate(legacyProviders, firstString(data?.provider))
+    } else if (eventRecord.type === 'model/selection') {
+      // DSH forks persist the selected route before the first child turn. The
+      // fork header has no adapter field, so a namespaced selection is the
+      // earliest durable ownership evidence available for the child.
+      addCandidate(candidates, firstString(data?.adapterId, data?.provider))
     }
   }
   // Explicit ownership wins over older native request contexts whose API
