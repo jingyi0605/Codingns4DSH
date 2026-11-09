@@ -241,6 +241,16 @@ test('pending translation is clickable, shows progress, and switches to complete
       assert.ok(html.includes(localizedT(`translation.failure.${code}`)), code)
       assert.equal(html.includes(localizedT('translation.failure.unknown')), false, code)
     }
+    for (const validation of ['format', 'language', 'completion', 'protected-text'] as const) {
+      const key = `translation.failure.validation.${validation}`
+      assert.ok(dictionary[key], key)
+      tree = renderer.render({ ...props, translationT: localizedT, record: {
+        ...record, failed: true, failure: { code: 'invalid-response', retryable: false, validation },
+      } } as typeof props)
+      html = renderToStaticMarkup(elements(tree).find((element) => element.props.role === 'dialog')!)
+      assert.ok(html.includes(localizedT(key)), validation)
+      assert.equal(html.includes(localizedT('translation.failure.invalid-response')), false, validation)
+    }
   }
   elements(tree).find((element) => element.type === 'button')!.props.onClick()
   tree = renderer.render()
@@ -349,7 +359,7 @@ test('failed user translation opens a compact attached popup with only the notic
 test('input and reply history pass translation metrics and sanitized failure diagnostics to the popup action', () => {
   const renderers = captureRenderers()
   const metrics = { durationMs: 1234, totalTokens: 456 }
-  const failure = { code: 'invalid-response', retryable: false }
+  const failure = { code: 'invalid-response', retryable: false, validation: 'language' }
   const diagnostics = { failed: true, failure: { ...failure, message: 'private-provider-detail' } }
   for (const [key, node] of [
     ['user', { id: 'user-metrics', data: {

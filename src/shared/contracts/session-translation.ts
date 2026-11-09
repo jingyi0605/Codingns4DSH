@@ -147,19 +147,30 @@ function normalizeTranslationModel(value: SessionTranslationModel | undefined): 
   return provider === '' || model === '' ? undefined : { provider, model }
 }
 
+export type SessionTranslationValidation = 'format' | 'language' | 'completion' | 'protected-text'
+
 export interface SessionTranslationFailure {
   readonly code: 'timeout' | 'cancelled' | 'rate-limit' | 'network' | 'unavailable' | 'invalid-response' | 'configuration' | 'provider'
   readonly retryable: boolean
+  /** The failed check, when known; only meaningful for invalid-response. */
+  readonly validation?: SessionTranslationValidation
 }
 
 /** Retain known diagnostics without copying raw provider errors into history or UI. */
 export function readSessionTranslationDiagnostics(value: unknown): Pick<SessionTranslationRecord, 'failure'> {
   const failure = asRecord(asRecord(value)?.failure)
   if (typeof failure?.retryable !== 'boolean') return {}
+  const validation = failure.code === 'invalid-response'
+    && (failure.validation === 'format' || failure.validation === 'language'
+      || failure.validation === 'completion' || failure.validation === 'protected-text')
+    ? failure.validation : undefined
   switch (failure.code) {
     case 'timeout': case 'cancelled': case 'rate-limit': case 'network':
     case 'unavailable': case 'invalid-response': case 'configuration': case 'provider':
-      return { failure: { code: failure.code, retryable: failure.retryable } }
+      return { failure: {
+        code: failure.code, retryable: failure.retryable,
+        ...(validation === undefined ? {} : { validation }),
+      } }
     default:
       return {}
   }

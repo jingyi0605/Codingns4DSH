@@ -1,5 +1,58 @@
 # Tasks
 
+## 2026-11-09 isolated Stage0 acceptance
+
+- [x] DONE: Build a branch snapshot and configure isolated DSH 0.2.2-rc.1 Stage0 for direct browser acceptance. Observable result: a working authenticated URL opens prepared sessions for Chinese technical-name skipping, custom rules, and four specific validation failures; records and localized details survive reload. Depends on the completed source fix, existing dependencies, and the user's Stage0/build authorization. Read the launcher, runtime manager, Stage0 patch, and previous isolated diagnostic evidence first. Change only local snapshot/profile/fixture/verifier files and this spec's evidence. Exclude Desktop/existing service changes, copied credentials, paid upstream requests, commits, and publishing. Verify snapshot source hashes, build and built-output tests, actual runtime persistence, isolated headless-browser interactions, and listener isolation.
+
+The isolated environment is under `C:/Users/Administrator/.config/codingns4dsh/stage0-translation-validation-20261109`; its local `README.md` documents acceptance, startup, and scoped shutdown. DSH Home is `C:/Users/Administrator/.dsh-stage0-translation-validation-20261109`, profile `stage0`, with separate state and loopback port **17896**. Telemetry and watch mode are off. No credentials were copied. The existing 17890 listener remains PID 3004. The authenticated browser URL was supplied for manual acceptance; authentication tokens are not recorded in this spec. After the user confirmed acceptance, all running Stage0 processes were stopped, port 17896 was released, and the existing 17890 service remained unchanged. Local `shutdown-verification.json` records zero remaining Stage0 processes and the released acceptance port.
+
+All **567 source files** in the snapshot match both the recorded SHA256 manifest and this working branch. The profile plugin junction points to that snapshot. The snapshot build passed using the equivalent direct Node steps in local `build.ps1`: version check, clean snapshot output, TypeScript emit, Client bundle, and H5 bundle. The initial package-script attempt hit pnpm 11's `ERR_PNPM_UNSAFE_MODULES_DIR` when it tried to synchronize the shared dependency junction; no deletion occurred. Direct Node build steps avoided dependency mutation. Repository output and Desktop were not rebuilt or installed. Local build/install logs retain existing bundler and upstream OpenTelemetry peer warnings.
+
+Built-output verification passed **159/159 tests**, zero failures, cancellations, or skips, using this command from the snapshot (not the source loader):
+
+```powershell
+node --import ./tests/register-css-loader.mjs --test --test-concurrency=1 --test-reporter=spec tests/session-translation-language.spec.ts tests/session-translation-result.spec.ts tests/session-translation-protection.spec.ts tests/session-translation-rules.spec.ts tests/session-translation.spec.ts tests/session-translation-native.spec.ts tests/session-translation-chat.spec.ts
+```
+
+Actual DSH persistence passed **6/6 prepared native sessions**, each completed with zero tool calls. Chinese technical-name prose makes zero translator calls and retains its original text; unchanged successful native output intentionally has no redundant translation metadata. Custom rules apply to both Chinese reasoning and reply, preserve originals, and append an explicit fixture marker. The other four sessions each preserve two failed records with the correct `failure.validation` value (`format`, `language`, `completion`, or `protected-text`), original fallback, model, duration, and reported usage.
+
+Isolated headless Chrome passed **44/44 browser assertions** across Chinese/English locales, initial display/reload, successful custom-rule details, and all four failure explanations for reasoning/reply. Both fresh browser contexts authenticated using the same launch URL supplied for manual acceptance. No page script errors occurred. Saved screenshots include every case; Chinese protected-text reply and English incomplete-response reasoning layouts were visually inspected. These checks assert retained code/command text and specific explanations, rather than the old generic explanation.
+
+The clearly named `stage0-validation-fixture` is a local synthetic LLM adapter. It forces each response shape through the real validation, persistence and UI paths, reporting **1273 synthetic tokens per translation**; paid provider calls and real billed tokens are **zero**. Custom rules and fixture mode were restored after session preparation. One preliminary Chinese session is preserved alongside the six acceptance sessions; select the newer numbered 01 session. Preparation harness assumptions about the settings write contract, redundant native metadata, and localized language labels were corrected before the successful results; no product changes were needed during this Stage0 follow-up.
+
+Local evidence: `build.log`, `built-tests.log`, `rpc-verification.json`, `browser-verification.json`, `isolation-verification.json`, `source-hashes.json`, `artifact-hashes.json`, and `browser-*.png`. After restarting the isolated environment, recheck it without new prompts using `node <environment>/verify-browser.mjs` and `node <environment>/verify-isolation.mjs`. The browser entry point is the root application; choose numbered sessions in the `translation-acceptance` workspace, expanding the remaining sessions to find 01.
+
+This establishes built-output, native synthetic-provider runtime, and Chinese/English browser acceptance; the user confirmed manual acceptance before requesting shutdown and PR submission. Real upstream translation, live external CLI agents, full-suite execution, and migration of old failure records remain outside this acceptance. The historical rejected provider reply is still unavailable. No publishing or changes to an existing installation were performed.
+
+## 2026-11-09 Chinese technical names and validation details
+
+- [x] DONE: Recognize Chinese prose containing short capitalized product names, and retain the specific validation category in translation failures. Observable result: Chinese update summaries containing Claude Code / Magpie RPC skip model calls when no custom rules are active; custom rules still run on same-language text; failed responses show format, language, completion, or protected-text explanations after history serialization. Depends on the existing language detector, translator, diagnostic reader, and details popup. Read Requirements 5–9, Design / Data ownership, language/rules/result/native/chat tests, and frontend localization rules first. Change the translation service/runtime/protection, shared diagnostic contract, popup/locales, related tests, and this spec. Exclude relaxing validation, changing custom-rule priority, retry policy, historical-record migration, builds, running profiles, commits, and publishing. Verify failing-first regressions, affected source suites, TypeScript, version/capability/i18n checks, and final diff review.
+
+Branch: `fix/translation-validation-details`, created from clean local `main` at `cfc7af63`. The reported session's final Chinese reply saved only `invalid-response`; its rejected provider response and detailed validation error were not retained. This work does not assign a guessed validation category to that historical record.
+
+Failing-first verification: **16 failed, 5 passed** across the selected language, validation, serialization, and popup regressions before implementation. After implementation, the initial eight-file run passed **178/178**. The expanded run found one existing interaction assertion expecting the old failure shape; it now also checks the retained language-validation detail in interaction diagnostics.
+
+Final source verification: **305/305 tests passed across 20 files**, zero failures, cancellations, or skips. Coverage includes native/external input, reasoning and replies, malformed JSON/envelopes, empty/wrong-language results, truncated/missing finish events, omitted/unknown/duplicated placeholders, model fallback and reported usage, sanitized history, legacy records, English/Chinese popup text, custom rules, and ambiguous foreign prose. Log: local `data/logs/translation-validation-details-20261109-003751.log`.
+
+```powershell
+$testFiles = @(rg --files tests -g 'session-translation*.spec.ts' -g 'interaction-translation*.spec.ts' | Sort-Object)
+$testFiles += @('tests/session-prompt-translation.spec.ts', 'tests/dsh-message-projector.spec.ts', 'tests/cli-adapters-turn-status.spec.ts', 'tests/attachment-prompt-language.spec.ts')
+node --import ./tests/register-source-loader.mjs --test --test-concurrency=1 --test-reporter=spec @testFiles
+node ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit
+node scripts/check-version-sync.mjs
+node scripts/check-capability-retirement.mjs
+node scripts/check-client-i18n.mjs
+git diff --check
+```
+
+TypeScript, version, capability, localization, and whitespace checks pass. Localization reports zero blocking violations and 124 existing nonblocking warnings; React source tests retain the existing server-rendering `useLayoutEffect` warnings. The first TypeScript run found a missing local `@deepseek-ai/dsh-client-ui-context-menu` dependency. Synchronized local dependencies with `corepack pnpm@10.7.1 install --frozen-lockfile --ignore-scripts`, then reran TypeScript and all 305 source tests successfully. `package.json` and `pnpm-lock.yaml` are unchanged; no dependency lifecycle scripts were run.
+
+A read-only replay of the reported session's complete 936-character final reply through the modified source and a local fake provider also passes: without custom rules, source language is Chinese, model calls are zero, and the original is returned unchanged; with a custom rule, source language remains Chinese, exactly one fixture call occurs, and all 16 protected spans remain unchanged. No upstream requests or billed tokens were used. The tracked language tests retain a reduced reproduction rather than copying the private session log.
+
+At the end of source-only verification, no bundle build, installed-profile change, live-provider translation, browser/Stage0 operation, commit, push, or publishing had been performed. The separately authorized Stage0 follow-up above records the subsequent build and browser evidence. Real upstream-provider acceptance remains unperformed; an enabled custom rule still requires a model call and can encounter an invalid upstream response.
+
+## Original implementation (2026-10-15)
+
 Status: Complete, verified from source on 2026-10-15.
 
 - [x] 1. Record approved scope, evidence, and design. DONE: attached JSONL and current source inspected; path-protection gap reproduced in memory.

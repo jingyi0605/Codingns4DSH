@@ -2,6 +2,8 @@
 
 Status: Complete, verified from source on 2026-10-15. Approved for implementation on 2026-10-15.
 
+Latest follow-up: Chinese technical-name detection and specific validation-failure details verified from source on 2026-11-09; see the dated task evidence.
+
 Extend the existing session translation service to attachment notices, injected skill descriptions, and assembled system/tool descriptions. Preserve filenames, paths, identifiers, schemas, original audit data, and disabled-session behavior.
 
 - Requirements: `specs/spec015-会话内置提示翻译/requirements.md`

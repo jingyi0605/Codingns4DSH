@@ -208,7 +208,9 @@ export function TranslationAction(props: TranslationActionProps): ReactElement |
     ...(record!.totalTokens === undefined ? [] : [`${record!.totalTokens} tok`]),
   ].join(' · ')),
   props.inputFailure === undefined ? null : createElement('p', { role: 'alert' }, props.translationT('translation.inputFailedHelp')),
-  pending || !failed ? null : createElement('p', { role: 'alert', style: { color: dshThemeColor.error } }, props.translationT(`translation.failure.${failure?.code ?? 'unknown'}`)),
+  pending || !failed ? null : createElement('p', { role: 'alert', style: { color: dshThemeColor.error } }, props.translationT(
+    failure?.validation === undefined ? `translation.failure.${failure?.code ?? 'unknown'}` : `translation.failure.validation.${failure.validation}`,
+  )),
   decisionError ? createElement('p', { role: 'alert', style: { color: dshThemeColor.error } }, props.translationT('translation.decisionFailed')) : null,
   props.inputFailure !== undefined ? createElement('div', { style: { display: 'flex', flexWrap: 'wrap', gap: 8, marginTop: 10 } },
     ...(['retry', 'send', 'cancel'] as const).map(choice => createElement('button', {

@@ -155,6 +155,40 @@ test('legitimate translation requests are retained without keyword filtering', a
   assert.equal(result.failed, undefined)
 })
 
+for (const kind of ['input', 'assistant', 'reasoning'] as const) {
+  test(`${kind} retains the specific validation failure without saving raw responses`, async t => {
+    const source = kind === 'input' ? '请检查 `src/app.ts`。' : 'Please review `src/app.ts`.'
+    const valid = kind === 'input' ? 'Please review @@CODINGNS_TRANSLATION_0@@.' : '请检查 @@CODINGNS_TRANSLATION_0@@。'
+    for (const [validation, text, finish] of [
+      ['format', 'private-invalid-response', 'stop'],
+      ['format', JSON.stringify({ translation: valid, explanation: 'private-explanation' }), 'stop'],
+      ['language', JSON.stringify({ translation: '' }), 'stop'],
+      ['language', JSON.stringify({ translation: kind === 'input' ? '请检查。' : 'Please review.' }), 'stop'],
+      ['completion', JSON.stringify({ translation: valid }), 'max-tokens'],
+      ['completion', JSON.stringify({ translation: valid }), undefined],
+      ['protected-text', JSON.stringify({ translation: valid.replace('@@CODINGNS_TRANSLATION_0@@', '') }), 'stop'],
+      ['protected-text', JSON.stringify({ translation: valid.replace('_0@@', '_9@@') }), 'stop'],
+      ['protected-text', JSON.stringify({ translation: `${valid} @@CODINGNS_TRANSLATION_0@@` }), 'stop'],
+    ] as const) {
+      const f = fixture(() => (async function* () {
+        yield { type: 'text-delta', text }
+        yield { type: 'usage', usage: { totalTokens: 17 } }
+        if (finish !== undefined) yield { type: 'finish', reason: { kind: finish } }
+      })())
+      t.after(() => f.service.dispose())
+      const result = kind === 'input'
+        ? await f.service.translateInputDetailed!('codex', source, undefined, true)
+        : await f.service.translateOutput('dsh', kind, source, undefined, true)
+      assert.equal(result?.failed, true)
+      assert.equal(result?.translated, source)
+      assert.deepEqual(result?.failure, { code: 'invalid-response', retryable: false, validation })
+      assert.equal(result?.totalTokens, 34, 'both model attempts retain reported usage')
+      assert.equal(f.requests.length, 2, 'validation failures still try the configured backup')
+      assert.equal(JSON.stringify(result).includes('private-'), false)
+    }
+  })
+}
+
 for (const kind of ['assistant', 'reasoning'] as const) {
   test(`${kind} output rejects commentary with the same response contract`, async t => {
     const f = fixture(request => response(request.model === 'primary' ? reported.response : JSON.stringify({ translation: '代码已更新。' })))

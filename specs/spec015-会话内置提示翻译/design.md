@@ -8,7 +8,11 @@ The existing translator owns language/model selection, placeholder validation, u
 
 Input audit records and native/external output projections retain the translator's structured failure category and retryability alongside duration and reported token usage. Unexpected translation exceptions use the existing failure classifier. Only known categories and a boolean retryability value cross the history/UI boundary; raw provider errors and responses are not copied into diagnostics. Failure does not erase provider-reported consumption.
 
-Translation details show a localized explanation of the recorded category. Older or malformed records without a recognized category explicitly report that failure details were not saved; they are not assigned an inferred cause. This does not recover diagnostics missing from existing history or distinguish individual validation checks within the existing `invalid-response` category.
+Local validation errors carry a typed check category (`format`, `language`, `completion`, or `protected-text`) into the existing `invalid-response` failure's optional `validation` field. The history reader accepts only those values, only for `invalid-response`, and strips unknown fields. Native/external projections and client readers retain that field through the existing diagnostic reader. Retry and model-pool ordering are unchanged.
+
+Translation details show a localized explanation of the specific check when saved, otherwise the recorded category. Older or malformed records without a recognized category explicitly report that failure details were not saved; they are not assigned an inferred cause. This does not recover diagnostics missing from existing history or retain rejected provider responses.
+
+Local source-language detection allows short (two to four word) capitalized Latin names within Han prose, including Markdown-emphasized names. A Han majority remains necessary; Latin-only clauses, lowercase multiword passages, common English command/grammar words, longer phrases, and non-Han/non-Latin prose remain ambiguous and use the model. This is a conservative character/word heuristic, not semantic language identification. Same-language skipping still requires no custom rules, so configured rules continue to apply to Chinese text containing technical names.
 
 Recognize complete path spans before merging known literals, so a working-directory prefix cannot split a longer path. Match identifier literals at token boundaries to avoid protecting fragments of ordinary words.
 

@@ -1,5 +1,6 @@
 import { fromMarkdown } from 'mdast-util-from-markdown'
 import type { Nodes } from 'mdast'
+import { TranslationValidationError } from './session-translation-runtime.js'
 
 interface TextRange {
   readonly start: number
@@ -199,11 +200,11 @@ export function restoreText(value: string, values: readonly string[]): string {
     const position = Number(index)
     const original = values[position]
     if (original === undefined || seen.has(position) || match !== `@@CODINGNS_TRANSLATION_${position}@@`) {
-      throw new Error('translation changed protected text placeholders')
+      throw new TranslationValidationError('protected-text', 'translation changed protected text placeholders')
     }
     seen.add(position)
     return original
   })
-  if (seen.size !== values.length) throw new Error('translation omitted protected text placeholders')
+  if (seen.size !== values.length) throw new TranslationValidationError('protected-text', 'translation omitted protected text placeholders')
   return restored
 }

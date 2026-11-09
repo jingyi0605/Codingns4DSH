@@ -18,7 +18,7 @@ import type {
 import { debugWarn } from '../../shared/debug.js'
 import { isCodeIdentifierText, isLanguageNeutralText, protectText, restoreText, stripPlaceholders } from './session-translation-protection.js'
 import type { TextProtectionOptions } from './session-translation-protection.js'
-import { translationFailure, withTranslationAbort as withAbort } from './session-translation-runtime.js'
+import { TranslationValidationError, translationFailure, withTranslationAbort as withAbort } from './session-translation-runtime.js'
 
 interface LlmRuntime {
   listProviders?(): readonly { id: string; name: string }[]
@@ -171,7 +171,9 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
             combined.throwIfAborted()
             const result = parseTranslationResult(response)
             // Validate prose before restoring code, whose language is intentionally unchanged.
-            if (!isUsableTranslation(stripPlaceholders(result), targetLanguage)) throw new Error('model returned an unusable translation')
+            if (!isUsableTranslation(stripPlaceholders(result), targetLanguage)) {
+              throw new TranslationValidationError('language', 'model returned an unusable translation')
+            }
             return restoreText(result.trim(), protectedText.values)
           }, combined)
           return { translated, model: candidate, ...metrics() }
@@ -353,10 +355,10 @@ function translationUserMessage(language: SessionTranslationLanguage, kind: Sess
 function parseTranslationResult(response: string): string {
   let value: unknown
   try { value = JSON.parse(response) }
-  catch { throw new Error('model returned an unusable translation: invalid JSON response') }
+  catch { throw new TranslationValidationError('format', 'model returned an unusable translation: invalid JSON response') }
   if (value === null || typeof value !== 'object' || Array.isArray(value)
     || Object.keys(value).length !== 1 || !('translation' in value) || typeof value.translation !== 'string') {
-    throw new Error('model returned an unusable translation: expected only a translation string field')
+    throw new TranslationValidationError('format', 'model returned an unusable translation: expected only a translation string field')
   }
   return value.translation
 }
@@ -374,8 +376,8 @@ function isUsableTranslation(value: string, language: SessionTranslationLanguage
 
 /**
  * Local language detection after protected code and literals have been removed.
- * Han prose may contain isolated Latin terms; foreign passages and ambiguous
- * mixtures remain unknown so that translation is not skipped accidentally.
+ * Han prose may contain Latin terms and short capitalized names. Foreign passages
+ * and ambiguous mixtures remain unknown so translation is not skipped accidentally.
  *
  * An English target also accepts plain Latin text without French/German signals,
  * preserving the existing bypass for short instructions such as "tool test".
@@ -447,10 +449,15 @@ function isHanProseWithEmbeddedLatinTerms(text: string, han: number): boolean {
   return clauses.every((clause) => {
     if (!/\p{Script=Latin}/u.test(clause)) return true
     if (!/[\u3400-\u9fff]/u.test(clause)) return false
-    // Only isolated terms qualify. Multiword names and phrases remain ambiguous;
-    // handling them conservatively avoids skipping actual foreign prose. Ignore
-    // Markdown emphasis without treating underscores inside identifiers as spaces.
-    return !/\p{Script=Latin}\s+\p{Script=Latin}/u.test(clause.replace(/[*_~]/gu, ''))
+    // Accept short capitalized names such as Claude Code and Magpie RPC inside
+    // Han prose, while keeping foreign sentences and commands on the model path.
+    // Ignore Markdown emphasis without splitting identifiers at underscores.
+    const phrases = clause.replace(/[*_~]/gu, '').match(/\p{Script=Latin}+(?:[ \t]+\p{Script=Latin}+)+/gu) ?? []
+    return phrases.every((phrase) => {
+      const words = phrase.split(/[ \t]+/u)
+      return words.length <= 4 && words.every(word => /^[A-Z][A-Za-z]*$/u.test(word)
+        && !/^(?:I|We|You|He|She|It|They|The|A|An|This|That|These|Those|Please|Do|Not|Run|Review|Check|Use|Fix|Add|Remove|Keep|Return|Translate)$/iu.test(word))
+    })
   })
 }
 
@@ -481,10 +488,10 @@ async function readTranslation(stream: AsyncIterable<Record<string, any>>, signa
     if (chunk.type === 'text-delta' && typeof chunk.text === 'string') text += chunk.text
     else if (chunk.type === 'block-end' && chunk.block?.type === 'text' && text === '' && typeof chunk.block.text === 'string') text = chunk.block.text
     if (chunk.type === 'finish' && chunk.reason?.kind === 'error') throw new Error(chunk.reason.failure?.message ?? 'translation failed')
-    if (chunk.type === 'finish' && chunk.reason?.kind !== 'stop') throw new Error('model returned an unusable translation: incomplete stream')
+    if (chunk.type === 'finish' && chunk.reason?.kind !== 'stop') throw new TranslationValidationError('completion', 'model returned an unusable translation: incomplete stream')
     if (chunk.type === 'finish') completed = true
   }
-  if (!completed) throw new Error('model returned an unusable translation: missing finish')
+  if (!completed) throw new TranslationValidationError('completion', 'model returned an unusable translation: missing finish')
   return text
 }
 

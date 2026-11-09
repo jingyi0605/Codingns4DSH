@@ -90,9 +90,11 @@ test('numbers embedded in prose are still translated and wrong-language output i
   t.after(() => f.dispose())
   const result = await f.engine.translate(request(['The year 1648', '1605 years']))
   assert.equal(f.calls.length, 2)
-  for (const item of Object.values(result.records)) {
+  for (const [key, item] of Object.entries(result.records)) {
     assert.equal(item.failed, true)
-    assert.deepEqual(item.failure, { code: 'invalid-response', retryable: false })
+    const failure = { code: 'invalid-response', retryable: false, validation: 'language' }
+    assert.deepEqual(item.failure, failure)
+    assert.deepEqual(result.diagnostics?.[key]?.failure, failure)
   }
 })
 
