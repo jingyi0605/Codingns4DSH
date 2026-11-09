@@ -2406,7 +2406,12 @@ test('CLI 功能模块向 DSH 注册外部 Provider 的图片能力，流仍由 
     id: 'gpt-5.5',
     name: 'gpt-5.5',
     inputModalities: ['text', 'image'],
+    // Known Codex model: DSH needs a declared capacity or a model switch fails compaction.
+    context: { contextWindow: 258400 },
   })
+  // Unknown models still declare a capacity so a model switch is never blocked.
+  const unknown = await virtualAdapter!.resolveModel('codingns-cli-codex', 'brand-new-model') as { context?: { contextWindow: number } }
+  assert.equal(unknown.context?.contextWindow, 1_000_000)
 
   await features.disable('cliAdapters')
   assert.equal(disposed, true)

@@ -40,7 +40,26 @@ interface DshVirtualModelInfo {
   readonly id: string
   readonly name: string
   readonly inputModalities: readonly ['text', 'image']
+  /** DSH compaction refuses a model switch when the target route declares no context capacity. */
+  readonly context: { readonly contextWindow: number }
 }
+
+/**
+ * Capacity reported when neither Magpie nor the built-in tables know the model.
+ *
+ * The external CLI owns its own conversation and context compaction, so DSH never
+ * sends it the native history. A deliberately large value keeps DSH from
+ * summarizing the native history during a model switch because of a guess. It is
+ * never written to a session as a confirmed context window.
+ */
+export const EXTERNAL_AGENT_FALLBACK_CONTEXT_WINDOW = 1_000_000
+
+/** Returns a trusted context window for the exact adapter model, or undefined when unknown. */
+export type ExternalContextWindowResolver = (
+  adapterId: CodingNsCliAdapterId,
+  modelId: string,
+  signal?: AbortSignal,
+) => Promise<number | undefined> | number | undefined
 
 interface DshVirtualProviderRegistration {
   setProviders(providers: readonly CodingNsCliAdapterId[]): void
@@ -56,6 +75,7 @@ interface DshVirtualProviderRegistration {
  */
 export function createDshVirtualProviderRegistration(
   dshContext: Context | undefined,
+  resolveContextWindow?: ExternalContextWindowResolver,
 ): DshVirtualProviderRegistration | undefined {
   const llm = readLlmRuntime(dshContext)
   if (llm === undefined) return undefined
@@ -67,7 +87,20 @@ export function createDshVirtualProviderRegistration(
     listModels: async () => [],
     resolveModel: async (provider, model, signal) => {
       signal?.throwIfAborted()
-      return { provider, id: model, name: model, inputModalities: ['text', 'image'] }
+      const adapterId = fromCliProviderId(provider)
+      let contextWindow: number | undefined
+      if (adapterId !== undefined && resolveContextWindow !== undefined) {
+        try { contextWindow = await resolveContextWindow(adapterId, model, signal) } catch { /* Lookup is best effort; fall back below. */ }
+        signal?.throwIfAborted()
+      }
+      return {
+        provider, id: model, name: model, inputModalities: ['text', 'image'],
+        context: {
+          contextWindow: typeof contextWindow === 'number' && Number.isSafeInteger(contextWindow) && contextWindow > 0
+            ? contextWindow
+            : EXTERNAL_AGENT_FALLBACK_CONTEXT_WINDOW,
+        },
+      }
     },
     prepareCall: async (provider, model, signal) => ({
       model: await adapter.resolveModel(provider, model, signal),

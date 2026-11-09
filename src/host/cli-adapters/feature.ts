@@ -40,6 +40,7 @@ import type { CodingNsNativeSessionBridge, CodingNsNativeSessionController } fro
 import { CodingNsRpcError } from '../rpc-table.js'
 import { setAdapterRegistry } from './registry-holder.js'
 import { createDshVirtualProviderRegistration } from './dsh-virtual-providers.js'
+import { knownAntigravityContextWindow, knownClaudeContextWindow, knownCodexContextWindow, knownCommandCodeContextWindow, knownOpenCodeContextWindow } from './model-catalog.js'
 import { dispatchBridgeSubagent, type BridgeAgentRegistry } from '../cli-bridge/dispatch.js'
 import { dispatchBridgeSearch } from '../cli-bridge/search-dispatch.js'
 import { dispatchBridgeFetch } from '../cli-bridge/fetch-dispatch.js'
@@ -270,7 +271,22 @@ export function createCliAdaptersFeature(options: {
         setAdapterRegistry(undefined)
       })
       registry.applyEnabledSettings(context.services.settings?.get().agentAdapters)
-      const virtualProviders = createDshVirtualProviderRegistration(context.services.dshContext)
+      const virtualProviders = createDshVirtualProviderRegistration(context.services.dshContext, async (adapterId, modelId, signal) => {
+        // Exact Magpie metadata wins; the static tables only cover Agents it does not expose.
+        // DSH resolves model info before every model switch and step, so a cold Magpie CLI
+        // lookup must not block it: after the budget we fall back to the static tables.
+        if (typeof magpieUsage.readModelMetadata === 'function') {
+          const budget = AbortSignal.timeout(2_000)
+          const confirmed = await magpieUsage.readModelMetadata(adapterId, modelId, signal ? AbortSignal.any([signal, budget]) : budget).catch(() => null)
+          if (confirmed?.contextWindow !== undefined) return confirmed.contextWindow
+        }
+        return adapterId === 'codex' ? knownCodexContextWindow(modelId)
+          : adapterId === 'command-code' ? knownCommandCodeContextWindow(modelId)
+          : adapterId === 'antigravity' ? knownAntigravityContextWindow(modelId)
+          : adapterId === 'opencode' ? knownOpenCodeContextWindow(modelId)
+          : adapterId === 'claude-code' ? knownClaudeContextWindow(modelId)
+          : undefined
+      })
       if (virtualProviders !== undefined) context.resources.add(() => virtualProviders.dispose())
       virtualProviders?.setProviders(registry.enabledAdapterIds())
       if (context.services.dshContext !== undefined && context.services.dshVersion !== undefined) {

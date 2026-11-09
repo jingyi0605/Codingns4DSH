@@ -68,7 +68,9 @@ async function fixture(version = '0.2.1-alpha.3', replace = true) {
       on(name: string, listener: (...args: any[]) => any) { hooks.set(name, listener); return () => { hooks.delete(name) } },
     } as never,
   } as never)
-  features.register(createCliAdaptersFeature({ registry }))
+  // resolveModel consults Magpie for context capacity; never spawn the real CLI in tests.
+  const magpieUsage = { readModelMetadata: async () => null } as never
+  features.register(createCliAdaptersFeature({ registry, magpieUsage }))
   await features.start('cliAdapters')
   return {
     routes, hooks, calls, store, registry, rpc, owner, nativeSelection, nativeAdapter,
