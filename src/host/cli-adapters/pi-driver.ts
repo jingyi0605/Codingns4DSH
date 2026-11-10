@@ -135,6 +135,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
       }, input.signal, (message, receivedAt) => performance.observe(message, receivedAt))
       let finishResult: { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }
       let latestUsage: Extract<CodingNsAgentEvent, { type: 'usage' }> | null = null
+      const streamState: PiStreamState = { streamed: new Set() }
       while (true) {
         const item = await stream.next()
         if (item.done) {
@@ -157,7 +158,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
             },
           }
         }
-        for (const chunk of piMessageToChunks(item.value.message)) {
+        for (const chunk of piMessageToChunks(item.value.message, streamState)) {
           if (chunk.type === 'usage') {
             // Pi 的 message_update 用量是同一轮的滚动快照，先保留最后一份，
             // 等 get_session_stats 补齐上下文后只投影一次，避免重复采样。
@@ -405,21 +406,53 @@ function parsePiCatalog(value: unknown): CodingNsCliModelCatalog {
   return { groups: [{ id: 'pi', name: 'Pi', models: [...new Map(items.map((item) => [item.id, item])).values()] }], currentModel: null, currentEffort: null }
 }
 
-function piMessageToChunks(message: Record<string, any>): readonly CodingNsAgentEvent[] {
+/** 记录当前 assistant 消息里已经流式输出过的内容块，避免 *_end 的完整内容重复追加。 */
+interface PiStreamState {
+  readonly streamed: Set<string>
+}
+
+function piBoundary(channel: 'reasoning' | 'text'): CodingNsAgentEvent {
+  return { type: 'message-boundary', channel, messageId: `pi-assistant-${channel}` }
+}
+
+function piMessageToChunks(message: Record<string, any>, state: PiStreamState = { streamed: new Set() }): readonly CodingNsAgentEvent[] {
   const params = isRecord(message.params) ? message.params : message
   const event = isRecord(params.item) ? params.item : params
   const assistantEvent = isRecord(params.assistantMessageEvent) ? params.assistantMessageEvent : null
   const completedMessage = isRecord(params.message) ? params.message : null
   const rootType = typeof event.type === 'string' ? event.type : typeof params.event === 'string' ? params.event : ''
   const usage = piUsageChunk(params) ?? (completedMessage === null ? null : piUsageChunk(completedMessage))
+  if (rootType === 'message_start') state.streamed.clear()
+  // Pi 在 message_end/turn_end 才明确告知一条 assistant 消息已完成。必须在这里关闭
+  // 正文和思考块，否则文本会一直停留在打开的块里，直到整轮 finish 才一次性落盘。
+  if (rootType === 'message_end' || rootType === 'turn_end') {
+    state.streamed.clear()
+    const closing = completedMessage === null || completedMessage.role === 'assistant'
+      ? [piBoundary('reasoning'), piBoundary('text')]
+      : []
+    return usage === null ? closing : [...closing, usage]
+  }
   if (rootType === 'agent_start'
     || rootType === 'agent_settled'
     || rootType === 'agent_end'
     || rootType === 'turn_start'
-    || rootType === 'turn_end'
-    || rootType === 'message_start'
-    || rootType === 'message_end') return usage === null ? [] : [usage]
+    || rootType === 'message_start') return usage === null ? [] : [usage]
   const type = assistantEvent !== null && typeof assistantEvent.type === 'string' ? assistantEvent.type : rootType
+  if (type === 'thinking_end' || type === 'text_end') {
+    // *_end 携带该内容块的完整内容。已流式输出过就只收尾；Provider 没有发 delta 时补发一次。
+    const channel = type === 'thinking_end' ? 'reasoning' : 'text'
+    const key = `${channel}:${String(assistantEvent?.contentIndex ?? '')}`
+    const full = textValue(assistantEvent?.content)
+    const chunks: CodingNsAgentEvent[] = []
+    if (!state.streamed.has(key) && full) chunks.push({ type: channel === 'reasoning' ? 'reasoning-delta' : 'text-delta', text: full })
+    state.streamed.delete(key)
+    chunks.push(piBoundary(channel))
+    if (usage !== null) chunks.push(usage)
+    return chunks
+  }
+  if (type === 'thinking_delta' || type === 'text_delta') {
+    state.streamed.add(`${type === 'thinking_delta' ? 'reasoning' : 'text'}:${String(assistantEvent?.contentIndex ?? '')}`)
+  }
   const reasoning = reasoningText(assistantEvent ?? params)
   if (reasoning !== null) return usage === null ? [{ type: 'reasoning-delta', text: reasoning }] : [{ type: 'reasoning-delta', text: reasoning }, usage]
   const text = textValue(assistantEvent?.delta ?? params.delta ?? params.text ?? params.content ?? params.message)

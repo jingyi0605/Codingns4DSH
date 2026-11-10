@@ -1878,6 +1878,59 @@ test('Pi 在 prompt 响应先到时继续等待文本和 agent_settled', async (
   driver.dispose()
 })
 
+test('Pi 在 message_end 关闭正文和思考块，AI 消息按工具前后的时间线输出', async () => {
+  const driver = new PiAgentDriver({
+    binaries: ['fake-pi'],
+    spawnSync: (() => ({ status: 0, stdout: 'pi 1.5.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; type?: string; method?: string }
+        const command = request.type ?? request.method
+        if (command !== 'prompt') {
+          stdout.write(`${JSON.stringify({ id: request.id, type: 'response', success: true, data: {} })}\n`)
+          return
+        }
+        stdout.write(`${JSON.stringify({ id: request.id, type: 'response', success: true, data: { disposition: 'accepted' } })}\n`)
+        const events: unknown[] = [
+          { type: 'message_start', message: { role: 'assistant' } },
+          { type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: '先想' } },
+          { type: 'message_update', assistantMessageEvent: { type: 'thinking_end', contentIndex: 0, content: '先想' } },
+          { type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 1, delta: '工具前' } },
+          { type: 'message_update', assistantMessageEvent: { type: 'text_end', contentIndex: 1, content: '工具前' } },
+          { type: 'message_end', message: { role: 'assistant' } },
+          { type: 'tool_execution_start', toolCallId: 'c1', toolName: 'bash', args: { command: 'pwd' } },
+          { type: 'tool_execution_end', toolCallId: 'c1', toolName: 'bash', result: '/w', isError: false },
+          { type: 'message_start', message: { role: 'assistant' } },
+          { type: 'message_update', assistantMessageEvent: { type: 'text_end', contentIndex: 0, content: '工具后' } },
+          { type: 'message_end', message: { role: 'assistant' } },
+          { type: 'agent_settled' },
+        ]
+        setImmediate(() => { for (const event of events) stdout.write(`${JSON.stringify(event)}\n`) })
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'pi-timeline', messages: [], prompt: '执行' })) chunks.push(chunk)
+  const summary = chunks.flatMap((chunk) => {
+    if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') return [`${chunk.type}:${chunk.text}`]
+    if (chunk.type === 'message-boundary') return [`boundary:${chunk.channel}`]
+    if (chunk.type === 'tool-event') return [`tool:${chunk.status}`]
+    return []
+  })
+  assert.deepEqual(summary, [
+    'reasoning-delta:先想', 'boundary:reasoning',
+    'text-delta:工具前', 'boundary:text',
+    'boundary:reasoning', 'boundary:text',
+    'tool:running', 'tool:completed',
+    'text-delta:工具后', 'boundary:text',
+    'boundary:reasoning', 'boundary:text',
+  ])
+  driver.dispose()
+})
+
 test('Pi cancellation sends abort immediately and disposes an unresponsive turn', async () => {
   const controller = new AbortController()
   const requests: Array<{ readonly id?: number; readonly type?: string; readonly method?: string }> = []
