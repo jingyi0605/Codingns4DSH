@@ -28,6 +28,8 @@ export interface PiAgentDriverOptions {
 /** Pi Agent 的 --mode rpc 适配器。Pi 的长期 RPC 细节被限制在本文件和标准进程层内。 */
 export class PiAgentDriver implements CodingNsCliDriver {
   readonly descriptor = { id: 'pi', name: 'Pi Agent', protocol: 'json-rpc', capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'steer'] as const } as const
+  /** 工具完成后由 Registry 挂起并续读同一个事件迭代器，使工具和正文按时间线分 step。 */
+  readonly supportsToolStepSplitting = true
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
@@ -450,6 +452,10 @@ function piMessageToChunks(message: Record<string, any>, state: PiStreamState = 
     if (usage !== null) chunks.push(usage)
     return chunks
   }
+  // toolcall_* 只是模型在流式拼装调用参数，真正的执行由 tool_execution_* 表达。
+  // 把它们转成工具事件会生成大量无 callId 的空 `tool` 调用，且 toolcall_end 会在工具
+  // 尚未执行时就被当成“已完成”，导致按工具分 step 时过早切分。
+  if (type === 'toolcall_start' || type === 'toolcall_delta' || type === 'toolcall_end') return usage === null ? [] : [usage]
   if (type === 'thinking_delta' || type === 'text_delta') {
     state.streamed.add(`${type === 'thinking_delta' ? 'reasoning' : 'text'}:${String(assistantEvent?.contentIndex ?? '')}`)
   }

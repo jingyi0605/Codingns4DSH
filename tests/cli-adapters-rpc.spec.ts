@@ -1931,6 +1931,46 @@ test('Pi 在 message_end 关闭正文和思考块，AI 消息按工具前后的�
   driver.dispose()
 })
 
+test('Pi 忽略 toolcall_* 参数拼装事件，只用 tool_execution_* 生成工具事件并声明按工具分 step', async () => {
+  const driver = new PiAgentDriver({
+    binaries: ['fake-pi'],
+    spawnSync: (() => ({ status: 0, stdout: 'pi 1.5.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const stdin = { write(data: string): void {
+        const request = JSON.parse(data) as { id: number; type?: string; method?: string }
+        const command = request.type ?? request.method
+        if (command !== 'prompt') {
+          stdout.write(`${JSON.stringify({ id: request.id, type: 'response', success: true, data: {} })}\n`)
+          return
+        }
+        stdout.write(`${JSON.stringify({ id: request.id, type: 'response', success: true, data: { disposition: 'accepted' } })}\n`)
+        const events: unknown[] = [
+          { type: 'message_start', message: { role: 'assistant' } },
+          { type: 'message_update', assistantMessageEvent: { type: 'toolcall_start', contentIndex: 0, id: 'c1', toolName: 'bash' } },
+          { type: 'message_update', assistantMessageEvent: { type: 'toolcall_delta', contentIndex: 0, delta: '{"command"' } },
+          { type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', contentIndex: 0, toolCall: { id: 'c1', name: 'bash', arguments: { command: 'pwd' } } } },
+          { type: 'message_end', message: { role: 'assistant' } },
+          { type: 'tool_execution_start', toolCallId: 'c1', toolName: 'bash', args: { command: 'pwd' } },
+          { type: 'tool_execution_end', toolCallId: 'c1', toolName: 'bash', result: '/w', isError: false },
+          { type: 'agent_settled' },
+        ]
+        setImmediate(() => { for (const event of events) stdout.write(`${JSON.stringify(event)}\n`) })
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  assert.equal(driver.supportsToolStepSplitting, true)
+  const chunks = []
+  for await (const chunk of driver.executeTurn({ sessionId: 'pi-toolcall', messages: [], prompt: '执行' })) chunks.push(chunk)
+  assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-event').map((chunk) => [chunk.toolName, chunk.callId, chunk.status]), [
+    ['bash', 'c1', 'running'],
+    ['bash', 'c1', 'completed'],
+  ])
+  driver.dispose()
+})
+
 test('Pi cancellation sends abort immediately and disposes an unresponsive turn', async () => {
   const controller = new AbortController()
   const requests: Array<{ readonly id?: number; readonly type?: string; readonly method?: string }> = []
