@@ -10,7 +10,7 @@ import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
 import { GROK_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { isRegularFile, probeStoredSession, resolveSessionDirectory } from './session-probe.js'
-import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { acpToolStatusFields, firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks } from './attachment-utils.js'
 import { acpBridgeMcpServers, bridgeSessionGuidance, subagentBridgeActive, teamBridgeToken } from '../cli-bridge/injections.js'
 import { getSubagentBridge } from '../cli-bridge/bridge-holder.js'
@@ -299,7 +299,7 @@ export class GrokBuildDriver implements CodingNsCliDriver {
           if (chunk.type === 'tool-event') {
             const callId = chunk.callId ?? chunk.toolName
             if (chunk.status === 'completed' || chunk.status === 'failed') activeTools.delete(callId)
-            else activeTools.set(callId, chunk.toolName === 'tool' ? activeTools.get(callId) ?? chunk.toolName : chunk.toolName)
+            else if (chunk.status === 'started' || chunk.status === 'running') activeTools.set(callId, chunk.toolName === 'tool' ? activeTools.get(callId) ?? chunk.toolName : chunk.toolName)
           }
           yield chunk
           advanceCodingNsSegment(chunk, segmentState)
@@ -845,7 +845,7 @@ function acpMessageToChunks(message: Record<string, any>): readonly CodingNsAgen
     return [...imageEvents, {
       type: 'tool-event',
       toolName: name ?? 'tool',
-      status: normalizeToolStatus(tool.status ?? tool.state ?? update.status, fallback),
+      ...acpToolStatusFields(tool.status ?? tool.state ?? update.status, type, fallback),
       ...(callId ? { callId } : {}),
       ...(input !== undefined ? { input } : {}),
       ...(output !== undefined ? { output } : {}),

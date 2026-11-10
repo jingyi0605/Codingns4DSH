@@ -23,7 +23,7 @@ import type {
 import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage, type JsonRpcProcessOptions } from './json-rpc-process.js'
 import { emptyCatalog, isRecord, streamRpcRequest, textValue, usageChunk } from './rpc-driver-utils.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
-import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { acpToolStatusFields, firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks } from './attachment-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 import { reasoningText } from './reasoning-content.js'
@@ -1658,7 +1658,7 @@ function codeBuddyMessageToChunk(message: JsonRpcMessage): CodingNsAgentEvent | 
     return {
       type: 'tool-event',
       toolName: toolName ?? 'tool',
-      status: normalizeToolStatus(tool.status ?? tool.state ?? update.status, fallback),
+      ...acpToolStatusFields(tool.status ?? tool.state ?? update.status, type, fallback),
       ...(callId === undefined ? {} : { callId }),
       ...(input === undefined ? {} : { input }),
       ...(output === undefined ? {} : { output, outputMode: type.includes('delta') ? 'delta' as const : 'snapshot' as const }),

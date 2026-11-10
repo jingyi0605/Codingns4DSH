@@ -86,6 +86,10 @@ export class CodingNsDshToolHistoryProjector {
     const callId = explicitCallId || this.nextAnonymousCallId()
     const key = explicitCallId ? `id:${explicitCallId}` : `anonymous:${callId}`
     const current = this.records.get(key)
+    // A statusless metadata patch can arrive after this call's step was settled.
+    // It does not declare another invocation in the new step.
+    if (explicitCallId && current === undefined && event.status === undefined && event.input === undefined
+      && event.output === undefined && event.error === undefined && !images?.length) return null
     if (current === undefined && this.observedCalls >= CALL_COUNT_LIMIT) return null
     const toolName = meaningfulToolName(event.toolName, current?.toolName)
     const input = shouldIgnoreEmptyToolInput(event.input, current?.input)

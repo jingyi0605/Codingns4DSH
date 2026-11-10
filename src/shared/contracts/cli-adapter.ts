@@ -398,6 +398,7 @@ export interface CodingNsCliMessage {
 export interface CodingNsAgentToolEvent {
   readonly type: 'tool-event'
   readonly toolName: string
+  /** Omitted in partial updates; consumers must retain the call's current lifecycle state. */
   readonly status?: 'started' | 'running' | 'completed' | 'failed'
   readonly callId?: string
   readonly input?: string

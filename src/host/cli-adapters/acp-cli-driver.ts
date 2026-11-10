@@ -11,7 +11,7 @@ import type {
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, streamRpcRequest, usageChunk } from './rpc-driver-utils.js'
-import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { acpToolStatusFields, firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks } from './attachment-utils.js'
 import { acpBridgeMcpServers, teamBridgeToken } from '../cli-bridge/injections.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
@@ -731,7 +731,7 @@ function toolChunk(update: Record<string, any>, type: string): CodingNsAgentEven
   const error = serializeToolValue(tool.error ?? update.error)
   const fallback = error !== undefined || type.includes('error') || type.includes('fail') ? 'failed' : output !== undefined || type.includes('result') || type.includes('complete') ? 'completed' : 'running'
   return {
-    type: 'tool-event', toolName: name ?? 'tool', status: normalizeToolStatus(tool.status ?? tool.state ?? update.status, fallback),
+    type: 'tool-event', toolName: name ?? 'tool', ...acpToolStatusFields(tool.status ?? tool.state ?? update.status, type, fallback),
     ...(callId ? { callId } : {}), ...(input !== undefined ? { input } : {}),
     ...(output !== undefined ? { output, outputMode: type.includes('delta') ? 'delta' as const : 'snapshot' as const } : {}),
     ...(error !== undefined ? { error } : {}),

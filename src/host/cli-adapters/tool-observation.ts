@@ -23,6 +23,12 @@ export function normalizeToolStatus(value: unknown, fallback: ExternalToolStatus
   return fallback
 }
 
+/** ACP updates are patches: omitted status must not infer completion from output or restart a call from metadata. */
+export function acpToolStatusFields(value: unknown, type: string, fallback: ExternalToolStatus): Pick<CodingNsAgentToolEvent, 'status'> {
+  if (type === 'tool_call_update' && (value === undefined || value === null)) return {}
+  return { status: normalizeToolStatus(value, fallback) }
+}
+
 export function firstToolText(...values: unknown[]): string | undefined {
   for (const value of values) {
     if (typeof value === 'string' && value.trim() !== '') return value.trim()
