@@ -377,6 +377,14 @@ export function readNativeSubagentParentPending(parentSessionId: string): readon
     .filter((state) => state.parentSessionId === id && (state.status === 'creating' || state.status === 'running' || nativeSubagentFailureNeedsReview(state)))
 }
 
+/** Read parent subagent state without injecting the prompt used by the completion barrier. */
+export function hasPendingNativeSubagents(parentSessionId: string): boolean {
+  const id = parentSessionId.trim()
+  if (id === '') return false
+  const pending = readNativeSubagentParentPending(id)
+  return Math.max(parentTaskStates.get(id)?.active ?? 0, pending.length) > 0
+}
+
 /**
  * 父会话 turn/end 前的收尾屏障。
  *
