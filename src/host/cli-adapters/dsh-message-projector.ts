@@ -13,7 +13,7 @@ import {
   type CodingNsNormalizedAgentEvent,
 } from './stream-normalizer.js'
 import type { CodingNsDshExternalToolMarker } from './dsh-tool-history.js'
-import type { SessionTranslationService } from '../features/session-translation-service.js'
+import { SESSION_TRANSLATION_SEGMENT_LIMIT, type SessionTranslationService } from '../features/session-translation-service.js'
 import type { SessionTranslationRecord } from '../../shared/contracts/session-translation.js'
 import { readSessionTranslationDiagnostics, readSessionTranslationMetrics } from '../../shared/contracts/session-translation.js'
 import { translationFailure } from '../features/session-translation-runtime.js'
@@ -301,26 +301,56 @@ export class CodingNsDshMessageProjector {
   }
 
   private async translatedBlock(channel: 'reasoning' | 'text', index: number, original: string): Promise<readonly CodingNsDshStreamChunk[]> {
+    if (original.length > SESSION_TRANSLATION_SEGMENT_LIMIT && this.options.translation?.translateOutputBatches !== undefined) {
+      try {
+        const batched = await this.options.translation.translateOutputBatches(
+          this.options.adapterId,
+          channel === 'reasoning' ? 'reasoning' : 'assistant',
+          original,
+          this.options.signal,
+          this.options.translationEnabled,
+        )
+        if (batched !== null && batched.batches.length > 1) {
+          const record = {
+            original: batched.record.original,
+            translated: batched.record.translated,
+            ...(batched.record.sourceLanguage === undefined ? {} : { sourceLanguage: batched.record.sourceLanguage }),
+            targetLanguage: batched.record.targetLanguage,
+            outputKind: channel === 'reasoning' ? 'reasoning' as const : 'assistant' as const,
+            bilingual: batched.record.bilingual,
+            ...(batched.record.alreadyTargetLanguage === true ? { alreadyTargetLanguage: true } : {}),
+            ...(batched.record.model === undefined ? {} : { model: batched.record.model }),
+            ...readSessionTranslationDiagnostics(batched.record),
+            ...readSessionTranslationMetrics(batched.record),
+            ...(batched.record.failed === true ? { failed: true } : {}),
+          }
+          return [
+            { type: 'block-start', index, blockType: channel },
+            ...batched.batches.map(batch => ({ type: `${channel}-delta`, index, text: batch.translated })),
+            { type: 'block-end', index, block: { type: channel, text: original, codingnsTranslation: record }, codingnsTranslation: record },
+          ]
+        }
+        if (batched !== null) return this.translatedRecordBlock(channel, index, original, batched.record)
+      } catch (error) {
+        return this.failedTranslationBlock(channel, index, original, error)
+      }
+    }
+
     let translation: SessionTranslationRecord | null | undefined
     try {
       translation = await this.options.translation?.translateOutput(this.options.adapterId, channel === 'reasoning' ? 'reasoning' : 'assistant', original, this.options.signal, this.options.translationEnabled)
     } catch (error) {
-      // 翻译服务是旁路能力；异常时保留 Provider 原文并正常结束当前 block。
-      const failedRecord = {
-        original,
-        translated: original,
-        targetLanguage: this.options.translation?.outputLanguage ?? 'zh',
-        outputKind: channel === 'reasoning' ? 'reasoning' as const : 'assistant' as const,
-        bilingual: false,
-        failed: true,
-        failure: translationFailure(error, this.options.signal),
-      }
-      return [
-        { type: 'block-start', index, blockType: channel, codingnsTranslation: failedRecord },
-        { type: `${channel}-delta`, index, text: original, codingnsTranslation: failedRecord },
-        { type: 'block-end', index, block: { type: channel, text: original, codingnsTranslation: failedRecord }, codingnsTranslation: failedRecord },
-      ]
+      return this.failedTranslationBlock(channel, index, original, error)
     }
+    return this.translatedRecordBlock(channel, index, original, translation)
+  }
+
+  private translatedRecordBlock(
+    channel: 'reasoning' | 'text',
+    index: number,
+    original: string,
+    translation: SessionTranslationRecord | null | undefined,
+  ): readonly CodingNsDshStreamChunk[] {
     const record = translation === null || translation === undefined ? undefined : {
       original: translation.original,
       translated: translation.translated,
@@ -340,6 +370,30 @@ export class CodingNsDshMessageProjector {
       { type: 'block-start', index, blockType: channel, ...(record === undefined ? {} : { codingnsTranslation: record }) },
       { type: `${channel}-delta`, index, text: original, ...(record === undefined ? {} : { codingnsTranslation: record }) },
       { type: 'block-end', index, block: { type: channel, text: original, ...(record === undefined ? {} : { codingnsTranslation: record }) }, ...(record === undefined ? {} : { codingnsTranslation: record }) },
+    ]
+  }
+
+  private failedTranslationBlock(
+    channel: 'reasoning' | 'text',
+    index: number,
+    original: string,
+    error: unknown,
+  ): readonly CodingNsDshStreamChunk[] {
+    // Translation is a side channel; on failure preserve the Provider original and
+    // finish the current block with a classified diagnostic.
+    const failedRecord = {
+      original,
+      translated: original,
+      targetLanguage: this.options.translation?.outputLanguage ?? 'zh',
+      outputKind: channel === 'reasoning' ? 'reasoning' as const : 'assistant' as const,
+      bilingual: false,
+      failed: true,
+      failure: translationFailure(error, this.options.signal),
+    }
+    return [
+      { type: 'block-start', index, blockType: channel, codingnsTranslation: failedRecord },
+      { type: `${channel}-delta`, index, text: original, codingnsTranslation: failedRecord },
+      { type: 'block-end', index, block: { type: channel, text: original, codingnsTranslation: failedRecord }, codingnsTranslation: failedRecord },
     ]
   }
 

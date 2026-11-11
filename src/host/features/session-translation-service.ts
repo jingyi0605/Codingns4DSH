@@ -36,6 +36,13 @@ interface AgentDefaultModel {
   currentSelection?(): ModelSelection | undefined
 }
 
+export const SESSION_TRANSLATION_SEGMENT_LIMIT = 3000
+
+export interface SessionTranslationOutputBatchResult {
+  readonly record: SessionTranslationRecord
+  readonly batches: readonly { readonly original: string; readonly translated: string }[]
+}
+
 export interface SessionTranslationService {
   readonly enabled: boolean
   /** Changes with settings and the default model, invalidating structured display translations. */
@@ -69,6 +76,8 @@ export interface SessionTranslationService {
     readonly failure?: SessionTranslationFailure
   }>
   translateOutput(adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean, sessionId?: string): Promise<SessionTranslationRecord | null>
+  /** Long output is translated in paragraph-sized requests so callers can display it in batches. */
+  translateOutputBatches?(adapterId: string, kind: SessionTranslationOutputKind, text: string, signal?: AbortSignal, sessionEnabled?: boolean, sessionId?: string): Promise<SessionTranslationOutputBatchResult | null>
   dispose(): void
 }
 
@@ -217,7 +226,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
         totalTokens: 0,
       }
     }
-    const result = await translateWithModels(adapterId, kind, value, protectedText, targetLanguage, signal, sessionId)
+    const { batches: _batches, ...result } = await translatePreparedText(adapterId, kind, value, protectedText, targetLanguage, signal, sessionId)
     return {
       original: value,
       ...result,
@@ -277,6 +286,42 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
     async translateOutput(adapterId, kind, text, signal, sessionEnabled, sessionId) {
       return translate(adapterId, kind, text, signal, sessionEnabled, sessionId)
     },
+    async translateOutputBatches(adapterId, kind, text, signal, sessionEnabled, sessionId) {
+      const value = text
+      if (!active || disposed || value.trim() === '') return null
+      if (!canTranslateAdapter(adapterId, sessionEnabled) || !outputEnabled(adapterId, kind)) return null
+      const targetLanguage = kind === 'assistant' || kind === 'reasoning' ? settings.outputLanguage : settings.inputLanguage
+      const protectedText = protectText(value)
+      if (hasNoTranslatableText(protectedText.text)) return null
+      const sourceLanguage = detectSourceLanguage(protectedText.text, targetLanguage)
+      if (sourceLanguage === targetLanguage && !settings.translationRules?.length) {
+        return {
+          record: {
+            original: value,
+            translated: value,
+            sourceLanguage,
+            targetLanguage,
+            bilingual: settings.bilingual,
+            alreadyTargetLanguage: true,
+            durationMs: 0,
+            totalTokens: 0,
+          },
+          batches: [{ original: value, translated: value }],
+        }
+      }
+      const result = await translatePreparedText(adapterId, kind, value, protectedText, targetLanguage, signal, sessionId)
+      const { batches, ...recordResult } = result
+      return {
+        record: {
+          original: value,
+          ...recordResult,
+          ...(sourceLanguage === undefined ? {} : { sourceLanguage }),
+          targetLanguage,
+          bilingual: settings.bilingual,
+        },
+        batches,
+      }
+    },
     dispose: deactivate,
   }
 
@@ -296,9 +341,82 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
       if (sourceLanguage === targetLanguage && !settings.translationRules?.length) {
         return { translated: text, sourceLanguage, alreadyTargetLanguage: true, durationMs: 0, totalTokens: 0 }
       }
-      const result = await translateWithModels(adapterId, 'input', text, protectedText, targetLanguage, signal, sessionId)
+      const { batches: _batches, ...result } = await translatePreparedText(adapterId, 'input', text, protectedText, targetLanguage, signal, sessionId)
       return { ...result, ...(sourceLanguage === undefined ? {} : { sourceLanguage }) }
   }
+
+interface PreparedTranslationResult extends SessionTranslationMetrics {
+  readonly translated: string
+  readonly model?: SessionTranslationModel
+  readonly failed?: boolean
+  readonly failure?: SessionTranslationFailure
+  readonly batches: readonly { readonly original: string; readonly translated: string }[]
+}
+
+async function translatePreparedText(
+  adapterId: string,
+  kind: SessionTranslationOutputKind | 'input',
+  original: string,
+  protectedText: ReturnType<typeof protectText>,
+  targetLanguage: SessionTranslationLanguage,
+  signal?: AbortSignal,
+  sessionId?: string,
+): Promise<PreparedTranslationResult> {
+  const segments = splitTranslationText(protectedText.text, SESSION_TRANSLATION_SEGMENT_LIMIT)
+  const batches: { original: string; translated: string }[] = []
+  let durationMs = 0
+  let totalTokens = 0
+  let hasTokenMetrics = false
+  let model: SessionTranslationModel | undefined
+  let failure: SessionTranslationFailure | undefined
+
+  for (const protectedSegment of segments) {
+    const segmentOriginal = restoreText(protectedSegment, protectedText.values)
+    if (hasNoTranslatableText(protectedSegment)) {
+      batches.push({ original: segmentOriginal, translated: segmentOriginal })
+      continue
+    }
+    const result = await translateWithModels(adapterId, kind, segmentOriginal, {
+      text: protectedSegment,
+      values: protectedText.values,
+    }, targetLanguage, signal, sessionId)
+    durationMs += result.durationMs ?? 0
+    if (result.totalTokens !== undefined) {
+      totalTokens += result.totalTokens
+      hasTokenMetrics = true
+    }
+    model ??= result.model
+    failure ??= result.failure
+    batches.push({
+      original: segmentOriginal,
+      translated: preserveSegmentWhitespace(segmentOriginal, result.translated),
+    })
+    if (result.failed === true) {
+      // A partially translated message is unsafe to submit or display as the final
+      // output. Keep the complete original while retaining the failure diagnostics.
+      return {
+        translated: original,
+        failed: true,
+        ...(result.model === undefined ? {} : { model: result.model }),
+        ...(failure === undefined ? {} : { failure }),
+        durationMs,
+        ...(hasTokenMetrics ? { totalTokens } : {}),
+        batches: segments.map(segment => {
+          const value = restoreText(segment, protectedText.values)
+          return { original: value, translated: value }
+        }),
+      }
+    }
+  }
+
+  return {
+    translated: batches.map(batch => batch.translated).join(''),
+    ...(model === undefined ? {} : { model }),
+    durationMs,
+    ...(hasTokenMetrics ? { totalTokens } : {}),
+    batches,
+  }
+}
 
   function outputEnabled(adapterId: string, kind: SessionTranslationOutputKind): boolean {
     const options = resolveSessionTranslationOptions(settings, adapterId)
@@ -335,6 +453,40 @@ function translationSystem(language: SessionTranslationLanguage, kind: SessionTr
     'PRESERVATION RULE: Preserve line breaks, Markdown structure, fenced code, inline code, HTML/XML elements, JSON, shell commands, URLs, file paths, identifiers, and placeholders exactly.',
     'PRESERVATION RULE: Copy each @@CODINGNS_TRANSLATION_N@@ placeholder exactly once. Never translate, omit, duplicate, or invent placeholders.',
   ].join('\n')
+}
+
+/** Split long protected text without cutting a complete paragraph when possible. */
+export function splitTranslationText(text: string, limit = SESSION_TRANSLATION_SEGMENT_LIMIT): readonly string[] {
+  if (limit <= 0) throw new RangeError('Translation segment limit must be positive')
+  if (text.length <= limit) return [text]
+  const segments: string[] = []
+  let start = 0
+  while (start < text.length) {
+    const remaining = text.length - start
+    if (remaining <= limit) {
+      segments.push(text.slice(start))
+      break
+    }
+    const hardLimit = start + limit
+    const paragraphEnd = nearestParagraphEnd(text, start, hardLimit)
+    const end = paragraphEnd > start ? paragraphEnd : hardLimit
+    segments.push(text.slice(start, end))
+    start = end
+  }
+  return segments
+}
+
+function nearestParagraphEnd(text: string, start: number, limit: number): number {
+  const doubleNewline = text.lastIndexOf('\n\n', limit)
+  const crlfDoubleNewline = text.lastIndexOf('\r\n\r\n', limit)
+  const boundary = Math.max(doubleNewline >= start ? doubleNewline + 2 : start, crlfDoubleNewline >= start ? crlfDoubleNewline + 4 : start)
+  return boundary > start ? boundary : start
+}
+
+function preserveSegmentWhitespace(original: string, translated: string): string {
+  const leading = original.match(/^\s*/u)?.[0] ?? ''
+  const trailing = original.match(/\s*$/u)?.[0] ?? ''
+  return `${leading}${translated.trim()}${trailing}`
 }
 
 function translationUserMessage(language: SessionTranslationLanguage, kind: SessionTranslationOutputKind | 'input', text: string): string {
