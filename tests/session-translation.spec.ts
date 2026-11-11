@@ -148,6 +148,35 @@ test('会话翻译只在文本块结束后投影原文，并保留双语元数�
   ])
 })
 
+test('长外部回复在翻译完成后按批次投影译文增量', async () => {
+  const original = 'A'.repeat(3001)
+  const batches = [
+    { original: original.slice(0, 1500), translated: '第一批' },
+    { original: original.slice(1500), translated: '第二批' },
+  ]
+  const record = { original, translated: '第一批第二批', targetLanguage: 'zh' as const, bilingual: false }
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'codex',
+    sessionId: 'translation-batches',
+    translationEnabled: true,
+    translation: {
+      shouldTranslate: () => true,
+      translateOutput: async () => { throw new Error('single-request path should not be used') },
+      translateOutputBatches: async () => ({ record, batches }),
+    } as never,
+  })
+
+  assert.deepEqual(await projector.push({ type: 'text-delta', text: original }), [])
+  const chunks = await projector.push({ type: 'finish', reason: 'stop' })
+  assert.deepEqual(chunks, [
+    { type: 'block-start', index: 1, blockType: 'text' },
+    { type: 'text-delta', index: 1, text: '第一批' },
+    { type: 'text-delta', index: 1, text: '第二批' },
+    { type: 'block-end', index: 1, block: { type: 'text', text: original, codingnsTranslation: { ...record, outputKind: 'assistant' } }, codingnsTranslation: { ...record, outputKind: 'assistant' } },
+    { type: 'finish', reason: { kind: 'stop' } },
+  ])
+})
+
 test('translation metrics survive history serialization and external output projection', async () => {
   const metrics = { durationMs: 1234, totalTokens: 456 }
   const saved = JSON.parse(JSON.stringify({ codingnsTranslationInput: {

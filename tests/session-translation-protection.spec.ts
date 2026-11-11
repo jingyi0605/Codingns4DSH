@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { protectText, restoreText, stripPlaceholders } from '../src/host/features/session-translation-protection.js'
-import { createSessionTranslationService } from '../src/host/features/session-translation-service.js'
+import { createSessionTranslationService, SESSION_TRANSLATION_SEGMENT_LIMIT, splitTranslationText } from '../src/host/features/session-translation-service.js'
 import { DEFAULT_SESSION_TRANSLATION_SETTINGS } from '../src/shared/contracts/session-translation.js'
 
 const button = '<button type="button" class="_button_1rv3m_2 _ghost_1rv3m_45 _sm_1rv3m_28">跟随 DSH 默认模型</button>'
@@ -255,6 +255,29 @@ test('missing, duplicated, unknown, altered, and untranslated responses preserve
     assert.equal(result.translated, original, response)
     assert.equal(result.failed, true, response)
   }
+})
+
+test('long translations use paragraph-sized requests and reassemble the translated batches', async (t) => {
+  const original = Array.from({ length: 5 }, (_, index) => `Paragraph ${index + 1}: ${'Review the implementation carefully. '.repeat(70)}`).join('\n\n')
+  assert.ok(original.length > SESSION_TRANSLATION_SEGMENT_LIMIT)
+  const expectedSegments = splitTranslationText(original)
+  assert.ok(expectedSegments.length > 1)
+  assert.ok(expectedSegments.every(segment => segment.length <= SESSION_TRANSLATION_SEGMENT_LIMIT))
+  assert.ok(expectedSegments.slice(0, -1).every(segment => segment.endsWith('\n\n')))
+
+  const f = fixture(source => `译文${source}`)
+  t.after(() => f.service.dispose())
+  const result = await f.service.translateOutput('dsh', 'assistant', original, undefined, true)
+  assert.equal(result?.failed, undefined)
+  assert.equal(result?.translated, expectedSegments.map(segment => `译文${segment}`).join(''))
+  assert.equal(f.sources.length, expectedSegments.length)
+  assert.deepEqual(f.sources, expectedSegments)
+
+  const batched = await f.service.translateOutputBatches!('dsh', 'assistant', original, undefined, true)
+  assert.ok(batched)
+  assert.deepEqual(batched.batches.map(batch => batch.original), expectedSegments)
+  assert.deepEqual(batched.batches.map(batch => batch.translated), expectedSegments.map(segment => `译文${segment}`))
+  assert.equal(batched.record.translated, result?.translated)
 })
 
 test('a damaged placeholder preserves the original assistant and reasoning output', async (t) => {
