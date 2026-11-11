@@ -40,6 +40,52 @@ interface WorkspaceMcpStatus {
   readonly reason: string | null
 }
 
+type WebhookEventType = 'session.completed' | 'session.failed' | 'session.permission_requested' | 'session.question_asked'
+
+interface WebhookDestination {
+  readonly id: string
+  readonly name: string
+  readonly url: string
+  readonly enabled: boolean
+  readonly workspaceIds: readonly string[] | null
+  readonly eventTypes: readonly WebhookEventType[]
+  readonly includeLastMessage: boolean
+}
+
+interface WebhookDelivery {
+  readonly deliveryId: string
+  readonly destinationId: string
+  readonly status: 'pending' | 'sending' | 'delivered' | 'failed'
+  readonly lastError: string | null
+  readonly httpStatus?: number
+  readonly createdAt: string
+}
+
+interface WebhookWorkspace { readonly id: string; readonly name: string }
+interface WebhookEventAvailability { readonly available: boolean; readonly reason: string | null }
+interface WebhookSnapshot {
+  readonly destinations: readonly WebhookDestination[]
+  readonly deliveries: readonly WebhookDelivery[]
+  readonly workspaces: readonly WebhookWorkspace[]
+  readonly events: Readonly<Record<WebhookEventType, WebhookEventAvailability>>
+}
+
+interface WebhookEditorDraft {
+  readonly id?: string
+  readonly name: string
+  readonly url: string
+  readonly workspaceIds: readonly string[] | null
+  readonly eventTypes: readonly WebhookEventType[]
+  readonly includeLastMessage: boolean
+}
+
+const WEBHOOK_EVENT_LABELS: Readonly<Record<WebhookEventType, string>> = {
+  'session.completed': 'workspaceMcp.webhook.event.completed',
+  'session.failed': 'workspaceMcp.webhook.event.failed',
+  'session.permission_requested': 'workspaceMcp.webhook.event.permission',
+  'session.question_asked': 'workspaceMcp.webhook.event.question',
+}
+
 interface WorkspaceMcpCapabilityDescription {
   readonly name: string
   readonly permissionKey: string
@@ -82,6 +128,12 @@ function WorkspaceMcpPanel({ services, enabled, snapshot, notify }: FeaturePanel
   const [generatedKey, setGeneratedKey] = useState<string | null>(null)
   const [capabilitiesOpen, setCapabilitiesOpen] = useState(false)
   const [lanUrl, setLanUrl] = useState<string | null>(null)
+  const [webhookState, setWebhookState] = useState<WebhookSnapshot | null>(null)
+  const [webhookFailed, setWebhookFailed] = useState(false)
+  const [webhookBusy, setWebhookBusy] = useState(false)
+  const [webhookEditor, setWebhookEditor] = useState<WebhookEditorDraft | null>(null)
+  const [webhookSecret, setWebhookSecret] = useState<{ readonly name: string; readonly secret: string } | null>(null)
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   const lanAccessEnabled = status?.lanAccessEnabled ?? snapshot.value?.modules.workspaceMcpLanAccess === true
 
   useEffect(() => {
@@ -103,6 +155,25 @@ function WorkspaceMcpPanel({ services, enabled, snapshot, notify }: FeaturePanel
     })
     return () => { active = false }
   }, [services.rpc, enabled, refreshCount, snapshot.value?.modules.workspaceMcpLanAccess])
+
+  useEffect(() => {
+    let active = true
+    void services.rpc.call(CODINGNS_RPC_CHANNEL, 'workspaceMcp/webhook-list', {}).then((result) => {
+      if (!result.ok) throw new Error('Webhook status request failed')
+      const next = normalizeWebhookSnapshot(result.value)
+      if (next === null) throw new Error('Invalid webhook status')
+      if (active) {
+        setWebhookState(next)
+        setWebhookFailed(false)
+      }
+    }).catch(() => {
+      if (active) {
+        setWebhookState(null)
+        setWebhookFailed(true)
+      }
+    })
+    return () => { active = false }
+  }, [services.rpc, refreshCount])
 
   useEffect(() => {
     let active = true
@@ -200,6 +271,70 @@ function WorkspaceMcpPanel({ services, enabled, snapshot, notify }: FeaturePanel
     })
   }
 
+  const saveWebhook = async (): Promise<void> => {
+    if (webhookEditor === null) return
+    setWebhookBusy(true)
+    try {
+      const { id, url, ...settings } = webhookEditor
+      const result = await services.rpc.call(CODINGNS_RPC_CHANNEL, id === undefined ? 'workspaceMcp/webhook-create' : 'workspaceMcp/webhook-update', {
+        ...(id === undefined ? {} : { id }),
+        ...settings,
+        ...(url.trim() === '' && id !== undefined ? {} : { url: url.trim() }),
+      })
+      if (!result.ok || !isRecord(result.value)) throw new Error(result.ok ? 'Invalid webhook response' : result.error.message)
+      const secret = result.value.secret
+      if (typeof secret === 'string') setWebhookSecret({ name: webhookEditor.name, secret })
+      setWebhookEditor(null)
+      setRefreshCount((count) => count + 1)
+      notify({ kind: 'success', message: t(id === undefined ? 'workspaceMcp.webhook.created' : 'workspaceMcp.webhook.saved') })
+    } catch (error) {
+      notify({ kind: 'error', message: webhookErrorMessage(error, t) })
+    } finally {
+      setWebhookBusy(false)
+    }
+  }
+
+  const updateWebhook = async (action: string, payload: Record<string, unknown>, successKey: string): Promise<unknown | null> => {
+    setWebhookBusy(true)
+    try {
+      const result = await services.rpc.call(CODINGNS_RPC_CHANNEL, `workspaceMcp/${action}`, payload)
+      if (!result.ok) throw Object.assign(new Error(result.error.message), { code: result.error.code })
+      setRefreshCount((count) => count + 1)
+      if (successKey !== '') notify({ kind: 'success', message: t(successKey) })
+      return result.value
+    } catch (error) {
+      notify({ kind: 'error', message: webhookErrorMessage(error, t) })
+      return null
+    } finally {
+      setWebhookBusy(false)
+    }
+  }
+
+  const testWebhook = async (destination: WebhookDestination): Promise<void> => {
+    const result = await updateWebhook('webhook-test', { id: destination.id }, '')
+    if (result === null) return
+    const ok = isRecord(result) && result.ok === true
+    notify({ kind: ok ? 'success' : 'error', message: t(ok ? 'workspaceMcp.webhook.testPassed' : 'workspaceMcp.webhook.testFailed') })
+  }
+
+  const rotateWebhookSecret = async (destination: WebhookDestination): Promise<void> => {
+    const result = await updateWebhook('webhook-rotate-secret', { id: destination.id }, '')
+    if (!isRecord(result) || typeof result.secret !== 'string') return
+    setWebhookSecret({ name: destination.name, secret: result.secret })
+  }
+
+  const copyWebhookSecret = async (): Promise<void> => {
+    if (webhookSecret === null) return
+    try {
+      await navigator.clipboard.writeText(webhookSecret.secret)
+      notify({ kind: 'success', message: t('workspaceMcp.webhook.secretCopied') })
+    } catch {
+      notify({ kind: 'error', message: t('workspaceMcp.copyFailed') })
+    }
+  }
+
+  const eventTypes = Object.keys(WEBHOOK_EVENT_LABELS) as WebhookEventType[]
+
   const compactButtonStyle = {
     ...dshSettingsButtonStyle,
     flex: '1 1 0',
@@ -265,6 +400,63 @@ function WorkspaceMcpPanel({ services, enabled, snapshot, notify }: FeaturePanel
       ) : null,
       reasonKey !== null && status !== null && !loading ? createElement('span', { style: { color: dshThemeColor.labelSecondary } }, t(reasonKey)) : null,
     ),
+    createElement('section', {
+      style: { display: 'flex', flexDirection: 'column', gap: 10, paddingTop: 12, borderTop: `1px solid ${dshThemeColor.border}` },
+      'data-workspace-mcp-webhooks': true,
+    },
+      createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, flexWrap: 'wrap' } },
+        createElement('strong', { style: { fontSize: uiFontSize(13) } }, t('workspaceMcp.webhook.title')),
+        createElement('button', {
+          type: 'button', disabled: webhookBusy || webhookState?.destinations.length === 20,
+          onClick: () => setWebhookEditor({ name: '', url: '', workspaceIds: null, eventTypes: ['session.completed'], includeLastMessage: true }),
+          style: { ...dshSettingsPrimaryButtonStyle, minHeight: 32, padding: '6px 10px', fontSize: uiFontSize(12) },
+        }, t('workspaceMcp.webhook.add')),
+      ),
+      createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: 1.5 } }, t('workspaceMcp.webhook.notice')),
+      createElement('p', { style: { margin: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: 1.5 } }, t('workspaceMcp.webhook.mcpHint')),
+      webhookFailed ? createElement('span', { role: 'alert', style: { color: dshThemeColor.error, fontSize: uiFontSize(12) } }, t('workspaceMcp.webhook.loadFailed')) : null,
+      webhookState?.destinations.length === 0 ? createElement('span', { style: { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) } }, t('workspaceMcp.webhook.empty')) : null,
+      webhookState === null && !webhookFailed ? createElement('span', { style: { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) } }, t('workspaceMcp.loading')) : null,
+      webhookState?.destinations.map((destination) => {
+        const lastDelivery = webhookState.deliveries.find((delivery) => delivery.destinationId === destination.id)
+        return createElement('div', {
+          key: destination.id,
+          style: { display: 'flex', flexDirection: 'column', gap: 7, padding: '10px 0', borderTop: `1px solid ${dshThemeColor.border}` },
+        },
+          createElement('div', { style: { display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' } },
+            createElement('div', { style: { display: 'grid', gap: 3, minWidth: 0, overflowWrap: 'anywhere' } },
+              createElement('strong', undefined, destination.name),
+              createElement('code', { style: { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(11), overflowWrap: 'anywhere' } }, destination.url),
+              createElement('span', { style: { color: destination.enabled ? dshThemeColor.success : dshThemeColor.labelSecondary, fontSize: uiFontSize(12) } }, t(destination.enabled ? 'workspaceMcp.webhook.enabled' : 'workspaceMcp.webhook.disabled')),
+              createElement('span', { style: { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) } }, lastDelivery === undefined
+                ? t('workspaceMcp.webhook.noDelivery')
+                : t('workspaceMcp.webhook.lastDelivery', {
+                  status: t(`workspaceMcp.webhook.delivery.${lastDelivery.status}`),
+                  ...(lastDelivery.httpStatus === undefined ? {} : { httpStatus: String(lastDelivery.httpStatus) }),
+                  ...(lastDelivery.lastError === null ? {} : { error: lastDelivery.lastError }),
+                })),
+            ),
+            createElement('div', { style: { display: 'flex', gap: 6, flexWrap: 'wrap' } },
+              createElement('button', { type: 'button', disabled: webhookBusy, style: compactButtonStyle, onClick: () => void updateWebhook('webhook-update', { id: destination.id, enabled: !destination.enabled }, '') }, t(destination.enabled ? 'workspaceMcp.webhook.disable' : 'workspaceMcp.webhook.enable')),
+              createElement('button', { type: 'button', disabled: webhookBusy, style: compactButtonStyle, onClick: () => setWebhookEditor({ id: destination.id, name: destination.name, url: '', workspaceIds: destination.workspaceIds, eventTypes: destination.eventTypes, includeLastMessage: destination.includeLastMessage }) }, t('workspaceMcp.webhook.edit')),
+              createElement('button', { type: 'button', disabled: webhookBusy, style: compactButtonStyle, onClick: () => void testWebhook(destination) }, t('workspaceMcp.webhook.test')),
+              createElement('button', { type: 'button', disabled: webhookBusy, style: compactButtonStyle, onClick: () => void rotateWebhookSecret(destination) }, t('workspaceMcp.webhook.rotateSecret')),
+              createElement('button', { type: 'button', disabled: webhookBusy, style: { ...compactButtonStyle, color: dshThemeColor.error }, onClick: () => setConfirmDeleteId(destination.id) }, t('workspaceMcp.webhook.delete')),
+            ),
+          ),
+          confirmDeleteId === destination.id ? createElement('div', { style: { display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' } },
+            createElement('span', { style: { marginRight: 'auto', color: dshThemeColor.warning, fontSize: uiFontSize(12) } }, t('workspaceMcp.webhook.deleteConfirm')),
+            createElement('button', { type: 'button', disabled: webhookBusy, style: compactButtonStyle, onClick: () => setConfirmDeleteId(null) }, t('workspaceMcp.webhook.cancel')),
+            createElement('button', { type: 'button', disabled: webhookBusy, style: { ...compactButtonStyle, color: dshThemeColor.error }, onClick: async () => { const result = await updateWebhook('webhook-delete', { id: destination.id }, ''); if (result !== null) setConfirmDeleteId(null) } }, t('workspaceMcp.webhook.confirmDelete')),
+          ) : null,
+        )
+      }) ?? null,
+      webhookState !== null ? createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 4, paddingTop: 8, borderTop: `1px solid ${dshThemeColor.border}` } },
+        ...eventTypes.map((type) => createElement('span', { key: type, style: { color: webhookState.events[type]?.available ? dshThemeColor.labelSecondary : dshThemeColor.warning, fontSize: uiFontSize(11), lineHeight: 1.45 } },
+          `${t(WEBHOOK_EVENT_LABELS[type])}: ${t(webhookState.events[type]?.available ? 'workspaceMcp.webhook.available' : 'workspaceMcp.webhook.unavailable')}`,
+        )),
+      ) : null,
+    ),
     createElement('div', { style: { display: 'flex', flexDirection: 'column', gap: 8, paddingTop: 12, borderTop: `1px solid ${dshThemeColor.border}` } },
       createElement('strong', { style: { fontSize: uiFontSize(13) } }, t('workspaceMcp.installPromptTitle')),
       createElement('span', { style: { color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), lineHeight: 1.5 } }, t('workspaceMcp.installPromptHint')),
@@ -290,6 +482,9 @@ function WorkspaceMcpPanel({ services, enabled, snapshot, notify }: FeaturePanel
         style: { ...dshSettingsButtonStyle, alignSelf: 'flex-end', minHeight: 32, padding: '6px 10px', fontSize: uiFontSize(12) },
       }, t('workspaceMcp.copyInstallPrompt')),
     ),
+    webhookEditor === null || webhookState === null ? null : createWorkspaceMcpWebhookEditor(t, webhookEditor, webhookState, webhookBusy,
+      (next) => setWebhookEditor(next), () => setWebhookEditor(null), () => void saveWebhook()),
+    webhookSecret === null ? null : createWorkspaceMcpWebhookSecretModal(t, webhookSecret, copyWebhookSecret, () => setWebhookSecret(null)),
     capabilitiesOpen ? createWorkspaceMcpCapabilitiesModal(t, () => setCapabilitiesOpen(false)) : null,
   )
 }
@@ -430,6 +625,99 @@ function createWorkspaceMcpCapabilitiesModal(
   )
 }
 
+function createWorkspaceMcpWebhookEditor(
+  t: ReturnType<typeof useCodingNsTranslator>,
+  draft: WebhookEditorDraft,
+  snapshot: WebhookSnapshot,
+  busy: boolean,
+  onChange: (draft: WebhookEditorDraft) => void,
+  onClose: () => void,
+  onSave: () => void,
+): ReactElement {
+  const fieldStyle = { ...dshSettingsFieldStyle, boxSizing: 'border-box' as const, width: '100%', minWidth: 0 }
+  const labelStyle = { display: 'grid', gap: 5, minWidth: 0, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) }
+  const update = (patch: Partial<WebhookEditorDraft>): void => onChange({ ...draft, ...patch })
+  const eventTypes = Object.keys(WEBHOOK_EVENT_LABELS) as WebhookEventType[]
+  return createElement('div', {
+    role: 'presentation', onMouseDown: (event: { target: unknown; currentTarget: unknown }) => { if (event.target === event.currentTarget) onClose() },
+    style: { position: 'fixed', inset: 0, zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, background: dshThemeColor.overlay, boxSizing: 'border-box' },
+  },
+    createElement('form', {
+      role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'codingns-workspace-mcp-webhook-title',
+      onSubmit: (event: { preventDefault(): void }) => { event.preventDefault(); onSave() },
+      style: { display: 'grid', gap: 12, width: 'min(560px, 100%)', maxHeight: 'min(760px, calc(100dvh - 32px))', overflowY: 'auto', padding: 18, border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, background: dshThemeColor.menuBackground, color: dshThemeColor.labelPrimary, boxSizing: 'border-box' },
+    },
+      createElement('h2', { id: 'codingns-workspace-mcp-webhook-title', style: { margin: 0, fontSize: uiFontSize(17) } }, t(draft.id === undefined ? 'workspaceMcp.webhook.addTitle' : 'workspaceMcp.webhook.editTitle')),
+      createElement('label', { style: labelStyle }, t('workspaceMcp.webhook.name'), createElement('input', {
+        required: true, maxLength: 80, value: draft.name, style: fieldStyle,
+        onChange: (event: { currentTarget: { value: string } }) => update({ name: event.currentTarget.value }),
+      })),
+      createElement('label', { style: labelStyle }, t('workspaceMcp.webhook.url'), createElement('input', {
+        required: draft.id === undefined, maxLength: 2048, type: 'url', placeholder: draft.id === undefined ? 'https://' : t('workspaceMcp.webhook.keepUrl'), value: draft.url, style: fieldStyle,
+        onChange: (event: { currentTarget: { value: string } }) => update({ url: event.currentTarget.value }),
+      })),
+      createElement('fieldset', { style: { display: 'grid', gap: 6, margin: 0, padding: 0, border: 0 } },
+        createElement('legend', { style: { marginBottom: 6, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) } }, t('workspaceMcp.webhook.workspaces')),
+        createElement('label', { style: checkboxLabelStyle }, createElement('input', {
+          type: 'checkbox', checked: draft.workspaceIds === null,
+          onChange: (event: { currentTarget: { checked: boolean } }) => update({ workspaceIds: event.currentTarget.checked ? null : [] }),
+        }), t('workspaceMcp.webhook.allWorkspaces')),
+        draft.workspaceIds === null ? null : snapshot.workspaces.map((workspace) => createElement('label', { key: workspace.id, style: checkboxLabelStyle }, createElement('input', {
+          type: 'checkbox', checked: draft.workspaceIds?.includes(workspace.id) === true,
+          onChange: (event: { currentTarget: { checked: boolean } }) => update({ workspaceIds: event.currentTarget.checked
+            ? [...(draft.workspaceIds ?? []), workspace.id]
+            : (draft.workspaceIds ?? []).filter((id) => id !== workspace.id) }),
+        }), workspace.name)),
+      ),
+      createElement('fieldset', { style: { display: 'grid', gap: 6, margin: 0, padding: 0, border: 0 } },
+        createElement('legend', { style: { marginBottom: 6, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12) } }, t('workspaceMcp.webhook.events')),
+        ...eventTypes.map((type) => {
+          const available = snapshot.events[type]?.available === true
+          const checked = draft.eventTypes.includes(type)
+          return createElement('label', { key: type, style: { ...checkboxLabelStyle, opacity: available ? 1 : 0.65 } }, createElement('input', {
+            type: 'checkbox', checked, disabled: busy || (!available && !checked),
+            onChange: (event: { currentTarget: { checked: boolean } }) => update({ eventTypes: event.currentTarget.checked
+              ? [...draft.eventTypes, type]
+              : draft.eventTypes.filter((item) => item !== type) }),
+          }), t(WEBHOOK_EVENT_LABELS[type]), available ? null : t('workspaceMcp.webhook.unavailable'))
+        }),
+      ),
+      createElement('label', { style: checkboxLabelStyle }, createElement('input', {
+        type: 'checkbox', checked: draft.includeLastMessage,
+        onChange: (event: { currentTarget: { checked: boolean } }) => update({ includeLastMessage: event.currentTarget.checked }),
+      }), t('workspaceMcp.webhook.includeLastMessage')),
+      createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap', paddingTop: 8, borderTop: `1px solid ${dshThemeColor.border}` } },
+        createElement('button', { type: 'button', disabled: busy, style: dshSettingsButtonStyle, onClick: onClose }, t('workspaceMcp.webhook.cancel')),
+        createElement('button', { type: 'submit', disabled: busy || draft.eventTypes.length === 0, style: dshSettingsPrimaryButtonStyle }, busy ? t('workspaceMcp.webhook.saving') : t('workspaceMcp.webhook.save')),
+      ),
+    ),
+  )
+}
+
+function createWorkspaceMcpWebhookSecretModal(
+  t: ReturnType<typeof useCodingNsTranslator>,
+  secret: { readonly name: string; readonly secret: string },
+  onCopy: () => void,
+  onClose: () => void,
+): ReactElement {
+  return createElement('div', {
+    role: 'presentation', onMouseDown: (event: { target: unknown; currentTarget: unknown }) => { if (event.target === event.currentTarget) onClose() },
+    style: { position: 'fixed', inset: 0, zIndex: 2200, display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 16, background: dshThemeColor.overlay, boxSizing: 'border-box' },
+  },
+    createElement('div', { role: 'dialog', 'aria-modal': true, 'aria-labelledby': 'codingns-workspace-mcp-webhook-secret-title', style: { display: 'grid', gap: 12, width: 'min(500px, 100%)', padding: 18, border: `1px solid ${dshThemeColor.border}`, borderRadius: 8, background: dshThemeColor.menuBackground, color: dshThemeColor.labelPrimary, boxSizing: 'border-box' } },
+      createElement('h2', { id: 'codingns-workspace-mcp-webhook-secret-title', style: { margin: 0, fontSize: uiFontSize(17) } }, t('workspaceMcp.webhook.secretTitle', { name: secret.name })),
+      createElement('input', { type: 'text', readOnly: true, value: secret.secret, 'aria-label': t('workspaceMcp.webhook.secretTitle', { name: secret.name }), style: { ...dshSettingsFieldStyle, boxSizing: 'border-box', width: '100%', minWidth: 0, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' }, onFocus: (event: { currentTarget: { select(): void } }) => event.currentTarget.select() }),
+      createElement('span', { style: { color: dshThemeColor.warning, fontSize: uiFontSize(12), lineHeight: 1.5 } }, t('workspaceMcp.webhook.secretOnce')),
+      createElement('div', { style: { display: 'flex', justifyContent: 'flex-end', gap: 8 } },
+        createElement('button', { type: 'button', style: dshSettingsButtonStyle, onClick: onCopy }, t('workspaceMcp.copyKey')),
+        createElement('button', { type: 'button', style: dshSettingsPrimaryButtonStyle, onClick: onClose }, t('workspaceMcp.webhook.closeSecret')),
+      ),
+    ),
+  )
+}
+
+const checkboxLabelStyle = { display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, color: dshThemeColor.labelPrimary, fontSize: uiFontSize(12), lineHeight: 1.45, overflowWrap: 'anywhere' as const }
+
 const capabilityCellStyle = {
   padding: '11px 12px',
   textAlign: 'left' as const,
@@ -453,6 +741,56 @@ function normalizeStatus(value: unknown): WorkspaceMcpStatus | null {
     url: value.url,
     reason: value.reason,
   }
+}
+
+function webhookErrorMessage(error: unknown, t: ReturnType<typeof useCodingNsTranslator>): string {
+  const code = isRecord(error) && typeof error.code === 'string' ? error.code : ''
+  const key = code === 'WORKSPACE_MCP_WEBHOOK_INVALID_URL' ? 'workspaceMcp.webhook.error.invalidUrl'
+    : code === 'WORKSPACE_MCP_WEBHOOK_LIMIT' ? 'workspaceMcp.webhook.error.limit'
+      : code === 'WORKSPACE_MCP_WEBHOOK_NOT_FOUND' ? 'workspaceMcp.webhook.error.notFound'
+        : code === 'CODINGNS_RPC_FORBIDDEN' ? 'workspaceMcp.webhook.error.forbidden'
+          : 'workspaceMcp.webhook.error.generic'
+  return t(key)
+}
+
+function normalizeWebhookSnapshot(value: unknown): WebhookSnapshot | null {
+  if (!isRecord(value) || !Array.isArray(value.destinations) || !Array.isArray(value.deliveries)
+    || !Array.isArray(value.workspaces) || !isRecord(value.events)) return null
+  const eventTypes = Object.keys(WEBHOOK_EVENT_LABELS) as WebhookEventType[]
+  const destinations = value.destinations.flatMap((raw): WebhookDestination[] => {
+    if (!isRecord(raw) || typeof raw.id !== 'string' || typeof raw.name !== 'string' || typeof raw.url !== 'string'
+      || typeof raw.enabled !== 'boolean' || (raw.workspaceIds !== null && (!Array.isArray(raw.workspaceIds) || !raw.workspaceIds.every((id) => typeof id === 'string')))
+      || !Array.isArray(raw.eventTypes) || !raw.eventTypes.every((type) => eventTypes.includes(type as WebhookEventType))
+      || typeof raw.includeLastMessage !== 'boolean') return []
+    return [{
+      id: raw.id,
+      name: raw.name,
+      url: raw.url,
+      enabled: raw.enabled,
+      workspaceIds: raw.workspaceIds as readonly string[] | null,
+      eventTypes: raw.eventTypes as WebhookEventType[],
+      includeLastMessage: raw.includeLastMessage,
+    }]
+  })
+  const deliveries = value.deliveries.flatMap((raw): WebhookDelivery[] => {
+    if (!isRecord(raw) || typeof raw.deliveryId !== 'string' || typeof raw.destinationId !== 'string'
+      || (raw.status !== 'pending' && raw.status !== 'sending' && raw.status !== 'delivered' && raw.status !== 'failed')
+      || (raw.lastError !== null && typeof raw.lastError !== 'string') || typeof raw.createdAt !== 'string'
+      || (raw.httpStatus !== undefined && typeof raw.httpStatus !== 'number')) return []
+    return [{ deliveryId: raw.deliveryId, destinationId: raw.destinationId, status: raw.status,
+      lastError: raw.lastError, ...(typeof raw.httpStatus === 'number' ? { httpStatus: raw.httpStatus } : {}), createdAt: raw.createdAt }]
+  })
+  const workspaces = value.workspaces.flatMap((raw): WebhookWorkspace[] => isRecord(raw) && typeof raw.id === 'string' && typeof raw.name === 'string'
+    ? [{ id: raw.id, name: raw.name }]
+    : [])
+  const availability = value.events
+  const events = Object.fromEntries(eventTypes.map((type) => {
+    const raw = availability[type]
+    return [type, isRecord(raw) && typeof raw.available === 'boolean'
+      ? { available: raw.available, reason: typeof raw.reason === 'string' ? raw.reason : null }
+      : { available: false, reason: null }]
+  })) as Record<WebhookEventType, WebhookEventAvailability>
+  return { destinations, deliveries, workspaces, events }
 }
 
 function safeWorkspaceMcpUrl(value: string | null | undefined): string | null {
