@@ -11,7 +11,7 @@
 
 [简体中文](README.md) · **English**
 
-**Current release `@jingyi0605/codingns4dsh@0.2.2-1`** · DSH minimum **`0.2.1-alpha.2`** (tested with `0.2.2-rc.1`; newer versions warn but do not block installation or operation) · Node **`>= 24.9`** · macOS / Linux / Windows
+**Current release `@jingyi0605/codingns4dsh@0.2.2-rc.2`** · DSH minimum **`0.2.1-alpha.2`** (tested with `0.2.2-rc.1`; newer versions warn but do not block installation or operation) · Node **`>= 24.9`** · macOS / Linux / Windows
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ group 1092985965** · **[WeChat / QQ QR codes](#community)**
 
@@ -225,7 +225,7 @@ The account menu shows login status, access method, connection latency and Host 
 ### Use the Built-in Web Profile
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.2-1
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.2-rc.2
 dsh web
 ```
 
@@ -235,7 +235,7 @@ Create a separate environment from the built-in Web profile:
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.2-1
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.2-rc.2
 dsh codingns
 ```
 
