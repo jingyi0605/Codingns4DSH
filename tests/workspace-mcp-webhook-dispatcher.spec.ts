@@ -10,6 +10,13 @@ import { createWorkspaceMcpWebhookPayload, serializeWorkspaceMcpWebhookPayload }
 
 const startTime = Date.parse('2026-11-10T08:00:00.000Z')
 
+async function waitFor(condition: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!condition() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
 function destination(id: string): WorkspaceMcpWebhookDestination {
   const createdAt = new Date(startTime).toISOString()
   return {
@@ -256,7 +263,7 @@ test('dispatcher close aborts in-flight requests and clears the retry timer', as
     await f.store.createDestination(destination('dst'))
     await f.store.enqueue(delivery('close-me', 'dst'))
     f.dispatcher.wake()
-    for (let index = 0; index < 20 && observedSignal === undefined; index += 1) await new Promise((resolve) => setImmediate(resolve))
+    await waitFor(() => observedSignal !== undefined)
     assert.ok(observedSignal)
     await f.dispatcher.close()
     assert.equal(observedSignal?.aborted, true)

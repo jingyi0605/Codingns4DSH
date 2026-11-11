@@ -9,6 +9,13 @@ import { FileWorkspaceMcpWebhookStore, type WorkspaceMcpWebhookDestination } fro
 
 const timestamp = '2026-11-10T08:00:00.000Z'
 
+async function waitFor(condition: () => boolean, timeoutMs = 1_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!condition() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+  }
+}
+
 function destination(id: string, eventTypes: WorkspaceMcpWebhookDestination['eventTypes'] = ['session.completed', 'session.failed', 'session.permission_requested', 'session.question_asked']): WorkspaceMcpWebhookDestination {
   return { id, name: id, url: `http://127.0.0.1/${id}`, secret: `secret-${id}`, enabled: true,
     workspaceIds: null, eventTypes, includeLastMessage: true, createdAt: timestamp, updatedAt: timestamp }
@@ -77,7 +84,7 @@ test('session completed queues one signed-body candidate per matching destinatio
   try {
     f.emit({ type: 'assistant/message', seq: 2, time: Date.parse(timestamp), data: { message: { role: 'assistant', content: [{ type: 'text', text: 'Final answer' }] } } })
     f.emit({ type: 'turn/end', seq: 3, time: Date.parse(timestamp), data: { turn: 1, reason: { kind: 'completed' } } })
-    for (let i = 0; i < 100 && f.queuedCount() < 2; i += 1) await new Promise((resolve) => setImmediate(resolve))
+    await waitFor(() => f.queuedCount() >= 2)
     const snapshot = await f.store.snapshot()
     assert.equal(snapshot.deliveries.length, 2)
     const all = snapshot.deliveries.find((item) => item.destinationId === 'all')!
