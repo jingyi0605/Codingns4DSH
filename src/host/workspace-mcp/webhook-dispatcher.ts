@@ -27,6 +27,7 @@ export interface WorkspaceMcpWebhookDispatcherOptions {
 }
 
 export class WorkspaceMcpWebhookDispatcher {
+  private readonly store: FileWorkspaceMcpWebhookStore
   private readonly fetcher: typeof fetch
   private readonly now: () => number
   private readonly setTimer: NonNullable<WorkspaceMcpWebhookDispatcherOptions['setTimer']>
@@ -42,7 +43,8 @@ export class WorkspaceMcpWebhookDispatcher {
   private wakePending = false
   private stopped = false
 
-  constructor(private readonly store: FileWorkspaceMcpWebhookStore, options: WorkspaceMcpWebhookDispatcherOptions = {}) {
+  constructor(store: FileWorkspaceMcpWebhookStore, options: WorkspaceMcpWebhookDispatcherOptions = {}) {
+    this.store = store
     this.fetcher = options.fetch ?? fetch
     this.now = options.now ?? Date.now
     this.setTimer = options.setTimer ?? ((callback, delay) => setTimeout(callback, delay))

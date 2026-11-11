@@ -62,8 +62,9 @@ test('hidden failing detail', () => { throw new Error('hidden error detail') })
 test('packaging reporter includes cancellations in the final counts', () => {
   const result = runFixture(`
 import test from 'node:test'
-test('hidden parent detail', (t) => {
-  t.test('hidden cancelled detail', () => new Promise(() => {}))
+test('hidden parent detail', async (t) => {
+  await t.test('hidden cancelled detail', { timeout: 10 }, () => new Promise(() => {}))
+  throw new Error('hidden parent failure')
 })
 `)
   assert.equal(result.status, 1, result.stderr)

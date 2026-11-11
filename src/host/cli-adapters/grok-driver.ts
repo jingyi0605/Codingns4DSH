@@ -842,10 +842,12 @@ function acpMessageToChunks(message: Record<string, any>): readonly CodingNsAgen
       : rawOutput !== undefined || type.includes('result') || type.includes('complete')
         ? 'completed'
         : 'running'
+    const status = acpToolStatusFields(tool.status ?? tool.state ?? update.status, type, fallback)
     return [...imageEvents, {
       type: 'tool-event',
       toolName: name ?? 'tool',
-      ...acpToolStatusFields(tool.status ?? tool.state ?? update.status, type, fallback),
+      ...status,
+      ...(status.status === undefined && contentText !== undefined ? { status: fallback } : {}),
       ...(callId ? { callId } : {}),
       ...(input !== undefined ? { input } : {}),
       ...(output !== undefined ? { output } : {}),

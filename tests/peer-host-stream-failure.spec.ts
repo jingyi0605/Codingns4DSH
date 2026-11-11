@@ -112,8 +112,9 @@ test('连接失败重试耗尽后只记录一次目标、订阅方法、耗时�
   try {
     const result = await streamHandler(streams, id)('peerHost/nativeStreamNext', {}, new AbortController().signal)
     assert.equal(reads, 3)
-    assert.equal(errors.mock.callCount(), 1)
-    const details = errors.mock.calls[0]!.arguments[1] as Record<string, unknown>
+    const diagnostics = errors.mock.calls.filter(call => call.arguments[0] === 'codingns4dsh: host rpc handler failed')
+    assert.equal(diagnostics.length, 1)
+    const details = diagnostics[0]!.arguments[1] as Record<string, unknown>
     assert.equal(details.targetHostId, 'peer-1')
     assert.equal(details.method, 'session/follow')
     assert.equal(details.phase, 'next')

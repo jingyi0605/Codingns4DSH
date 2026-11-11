@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module'
 import { copyFile, mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { dirname, join, resolve } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
@@ -183,13 +183,16 @@ function resolvePackageManifest(packageName, anchors) {
       // Desktop 的 client-modules Loader 会以宿主 DSH runtime 作为外部包解析根。
     }
   }
+  const runtimePath = findRuntimePackageManifest(packageName)
+  if (runtimePath !== undefined) return { path: runtimePath, source: 'dsh-runtime' }
   return undefined
 }
 
 async function linkRuntimePackage(packageName) {
-  const target = join(runtimeNodeModules, packageName)
+  const target = findRuntimePackageRoot(packageName)
+  if (target === undefined) return
   const destination = join(profile, 'node_modules', packageName)
-  if (!existsSync(target) || existsSync(destination)) return
+  if (existsSync(destination)) return
   await mkdir(dirname(destination), { recursive: true })
   try {
     await symlink(target, destination, 'dir')
@@ -197,6 +200,28 @@ async function linkRuntimePackage(packageName) {
     if (process.platform !== 'win32' || !['EPERM', 'EACCES'].includes(error?.code)) throw error
     await copyDirectory(target, destination)
   }
+}
+
+/** Resolve both flat and pnpm virtual-store runtime layouts without mutating the runtime. */
+function findRuntimePackageManifest(packageName) {
+  const direct = join(runtimeNodeModules, packageName, 'package.json')
+  if (existsSync(direct)) return direct
+  const store = join(runtimeNodeModules, '.pnpm')
+  if (!existsSync(store)) return undefined
+  const encoded = packageName.replace('/', '+')
+  const candidates = readdirSync(store)
+    .filter((entry) => entry.startsWith(`${encoded}@`))
+    .map((entry) => join(store, entry, 'node_modules', packageName, 'package.json'))
+    .filter((path) => existsSync(path))
+  const exact = candidates.find((path) => {
+    try { return JSON.parse(readFileSync(path, 'utf8')).version === expectedDshVersion } catch { return false }
+  })
+  return exact ?? candidates[0]
+}
+
+function findRuntimePackageRoot(packageName) {
+  const manifest = findRuntimePackageManifest(packageName)
+  return manifest === undefined ? undefined : dirname(manifest)
 }
 
 async function copyDirectory(source, destination) {

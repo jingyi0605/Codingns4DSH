@@ -67,8 +67,11 @@ export interface WorkspaceMcpWebhookStoreSnapshot extends WorkspaceMcpWebhookSto
 }
 
 export class WorkspaceMcpWebhookStoreError extends Error {
-  constructor(readonly code: 'WORKSPACE_MCP_WEBHOOK_LIMIT' | 'WORKSPACE_MCP_WEBHOOK_NOT_FOUND', message: string) {
+  readonly code: 'WORKSPACE_MCP_WEBHOOK_LIMIT' | 'WORKSPACE_MCP_WEBHOOK_NOT_FOUND'
+
+  constructor(code: 'WORKSPACE_MCP_WEBHOOK_LIMIT' | 'WORKSPACE_MCP_WEBHOOK_NOT_FOUND', message: string) {
     super(message)
+    this.code = code
     this.name = 'WorkspaceMcpWebhookStoreError'
   }
 }
@@ -83,6 +86,8 @@ const EVENT_TYPES = new Set<WorkspaceMcpWebhookEventType>([
 
 /** Stores webhook secrets and durable deliveries in a private Host-only file. */
 export class FileWorkspaceMcpWebhookStore {
+  private readonly filePath: string
+  private readonly now: () => number
   private data: MutableStoreData = emptyStoreData()
   private loadPromise: Promise<void> | undefined
   private status: WorkspaceMcpWebhookStoreStatus = 'ok'
@@ -92,7 +97,10 @@ export class FileWorkspaceMcpWebhookStore {
   private persistenceTask: Promise<void> = Promise.resolve()
   private readonly persistenceWaiters: Array<{ version: number; resolve(): void }> = []
 
-  constructor(private readonly filePath = defaultWebhookStorePath(), private readonly now: () => number = Date.now) {}
+  constructor(filePath = defaultWebhookStorePath(), now: () => number = Date.now) {
+    this.filePath = filePath
+    this.now = now
+  }
 
   async snapshot(): Promise<WorkspaceMcpWebhookStoreSnapshot> {
     await this.ensureLoaded()
