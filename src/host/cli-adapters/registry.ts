@@ -680,6 +680,14 @@ export class CodingNsCliAdapterRegistry {
       }
       while (true) {
         const next = await iterator.next()
+        // A CLI may deliver a tool result only after cancellation. Never retain
+        // that aborted iterator for a subsequent DSH step or user prompt.
+        if (input.signal?.aborted) {
+          this.segmentedTurns.delete(input.sessionId)
+          this.sessionStore?.upsert(input.sessionId, { ...this.sessions.get(input.sessionId) ?? current, status: 'idle' })
+          yield { type: 'finish', reason: 'cancel' }
+          return
+        }
         if (next.done || next.value.type === 'finish') {
           if (deferredPeerInput) {
             if (!next.done && next.value.type === 'finish' && next.value.reason !== 'stop') {
@@ -696,7 +704,7 @@ export class CodingNsCliAdapterRegistry {
         const event = next.value
         if (event.type === 'tool-event' && event.callId !== undefined) {
           if (event.status === 'completed' || event.status === 'failed') pendingToolCalls.delete(event.callId)
-          else pendingToolCalls.add(event.callId)
+          else if (event.status === 'started' || event.status === 'running') pendingToolCalls.add(event.callId)
         }
         if (event.type === 'usage') this.lastUsages.set(input.sessionId, usageSnapshot(event))
         if (event.type === 'session-binding') {
@@ -769,6 +777,11 @@ export class CodingNsCliAdapterRegistry {
           // 所有权交给续段表，当前调用结束不得关闭需要继续消费的 Provider 流。
           iterator = undefined
           yield event
+          if (input.signal?.aborted) {
+            this.discardSegmentedTurn(input.sessionId)
+            yield { type: 'finish', reason: 'cancel' }
+            return
+          }
           yield { type: 'step-boundary' }
           return
         }

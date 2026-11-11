@@ -8,7 +8,7 @@ import { JsonRpcProcess } from './json-rpc-process.js'
 import { isRecord, streamRpcRequest, textValue, usageChunk } from './rpc-driver-utils.js'
 import { GEMINI_CATALOG, isProviderDefaultModel, resolveGeminiEfforts } from './model-catalog.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
-import { firstToolText, isToolRecord, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { acpToolStatusFields, firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks, promptWithAttachmentPaths } from './attachment-utils.js'
 import { acpBridgeMcpServers, teamBridgeToken } from '../cli-bridge/injections.js'
 import { reasoningText } from './reasoning-content.js'
@@ -384,7 +384,7 @@ function geminiAcpMessageToChunk(message: Record<string, any>): CodingNsAgentEve
       return {
         type: 'tool-event',
         toolName: name ?? 'tool',
-        status: normalizeToolStatus(tool.status ?? tool.state ?? update.status, fallback),
+        ...acpToolStatusFields(tool.status ?? tool.state ?? update.status, type, fallback),
         ...(callId ? { callId } : {}),
         ...(input !== undefined ? { input } : {}),
         ...(output !== undefined ? { output } : {}),

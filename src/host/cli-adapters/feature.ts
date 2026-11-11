@@ -883,6 +883,10 @@ export function createCliAdaptersFeature(options: {
           try {
             for await (const chunk of registry.execute({ ...input, adapterId: config.adapterId })) {
               if (chunk.type === 'step-boundary') {
+                if (input.signal?.aborted) {
+                  discardSuspendedTurn()
+                  continue
+                }
                 // Agent Loop 会在本次 llm/stream 返回后关闭当前 step，并在返回前
                 // 检查 next-step inbox。必须先注入，再发送 finish，不能等 complete()
                 // 之后再写入，否则 DSH 已经把整个 turn 结算完了。

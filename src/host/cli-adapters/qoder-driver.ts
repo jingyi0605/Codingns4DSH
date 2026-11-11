@@ -20,7 +20,7 @@ import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
 import { buildAcpPromptBlocks } from './attachment-utils.js'
 import { acpBridgeMcpServers } from '../cli-bridge/injections.js'
 import { isRecord, usageChunk } from './rpc-driver-utils.js'
-import { firstToolText, normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { acpToolStatusFields, firstToolText, serializeToolValue } from './tool-observation.js'
 import { reasoningText } from './reasoning-content.js'
 import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
 
@@ -686,7 +686,7 @@ function qoderAcpMessageToChunk(
     const output = serializeToolValue(tool.rawOutput ?? tool.output ?? tool.result ?? update.rawOutput)
     const error = serializeToolValue(tool.error ?? update.error)
     const fallback = error !== undefined || type.includes('error') || type.includes('fail') ? 'failed' : output !== undefined || type.includes('complete') || type.includes('result') ? 'completed' : 'running'
-    return { type: 'tool-event', toolName: toolName ?? 'tool', status: normalizeToolStatus(tool.status ?? tool.state ?? update.status, fallback), ...(callId ? { callId } : {}), ...(inputValue !== undefined ? { input: inputValue } : {}), ...(output !== undefined ? { output, outputMode: type.includes('delta') ? 'delta' as const : 'snapshot' as const } : {}), ...(error !== undefined ? { error } : {}) }
+    return { type: 'tool-event', toolName: toolName ?? 'tool', ...acpToolStatusFields(tool.status ?? tool.state ?? update.status, type, fallback), ...(callId ? { callId } : {}), ...(inputValue !== undefined ? { input: inputValue } : {}), ...(output !== undefined ? { output, outputMode: type.includes('delta') ? 'delta' as const : 'snapshot' as const } : {}), ...(error !== undefined ? { error } : {}) }
   }
   return usageChunk(update)
 }

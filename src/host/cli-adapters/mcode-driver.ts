@@ -16,7 +16,7 @@ import { MINIMAX_CODE_CATALOG, isProviderDefaultModel } from './model-catalog.js
 import { buildMcodeCatalog, parseMcodeModelCatalog, readMcodeConfigYaml } from './mcode-catalog.js'
 import { probeStoredSession } from './session-probe.js'
 import { buildAcpPromptBlocks, promptWithAttachmentPaths, withAttachmentPaths } from './attachment-utils.js'
-import { firstToolText, serializeToolValue } from './tool-observation.js'
+import { acpToolStatusFields, firstToolText, serializeToolValue } from './tool-observation.js'
 import { terminateChildProcess, WINDOWS, type CodingNsChildProcess } from './process-utils.js'
 import { acpBridgeMcpServers, teamBridgeToken } from '../cli-bridge/injections.js'
 import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitationRequest as parseAcpElicitationRequest, type AcpElicitationRequest } from './acp-elicitation.js'
@@ -467,12 +467,11 @@ function mcodeAcpMessageToChunk(message: JsonRpcMessage, input: CodingNsCliTurnI
     return text === null ? null : { type: 'reasoning-delta', text }
   }
   if (kind === 'tool_call' || kind === 'tool_call_update') {
-    const failed = firstToolText(update.status) === 'failed'
     const output = acpText(update.content ?? update.rawOutput)
     return {
       type: 'tool-event',
       toolName: firstToolText(update.title, update.toolName) ?? 'tool',
-      status: kind === 'tool_call' ? 'running' : failed ? 'failed' : 'completed',
+      ...acpToolStatusFields(update.status, kind, 'running'),
       ...(firstToolText(update.toolCallId, update.id) ? { callId: firstToolText(update.toolCallId, update.id)! } : {}),
       ...(firstToolText(update.title) ? { detail: firstToolText(update.title)! } : {}),
       ...(output !== null ? { output } : {}),
