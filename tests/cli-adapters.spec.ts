@@ -2420,6 +2420,7 @@ test('CLI 功能模块向 DSH 注册外部 Provider 的图片能力，流仍由 
 test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流的旁路行为', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
+  let listenerOptions: unknown
   let capturedPrompt = ''
   const registryInputs: Array<Record<string, unknown>> = []
   const sessionStatuses: Array<readonly [string, boolean]> = []
@@ -2437,8 +2438,9 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
     },
   }])
   const events = {
-    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) {
+    on(_name: string, next: (options: unknown, downstream: () => AsyncIterable<unknown>) => AsyncIterable<unknown>, options?: unknown) {
       listener = next
+      listenerOptions = options
       return () => { listener = undefined }
     },
     emit(name: string, ...args: unknown[]) {
@@ -2452,6 +2454,7 @@ test('CLI 功能模块按会话配置接管 llm/stream，并保留默认 DSH 流
   await features.start('cliAdapters')
   await table.resolve('cli/session/set')?.handler('session/set', { sessionId: 's1', adapterId: 'fake' })
   assert.notEqual(listener, undefined)
+  assert.deepEqual(listenerOptions, { global: true }, 'native child Agents use a different Cordis scope')
 
   const delegatedChunks = []
   for await (const chunk of listener!({
