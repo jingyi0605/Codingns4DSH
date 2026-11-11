@@ -15,7 +15,7 @@ import type { CredentialBroker } from '../credentials/broker.js'
 import type { SessionHandleEvictionController } from '../session-handle-eviction.js'
 
 export interface CodingNsHostEvents {
-  on(name: string, listener: (...args: any[]) => any): unknown
+  on(name: string, listener: (...args: any[]) => any, options?: unknown): unknown
   /** 向 DSH 原生事件总线发布 Host 状态，供客户端会话状态投影消费。 */
   emit?(name: string, ...args: any[]): unknown
 }

@@ -912,7 +912,7 @@ export function createCliAdaptersFeature(options: {
             // 原生 turn/end 与 agent/status idle 补齐。
             if (!suspendedForNextStep) publishExternalStatus(sessionId, false)
           }
-        })
+        }, { global: true })
         if (typeof dispose === 'function') context.resources.add(() => { (dispose as () => void)() })
       }
       context.resources.add(async () => {
