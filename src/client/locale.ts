@@ -11,7 +11,6 @@ import * as peerHostWorkspaceDictionary from './locales/peerHostWorkspace.js'
 import * as terminalAuthDictionary from './locales/terminalAuth.js'
 import * as usageDictionary from './locales/usage.js'
 import * as subagentCollapsedDictionary from './locales/subagentCollapsed.js'
-import * as quickAppsDictionary from './locales/quickApps.js'
 import * as cliManagementDictionary from './locales/cliManagement.js'
 import * as magpieDictionary from './locales/magpie.js'
 import * as pluginUpdateDictionary from './locales/pluginUpdate.js'
@@ -1111,7 +1110,6 @@ const en: Record<string, string> = {
   ...terminalAuthDictionary.en,
   ...panelsDictionary.en,
   ...subagentCollapsedDictionary.en,
-  ...quickAppsDictionary.en,
   ...cliManagementDictionary.en,
   ...magpieDictionary.en,
   ...pluginUpdateDictionary.en,
@@ -1129,7 +1127,6 @@ const zh: Record<string, string> = {
   ...terminalAuthDictionary.zh,
   ...panelsDictionary.zh,
   ...subagentCollapsedDictionary.zh,
-  ...quickAppsDictionary.zh,
   ...cliManagementDictionary.zh,
   ...magpieDictionary.zh,
   ...pluginUpdateDictionary.zh,

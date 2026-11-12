@@ -11,10 +11,6 @@ import { createWorkspaceSessionControlAdapter, supportsWorkspaceSessionControl }
 import { createWorkspacePendingQuestionsAdapter, supportsWorkspacePendingQuestions } from './host/workspace-pending-questions-adapter.js'
 import { createWorkspaceApprovalAdapter, supportsWorkspaceApproval } from './host/workspace-approval-adapter.js'
 import { createSessionPromptAdapter, supportsSessionPromptAssembly } from './host/session-prompt-adapter.js'
-import { supportsQuickAppOrigins } from './host/quick-app-origin-adapter.js'
-import { supportsQuickAppProxy, createQuickAppProxy } from './host/quick-app-proxy-adapter.js'
-import { supportsQuickAppFooter } from './client/quick-app-footer-adapter.js'
-import { createWorkspaceDirectoryBrowser, supportsWorkspaceDirectory } from './host/workspace-directory-adapter.js'
 import { createSessionPerformanceAdapter, supportsSessionPerformance } from './host/session-performance-adapter.js'
 import { createSessionPerformancePresentation, supportsSessionPerformancePresentation } from './client/session-performance-adapter.js'
 import { createAgentTeamAdapter, supportsExternalAgentTeam } from './host/agent-team-adapter.js'
@@ -55,12 +51,6 @@ export function createDshCapabilityRegistry(
         detect: ctx => supportsExternalAgentTeam(ctx, role === 'lead'), create: createAgentTeamAdapter })
     }
     add({ id: 'session-performance-projection-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformance, create: createSessionPerformanceAdapter })
-    add({ id: 'quick-app-host-proxy-021', capability: 'quick-app.proxy', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
-      detect: supportsQuickAppProxy, create: createQuickAppProxy })
-    add({ id: 'workspace-directory-list-021', capability: 'workspace.directory-list', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
-      detect: supportsWorkspaceDirectory, create: createWorkspaceDirectoryBrowser })
-    add({ id: 'quick-app-origin-provider', capability: 'quick-app.origin', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
-      detect: () => supportsQuickAppOrigins(facts.quickAppOrigins), create: () => facts.quickAppOrigins })
     add({ id: 'session-prompt-assembly-021', capability: 'session.prompt-assembly', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
       detect: supportsSessionPromptAssembly, create: createSessionPromptAdapter })
     add({ id: 'session-external-model-selection-021', capability: 'session.external-model-selection', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
@@ -96,8 +86,6 @@ export function createDshCapabilityRegistry(
     add({ id: 'ui-context-menu-022', capability: 'ui.context-menu', supportedDsh: '>=0.2.2-alpha.3', runtime, priority: 20,
       status: 'supported', introducedIn: '0.2.2-alpha.3', detect: supportsContextMenus, create: readContextMenus })
     add({ id: 'session-performance-presentation-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformancePresentation, create: createSessionPerformancePresentation })
-    add({ id: 'sidebar-footer-action-021', capability: 'sidebar.footer-action', supportedDsh: range020, runtime, priority: 10, status: 'supported', introducedIn: '0.2.0-rc.2',
-      detect: ctx => supportsQuickAppFooter(read(ctx, 'slots')), create: ctx => read(ctx, 'slots') })
     add({ id: 'message-presentation-020', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.1-alpha.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.2',
       detect: ctx => supportsLegacyMessagePresentation({ slots: read(ctx, 'slots') }, facts.primitives), create: () => createLegacyMessagePresentation(facts.primitives) })
     add({ id: 'message-presentation-021', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
@@ -125,7 +113,6 @@ type CapabilityRouteAdder = <T>(route: DshCapabilityRoute<T>) => void
  * 图标导出属于客户端 bundle 的静态导入，由 client/index.ts 在装配时提供。
  */
 export interface DshCapabilityRuntimeFacts {
-  readonly quickAppOrigins?: unknown
   readonly primitives?: unknown
 }
 

@@ -7,9 +7,6 @@ import type { DebugWorkspaceService } from '../debug.js'
 import type { CodingNsNativeTeamProxy } from '../cli-adapters/native-team-proxy.js'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SessionTranslationService } from './session-translation-service.js'
-import type { QuickAppLanTransport, QuickAppOriginProvider } from '../../dsh-capabilities/host/quick-app-origin-adapter.js'
-import type { QuickAppPeerGateway } from '../modules/quick-apps/remote.js'
-import type { WorkspaceDirectoryBrowser } from '../../dsh-capabilities/host/workspace-directory-adapter.js'
 import type { CredentialService } from '../credentials/service.js'
 import type { CredentialBroker } from '../credentials/broker.js'
 import type { SessionHandleEvictionController } from '../session-handle-eviction.js'
@@ -27,11 +24,6 @@ export interface CodingNsHostEvents {
  * 在这里增加字段，模块数量本身不改变这个契约的形状。
  */
 export interface CodingNsHostServices {
-  /** Only a verified transport composition may supply executable app origins. */
-  readonly quickAppOrigins?: QuickAppOriginProvider
-  readonly quickAppLanTransport?: QuickAppLanTransport
-  readonly quickAppPeerGateway?: QuickAppPeerGateway
-  readonly workspaceDirectoryBrowser?: WorkspaceDirectoryBrowser | undefined
   readonly rpc: CodingNsRpcTable
   /** 当前 DSH Host Context；仅供需要结构探测原生服务的适配层使用。 */
   readonly dshContext?: Context

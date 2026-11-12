@@ -8,7 +8,6 @@ import { CODINGNS_VERSION, DSH_VERSION, isDshVersionCompatible } from '../../sha
 import { PeerHostHandshakeService } from '../modules/peer-host/peer-host-handshake.js'
 import { isPeerHostTransientStatus, PeerHostSessionService } from '../modules/peer-host/peer-host-session.js'
 import { PeerHostHttpProxyService } from '../modules/peer-host/host-api-proxy-service.js'
-import { createQuickAppPeerGateway } from '../modules/peer-host/quick-app-gateway.js'
 import {
   EncryptedFilePeerHostCredentialStore,
   FilePeerHostRecordStore,

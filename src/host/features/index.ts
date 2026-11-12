@@ -8,7 +8,6 @@ import { createDebugFeature } from './debug.js'
 import { createHostStatusFeature } from './host-status.js'
 import { createGitManagementFeature } from './git-management.js'
 import { createFileManagementFeature } from './file-management.js'
-import { createQuickAppsFeature } from './quick-apps.js'
 import { createPeerHostFeature } from './peer-host.js'
 import { createSessionTitleOptimizationFeature } from './session-title-optimization.js'
 import { createSessionTranslationFeature } from './session-translation.js'
@@ -38,7 +37,6 @@ export function createHostFeatures(options: HostFeatureOptions = {}): readonly F
     createWorkspaceMcpHostFeature(),
     createGitManagementFeature(),
     createFileManagementFeature(),
-    createQuickAppsFeature(),
     createPeerHostFeature(),
   ]
 }

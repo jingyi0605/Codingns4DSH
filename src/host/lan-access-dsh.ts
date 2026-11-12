@@ -14,8 +14,6 @@ import type { DshHostSettingsScope } from '../dsh-capabilities/host/config-forms
 import { createLoginAttemptContext, LoginAttemptGuard, type LoginAttemptContext } from './login-attempt-guard.js'
 import { hostBrowserText, resolveAcceptLanguageLocale, resolveHostPushLocale, type HostLocale } from './browser-text.js'
 import { isPeerHostHttpRoute } from '../shared/peer-host-http-routes.js'
-import type { QuickAppLanTransport } from '../dsh-capabilities/host/quick-app-origin-adapter.js'
-import { quickAppProxyBase } from '../shared/quick-app-proxy-path.js'
 
 export interface LanAccessDshStream {
   pipe(destination: LanAccessDshStream): LanAccessDshStream
@@ -209,7 +207,6 @@ export class LanAccessDshProxy {
     private readonly runtime: LanAccessDshRuntime = createNodeLanAccessDshRuntime(),
     private readonly authenticatedUrl?: string,
     sessionCookieName = resolveLoginProtectionCookieName(),
-    private readonly quickApps?: QuickAppLanTransport,
   ) {
     this.sessionCookieName = resolveLoginProtectionCookieName(sessionCookieName)
   }
@@ -262,7 +259,6 @@ export class LanAccessDshProxy {
         await active.close()
         throw error
       }
-      this.quickApps?.started(config.listenHost)
       return this.snapshot(active)
     } catch (error) {
       this.active = null
@@ -281,7 +277,6 @@ export class LanAccessDshProxy {
     active.sockets.clear()
     this.revokedSessions.clear()
     this.loginAttempts.reset()
-    await this.quickApps?.stopping()
     await active.close()
   }
 
@@ -389,9 +384,6 @@ export class LanAccessDshProxy {
   }
 
   private authorizeWithoutMcp(request: ParsedLanRequest, localAddress: boolean, localSocket: LanAccessDshStream): Uint8Array | 'pass' {
-    // This route authenticates with a Host-issued launch address, independently of
-    // DSH login cookies. Sandboxed resource requests legitimately have Origin:null.
-    if (quickAppProxyBase(request.path) && !request.headers.upgrade) return 'pass'
     const config = this.loginConfig
     // 登录页与登录错误按浏览器自己的语言渲染；DSH 只支持 zh/en，其它语言回退中文。
     const locale = resolveAcceptLanguageLocale(request.headers['accept-language'])
@@ -415,11 +407,6 @@ export class LanAccessDshProxy {
     // Keep rejecting app-origin requests even after a transport configuration is removed:
     // old app documents may still be executing in a browser after their listener closes.
     if (isCrossOriginLanBrowserRequest(request.headers, request.method, request.path)) return loginResponse(403, 'Cross-origin DSH access is denied.')
-    // Check the original browser origin before the trusted upstream header rewrite.
-    // This also applies to loopback ingress behind a TLS proxy and to WebSocket upgrades.
-    if (this.quickApps && !this.quickApps.permits(request.headers, request.method, request.path)) {
-      return loginResponse(403, 'Cross-origin DSH access is denied.')
-    }
     // PWA 静态资产先于登录判定：它们只包含公开元数据，未登录时也可取；命中时
     // 直接合成响应，不进入上游转发路径。
     const pwaResponse = this.authorizePwa(request)
@@ -1073,11 +1060,6 @@ function isOfficialConnectionRpcMessage(value: unknown): value is { type: 'clien
 export function rewriteLanAccessDshRequestHeaders(input: Uint8Array, targetAuthority: string, upstreamCookie?: string): Uint8Array {
   const text = decodeLatin1(input)
   const lines = text.split('\r\n')
-  if (quickAppProxyBase(lines[0]?.split(' ')[1] ?? '')) {
-    // Preserve the sandbox Origin and never attach the privileged DSH credential.
-    return encodeLatin1(lines.filter(line => !/^(?:cookie|authorization):/iu.test(line))
-      .map(line => /^host:/iu.test(line) ? `Host: ${targetAuthority}` : /^connection:/iu.test(line) ? 'Connection: close' : line).join('\r\n'))
-  }
   const upgrade = isUpgradeRequest(input)
   let hasConnection = false
   let hasCookie = false

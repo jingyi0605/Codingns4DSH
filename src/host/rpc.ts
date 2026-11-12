@@ -299,7 +299,6 @@ const CODINGNS_RPC_ENDPOINTS = [
   'debug/port/check', 'debug/port/terminate', 'debug/port/kill', 'debug/proxy/get', 'debug/proxy/enable', 'debug/proxy/disable',
   'git/status', 'git/models', 'git/generate-message', 'git/init', 'git/diff', 'git/stage', 'git/unstage', 'git/discard', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/switch', 'git/fetch', 'git/pull', 'git/push', 'git/undo',
   'fileManagement/session-changes', 'fileManagement/read', 'fileManagement/download', 'fileManagement/write', 'fileManagement/create-file', 'fileManagement/create-directory', 'fileManagement/rename', 'fileManagement/copy', 'fileManagement/move', 'fileManagement/delete', 'fileManagement/git-ignore',
-  'quickApps/list', 'quickApps/browse', 'quickApps/upsert', 'quickApps/reorder', 'quickApps/remove', 'quickApps/launch', 'quickApps/document', 'quickApps/close', 'quickApps/grant', 'quickApps/revoke', 'quickApps/remote',
   'workspaceMcp/status', 'workspaceMcp/generate-key', 'workspaceMcp/webhook-list', 'workspaceMcp/webhook-create',
   'workspaceMcp/webhook-update', 'workspaceMcp/webhook-rotate-secret', 'workspaceMcp/webhook-delete', 'workspaceMcp/webhook-test',
   'credentials/list', 'credentials/save', 'credentials/delete', 'credentials/issue', 'credentials/capability', 'credentials/master-password/status', 'credentials/master-password/set',
@@ -465,7 +464,7 @@ function operationsToPatch(operations: readonly CodingNsSettingsOperation[]): Re
 
 function isAllowedSettingsPath(path: readonly string[]): boolean {
   if (path.length === 1) return ['controlBaseUrl', 'controlBaseUrls', 'terminalEnhancement', 'workspaceSessionEnhancement', 'fileManagement', 'mobileAccess', 'subscriptionUsage', 'subscriptionReports', 'sessionTranslation', 'gitManagement'].includes(path[0] ?? '')
-  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'magpieManagement', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'quickApps', 'mobileAccess', 'peerHost', 'sessionTranslation', 'workspaceMcp', 'workspaceMcpLanAccess', 'credentials'].includes(path[1] ?? '')
+  if (path[0] === 'modules') return path.length === 2 && ['lanAccess', 'reverseProxy', 'cliAdapters', 'magpieManagement', 'terminalEnhancement', 'workspaceSessionEnhancement', 'debug', 'gitManagement', 'fileManagement', 'mobileAccess', 'peerHost', 'sessionTranslation', 'workspaceMcp', 'workspaceMcpLanAccess', 'credentials'].includes(path[1] ?? '')
   if (path[0] === 'workspaceSessionEnhancement') {
     return path.length === 2 && [
       'showAdapterLogo', 'showArchivedSessions', 'showWorkspaceHiding', 'hiddenWorkspaceIds',
