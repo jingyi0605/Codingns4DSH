@@ -74,7 +74,8 @@ function createHostContext(options: { readonly omit?: readonly string[] } = {}):
         calls.push(`agents.get:${id}`)
         return id === session.id ? agent : undefined
       },
-      roots: () => [agent],
+      // DSH 0.2.2-rc.2 的 AgentRegistry 只有 get/list，没有 roots()。
+      list: () => [agent],
     },
     sessionProjections: {
       stateOf: (target: unknown, key: string) => {
@@ -276,7 +277,7 @@ test('待答问题适配器把缺失投影、未知会话与畸形条目降级�
   const sharedAgent = { id: 'a', session: sharedSession }
   const base = {
     sessions: { get: () => sharedSession },
-    agents: { get: () => sharedAgent, roots: () => [sharedAgent] },
+    agents: { get: () => sharedAgent },
     userQuestions: { answer: () => true },
   }
 
@@ -309,6 +310,33 @@ test('待答问题适配器把缺失投影、未知会话与畸形条目降级�
   assert.deepEqual(malformed.list('s'), [{ callId: 'ok', state: 'open', questions: [{ id: 'q', question: 'Q' }] }])
 })
 
+test('待答问题适配器在没有 agents.roots() 的 DSH 0.2.2-rc.2 上可用，并拒绝子代理会话', () => {
+  const topSession = { id: 'top', header: { id: 'top' } }
+  const childSession = { id: 'child', header: { id: 'child', origin: 'subagent', parentSession: 'top' } }
+  const topAgent = { id: 'top', session: topSession }
+  const childAgent = { id: 'child', session: childSession }
+  const registry = new Map([['top', topAgent], ['child', childAgent]])
+  const sessions = new Map<string, unknown>([['top', topSession], ['child', childSession]])
+  const answered: string[] = []
+  const context = {
+    get: (name: string): unknown => ({
+      sessions: { get: (id: string) => sessions.get(id) },
+      agents: { get: (id: string) => registry.get(id), list: () => [...registry.values()] },
+      sessionProjections: { stateOf: () => ({ questions: { active: [{ callId: 'c', state: 'open', questions: [{ id: 'q', question: 'Q' }] }] } }) },
+      userQuestions: { answer: (_agent: unknown, callId: string) => { answered.push(callId); return true } },
+    })[name],
+  }
+  const answer = { answers: [{ id: 'q', selected: ['x'] }] }
+
+  assert.equal(supportsWorkspacePendingQuestions(context), true)
+  const adapter = createWorkspacePendingQuestionsAdapter(context)
+  assert.equal(adapter.list('top')?.length, 1)
+  assert.equal(adapter.answer('top', 'c', answer), true)
+  assert.equal(adapter.list('child'), null)
+  assert.equal(adapter.answer('child', 'c', answer), false)
+  assert.deepEqual(answered, ['c'])
+})
+
 test('待答问题适配器提交答案时只认原生 userQuestions.answer 的布尔 true', () => {
   const context = createHostContext()
   const adapter = createWorkspacePendingQuestionsAdapter(context)
@@ -323,7 +351,7 @@ test('待答问题适配器提交答案时只认原生 userQuestions.answer 的�
   for (const result of [false, undefined, null, 'ok', 1]) {
     const adapter = build({
       sessions: { get: () => ({ id: 's' }) },
-      agents: { get: () => sharedAgent, roots: () => [sharedAgent] },
+      agents: { get: () => sharedAgent },
       sessionProjections: { stateOf: () => ({ questions: { active: [] } }) },
       userQuestions: { answer: () => result },
     })
@@ -334,7 +362,7 @@ test('待答问题适配器提交答案时只认原生 userQuestions.answer 的�
   for (const agents of [{ get: () => undefined }, { get: () => { throw new Error('registry fault') } }]) {
     const adapter = build({
       sessions: { get: () => ({ id: 's' }) },
-      agents: { roots: () => [sharedAgent], ...agents },
+      agents,
       sessionProjections: { stateOf: () => ({ questions: { active: [] } }) },
       userQuestions: { answer: () => { throw new Error('answer fault') } },
     })
