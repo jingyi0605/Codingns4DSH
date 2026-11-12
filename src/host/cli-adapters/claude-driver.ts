@@ -3,7 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsAgentImageArtifact, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
-import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
+import type { CodingNsCliCompactionInput, CodingNsCliCompactionResult, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
 import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel } from './model-catalog.js'
 import { discoverClaudeModelCatalog } from './claude-model-options.js'
@@ -113,6 +113,36 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     this.now = options.now ?? Date.now
   }
   private readonly interactions = new Map<string, ClaudeInteractionState>()
+  private readonly compactions = new Map<string, { compacted: boolean; message?: string }>()
+
+  async compact(input: CodingNsCliCompactionInput): Promise<CodingNsCliCompactionResult> {
+    input.signal?.throwIfAborted()
+    if (!input.providerSessionId) throw new Error('CLAUDE_COMPACTION_SESSION_REQUIRED')
+    if (this.interactions.has(input.sessionId) || this.compactions.has(input.sessionId)) throw new Error('CLAUDE_COMPACTION_BUSY')
+    const state: { compacted: boolean; message?: string } = { compacted: false }
+    this.compactions.set(input.sessionId, state)
+    const signal = AbortSignal.any([...(input.signal ? [input.signal] : []), AbortSignal.timeout(120_000)])
+    try {
+      let completed = false
+      for await (const event of this.executeTurn({ ...input, signal, prompt: '/compact', messages: [] })) {
+        if (event.type !== 'finish') continue
+        signal.throwIfAborted()
+        if (event.reason !== 'stop') throw new Error(event.failure?.message ?? 'CLAUDE_COMPACTION_FAILED')
+        completed = true
+      }
+      signal.throwIfAborted()
+      if (!completed) throw new Error('CLAUDE_COMPACTION_INCOMPLETE')
+      return { ...state }
+    } finally {
+      this.compactions.delete(input.sessionId)
+    }
+  }
+
+  protected override validateProviderSessionBinding(input: CodingNsCliTurnInput, providerSessionId: string): void {
+    if (this.compactions.has(input.sessionId) && providerSessionId !== input.providerSessionId) {
+      throw new Error('CLAUDE_COMPACTION_SESSION_MISMATCH')
+    }
+  }
 
   protected override eventTime(): number { return this.now() }
 
@@ -290,7 +320,8 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     const args = ['--print', '--output-format', 'stream-json', '--input-format', 'stream-json', '--permission-prompt-tool', 'stdio', '--include-partial-messages', '--verbose']
     args.push(...claudePermissionArgs(input.permission))
     // 子代理托管开启时注入 MCP 替身工具并停用内建 Task/Agent 子代理。
-    args.push(...claudeBridgeArgs(input.sessionId, this.descriptor.id))
+    if (this.compactions.has(input.sessionId)) args.push('--tools', '')
+    else args.push(...claudeBridgeArgs(input.sessionId, this.descriptor.id))
     for (const directory of new Set((input.attachments ?? []).map((attachment) => dirname(attachment.path)))) args.push('--add-dir', directory)
     if (input.providerSessionId) args.push('--resume', input.providerSessionId)
     if (input.modelId && !isProviderDefaultModel(input.modelId)) args.push('--model', input.modelId)
@@ -348,6 +379,14 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   }
 
   protected parseEvent(value: Record<string, unknown>, input: CodingNsCliTurnInput): readonly CodingNsAgentEvent[] {
+    const compaction = this.compactions.get(input.sessionId)
+    if (compaction !== undefined) {
+      if (value.type === 'system' && value.subtype === 'compact_boundary') compaction.compacted = true
+      if (value.type !== 'result') return []
+      if (typeof value.result === 'string') compaction.message = value.result
+      const failure = readClaudeFailure(value, value)
+      return [{ type: 'finish', reason: failure === null ? 'stop' : 'error', ...(failure === null ? {} : { failure }) }]
+    }
     // Claude owns API retries. Their error field describes a pending retry,
     // not a terminal failure; keep consuming until the actual result arrives.
     if (value.type === 'system' && value.subtype === 'api_retry') return []

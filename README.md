@@ -102,6 +102,8 @@ Agent 的安装与登录由各自工具完成。适配细节见[外部 Agent 文
 
 选择 Agent 和模型即可开始编程，回复、工具调用、权限确认与提问直接显示在 DSH 对话中。模型与思考强度按 Agent 记忆，也可将任务委派给其他已接入的 Agent。
 
+在 DSH `>=0.2.1-rc.5` 中，Codex 和 Claude Code 会话可在空闲时执行 `/compact`（不带参数），压缩对应 Agent 已建立的原生会话。Codex 等待原生压缩完成通知；Claude Code 恢复原会话执行原生命令，并区分实际压缩与“消息不足”等未压缩结果。命令不会新建对话、提交普通总结提示或替换 DSH 展示的历史。内置 DSH Agent 继续使用 DSH 自身的压缩机制；其他外部 Agent 尚未通过此入口接入原生压缩。
+
 <div align="center">
   <table>
     <tr>

@@ -19,6 +19,7 @@ import { failedDetection } from './binary-detection.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import { debugInfo } from '../../shared/debug.js'
 import type {
+  CodingNsCliCompactionResult,
   CodingNsCliDriver,
   CodingNsCliSessionProbeInput,
   CodingNsCliSessionProbeResult,
@@ -546,6 +547,39 @@ export class CodingNsCliAdapterRegistry {
   /** Qoder 等 ACP 驱动由 Registry 挂起同一个迭代器完成通用工具分步。 */
   supportsToolStepSplitting(adapterId: CodingNsCliAdapterId): boolean {
     return this.drivers.get(adapterId)?.supportsToolStepSplitting === true
+  }
+
+  supportsCompaction(sessionId: string): boolean {
+    return typeof this.drivers.get(this.getSession(sessionId).adapterId)?.compact === 'function'
+  }
+
+  /** Shares the execution lock with normal turns, installation and suspended steps. */
+  async compact(sessionId: string, cwd: string | undefined, signal: AbortSignal): Promise<CodingNsCliCompactionResult> {
+    signal.throwIfAborted()
+    if (this.disposed) throw new CodingNsRpcError('CODINGNS_CLI_UNAVAILABLE', 'Agent adapters have been stopped.')
+    const config = this.getSession(sessionId)
+    const driver = this.requireEnabledDriver(config.adapterId)
+    if (!driver.compact) throw new CodingNsRpcError('CODINGNS_CLI_UNSUPPORTED', 'Native compaction is unavailable for this Agent.')
+    if (this.executingSessions.has(sessionId) || this.segmentedTurns.has(sessionId)
+      || this.maintenanceAdapters.has(config.adapterId) || this.archivingSessions.has(sessionId)) {
+      throw new CodingNsRpcError('CODINGNS_CLI_MANAGEMENT_BUSY', 'The Agent or session is busy.')
+    }
+    if (!config.providerSessionId) throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', 'There is no provider conversation to compact yet.')
+    this.executingSessions.set(sessionId, config.adapterId)
+    try {
+      const result = await driver.compact({
+        sessionId, providerSessionId: config.providerSessionId,
+        ...(cwd === undefined ? {} : { cwd }),
+        ...(config.modelId === undefined ? {} : { modelId: config.modelId }),
+        ...(config.effortId === undefined ? {} : { effortId: config.effortId }),
+        signal: AbortSignal.any([signal, this.lifetime.signal]),
+      })
+      // Until the next real usage report, do not present pre-compaction usage as current.
+      if (result.compacted) this.lastUsages.delete(sessionId)
+      return result
+    } finally {
+      this.executingSessions.delete(sessionId)
+    }
   }
 
   /** 供原生 Subagent Provider 执行首轮；不创建普通外部会话索引。 */

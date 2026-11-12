@@ -32,6 +32,13 @@ export type HostBrowserTextKey =
   | 'push.waitingBody'
   | 'push.testTitle'
   | 'push.testBody'
+  | 'compact.completed'
+  | 'compact.unchanged'
+  | 'compact.empty'
+  | 'compact.usage'
+  | 'compact.busy'
+  | 'compact.cancelled'
+  | 'compact.failed'
 
 const TEXT: Record<HostLocale, Record<HostBrowserTextKey, string>> = {
   en: {
@@ -56,6 +63,13 @@ const TEXT: Record<HostLocale, Record<HostBrowserTextKey, string>> = {
     'push.waitingBody': 'Session {sessionId} is waiting for confirmation or an answer.',
     'push.testTitle': 'DSH test notification',
     'push.testBody': 'If you can see this notification, the push pipeline works.',
+    'compact.completed': '{agent}: native context compacted.',
+    'compact.unchanged': '{agent}: no context was compacted.',
+    'compact.empty': '{agent}: there is no provider conversation to compact yet. Send a message first.',
+    'compact.usage': 'Usage: /compact (no arguments).',
+    'compact.busy': 'Compaction is unavailable while the Agent is busy.',
+    'compact.cancelled': 'Compaction cancelled.',
+    'compact.failed': 'Native compaction did not finish cleanly. Check the Agent installation, authentication and session before retrying.',
   },
   zh: {
     'login.documentTitle': 'DSH Web | 本地登录',
@@ -79,6 +93,13 @@ const TEXT: Record<HostLocale, Record<HostBrowserTextKey, string>> = {
     'push.waitingBody': '会话 {sessionId} 正在等待确认或回答。',
     'push.testTitle': 'DSH 测试通知',
     'push.testBody': '如果你看到这条通知，推送链路已经打通。',
+    'compact.completed': '{agent}：原生上下文已压缩。',
+    'compact.unchanged': '{agent}：本次未压缩上下文。',
+    'compact.empty': '{agent}：尚无可压缩的原生会话，请先发送消息。',
+    'compact.usage': '用法：/compact（不带参数）。',
+    'compact.busy': 'Agent 正在运行，暂时无法压缩上下文。',
+    'compact.cancelled': '已取消上下文压缩。',
+    'compact.failed': '原生上下文压缩未正常完成，请检查 Agent 安装、登录状态和会话后重试。',
   },
 }
 
