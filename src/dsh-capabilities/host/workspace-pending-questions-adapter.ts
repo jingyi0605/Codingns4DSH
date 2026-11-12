@@ -19,7 +19,7 @@ export interface WorkspacePendingQuestionsAdapter {
 }
 
 interface SessionStoreLike { get(id: string): unknown }
-interface AgentRegistryLike { get(id: string): unknown; roots?(): readonly unknown[] }
+interface AgentRegistryLike { get(id: string): unknown }
 interface ProjectionRegistryLike { stateOf(session: unknown, key: 'userQuestions'): unknown }
 interface UserQuestionsLike { answer(agent: unknown, callId: string, answer: unknown): boolean }
 
@@ -27,7 +27,6 @@ export function supportsWorkspacePendingQuestions(context: unknown): boolean {
   const get = contextGet(context)
   return hasMethod(get?.('sessions'), 'get')
     && hasMethod(get?.('agents'), 'get')
-    && hasMethod(get?.('agents'), 'roots')
     && hasMethod(get?.('sessionProjections'), 'stateOf')
     && hasMethod(get?.('userQuestions'), 'answer')
 }
@@ -48,7 +47,7 @@ export function createWorkspacePendingQuestionsAdapter(context: unknown): Worksp
       if (session === undefined) return null
       let agent: unknown
       try { agent = agents.get(sessionId) } catch { return null }
-      if (agent === undefined || record(agent)?.session !== session || !(agents.roots?.() ?? []).includes(agent)) return null
+      if (!isTopLevelAgent(agent, session)) return null
       try {
         const state = record(projections.stateOf(session, 'userQuestions'))
         const userQuestions = record(state?.questions)
@@ -67,11 +66,19 @@ export function createWorkspacePendingQuestionsAdapter(context: unknown): Worksp
       try { agent = agents.get(sessionId) } catch { return false }
       let session: unknown
       try { session = sessions.get(sessionId) } catch { return false }
-      if (agent === undefined || session === undefined || record(agent)?.session !== session
-        || !(agents.roots?.() ?? []).includes(agent)) return false
+      if (session === undefined || !isTopLevelAgent(agent, session)) return false
       try { return questions.answer(agent, callId, answer) === true } catch { return false }
     },
   }
+}
+
+/**
+ * 只接受会话自己的顶层 Agent。子代理会话由 `header.origin === 'subagent'` 标记；
+ * 0.2.2-rc.2 起 `AgentRegistry.roots()` 已被移除，不能再依赖它。
+ */
+function isTopLevelAgent(agent: unknown, session: unknown): boolean {
+  if (agent === undefined || record(agent)?.session !== session) return false
+  return record(record(session)?.header)?.origin !== 'subagent'
 }
 
 function contextGet(context: unknown): ((name: string) => unknown) | undefined {
