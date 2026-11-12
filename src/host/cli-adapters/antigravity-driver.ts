@@ -14,6 +14,11 @@ const ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS = 30_000
 /** 进程内保留的会话级累计用量基线数量上限，避免长驻 Host 无限增长。 */
 const ANTIGRAVITY_CUMULATIVE_LIMIT = 256
 
+/** 仅在本轮 Host 调用内传递，不进入共享协议或持久化会话。 */
+interface AntigravityTurnInput extends CodingNsCliTurnInput {
+  readonly magpieSettings?: string
+}
+
 /**
  * 异步缓冲一次外部 CLI 调用。
  *
@@ -24,6 +29,7 @@ const ANTIGRAVITY_CUMULATIVE_LIMIT = 256
 async function runBufferedModels(
   runSpawn: typeof spawn,
   command: string,
+  args: readonly string[],
   environment: Record<string, string | undefined>,
   timeoutMs: number,
   signal: AbortSignal,
@@ -35,7 +41,7 @@ async function runBufferedModels(
     }
     let child: CodingNsChildProcess
     try {
-      child = runSpawn(command, ['models'], {
+      child = runSpawn(command, args, {
         env: environment,
         windowsHide: true,
         shell: process.platform === 'win32',
@@ -148,9 +154,11 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       const magpie = await this.readMagpieEnvironment(this.modelProbeAbort.signal)
       // `agy models` 需要向服务端拉取目录；在本机冷启动约 19 秒，
       // 这里沿用 codexhost 的异步缓冲方式，避免同步阻塞 Host 事件循环。
+      // --settings 是全局参数，必须放在 models 子命令之前。
       const result = await runBufferedModels(
         this.runSpawn,
         detected.command,
+        [...(magpie?.settings === undefined ? [] : ['--settings', magpie.settings]), 'models'],
         { ...(this.resolvedEnvironment ?? commandEnvironment(detected.command)), ...magpie?.env },
         ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS,
         this.modelProbeAbort.signal,
@@ -167,17 +175,20 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     const magpie = await this.readMagpieEnvironment(signal)
     // 与 Magpie 的 Shell 包装器一致：显式 --model 优先，否则跟随其当前模型。
     // 凭据只留在本轮子进程环境，不修改宿主环境、会话配置或 Client 返回值。
-    yield* super.executeTurn(magpie === null ? { ...input, signal } : {
+    const prepared: AntigravityTurnInput = magpie === null ? { ...input, signal } : {
       ...input,
       signal,
       modelId: isProviderDefaultModel(input.modelId) ? magpie.model : input.modelId!,
       runtimeEnv: { ...magpie.env, ...input.runtimeEnv },
-    })
+      ...(magpie.settings === undefined ? {} : { magpieSettings: magpie.settings }),
+    }
+    yield* super.executeTurn(prepared)
   }
 
   private async readMagpieEnvironment(signal: AbortSignal): Promise<{
     readonly model: string
     readonly env: Readonly<Record<string, string>>
+    readonly settings?: string
   } | null> {
     signal.throwIfAborted()
     const command = this.magpieCommand()
@@ -195,13 +206,16 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         const separator = line.indexOf('=')
         if (separator < 1) continue
         const key = line.slice(0, separator)
-        if (['model', 'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL'].includes(key)) values.set(key, line.slice(separator + 1))
+        if (['model', 'settings', 'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL'].includes(key)) values.set(key, line.slice(separator + 1))
       }
       const model = values.get('model')?.trim()
       const apiKey = values.get('GEMINI_API_KEY')
       const baseUrl = values.get('GOOGLE_GEMINI_BASE_URL')
       if (!model || !apiKey?.trim() || !baseUrl?.trim()) return null
-      return { model, env: { GEMINI_API_KEY: apiKey, GOOGLE_GEMINI_BASE_URL: baseUrl } }
+      // Magpie 还通过 settings 文件接入自定义模型；只有环境变量时 AGY
+      // 仍会走原生登录检查。只作为 CLI 参数透传，不读取或持久化其内容。
+      const settings = values.get('settings')?.trim()
+      return { model, env: { GEMINI_API_KEY: apiKey, GOOGLE_GEMINI_BASE_URL: baseUrl }, ...(settings ? { settings } : {}) }
     } catch {
       signal.throwIfAborted()
       // 未配置、旧版不支持或入口不可用时，保留原生 AGY 路径；不转发含凭据的输出。
@@ -391,12 +405,13 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     }
   }
 
-  protected buildArgs(input: CodingNsCliTurnInput): readonly string[] {
+  protected buildArgs(input: AntigravityTurnInput): readonly string[] {
     // `--input-format stream-json` 本身会进入 AGY 的 print mode；不要再拼接裸
     // `--print`，也不要把 `--input-format` 放在 `--print` 后面，否则 AGY 会把
     // 选项误当成 prompt，或报 `flag needs an argument: -print`。
     const args = ['--input-format', 'stream-json', '--output-format', 'stream-json', ...antigravityPermissionArgs(input.permission)]
     if (input.providerSessionId) args.unshift('--conversation', input.providerSessionId)
+    if (input.magpieSettings !== undefined) args.push('--settings', input.magpieSettings)
     const directories = new Set<string>([input.cwd ?? process.cwd()])
     for (const attachment of input.attachments ?? []) directories.add(dirname(attachment.path))
     for (const directory of directories) args.push('--add-dir', directory)

@@ -193,6 +193,27 @@ The former model-switching tasks are intentionally retired. Magpie model selecti
 - 对新构建产物直接执行两个 Antigravity 测试文件，共 33 项全部通过。新基线没有重新运行完整测试集或真实 Stage0 推理；前述真实两轮验证属于 DSH `0.2.1-rc.5`，不代表已验证 `0.2.2-alpha.2` 的浏览器或真实 CLI 路径。
 - 提交前已关闭本次任务创建的旧版隔离 Stage0 及其启动器，确认 17891 端口释放，避免混用新依赖与旧运行时。Desktop 未变更。同步前的本地补丁和 stash 备份保留，未清理其他分支、工作区或既有备份。
 
+## Antigravity settings 透传修复 — 2026-11-12
+
+- 本机 AGY `1.5.6` 与选定 Magpie `0.1.3820` 下复现：只传 API 环境变量的 `agy models` 退出 1 并要求登录；加入 `magpie agy env` 返回的 `settings` 后目录恢复。`--settings` 必须置于 `models` 之前，置后会报未知参数。Desktop 已安装的插件 `0.2.2-rc.2` 保留旧环境修复，但尚未透传 `settings`。
+- 适配器接受可选 `settings`，用于目录探测及每轮（含续接）启动；保持显式模型、Host 环境覆盖、取消和旧版无 `settings` 行为。只传给 CLI，不读取或持久化文件内容，不返回 Client。修复前，两项更新后的行为测试失败；修复后通过。
+- 真实源码驱动调用本机 CLI，返回非回退目录共 13 项：默认项、5 个合并思考档位后的原生模型及 7 个 Magpie 模型。未进行真实模型推理或浏览器交互。
+- `pnpm run typecheck`、`pnpm run version:check`、`pnpm run capability:check`、`git diff --check` 通过。Windows 使用既有 DSH `0.2.2-rc.1` runtime 中的 pnpm 入口，未安装依赖或改写锁文件。
+- 源码加载器执行 `cli-adapters-antigravity.spec.ts`、`cli-adapters-antigravity-usage.spec.ts`、`cli-catalog-cache.spec.ts`、`cli-slots-translation.spec.ts`，66 项通过；加入 `magpie-usage.spec.ts` 和 `native-model-magpie-tag.spec.ts` 后为 137 项通过、1 项失败，失败为前述 `4.9M` / `490万` 断言。
+- 按适配器规则执行全部 `cli-adapters*.spec.ts`、`cli-catalog-cache.spec.ts`、`external-agent-pr.spec.ts`（源码加载器，串行），682 项通过、24 项失败、7 项跳过。将本次唯一修改的生产模块在内存加载时替换为 HEAD 版本，重跑这 24 项及上述 Magpie 失败项，25 项均复现失败；临时加载器已删除。日志保留于系统临时目录的 `codingns-antigravity-adapter-20261112.log` 和 `codingns-antigravity-baseline-20261112.log`。
+- 本次没有构建、部署、重启既有服务、提交或推送。桌面生效仍需另行构建并更新安装包，再重新检测目录；当前验证不代表桌面 UI 或真实推理已通过。
+- 按用户要求，将修复完整迁移至从本地 `main`（`63ac83e6`）创建的 `fix/antigravity-magpie-settings` 分支，独立工作树为 `D:/develop/Codingns4DSH-antigravity-settings`。原 `feat/native-agent-compact` 工作树已还原本次五个文件的修改，分支提交不变。在新分支重新执行上述四个定向测试文件，66 项通过；类型检查通过；真实源码驱动仍返回非回退的 13 项目录。前述扩大回归和 HEAD 对照结果来自迁移前的 `d4bcbf3f` 基线，没有将其记为新 `main` 基线的全量验证。
+
+### 独立 Stage0 实机验收 — 2026-11-12
+
+- 用户随后授权部署 Stage0。新工作树执行 `pnpm.cmd run build` 通过（先将既有 runtime 的 pnpm 目录加入本次子进程 PATH；初次未设置 PATH 的构建在 prebuild 阶段退出，未生成产物）。使用 DSH `0.2.2-rc.1`，新建 Home `C:/Users/Administrator/.dsh-stage0-antigravity-settings`、本机验证目录 `~/.config/codingns4dsh/stage0-antigravity-settings`，监听 `127.0.0.1:17904`。Profile 仅链接本修复工作树；以 `DSH_STAGE0_WATCH=0` 启动已构建产物，TMPDIR 指向该独立 Home 的 tmp。没有复制 Desktop 凭据、修改 Desktop 安装或重启其他进程。
+- 通过真实 `magpie/management/detection` RPC 选择本机 Magpie `0.1.3820` 入口，`cli/catalog/refresh` 检测到 AGY `1.5.6`。`cli/models` 返回非回退目录 13 项（默认项、5 个原生模型、7 个 Magpie 模型），包含正确的来源和模型元数据；重复读取保持完整。
+- 原生接口创建验收工作区与会话 `session-7b152988-00c3-4781-aeb4-04f4a893031d`，选择 `magpie/hl/gpt-6.1-sol` 后发送两轮无工具请求。两轮均 completed，真实回复分别含 `AGY_SETTINGS_STAGE0_ROUND_1_OK` 和 `AGY_SETTINGS_STAGE0_ROUND_2_OK`；Provider 会话标识均为 `8850ad3c-5011-47f9-9dae-f1fd9e40aed0`，确认真实续接。
+- 用仓库现有 Chrome headless 测试驱动打开真实页面：模型菜单 13 项均未禁用，原生 `Gemini 4 Argon · Antigravity` 与 Magpie 同名项可区分；实际点击原生 Gemini 和 Magpie GPT 两个选项，Host 回读精确模型 ID 正确，分别整页刷新后所选模型仍保持。基础目录与 Magpie 元数据分阶段加载，验收脚本等待完整标签后断言。页面可见两轮真实回复，已保存菜单与对话截图。此处原生模型只验证选择和持久化，未发送原生 Gemini 推理请求。
+- 首页和实际 Client 资源 HTTP 200，Client revision 为 `219e50216dd6`。证据包括本机目录中的 `verification.json`、`catalog.json`、`acceptance.json`、`browser-verification.json`、`acceptance-model-menu-final.png`、`acceptance-conversation.png`；启动器和进程信息为 `start.ps1`、`run.json`。认证链接仅保留于本机日志和 `.url` 快捷方式，不写入仓库。
+- Stage0 保持运行供用户验收，会话标题为“验收通过：Antigravity 模型选择与两轮续聊”。原工作树仍干净；未提交、推送或更新 Desktop。后续修改源码需要重建并只重启本次隔离实例。
+- 用户随后确认验收通过，并授权关闭环境、提交和向上游发起 PR。已核对本轮启动器、托管器和服务进程身份并关闭，确认 `17904` 不再监听，既有 `17890`、`17897` 服务保留。验收数据、截图和启动配置保留在本机独立目录，认证链接在服务关闭后不再可用。
+
 ## Verification constraints
 
 - No Magpie setter or current-model command is executed by CodingNS.

@@ -78,8 +78,8 @@ function magpieDriver(readEnv: () => { status: number; stdout: string }, options
         stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(),
         kill() { return true },
       })
-      if (args[0] === 'models') queueMicrotask(() => {
-        const configured = options.env.GEMINI_API_KEY === 'test-magpie-key'
+      if (args.at(-1) === 'models') queueMicrotask(() => {
+        const configured = options.env.GEMINI_API_KEY === 'test-magpie-key' && args.includes('--settings')
         child.stdout.end(configured ? 'magpie/hl/gpt-6-astra\tGPT-6 Astra\n' : '')
         child.stderr.end()
         child.emit('close', configured ? 0 : 1)
@@ -98,6 +98,7 @@ const magpieEnv = [
   'GEMINI_API_KEY=test-magpie-key',
   'GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:3425/v1',
   'model=magpie/hl/gpt-6-astra',
+  'settings=/tmp/magpie-agy-settings.json',
   'PATH=must-not-replace-host-path',
 ].join('\n')
 
@@ -109,11 +110,13 @@ test('Antigravity 模型探测从选定的 Magpie 入口读取环境，仅传递
     assert.deepEqual(envCalls, [['custom-magpie', 'agy', 'env']])
     assert.equal(catalog.groups[0]?.models.some(model => model.id === 'magpie/hl/gpt-6-astra'), true)
     assert.equal(calls[0]?.env.GEMINI_API_KEY, 'test-magpie-key')
+    assert.deepEqual(calls[0]?.args, ['--settings', '/tmp/magpie-agy-settings.json', 'models'])
+    assert.equal(calls[0]?.env.settings, undefined)
     assert.equal(calls[0]?.env.GOOGLE_GEMINI_BASE_URL, 'http://127.0.0.1:3425/v1')
     assert.notEqual(calls[0]?.env.PATH, 'must-not-replace-host-path')
     assert.equal(calls[0]?.env.model, undefined)
     assert.equal(process.env.GEMINI_API_KEY, originalKey)
-    assert.doesNotMatch(JSON.stringify(catalog), /test-magpie-key/u)
+    assert.doesNotMatch(JSON.stringify(catalog), /test-magpie-key|magpie-agy-settings/u)
   } finally { driver.dispose() }
 })
 
@@ -123,6 +126,7 @@ test('Antigravity 首轮和续接重新读取 Magpie 默认模型，同时保留
   try {
     await collect(driver, { modelId: 'provider-default' })
     output = magpieEnv.replace('magpie/hl/gpt-6-astra', 'magpie/tlp/gpt-6.1-sol')
+      .replace('/tmp/magpie-agy-settings.json', '/tmp/next-agy-settings.json')
     await collect(driver, { providerSessionId: 'agy-provider-session' })
     await collect(driver, {
       modelId: 'magpie/hl/claude-opus-5-5',
@@ -132,10 +136,25 @@ test('Antigravity 首轮和续接重新读取 Magpie 默认模型，同时保留
       ['--model', 'magpie/hl/gpt-6-astra'], ['--model', 'magpie/tlp/gpt-6.1-sol'], ['--model', 'magpie/hl/claude-opus-5-5'],
     ])
     assert.deepEqual(calls[1]?.args.slice(0, 2), ['--conversation', 'agy-provider-session'])
+    assert.deepEqual(calls.map(call => call.args.slice(call.args.indexOf('--settings'), call.args.indexOf('--settings') + 2)), [
+      ['--settings', '/tmp/magpie-agy-settings.json'],
+      ['--settings', '/tmp/next-agy-settings.json'],
+      ['--settings', '/tmp/next-agy-settings.json'],
+    ])
     assert.equal(calls[0]?.env.GEMINI_API_KEY, 'test-magpie-key')
     assert.equal(calls[1]?.env.GEMINI_API_KEY, 'test-magpie-key')
     assert.equal(calls[2]?.env.GEMINI_API_KEY, 'host-override')
     assert.equal(calls[2]?.env.CODINGNS_CREDENTIAL_BROKER_ENDPOINT, 'test-broker')
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 兼容不返回 settings 的旧版 Magpie 环境', async () => {
+  const { driver, calls } = magpieDriver(() => ({ status: 0, stdout: magpieEnv.replace('settings=/tmp/magpie-agy-settings.json', '') }))
+  try {
+    await collect(driver, { modelId: 'provider-default' })
+    assert.equal(calls[0]?.env.GEMINI_API_KEY, 'test-magpie-key')
+    assert.equal(calls[0]?.args.includes('--settings'), false)
+    assert.deepEqual(calls[0]?.args.slice(-2), ['--model', 'magpie/hl/gpt-6-astra'])
   } finally { driver.dispose() }
 })
 
@@ -145,6 +164,7 @@ test('Antigravity 未选择 Magpie 或环境读取失败、不完整时保留原
     try {
       await collect(driver, { modelId: 'provider-default', runtimeEnv: { GEMINI_API_KEY: 'native-key' } })
       assert.equal(calls[0]?.args.includes('--model'), false)
+      assert.equal(calls[0]?.args.includes('--settings'), false)
       assert.equal(calls[0]?.env.GEMINI_API_KEY, 'native-key')
     } finally { driver.dispose() }
   }
