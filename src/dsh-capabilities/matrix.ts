@@ -27,6 +27,7 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('sidebar.footer-action', 'sidebar-footer-action-021', 'client', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/client/quick-app-footer-adapter.ts', 'client/features/quick-apps.ts']),
   route('session.prompt-assembly', 'session-prompt-assembly-021', 'host', '>=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/session-prompt-adapter.ts', 'host/features/session-prompt-translation.ts', 'host/cli-adapters/feature.ts']),
   route('session.external-model-selection', 'session-external-model-selection-021', 'host', '>=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/session-model-selection-adapter.ts', 'host/cli-adapters/feature.ts']),
+  route('session.external-compaction', 'session-external-compaction-021', 'host', '>=0.2.1-rc.5', 'supported', ['dsh-capabilities/host/session-compaction-adapter.ts', 'host/cli-adapters/feature.ts']),
   route('session.activation', 'session-activation-020', 'host', '>=0.2.1-alpha.2 <=0.2.1-alpha.2', 'supported', ['dsh-capabilities/host/session-activation-adapter.ts', 'host/native-session-bridge.ts']),
   route('session.activation', 'session-activation-021', 'host', '>=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/session-activation-adapter.ts', 'host/native-session-bridge.ts']),
   route('workspace.session-control', 'workspace-session-control-020', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/workspace-session-control-adapter.ts', 'host/workspace-mcp/tools.ts']),

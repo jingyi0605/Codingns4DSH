@@ -38,6 +38,16 @@ export interface CodingNsCliSessionProbeResult {
   readonly rawStoreRef?: string
 }
 
+/** A maintenance operation on an existing provider conversation, never a new user turn. */
+export type CodingNsCliCompactionInput = Pick<CodingNsCliTurnInput,
+  'sessionId' | 'providerSessionId' | 'cwd' | 'modelId' | 'effortId' | 'signal'>
+
+export interface CodingNsCliCompactionResult {
+  readonly compacted: boolean
+  /** Provider-owned status text, including the reason when there is nothing to compact. */
+  readonly message?: string
+}
+
 /**
  * Host 内部的标准 Agent 运行时边界。
  *
@@ -84,6 +94,7 @@ export interface CodingNsCliDriver {
   listSkills?(input: CodingNsCliSkillListInput): Promise<readonly CodingNsCliSkillDescriptor[]>
   probeSession?(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult>
   executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent>
+  compact?(input: CodingNsCliCompactionInput): Promise<CodingNsCliCompactionResult>
   respondPermission?(sessionId: string, response: CodingNsAgentPermissionResponse): Promise<void> | void
   respondQuestion?(sessionId: string, response: CodingNsAgentQuestionResponse): Promise<void> | void
   steer?(sessionId: string, prompt: string): Promise<void> | void

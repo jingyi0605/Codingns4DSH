@@ -6,6 +6,7 @@ import { createTerminalSharingBridge, supportsTerminalSharing } from './client/t
 import { createInteractionPresentationBridge, supportsInteractionPresentation } from './client/interaction-presentation-adapter.js'
 import { supportsLegacyMessagePresentation, supportsFactoryMessagePresentation, createLegacyMessagePresentation, createFactoryMessagePresentation } from './client/message-presentation-adapter.js'
 import { createSessionModelSelectionAdapter, supportsSessionModelSelection } from './host/session-model-selection-adapter.js'
+import { createSessionCompactionAdapter, supportsSessionCompaction } from './host/session-compaction-adapter.js'
 import { createWorkspaceSessionControlAdapter, supportsWorkspaceSessionControl } from './host/workspace-session-control-adapter.js'
 import { createWorkspacePendingQuestionsAdapter, supportsWorkspacePendingQuestions } from './host/workspace-pending-questions-adapter.js'
 import { createWorkspaceApprovalAdapter, supportsWorkspaceApproval } from './host/workspace-approval-adapter.js'
@@ -41,6 +42,8 @@ export function createDshCapabilityRegistry(
   const add = <T>(route: DshCapabilityRoute<T>): void => registry.register(route)
 
   if (runtime === 'host') {
+    add({ id: 'session-external-compaction-021', capability: 'session.external-compaction', supportedDsh: '>=0.2.1-rc.5', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-rc.5',
+      detect: supportsSessionCompaction, create: createSessionCompactionAdapter })
     for (const [capability, id] of [['plugin.update.inspect', 'plugin-manager-inspect-021'], ['plugin.update.apply', 'plugin-manager-install-021']] as const) {
       add({ id, capability, supportedDsh: '>=0.2.1-rc.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-rc.2',
         detect: supportsPluginUpdateManager, create: createPluginUpdateManager })

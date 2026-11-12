@@ -100,6 +100,8 @@ Each Agent handles its own installation and login. See the [Agent adapter docume
 
 Choose an Agent and model to start coding. Replies, tool calls, approvals and questions appear directly in the DSH conversation. Model and thinking preferences are remembered per Agent, and you can delegate tasks to other connected Agents.
 
+On DSH `>=0.2.1-rc.5`, run `/compact` without arguments while a Codex or Claude Code session is idle to compact its existing native Agent conversation. Codex waits for its native completion notification. Claude Code resumes the original conversation, runs its native command, and distinguishes actual compaction from outcomes such as insufficient messages. The command does not create a conversation, submit a regular summarization prompt, or replace the history displayed by DSH. The built-in DSH Agent retains DSH's own compaction; other external Agents do not yet have native compaction through this entry point.
+
 <div align="center">
   <table>
     <tr>

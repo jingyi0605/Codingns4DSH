@@ -4,7 +4,7 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsAgentImageArtifact, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliServiceTier, CodingNsAgentPermissionResponse, CodingNsCliSandboxMode, CodingNsCliTurnInput, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput } from '../../shared/contracts/cli-adapter.js'
-import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
+import type { CodingNsCliCompactionInput, CodingNsCliCompactionResult, CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
 import { CODEX_CATALOG, isProviderDefaultModel } from './model-catalog.js'
@@ -302,6 +302,46 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     const session = await this.getSession(sessionInput, command)
     await this.refreshSkillCatalog(session, input.cwd, input.forceReload === true, input.signal)
     return [...session.skills.values()].map(({ path: _path, ...descriptor }) => descriptor)
+  }
+
+  async compact(input: CodingNsCliCompactionInput): Promise<CodingNsCliCompactionResult> {
+    input.signal?.throwIfAborted()
+    if (!input.providerSessionId) throw new Error('CODEX_COMPACTION_SESSION_REQUIRED')
+    const previous = this.sessions.get(input.sessionId)
+    if (previous?.turnId || previous?.segmentedTurn || previous?.compacting) throw new Error('CODEX_COMPACTION_BUSY')
+    const turnInput: CodingNsCliTurnInput = { ...input, messages: [], prompt: '' }
+    const command = this.cachedBinary ?? (await this.detect()).command
+    if (command === null) throw new Error('Codex 未安装')
+    if (previous && previous.threadId !== '' && previous.threadId !== input.providerSessionId) {
+      previous.rpc.dispose()
+      this.sessions.delete(input.sessionId)
+    }
+    let session: CodexSession | undefined
+    try {
+      session = previous && !previous.rpc.isClosed && previous.cwd === input.cwd
+        && previous.threadId === input.providerSessionId ? previous : await this.getSession(turnInput, command)
+      if (session.threadId === '') {
+        const response = await session.rpc.request('thread/resume', {
+          threadId: input.providerSessionId, ...codexThreadParams(turnInput),
+        }, { signal: input.signal, killOnAbort: false })
+        session.threadId = readId(response) ?? input.providerSessionId
+        session.providerSessionId = session.threadId
+        session.threadModelId = readThreadModel(response)
+        session.threadServiceTierId = readThreadServiceTier(response)
+      }
+      if (session.threadId !== input.providerSessionId) throw new Error('CODEX_COMPACTION_SESSION_MISMATCH')
+      await this.compactThread(session, turnInput)
+      return { compacted: true }
+    } catch (error) {
+      // Initialization and resume can fail or be cancelled before compaction starts.
+      // Discard that process as well; the next operation resumes the persisted thread.
+      this.sessions.get(input.sessionId)?.rpc.dispose()
+      throw error
+    } finally {
+      // Manual commands have their own command/run + command/done log. Do not replay
+      // these standalone maintenance events inside the next user turn.
+      if (session !== undefined) session.pendingCompactionEvents.length = 0
+    }
   }
 
   async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
@@ -889,6 +929,16 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     let resolveDone: (() => void) | undefined
     let rejectDone: ((error: Error) => void) | undefined
     const done = new Promise<void>((resolve, reject) => { resolveDone = resolve; rejectDone = reject })
+    // The RPC acknowledges starting compaction before it finishes. Keep cancellation
+    // live while awaiting its terminal notification, too.
+    const onAbort = (): void => {
+      rejectDone?.(input.signal?.reason instanceof Error ? input.signal.reason : new Error('CODEX_COMPACTION_CANCELLED'))
+      session.rpc.dispose()
+    }
+    input.signal?.addEventListener('abort', onAbort, { once: true })
+    // Both an immediate abort and a failed start can reject before we await done.
+    void done.catch(() => undefined)
+    if (input.signal?.aborted) onAbort()
     const onNotification = (message: JsonRpcMessage): void => {
       const params = isRecord(message.params) ? message.params : null
       if (readScopedId(params, ['threadId', 'thread_id'], 'thread') !== session.threadId) return
@@ -933,7 +983,11 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       }
     }
     const removeListener = session.rpc.addNotificationListener(onNotification)
-    const timer = setTimeout(() => rejectDone?.(new Error('Codex 上下文压缩超时')), CODEX_COMPACTION_TIMEOUT_MS)
+    const removeExitListener = session.rpc.addExitListener(error => rejectDone?.(error))
+    const timer = setTimeout(() => {
+      rejectDone?.(new Error('Codex 上下文压缩超时'))
+      session.rpc.dispose()
+    }, CODEX_COMPACTION_TIMEOUT_MS)
     timer.unref?.()
     try {
       await session.rpc.request('thread/compact/start', { threadId: session.threadId }, { signal: input.signal, killOnAbort: false })
@@ -964,6 +1018,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     } finally {
       clearTimeout(timer)
       removeListener()
+      removeExitListener()
+      input.signal?.removeEventListener('abort', onAbort)
     }
   }
 

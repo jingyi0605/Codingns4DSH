@@ -17,6 +17,7 @@ export type DshCapabilityId =
   | 'workspace.pending-questions'
   | 'workspace.approval'
   | 'session.external-model-selection'
+  | 'session.external-compaction'
   | 'session.prompt-assembly'
   | 'session.working-directory'
   | 'connection.rpc'

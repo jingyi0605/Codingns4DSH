@@ -67,6 +67,8 @@ import { isSessionTranslationInputEnabled } from '../features/session-translatio
 import { translationFailure } from '../features/session-translation-runtime.js'
 import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
 import type { SessionModelSelectionAdapter } from '../../dsh-capabilities/host/session-model-selection-adapter.js'
+import type { SessionCompactionAdapter } from '../../dsh-capabilities/host/session-compaction-adapter.js'
+import { hostBrowserText, resolveHostPushLocale } from '../browser-text.js'
 import { attachmentFileNotice } from '../../shared/attachment-prompts.js'
 import { sessionPromptScope, type SessionPromptAdapter } from '../../dsh-capabilities/host/session-prompt-adapter.js'
 import { createSessionPromptTranslation } from '../features/session-prompt-translation.js'
@@ -111,6 +113,7 @@ export function createCliAdaptersFeature(options: {
         { capability: 'agent-team.external-member', required: false, fallback: 'degrade' },
         { capability: 'agent-team.external-lead', required: false, fallback: 'degrade' },
         { capability: 'session.external-model-selection', required: false, fallback: 'degrade' },
+        { capability: 'session.external-compaction', required: false, fallback: 'degrade' },
         { capability: 'session.external-performance', required: false, fallback: 'degrade' },
       ],
     },
@@ -315,6 +318,32 @@ export function createCliAdaptersFeature(options: {
         registry,
         sessionStore,
       )
+      if (context.services.dshContext !== undefined && context.services.dshVersion !== undefined) {
+        const compaction = createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext)
+          .getProfile(context.services.dshContext).capabilities.get('session.external-compaction')?.value as SessionCompactionAdapter | undefined
+        if (compaction !== undefined) context.resources.add(compaction.install({
+          supports(sessionId) {
+            const session = nativeSessions?.get(sessionId)
+            if (session !== undefined && nativeSessions !== undefined) {
+              sessionStore.migrateLegacySessions(collectMigrationChain(nativeSessions, session))
+            }
+            return registry.supportsCompaction(sessionId)
+          },
+          error: kind => ({ kind: 'error', text: hostBrowserText(resolveHostPushLocale(context.services.settingsProvider), `compact.${kind}`) }),
+          async compact(sessionId, cwd, signal) {
+            publishExternalStatus(sessionId, true)
+            try {
+              const config = registry.getSession(sessionId)
+              const locale = resolveHostPushLocale(context.services.settingsProvider)
+              if (!config.providerSessionId) return { kind: 'success', text: hostBrowserText(locale, 'compact.empty', { agent: config.adapterId }) }
+              const result = await registry.compact(sessionId, cwd, signal)
+              return { kind: 'success', text: result.message?.trim() || hostBrowserText(locale, result.compacted ? 'compact.completed' : 'compact.unchanged', { agent: config.adapterId }) }
+            } finally {
+              publishExternalStatus(sessionId, false)
+            }
+          },
+        }))
+      }
       if (nativeSessions !== undefined) {
         const disposeNativeEvents = nativeSessions.subscribe({
           onEvent: (session, event) => {
