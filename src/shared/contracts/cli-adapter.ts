@@ -177,6 +177,8 @@ export interface CodingNsCliTeamDiagnostic {
   readonly supported: boolean
   readonly code: 'DSH_TEAM_NATIVE_UNAVAILABLE' | 'DSH_TEAM_PROXY_READY'
   readonly message: string
+  /** rc.2 keeps interruption independent from basic Team availability. */
+  readonly supportsInterrupt?: boolean
 }
 
 /** 每个 DSH 会话绑定的 CLI 选择；不包含凭据。 */

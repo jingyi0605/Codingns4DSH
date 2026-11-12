@@ -9,6 +9,7 @@ export interface BridgeFetchResult {
   readonly ok: boolean
   readonly text: string
   readonly error?: string | undefined
+  readonly errorCode?: string | undefined
   readonly result?: {
     readonly url: string
     readonly statusCode?: number | undefined
@@ -83,12 +84,21 @@ export async function dispatchBridgeFetch(
     return { ok: true, text: `${UNTRUSTED_NOTICE}\n${JSON.stringify(payload)}`, result: payload }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return fetchFailure(message.trim() || 'Web fetch failed.')
+    return fetchFailure(message.trim() || 'Web fetch failed.', errorCodeOf(error))
   } finally {
     operation.abort()
   }
 }
 
-function fetchFailure(error: string): BridgeFetchResult {
-  return { ok: false, text: error, error }
+function fetchFailure(error: string, errorCode?: string): BridgeFetchResult {
+  return { ok: false, text: error, error, ...(errorCode === undefined ? {} : { errorCode }) }
+}
+
+function errorCodeOf(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined
+  for (const key of ['code', 'errorCode', 'error_code'] as const) {
+    const value = Reflect.get(error, key)
+    if (typeof value === 'string' && value.trim() !== '') return value.trim().slice(0, 128)
+  }
+  return undefined
 }

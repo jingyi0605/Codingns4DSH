@@ -25,7 +25,7 @@ export interface SubagentBridgeRuntime {
   recordRedirect(sessionId: string, toolCallId: string, redirect: SubagentBridgeRedirect): void
   /** 取出并清理重定向记录；同一 toolCallId 只消费一次。 */
   consumeRedirect(sessionId: string, toolCallId: string): SubagentBridgeRedirect | undefined
-  teamSession?(sessionId: string): { readonly token: string; readonly identity: CodingNsTeamIdentity } | undefined
+  teamSession?(sessionId: string): { readonly token: string; readonly identity: CodingNsTeamIdentity; readonly supportsInterrupt?: boolean } | undefined
   authorizeTeam?(token: string): string | undefined
   revokeTeamSession?(sessionId: string): void
   revokeTeamSessions?(): void
@@ -35,6 +35,7 @@ export interface TeamSessionAccess {
   readonly identity: CodingNsTeamIdentity
   readonly caller: object
   readonly signal: AbortSignal
+  readonly supportsInterrupt?: boolean
 }
 
 const REDIRECT_TTL_MS = 30 * 60_000
@@ -92,7 +93,7 @@ export function createSubagentBridgeRuntime(options: { readonly baseUrl: string;
         sessions.set(sessionId, session)
         credentials.set(session.token, sessionId)
       }
-      return { token: session.token, identity: access.identity }
+      return { token: session.token, identity: access.identity, ...(access.supportsInterrupt === undefined ? {} : { supportsInterrupt: access.supportsInterrupt }) }
     },
     authorizeTeam(token) {
       const sessionId = credentials.get(token)

@@ -11,11 +11,14 @@ export const TEAM_LEAD_ACTIONS = [...TEAM_MEMBER_ACTIONS, 'spawn', 'interrupt'] 
 export type CodingNsTeamAction = typeof TEAM_LEAD_ACTIONS[number]
 
 /** The same schema is used by native tools and injected MCP transports. */
-export function teamToolSchema(role: CodingNsTeamIdentity['role'] = 'lead'): Record<string, unknown> {
+export function teamToolSchema(role: CodingNsTeamIdentity['role'] = 'lead', supportsInterrupt = true): Record<string, unknown> {
+  const actions = role === 'lead'
+    ? supportsInterrupt ? TEAM_LEAD_ACTIONS : TEAM_LEAD_ACTIONS.filter(action => action !== 'interrupt')
+    : TEAM_MEMBER_ACTIONS
   return {
     type: 'object',
     properties: {
-      action: { type: 'string', enum: [...(role === 'lead' ? TEAM_LEAD_ACTIONS : TEAM_MEMBER_ACTIONS)] },
+      action: { type: 'string', enum: [...actions] },
       name: { type: 'string' },
       description: { type: 'string' },
       prompt: { type: 'string' },
@@ -40,7 +43,7 @@ export function teamToolSchema(role: CodingNsTeamIdentity['role'] = 'lead'): Rec
   }
 }
 
-export function teamGuidance(toolName: string, identity: CodingNsTeamIdentity): string {
+export function teamGuidance(toolName: string, identity: CodingNsTeamIdentity, supportsInterrupt = true): string {
   return [
     `You are ${identity.role === 'lead' ? 'the Team Lead' : 'a teammate'} named "${identity.name}" in a native DSH Team.`,
     `Use exactly ${toolName} for Team coordination; call action=status or members to read the current membership.`,
@@ -51,7 +54,7 @@ export function teamGuidance(toolName: string, identity: CodingNsTeamIdentity): 
     'A ready task does not wake its owner. Message required inactive members before waiting; wait observes changes and must be followed by a re-read.',
     'Members share a checkout; coordinate disjoint writeScopes, dependencies, and final verification. Write scopes are advisory, not locks.',
     identity.role === 'lead'
-      ? 'Only the Lead can spawn or interrupt teammates and reassign tasks. Use agent/model/effort for supported child-specific selection; external history is fresh. Wait for required teammates before the final answer.'
+      ? `${supportsInterrupt ? 'Only the Lead can spawn, interrupt, and reassign tasks.' : 'Only the Lead can spawn and reassign tasks; interruption is unavailable in this Team.'} Use agent/model/effort for supported child-specific selection; external history is fresh. Wait for required teammates before the final answer.`
       : 'Report through message with target=lead. Do not spawn nested agents, use ordinary subagent tools, or impersonate the Lead.',
     'Do not use provider-owned agent teams or guess another CodingNS namespace. Keep task completion distinct from a turn ending.',
   ].join(' ')

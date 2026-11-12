@@ -233,6 +233,7 @@ export async function apply(ctx?: Context): Promise<void> {
       nativeTeam: new DshNativeTeamProxy(
         readOptionalService(hostCtx, 'agentTeams') as NativeTeamService | undefined,
         readOptionalService(hostCtx, 'agents') as AgentRegistry | undefined,
+        readOptionalService(hostCtx, 'subagents') as import('../dsh-capabilities/host/agent-team-adapter.js').NativeSubagentTeamService | undefined,
       ),
       terminalProcesses: terminal.processService,
       resolveWorkspaceRoot: (workspaceId) => workspaceRoots.get(workspaceId) ?? resolveRegistryWorkspaceRoot(hostCtx, workspaceId),

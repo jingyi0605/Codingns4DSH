@@ -13,7 +13,7 @@ import { createWorkspaceApprovalAdapter, supportsWorkspaceApproval } from './hos
 import { createSessionPromptAdapter, supportsSessionPromptAssembly } from './host/session-prompt-adapter.js'
 import { createSessionPerformanceAdapter, supportsSessionPerformance } from './host/session-performance-adapter.js'
 import { createSessionPerformancePresentation, supportsSessionPerformancePresentation } from './client/session-performance-adapter.js'
-import { createAgentTeamAdapter, supportsExternalAgentTeam } from './host/agent-team-adapter.js'
+import { createAgentTeamAdapter, supportsExternalAgentTeam, supportsNativeAgentTeam } from './host/agent-team-adapter.js'
 import { createGlobalPanelAdapter, supportsGlobalPanel } from './client/global-panel-adapter.js'
 import { readContextMenus, supportsContextMenus } from './client/context-menu-adapter.js'
 import { createPluginUpdateManager, supportsPluginUpdateManager } from './host/plugin-update-adapter.js'
@@ -211,7 +211,7 @@ function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): v
     id: 'agent-team-native-020', capability: 'agent-team.native', supportedDsh, runtime: 'host', priority: 10,
     status: 'supported', introducedIn: '0.2.0-rc.1',
     // 原生 Team 代理同时需要 TeamService 的成员/派生操作与 Agent 注册表。
-    detect: (ctx) => hasMethods(read(ctx, 'agentTeams'), ['listMembers', 'spawnTeammate']) && read(ctx, 'agents') !== undefined,
+    detect: supportsNativeAgentTeam,
     create: (ctx) => read(ctx, 'agentTeams'),
   })
   add({

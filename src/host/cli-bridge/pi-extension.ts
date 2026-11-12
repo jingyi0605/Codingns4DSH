@@ -65,6 +65,7 @@ const BRIDGE_ENV_KEYS = [
   'CODINGNS_TEAM_ROLE',
   'CODINGNS_TEAM_NAME',
   'CODINGNS_TEAM_ID',
+  'CODINGNS_TEAM_INTERRUPT',
   'CODINGNS_SUBAGENT_CHILD',
   'ELECTRON_RUN_AS_NODE',
 ] as const
@@ -99,11 +100,12 @@ export function createPiBridgeExtension(
     const role = environment.CODINGNS_TEAM_ROLE === 'lead' ? 'lead' : 'teammate'
     const name = environment.CODINGNS_TEAM_NAME ?? ''
     const teamId = environment.CODINGNS_TEAM_ID ?? ''
+    const supportsInterrupt = environment.CODINGNS_TEAM_INTERRUPT === '1'
     pi.registerTool({
       name: 'agent_team',
       label: 'Agent Team',
-      description: teamDescription(role, name),
-      parameters: teamParameters(typeBox.Type, role),
+      description: teamDescription(role, name, supportsInterrupt),
+      parameters: teamParameters(typeBox.Type, role, supportsInterrupt),
       exposure: 'direct',
       execute: async (_toolCallId, input, signal) => runTeamTool(fetcher, baseUrl, teamToken, input, signal, role, name, teamId),
     })
@@ -156,8 +158,10 @@ export function registerPiBridgeMcpServer(
   })
 }
 
-function teamParameters(type: PiTypeBoxApi['Type'], role: 'lead' | 'teammate'): unknown {
-  const actions = role === 'lead' ? TEAM_LEAD_ACTIONS : TEAM_MEMBER_ACTIONS
+function teamParameters(type: PiTypeBoxApi['Type'], role: 'lead' | 'teammate', supportsInterrupt = true): unknown {
+  const actions = role === 'lead'
+    ? supportsInterrupt ? TEAM_LEAD_ACTIONS : TEAM_LEAD_ACTIONS.filter(action => action !== 'interrupt')
+    : TEAM_MEMBER_ACTIONS
   return type.Object({
     action: type.Union(actions.map((action) => type.Literal(action))),
     name: type.Optional(type.String()),
@@ -213,9 +217,9 @@ function webFetchParameters(type: PiTypeBoxApi['Type']): unknown {
   }, { additionalProperties: false })
 }
 
-function teamDescription(role: 'lead' | 'teammate', name: string): string {
+function teamDescription(role: 'lead' | 'teammate', name: string, supportsInterrupt = true): string {
   const memberActions = TEAM_MEMBER_ACTIONS.join(', ')
-  const allowedActions = role === 'lead' ? `${memberActions}, spawn, interrupt` : memberActions
+  const allowedActions = role === 'lead' ? `${memberActions}, spawn${supportsInterrupt ? ', interrupt' : ''}` : memberActions
   return `You are ${role === 'lead' ? 'the Lead' : 'a teammate'} named ${name} in a native DSH Team. Use agent_team for coordination. Create teammates only on the user's explicit request. Task updates require current expectedRevision and taskAction; message acceptance is not processing or task completion. Members share files: coordinate write scopes and dependencies. Message required inactive peers before waiting and re-read after changes. Allowed actions: ${allowedActions}.`
 }
 

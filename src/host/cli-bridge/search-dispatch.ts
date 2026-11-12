@@ -9,6 +9,7 @@ export interface BridgeSearchResult {
   readonly ok: boolean
   readonly text: string
   readonly error?: string | undefined
+  readonly errorCode?: string | undefined
   readonly results?: { readonly results: readonly unknown[] } | undefined
 }
 
@@ -67,12 +68,21 @@ export async function dispatchBridgeSearch(
     return { ok: true, text: `${UNTRUSTED_NOTICE}\n${JSON.stringify(payload)}`, results: payload }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
-    return searchFailure(message.trim() || 'Web search failed.')
+    return searchFailure(message.trim() || 'Web search failed.', errorCodeOf(error))
   } finally {
     operation.abort()
   }
 }
 
-function searchFailure(error: string): BridgeSearchResult {
-  return { ok: false, text: error, error }
+function searchFailure(error: string, errorCode?: string): BridgeSearchResult {
+  return { ok: false, text: error, error, ...(errorCode === undefined ? {} : { errorCode }) }
+}
+
+function errorCodeOf(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined
+  for (const key of ['code', 'errorCode', 'error_code'] as const) {
+    const value = Reflect.get(error, key)
+    if (typeof value === 'string' && value.trim() !== '') return value.trim().slice(0, 128)
+  }
+  return undefined
 }

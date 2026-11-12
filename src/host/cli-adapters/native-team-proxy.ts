@@ -1,4 +1,5 @@
 import type { CodingNsCliTeamDiagnostic } from '../../shared/contracts/cli-adapter.js'
+import { DshAgentTeamAdapter, type NativeSubagentTeamService, type TeamAgent } from '../../dsh-capabilities/host/agent-team-adapter.js'
 
 /** DSH 0.2 原生 Agent Team 的最小结构契约。 */
 export interface CodingNsNativeTeamProxy {
@@ -9,6 +10,7 @@ export interface CodingNsNativeTeamProxy {
 export interface NativeTeamService {
   membership?: (agent: unknown) => unknown
   listMembers?: (agent: unknown) => unknown
+  isEnabled?: (agent: unknown) => boolean
   listTasks?: (agent: unknown) => unknown
   getTask?: (agent: unknown, id: unknown) => unknown
   spawnTeammate?: (agent: unknown, request: Record<string, unknown>) => unknown
@@ -29,12 +31,27 @@ export interface AgentRegistry {
  * 外部 CLI 没有 Agent 句柄，因此不会经过这个代理伪装成 Team 成员。
  */
 export class DshNativeTeamProxy implements CodingNsNativeTeamProxy {
+  private readonly modernAdapter?: DshAgentTeamAdapter
+
   constructor(
     private readonly service: NativeTeamService | undefined,
     private readonly agents: AgentRegistry | undefined,
-  ) {}
+    subagents?: NativeSubagentTeamService,
+  ) {
+    if (service !== undefined && agents !== undefined && subagents !== undefined) {
+      this.modernAdapter = new DshAgentTeamAdapter(service, agents as { get(id: string): unknown; list(): readonly unknown[] }, undefined, subagents)
+    }
+  }
 
   diagnostic(): CodingNsCliTeamDiagnostic {
+    if (this.modernAdapter !== undefined && this.modernAdapter.supportsLead) {
+      return {
+        supported: true,
+        code: 'DSH_TEAM_PROXY_READY',
+        message: 'DSH 0.2 原生 Agent Team 已通过 Codingns4DSH Proxy 暴露。',
+        supportsInterrupt: this.modernAdapter.supportsInterrupt,
+      }
+    }
     const supported = this.service !== undefined
       && typeof this.service.listMembers === 'function'
       && typeof this.service.spawnTeammate === 'function'
@@ -58,6 +75,13 @@ export class DshNativeTeamProxy implements CodingNsNativeTeamProxy {
     const input = asRecord(payload)
     const agent = this.findAgent(readString(input, 'sessionId'))
     if (agent === undefined) throw new Error('DSH_TEAM_AGENT_NOT_FOUND')
+    if (this.modernAdapter !== undefined && typeof service.membership !== 'function') {
+      const { sessionId: _sessionId, ...operation } = input
+      const translated = action === 'task/create' ? 'task_create'
+        : action === 'task/update' ? 'task_update'
+          : action
+      return this.modernAdapter.invoke(agent as TeamAgent, translated as never, operation, signal)
+    }
     switch (action) {
       case 'status':
         return {

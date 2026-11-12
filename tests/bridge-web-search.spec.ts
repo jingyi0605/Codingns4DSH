@@ -108,6 +108,21 @@ test('dispatchBridgeSearch cancels sibling queries when one search fails', async
   assert.equal(cancelled, true)
 })
 
+test('web bridge preserves rc.2 structured provider error codes', async () => {
+  const search = await dispatchBridgeSearch({ queries: ['code'] }, {
+    web: {
+      async search() { throw Object.assign(new Error('provider error'), { code: 'WEB_PROVIDER_FAILED' }) },
+    },
+  })
+  const fetch = await dispatchBridgeFetch({ url: 'https://example.com/' }, {
+    web: {
+      async fetch() { throw Object.assign(new Error('blocked'), { errorCode: 'WEB_URL_BLOCKED' }) },
+    },
+  })
+  assert.equal(search.errorCode, 'WEB_PROVIDER_FAILED')
+  assert.equal(fetch.errorCode, 'WEB_URL_BLOCKED')
+})
+
 test('dispatchBridgeFetch validates public http(s) URLs and marks page content untrusted', async () => {
   const seen: string[] = []
   const missing = await dispatchBridgeFetch({ url: 'https://example.com/' }, {})
@@ -234,6 +249,7 @@ test('Pi Team 扩展按既有角色注册 agent_team 操作集合', async () => 
         CODINGNS_TEAM_ROLE: role,
         CODINGNS_TEAM_NAME: role,
         CODINGNS_TEAM_ID: 'team-1',
+        CODINGNS_TEAM_INTERRUPT: '1',
       },
       fetcher,
     })

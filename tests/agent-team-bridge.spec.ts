@@ -121,6 +121,44 @@ test('Team routes retain alpha.2 support and newer hosts use structural service 
   } finally { await h.dispose() }
 })
 
+test('DSH rc.2 routes Team identity and operations through named SubAgents', async () => {
+  const root: TeamAgent = { id: 'root', session: { header: { id: 'root' } } }
+  const child: TeamAgent = { id: 'child-1', session: { header: { id: 'child-1' } } }
+  const agents = new Map<string, TeamAgent>([['root', root], ['child-1', child]])
+  const calls: Array<{ readonly name: string; readonly value: unknown }> = []
+  const service = {
+    isEnabled: () => true,
+    listTasks: () => [],
+    getTask: (_agent: unknown, id: string) => ({ id, revision: 2 }),
+    async createTask() { return { id: 'task-1', revision: 1 } },
+    async updateTask(_agent: unknown, request: Record<string, unknown>) { calls.push({ name: 'updateTask', value: request }); return request },
+  }
+  const subagents = {
+    registerProvider: () => () => undefined,
+    startActivation: async (spec: Record<string, unknown>) => { calls.push({ name: 'startActivation', value: spec }); return { childId: 'child-2', name: 'worker' } },
+    sendMessage: async (_sender: unknown, targetId: string, content: unknown) => { calls.push({ name: 'sendMessage', value: { targetId, content } }); return 'message-1' },
+    namesOf: (agent: TeamAgent) => agent.id === 'root' ? { self: 'lead' } : { self: 'worker', parent: 'lead' },
+    rootOf: () => root,
+    resolveName: async (_agent: unknown, name: string) => name === 'lead' ? 'root' : 'child-1',
+    listDescendants: async () => [{ kind: 'child', id: 'child-1', activity: 'running', path: 'worker', parentId: 'root', mode: 'continuable', label: 'Review' }],
+    interrupt: (targetId: string, authority: unknown) => { calls.push({ name: 'interrupt', value: { targetId, authority } }) },
+  }
+  const adapter = new DshAgentTeamAdapter(service, { get: (id) => agents.get(id), list: () => [...agents.values()] }, undefined, subagents)
+  assert.deepEqual(adapter.identity(root), { sessionId: 'root', teamId: 'root', role: 'lead', name: 'lead' })
+  assert.deepEqual(adapter.identity(child), { sessionId: 'child-1', teamId: 'root', role: 'teammate', name: 'worker' })
+  assert.deepEqual(await adapter.invoke(root, 'members', {}), [
+    { id: 'root', name: 'lead', role: 'lead', status: 'inactive' },
+    { id: 'child-1', name: 'worker', role: 'teammate', status: 'running', parentId: 'root' },
+  ])
+  assert.equal(await adapter.invoke(child, 'message', { target: 'lead', message: 'ready' }), 'message-1')
+  await adapter.invoke(child, 'task_update', { taskId: 'task-1', expectedRevision: 2, action: 'claim', owner: 'lead' })
+  await adapter.invoke(root, 'spawn', { provider: 'spawn', name: 'worker-2', description: 'Review', prompt: [{ type: 'text', text: 'Review' }] })
+  await adapter.invoke(root, 'interrupt', { target: 'worker' })
+  assert.equal(calls.some(call => call.name === 'startActivation'), true)
+  assert.equal(calls.some(call => call.name === 'interrupt'), true)
+  assert.deepEqual(calls.find(call => call.name === 'updateTask')?.value, { taskId: 'task-1', expectedRevision: 2, action: 'claim', owner: 'root' })
+})
+
 test('native and external Leads create real roster children with isolated model/effort selection', async () => {
   for (const rootAdapter of ['dsh', 'codex', 'claude-code', 'pi']) {
     const h = harness(rootAdapter)

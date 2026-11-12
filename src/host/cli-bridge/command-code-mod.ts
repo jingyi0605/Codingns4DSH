@@ -63,15 +63,17 @@ export default function codingNsSubagentMod(cmd: ModApiLike): void {
   const teamToken = process.env.CODINGNS_TEAM_TOKEN ?? ''
   if (teamToken !== '') {
     const lead = process.env.CODINGNS_TEAM_ROLE === 'lead'
+    const supportsInterrupt = process.env.CODINGNS_TEAM_INTERRUPT === '1'
     const memberActions = ['status', 'members', 'message', 'tasks', 'task', 'task_create', 'task_update', 'wait']
+    const leadActions = supportsInterrupt ? [...memberActions, 'spawn', 'interrupt'] : [...memberActions, 'spawn']
     cmd.addTool?.({
       schema: {
         name: 'agent_team',
-        description: `You are ${lead ? 'the Lead' : 'a teammate'} named ${process.env.CODINGNS_TEAM_NAME ?? ''} in a native DSH Team. Use agent_team for coordination. Create teammates only on the user's explicit request. Task updates require current expectedRevision and taskAction; message acceptance is not processing or task completion. Members share files: coordinate write scopes and dependencies. Message required inactive peers before waiting and re-read after changes. ${lead ? 'Only the Lead may spawn, interrupt, and reassign. Wait for required teammates before finishing.' : 'Report to target=lead and do not create nested agents.'}`,
+        description: `You are ${lead ? 'the Lead' : 'a teammate'} named ${process.env.CODINGNS_TEAM_NAME ?? ''} in a native DSH Team. Use agent_team for coordination. Create teammates only on the user's explicit request. Task updates require current expectedRevision and taskAction; message acceptance is not processing or task completion. Members share files: coordinate write scopes and dependencies. Message required inactive peers before waiting and re-read after changes. ${lead ? `Only the Lead may spawn${supportsInterrupt ? ', interrupt' : ''}, and reassign. Wait for required teammates before finishing.` : 'Report to target=lead and do not create nested agents.'}`,
         input_schema: {
           type: 'object', additionalProperties: false, required: ['action'],
           properties: {
-            action: { type: 'string', enum: lead ? [...memberActions, 'spawn', 'interrupt'] : memberActions },
+            action: { type: 'string', enum: lead ? leadActions : memberActions },
             ...Object.fromEntries(['name', 'description', 'prompt', 'agent', 'provider', 'model', 'effort', 'target', 'message', 'taskId', 'subject', 'taskAction', 'owner'].map(key => [key, { type: 'string' }])),
             context: { type: 'string', enum: ['fresh'] },
             expectedRevision: { type: 'integer', minimum: 1 },

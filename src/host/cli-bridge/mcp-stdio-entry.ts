@@ -13,6 +13,7 @@ const SESSION_ID = process.env.CODINGNS_DSH_SESSION_ID ?? ''
 const ADAPTER_ID = process.env.CODINGNS_ADAPTER_ID ?? ''
 const TEAM_TOKEN = process.env.CODINGNS_TEAM_TOKEN ?? ''
 const TEAM_ROLE = process.env.CODINGNS_TEAM_ROLE === 'lead' ? 'lead' : 'teammate'
+const TEAM_SUPPORTS_INTERRUPT = process.env.CODINGNS_TEAM_INTERRUPT === '1'
 // OpenCode V2 会把同目录下的 MCP server 全部放进工具目录，子会话需要独立
 // 的回传工具名；其他 ACP/Claude/Codex 适配器仍兼容原有 agent_subagent schema。
 const IS_SUBAGENT_CHILD = process.env.CODINGNS_SUBAGENT_CHILD === '1' && ADAPTER_ID === 'opencode'
@@ -32,8 +33,8 @@ interface JsonRpcRequest {
 
 const TOOL_DEFINITION = TEAM_TOKEN !== '' ? {
   name: TOOL_NAME,
-  description: teamGuidance('agent_team', { sessionId: SESSION_ID, teamId: process.env.CODINGNS_TEAM_ID ?? '', role: TEAM_ROLE, name: process.env.CODINGNS_TEAM_NAME ?? '' }),
-  inputSchema: teamToolSchema(TEAM_ROLE),
+  description: teamGuidance('agent_team', { sessionId: SESSION_ID, teamId: process.env.CODINGNS_TEAM_ID ?? '', role: TEAM_ROLE, name: process.env.CODINGNS_TEAM_NAME ?? '' }, TEAM_ROLE === 'lead' && TEAM_SUPPORTS_INTERRUPT),
+  inputSchema: teamToolSchema(TEAM_ROLE, TEAM_ROLE === 'lead' && TEAM_SUPPORTS_INTERRUPT),
 } : {
   name: TOOL_NAME,
   description: IS_SUBAGENT_CHILD
@@ -256,10 +257,11 @@ async function callSearch(args: Record<string, unknown>): Promise<Record<string,
     })
     const payload = await readJsonRecord(response)
     if (!response.ok || payload?.ok !== true) {
-      const detail = typeof payload?.error === 'string' && payload.error.trim() !== ''
+      const message = typeof payload?.error === 'string' && payload.error.trim() !== ''
         ? payload.error.trim()
         : `HTTP ${String(response.status)}`
-      return textResult(`Web search failed: ${detail}`, true)
+      const code = typeof payload?.errorCode === 'string' && payload.errorCode.trim() !== '' ? `${payload.errorCode.trim()}: ` : ''
+      return textResult(`Web search failed: ${code}${message}`, true)
     }
     const text = typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : JSON.stringify(payload)
     return textResult(text, false)
@@ -279,10 +281,11 @@ async function callFetch(args: Record<string, unknown>): Promise<Record<string, 
     })
     const payload = await readJsonRecord(response)
     if (!response.ok || payload?.ok !== true) {
-      const detail = typeof payload?.error === 'string' && payload.error.trim() !== ''
+      const message = typeof payload?.error === 'string' && payload.error.trim() !== ''
         ? payload.error.trim()
         : `HTTP ${String(response.status)}`
-      return textResult(`Web fetch failed: ${detail}`, true)
+      const code = typeof payload?.errorCode === 'string' && payload.errorCode.trim() !== '' ? `${payload.errorCode.trim()}: ` : ''
+      return textResult(`Web fetch failed: ${code}${message}`, true)
     }
     const text = typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : JSON.stringify(payload)
     return textResult(text, false)

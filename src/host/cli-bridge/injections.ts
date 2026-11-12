@@ -364,7 +364,13 @@ function bridgeEnvironment(sessionId: string, adapterId: string): Record<string,
     CODINGNS_BRIDGE_TOKEN: team?.token ?? runtime.token,
     CODINGNS_DSH_SESSION_ID: sessionId,
     CODINGNS_ADAPTER_ID: adapterId,
-    ...(team ? { CODINGNS_TEAM_TOKEN: team.token, CODINGNS_TEAM_ROLE: team.identity.role, CODINGNS_TEAM_NAME: team.identity.name, CODINGNS_TEAM_ID: team.identity.teamId } : {}),
+    ...(team ? {
+      CODINGNS_TEAM_TOKEN: team.token,
+      CODINGNS_TEAM_ROLE: team.identity.role,
+      CODINGNS_TEAM_NAME: team.identity.name,
+      CODINGNS_TEAM_ID: team.identity.teamId,
+      CODINGNS_TEAM_INTERRUPT: team.supportsInterrupt === true ? '1' : '0',
+    } : {}),
     ...(child ? { [SUBAGENT_CHILD_MARKER]: '1' } : {}),
     // 桌面版 DSH 的 process.execPath 是 Electron 二进制；该变量让它以 Node 运行 MCP 入口。
     ELECTRON_RUN_AS_NODE: '1',
@@ -378,7 +384,7 @@ function mcpServerConfig(env: Record<string, string>): Record<string, unknown> {
 export function bridgeSessionGuidance(sessionId: string, ordinaryToolName: string): string {
   const team = getSubagentBridge()?.teamSession?.(sessionId)
   const coordination = team
-    ? teamGuidance(ordinaryToolName.replace(/(?:agent_subagent|send_message)$/u, 'agent_team'), team.identity)
+    ? teamGuidance(ordinaryToolName.replace(/(?:agent_subagent|send_message)$/u, 'agent_team'), team.identity, team.supportsInterrupt === true)
     : bridgeSubagentGuidance(ordinaryToolName)
   return `${coordination} ${bridgeSearchGuidance(bridgeSearchToolName(ordinaryToolName))} ${bridgeFetchGuidance(bridgeFetchToolName(ordinaryToolName))}`
 }

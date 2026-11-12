@@ -42,7 +42,7 @@ export class CodingNsTeamDispatcher {
     const identity = this.identity(sessionId)
     const adapter = this.options.adapter()
     const caller = adapter?.resolveAgent(sessionId)
-    return identity && adapter && caller ? { identity, caller, signal: adapter.signal } : undefined
+    return identity && adapter && caller ? { identity, caller, signal: adapter.signal, supportsInterrupt: adapter.supportsInterrupt } : undefined
   }
 
   /** Runs during Agent publication, before a native child can inherit an external route. */
@@ -100,7 +100,7 @@ export class CodingNsTeamDispatcher {
       if (action === 'wait') {
         const timeout = input.timeout_ms ?? 30_000
         if (!Number.isSafeInteger(timeout) || Number(timeout) < 10_000 || Number(timeout) > 240_000) throw teamError('TEAM_INVALID_INPUT', 'Wait must be between 10 and 240 seconds.')
-        const members = adapter.invoke(agent, 'members', {}, combined)
+        const members = await adapter.invoke(agent, 'members', {}, combined)
         if (Array.isArray(members) && !members.some(member => member?.id !== agent.id && ['running', 'provisioning'].includes(member?.status))) {
           return { ok: true, action, result: { timedOut: false, noProgress: true } }
         }
@@ -139,7 +139,20 @@ export class CodingNsTeamDispatcher {
     return enqueueTeamSubagentSelection(identity.sessionId, adapterId, modelId, async () => {
       if (nativeRoute) this.nativeCreations.set(identity.teamId, { name, route: nativeRoute })
       try {
-        const result = await adapter.invoke(agent, 'spawn', { name, description, prompt: [{ type: 'text', text: prompt }], context: 'fresh', provider }, signal)
+        const result = await adapter.invoke(agent, 'spawn', {
+          name,
+          description,
+          prompt: [{ type: 'text', text: prompt }],
+          context: 'fresh',
+          provider,
+          ...(nativeRoute === undefined ? {} : {
+            agentOptions: {
+              provider: nativeRoute.provider,
+              model: nativeRoute.model,
+              ...(nativeRoute.reasoningEffort === undefined ? {} : { reasoningEffort: nativeRoute.reasoningEffort }),
+            },
+          }),
+        }, signal)
         this.options.registry.setSession(identity.sessionId, {
           ...this.options.registry.getSession(identity.sessionId), teamId: identity.teamId, teamMemberId: agent.id,
         }, { rememberPreference: false })
