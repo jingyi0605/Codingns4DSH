@@ -3,8 +3,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 
 const SIDEBAR_MODULE = '@deepseek-ai/dsh-client-ui-sidebar-right'
 const COMPAT_ROUTE = '/__codingns/sidebar-session-v1'
-const VIEW_START = 'var SidebarSessionView = class {'
+const VIEW_START_MARKERS = ['var SidebarSessionView = class {', 'var SidebarSessionView=class{']
 const OPENING_HANDLER = /this\.reference\.ready\.catch\(\(error\) => \{\r?\n([\t ]*)console\.error\("Sidebar Session opening failed:", error\);\r?\n[\t ]*\}\);/u
+const MINIFIED_OPENING_HANDLER = /this\.reference\.ready\.catch\(error=>\{console\.error\(`Sidebar Session opening failed:`,error\)\}\)/u
 
 interface ClientModules {
   fetchBundle(request: Request): Promise<Response>
@@ -19,27 +20,37 @@ interface WebServer {
 }
 
 /**
- * 需要该补丁的 DSH 版本：alpha.1 与 alpha.2 的侧栏都会把自身 dispose 引起的
- * ready 拒绝当作打开失败（已逐字节核对两版 `client.js` 的目标回调完全一致，
- * 且都缺少 `disposed` 守卫）。上游修复后从该集合移除并删除本文件。
+ * 需要该补丁的 DSH 版本：alpha.1、alpha.2 与 rc.2 的侧栏都会把自身 dispose 引起的
+ * ready 拒绝当作打开失败（已逐字节核对各版 `client.js` 的目标回调完全一致，
+ * 且都缺少 `disposed` 守卫）。rc.2 只是压缩了同一个回调。上游修复后从该集合
+ * 移除并删除本文件。
  */
-const SIDEBAR_SESSION_COMPAT_VERSIONS = new Set(['0.2.1-alpha.1', '0.2.1-alpha.2'])
+const SIDEBAR_SESSION_COMPAT_VERSIONS = new Set(['0.2.1-alpha.1', '0.2.1-alpha.2', '0.2.2-rc.2'])
 
 /**
- * DSH 0.2.1-alpha.1 / alpha.2 的侧栏会把自身 dispose 引起的 ready 拒绝当作打开失败。
+ * DSH 0.2.1-alpha.1 / alpha.2 / 0.2.2-rc.2 的侧栏会把自身 dispose 引起的 ready 拒绝当作打开失败。
  * 只在原生视图的回调里检查所有权；不改 Promise 的拒绝语义、引用计数或 console。
  * 匹配限定到已核对的类和回调，未知上游产物原样返回。保持行数，避免后续源码映射偏移。
  */
 export function patchSidebarSessionBundle(source: string): string {
-  const start = source.indexOf(VIEW_START)
+  const start = VIEW_START_MARKERS
+    .map(marker => source.indexOf(marker))
+    .find(index => index >= 0) ?? -1
   if (start < 0) return source
-  const end = source.indexOf('//#endregion', start)
+  const legacyEnd = source.indexOf('//#endregion', start)
+  const minifiedEnd = source.indexOf('};var SidebarSessionViews', start)
+  const end = legacyEnd >= 0 ? legacyEnd : minifiedEnd < 0 ? -1 : minifiedEnd + 1
   if (end < 0) return source
   const view = source.slice(start, end)
-  const patched = view.replace(OPENING_HANDLER, (handler: string) => handler.replace(
-    'console.error("Sidebar Session opening failed:", error);',
-    'if (!this.disposed) console.error("Sidebar Session opening failed:", error);',
-  ))
+  const patched = view
+    .replace(OPENING_HANDLER, (handler: string) => handler.replace(
+      'console.error("Sidebar Session opening failed:", error);',
+      'if (!this.disposed) console.error("Sidebar Session opening failed:", error);',
+    ))
+    .replace(
+      MINIFIED_OPENING_HANDLER,
+      'this.reference.ready.catch(error=>{if(!this.disposed)console.error(`Sidebar Session opening failed:`,error)})',
+    )
   return source.slice(0, start) + patched + source.slice(end)
 }
 

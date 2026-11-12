@@ -18,8 +18,12 @@ const bundleUrl = `plugins/??${moduleId}/client.js&rev=native-rev`
 const compatUrl = `__codingns/sidebar-session-v1/${bundleUrl}`
 
 function createView(source: string) {
-  const start = source.indexOf('var SidebarSessionView = class {')
-  const end = source.indexOf('//#endregion', start)
+  const start = ['var SidebarSessionView = class {', 'var SidebarSessionView=class{']
+    .map(marker => source.indexOf(marker))
+    .find(index => index >= 0) ?? -1
+  const legacyEnd = source.indexOf('//#endregion', start)
+  const minifiedEnd = source.indexOf('};var SidebarSessionViews', start)
+  const end = legacyEnd >= 0 ? legacyEnd : minifiedEnd < 0 ? -1 : minifiedEnd + 1
   assert.ok(start >= 0 && end > start, '锁定的原生 SidebarSessionView 必须存在')
   const errors: unknown[][] = []
   const View = runInNewContext(`${source.slice(start, end)}; SidebarSessionView`, {
@@ -222,8 +226,11 @@ test('兼容层只为已核对版本注册 Web 资源路由和页面注入，路
   assert.equal(table[0]!.src, compatUrl)
   disposers[0]!()
   assert.equal(routes.length, 0)
-  // alpha.2 的 SidebarSessionView 打开回调与 alpha.1 逐字节一致，同样需要补丁；
+  // rc.2 压缩了同一回调，但仍缺少 disposed 守卫，因此仍需要补丁；
   // 上游一旦修复，这条断言会随 SIDEBAR_SESSION_COMPAT_VERSIONS 一起失效。
   installSidebarSessionCompat(ctx as never, '0.2.1-alpha.2')
+  assert.equal(routes[0]!.path, '/__codingns/sidebar-session-v1')
+  disposers[1]!()
+  installSidebarSessionCompat(ctx as never, '0.2.2-rc.2')
   assert.equal(routes[0]!.path, '/__codingns/sidebar-session-v1')
 })
