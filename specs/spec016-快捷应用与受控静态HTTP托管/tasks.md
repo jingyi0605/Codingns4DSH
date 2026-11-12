@@ -1,5 +1,7 @@
 # Tasks — Quick Apps and controlled static HTTP hosting
 
+> **Retired (2026-11-12).** The Quick Apps module was removed from this plugin at the user's request. The code, tests, RPC routes, capability routes (`quick-app.proxy`, `quick-app.origin`, `workspace.directory-list`, `sidebar.footer-action`) and the `settings.quickApps` schema field are gone. Previously saved shortcut data is left in storage untouched and is no longer read. This Spec and its documents are kept as history only.
+
 ## Browser-storage increment — R7 (2026-10-17)
 
 This increment follows the existing Spec templates. Read R7 in this Spec's requirements, the browser-storage amendment in its design, and the repository isolation rules before implementation. The implementation phase excluded IndexedDB, installed profiles, releases and physical-device acceptance. The user subsequently authorized the separate Stage0 runtime check recorded in S7; Desktop and physical-phone operation remain excluded.
