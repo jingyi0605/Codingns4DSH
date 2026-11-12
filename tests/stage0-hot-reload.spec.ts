@@ -22,8 +22,8 @@ const yaml = createRequire(require.resolve('@deepseek-ai/cordis-plugin-include')
 
 test('Stage0 launcher defaults to the tested DSH runtime without changing persistent data paths', () => {
   const launcher = readFileSync(stage0Script, 'utf8')
-  assert.match(launcher, /deepseek-harness\/0\.2\.2-rc\.1\/node_modules\/@deepseek-ai\/dsh\/lib\/bin\.js/u)
-  assert.match(launcher, /DSH 0\.2\.2-rc\.1 launcher not found/u)
+  assert.match(launcher, /deepseek-harness\/0\.2\.2-rc\.2\/node_modules\/@deepseek-ai\/dsh\/lib\/bin\.js/u)
+  assert.match(launcher, /DSH 0\.2\.2-rc\.2 launcher not found/u)
   assert.match(launcher, /\.dsh-stage0-020/u)
   assert.match(launcher, /stage0-020/u)
 })
