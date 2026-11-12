@@ -193,8 +193,12 @@ export function stripPlaceholders(value: string): string {
   return value.replace(/@@CODINGNS_TRANSLATION_\d+@@/gu, ' ')
 }
 
-/** Missing, duplicated, or unknown markers invalidate the response instead of corrupting code. */
-export function restoreText(value: string, values: readonly string[]): string {
+/**
+ * Missing, duplicated, or unknown markers invalidate the response instead of corrupting code.
+ * `source` is the protected text that `value` was translated from. A split segment holds only
+ * some of the markers, so completeness is checked against it; without it, every value must appear.
+ */
+export function restoreText(value: string, values: readonly string[], source?: string): string {
   const seen = new Set<number>()
   const restored = value.replace(/@@CODINGNS_TRANSLATION_(\d+)@@/gu, (match, index: string) => {
     const position = Number(index)
@@ -205,6 +209,9 @@ export function restoreText(value: string, values: readonly string[]): string {
     seen.add(position)
     return original
   })
-  if (seen.size !== values.length) throw new TranslationValidationError('protected-text', 'translation omitted protected text placeholders')
+  const expected = source === undefined
+    ? values.map((_, index) => index)
+    : [...source.matchAll(/@@CODINGNS_TRANSLATION_(\d+)@@/gu)].map(match => Number(match[1]))
+  if (expected.some(index => !seen.has(index))) throw new TranslationValidationError('protected-text', 'translation omitted protected text placeholders')
   return restored
 }

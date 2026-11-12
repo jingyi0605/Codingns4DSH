@@ -183,7 +183,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
             if (!isUsableTranslation(stripPlaceholders(result), targetLanguage)) {
               throw new TranslationValidationError('language', 'model returned an unusable translation')
             }
-            return restoreText(result.trim(), protectedText.values)
+            return restoreText(result.trim(), protectedText.values, protectedText.text)
           }, combined)
           return { translated, model: candidate, ...metrics() }
         } catch (error) {
@@ -371,7 +371,7 @@ async function translatePreparedText(
   let failure: SessionTranslationFailure | undefined
 
   for (const protectedSegment of segments) {
-    const segmentOriginal = restoreText(protectedSegment, protectedText.values)
+    const segmentOriginal = restoreText(protectedSegment, protectedText.values, protectedSegment)
     if (hasNoTranslatableText(protectedSegment)) {
       batches.push({ original: segmentOriginal, translated: segmentOriginal })
       continue
@@ -402,7 +402,7 @@ async function translatePreparedText(
         durationMs,
         ...(hasTokenMetrics ? { totalTokens } : {}),
         batches: segments.map(segment => {
-          const value = restoreText(segment, protectedText.values)
+          const value = restoreText(segment, protectedText.values, segment)
           return { original: value, translated: value }
         }),
       }
