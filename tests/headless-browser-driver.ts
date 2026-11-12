@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { TestContext } from 'node:test'
 import WebSocket from 'ws'
 
-export async function quickAppBrowser(t: TestContext, args: string[] = []) {
+export async function headlessBrowser(t: TestContext, args: string[] = []) {
   let executable = process.env.QUICK_APPS_BROWSER_BIN
   const cache = join(homedir(), 'Library/Caches/ms-playwright')
   if (!executable) for (const entry of (await readdir(cache).catch(() => [])).sort().reverse()) {
@@ -14,7 +14,7 @@ export async function quickAppBrowser(t: TestContext, args: string[] = []) {
     try { await access(candidate); executable = candidate; break } catch { /* Keep looking. */ }
   }
   if (!executable) { t.skip('Set QUICK_APPS_BROWSER_BIN; this test does not install a browser.'); return undefined }
-  const profile = await mkdtemp(join(tmpdir(), 'quick-app-browser-'))
+  const profile = await mkdtemp(join(tmpdir(), 'headless-browser-'))
   const browser = spawn(executable, ['--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--no-proxy-server', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${profile}`, ...args, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] })
   t.after(async () => {
     if (browser.exitCode === null) { const exit = new Promise<void>(resolve => browser.once('exit', () => resolve())); browser.kill('SIGTERM'); await exit }

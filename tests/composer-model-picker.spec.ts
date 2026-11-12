@@ -7,7 +7,7 @@ import { watchNativeModelMenu } from '../src/client/native-model-translation-men
 import { composerSlotSelector, contextComposerSlotName } from '../src/dsh-capabilities/client/composer-slot-selectors.js'
 import { createSessionPerformancePresentation } from '../src/dsh-capabilities/client/session-performance-adapter.js'
 import { createPresentationSlots } from './fixtures/presentation-slots.ts'
-import { quickAppBrowser } from './quick-apps-browser-driver.js'
+import { headlessBrowser } from './headless-browser-driver.js'
 
 function composerStyles(): string {
   const original = Object.getOwnPropertyDescriptor(globalThis, 'document')
@@ -72,7 +72,7 @@ function composer(id: string, slots: typeof nativeSlots, adapter: string, contro
 }
 
 test('original and mirrored composers keep one model picker, responsive sizing, and an unobstructed send button', { timeout: 30_000 }, async t => {
-  const browser = await quickAppBrowser(t)
+  const browser = await headlessBrowser(t)
   if (browser === undefined) return
   const css = composerStyles()
   for (const { slots, control } of [nativeSlots, mirroredSlots()].flatMap(slots => ['button', 'select'].map(control => ({ slots, control })))) {
@@ -126,7 +126,7 @@ test('original and mirrored composers keep one model picker, responsive sizing, 
 })
 
 test('model submenu width remains stable while scrolling wide rows on mobile viewports', { timeout: 30_000 }, async t => {
-  const browser = await quickAppBrowser(t)
+  const browser = await headlessBrowser(t)
   if (browser === undefined) return
   const css = composerStyles()
   await browser.command('Page.enable')
@@ -170,7 +170,7 @@ test('model submenu width remains stable while scrolling wide rows on mobile vie
 })
 
 test('native model translation finds original and mirrored menus, stays scoped, and cleans up', { timeout: 30_000 }, async t => {
-  const browser = await quickAppBrowser(t)
+  const browser = await headlessBrowser(t)
   if (browser === undefined) return
   await browser.command('Page.enable')
   const { frameTree } = await browser.command('Page.getFrameTree')

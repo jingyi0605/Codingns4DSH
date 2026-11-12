@@ -3,10 +3,10 @@ import test from 'node:test'
 import { createServer, type IncomingHttpHeaders } from 'node:http'
 import { setTimeout } from 'node:timers/promises'
 import { LanAccessDshProxy, createLoginProtectionConfig, type ParsedLanRequest } from '../src/host/lan-access-dsh.js'
-import { quickAppBrowser } from './quick-apps-browser-driver.js'
+import { headlessBrowser } from './headless-browser-driver.js'
 
 test('LAN HTTP login accepts native browser form submissions and retries after a bad password', { timeout: 30_000 }, async t => {
-  const browser = await quickAppBrowser(t, ['--host-resolver-rules=MAP login.dsh.test 127.0.0.1'])
+  const browser = await headlessBrowser(t, ['--host-resolver-rules=MAP login.dsh.test 127.0.0.1'])
   if (!browser) return
   const cookieName = 'dsh_login_browser_fixture'
   const proxy = new LanAccessDshProxy(undefined, undefined, cookieName)

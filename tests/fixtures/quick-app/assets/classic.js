@@ -1,1 +1,0 @@
-window.classicValue = 'classic'

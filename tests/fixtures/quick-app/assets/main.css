@@ -1,3 +1,0 @@
-@import './imported.css';
-@font-face { font-family: FixtureFont; src: url('./font.woff2') format('woff2'); }
-h1 { font-family: FixtureFont, sans-serif; }

@@ -5,7 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { build } from 'tsdown'
-import { quickAppBrowser } from './quick-apps-browser-driver.js'
+import { headlessBrowser } from './headless-browser-driver.js'
 import { FeatureRegistry } from '../src/features/registry.js'
 import { CodingNsRpcTable } from '../src/host/rpc-table.js'
 import { registerCodingNsRpc } from '../src/host/rpc.js'
@@ -14,7 +14,7 @@ import { CODINGNS_PACKAGE_NAME } from '../src/shared/contracts/plugin-update.js'
 import { CODINGNS_VERSION } from '../src/shared/contracts/version.js'
 
 test('isolated settings browser exercises real HTTP authorization, confirmation, recovery, cancellation and truthful activation', { timeout: 90_000 }, async t => {
-  const browser = await quickAppBrowser(t)
+  const browser = await headlessBrowser(t)
   if (!browser) return
   const root = await mkdtemp(join(tmpdir(), 'plugin-update-ui-'))
   t.after(() => rm(root, { recursive: true, force: true }))
