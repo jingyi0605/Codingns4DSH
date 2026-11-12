@@ -280,6 +280,45 @@ test('long translations use paragraph-sized requests and reassemble the translat
   assert.equal(batched.record.translated, result?.translated)
 })
 
+function longProtectedMessage(): string {
+  return Array.from({ length: 5 }, (_, index) => [
+    `Paragraph ${index + 1}: ${'Review the implementation carefully. '.repeat(40)}`,
+    `See /tmp/project/file${index}.ts and run \`pnpm test\`.`,
+  ].join('\n')).join('\n\n')
+}
+
+test('long translations keep protected text in every segment', async (t) => {
+  const original = longProtectedMessage()
+  const protectedText = protectText(original)
+  const segments = splitTranslationText(protectedText.text)
+  assert.ok(segments.length > 1)
+  assert.ok(protectedText.values.length > 0)
+  assert.ok(segments.every(segment => segment.includes('@@CODINGNS_TRANSLATION_')))
+
+  const f = fixture(source => `译文${source}`)
+  t.after(() => f.service.dispose())
+  const result = await f.service.translateOutput('dsh', 'assistant', original, undefined, true)
+  assert.equal(result?.failed, undefined)
+  assert.equal(f.sources.length, segments.length)
+  assert.equal(result?.translated, segments.map(segment => `译文${restoreText(segment, protectedText.values, segment)}`).join(''))
+})
+
+test('a segment that drops its own placeholder preserves the whole original output', async (t) => {
+  const original = longProtectedMessage()
+  const f = fixture(source => `译文${source.replace(/@@CODINGNS_TRANSLATION_\d+@@/u, '')}`)
+  t.after(() => f.service.dispose())
+  const result = await f.service.translateOutput('dsh', 'assistant', original, undefined, true)
+  assert.equal(result?.failed, true)
+  assert.equal(result?.translated, original)
+})
+
+test('restoreText checks completeness against the given source segment', () => {
+  const values = ['a', 'b']
+  assert.equal(restoreText('x @@CODINGNS_TRANSLATION_1@@', values, 'y @@CODINGNS_TRANSLATION_1@@'), 'x b')
+  assert.throws(() => restoreText('x', values, 'y @@CODINGNS_TRANSLATION_1@@'), /omitted/u)
+  assert.throws(() => restoreText('x @@CODINGNS_TRANSLATION_0@@', values), /omitted/u)
+})
+
 test('a damaged placeholder preserves the original assistant and reasoning output', async (t) => {
   const f = fixture(() => '请修改按钮。')
   t.after(() => f.service.dispose())
