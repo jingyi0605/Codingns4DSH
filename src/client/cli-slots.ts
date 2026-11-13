@@ -1,5 +1,5 @@
 import { watchAdapterCatalog, subscribeAdapterCatalogChanged } from './adapter-catalog-watch.js'
-import { createElement, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
+import { createElement, Fragment, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import type { ReactElement } from 'react'
@@ -17,7 +17,7 @@ import {
   needsServiceTierRevalidation,
   toggledServiceTierId,
 } from './service-tier.js'
-import { DshInput, rankModelByName, resolveControlIcon, resolveCloseFillIcon, resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
+import { DshButton, DshInput, DshModal, rankModelByName, resolveControlIcon, resolveCloseFillIcon, resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 import { composerSlotSelector } from '../dsh-capabilities/client/composer-slot-selectors.js'
 import { providerIconUrl } from './provider-icons.js'
 import { publishSessionSelection } from './session-adapter-cache.js'
@@ -156,6 +156,8 @@ interface CliSlotProps {
   readonly settings?: CodingNsClientServices['settings'] | undefined
   readonly sessionId?: string
   readonly useSession?: SessionSelector
+  /** DSH 会话投影读取；`agentTeam` 投影保存当前会话的 Team 开关。 */
+  readonly useProjection?: (key: string) => unknown
   readonly rpc: CodingNsRpcClient
   readonly locale: CodingNsLocale
   /** 会话未单独设置翻译开关时是否跟随「DSH 原生会话」总开关。 */
@@ -527,12 +529,66 @@ function ModelName({ label, loading }: ModelNameProps): ReactElement {
   }, createElement('span', { ref: contentRef, style: contentStyle }, label))
 }
 
+/**
+ * 外部 Agent 会话的「启用智能体团队协作」开关。
+ *
+ * DSH 原生开关位于被隐藏的原生模型席位里，外部 Agent 会话看不到，因此在插件菜单中
+ * 提供同一个开关。开关状态只读 DSH 的 `agentTeam` 投影，不做乐观更新；写入走 Host，
+ * 由 Host 调用原生 `agentTeams.setEnabled`。当前 Agent 不能承载 Team 工具时不显示。
+ */
+function useTeamModeToggle(props: CliSlotProps, sessionId: string | undefined, adapterId: string, sessionUsed: boolean): {
+  readonly visible: boolean
+  readonly enabled: boolean
+  readonly pending: boolean
+  readonly failure: string | null
+  readonly select: (next: boolean) => void
+  readonly confirmingDisable: boolean
+  readonly confirmDisable: () => void
+  readonly cancelDisable: () => void
+} {
+  const projection = props.useProjection?.('agentTeam') as { readonly enabled?: boolean } | null | undefined
+  const [memberSupported, setMemberSupported] = useState(false)
+  const [pending, setPending] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+  useEffect(() => {
+    if (adapterId === DSH_NATIVE_SESSION_ADAPTER_ID) { setMemberSupported(false); return }
+    return watchAdapterCatalog(props.rpc, sessionId, (catalog) => {
+      setMemberSupported(catalog.find((entry) => entry.id === adapterId)?.team?.member === true)
+    })
+  }, [props.rpc, sessionId, adapterId])
+  const [confirmingDisable, setConfirmingDisable] = useState(false)
+  const write = (next: boolean): void => {
+    if (sessionId === undefined || pending) return
+    setPending(true)
+    setFailure(null)
+    void callCliRpc(props.rpc, 'team/mode', { sessionId, enabled: next })
+      .catch((error: unknown) => { setFailure(error instanceof Error ? error.message : String(error)) })
+      .finally(() => { setPending(false) })
+  }
+  // 与 DSH 原生开关一致：会话已经使用过模型后停用，要先确认缓存与 token 开销的影响。
+  const select = (next: boolean): void => {
+    if (!next && sessionUsed) { setConfirmingDisable(true); return }
+    write(next)
+  }
+  return {
+    visible: projection !== undefined && projection !== null && memberSupported && sessionId !== undefined,
+    enabled: projection?.enabled === true,
+    pending,
+    failure,
+    select,
+    confirmingDisable,
+    confirmDisable: () => { setConfirmingDisable(false); write(false) },
+    cancelDisable: () => setConfirmingDisable(false),
+  }
+}
+
 function ModelSlot(props: CliSlotProps): ReactElement | null {
   // 语言词典中的中文值仍保留“正在加载模型列表…”语义，切换语言时由 t() 取值。
   const t = useCodingNsTranslator(props.locale)
   const session = props.useSession?.((value) => value)
   const sessionId = props.sessionId ?? session?.sessionId
   const [selection, update] = useSelection(sessionId, props.rpc)
+  const teamMode = useTeamModeToggle(props, sessionId, selection.adapterId, isSessionLocked(session))
   const [catalogState, setCatalogState] = useState<ModelCatalogState | null>(null)
   const [refreshingAdapterId, setRefreshingAdapterId] = useState<string | null>(null)
   const [catalogRetry, setCatalogRetry] = useState(0)
@@ -886,6 +942,21 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
                 onSettings: openTranslationSettings,
               })]
             : []),
+          ...(teamMode.visible
+            ? [createElement('div', { key: 'team-mode', className: 'codingns4dsh-team-mode' },
+                createElement('div', { style: serviceTierRowStyle },
+                  createElement('span', { style: { ...serviceTierLabelStyle, flex: '1 1 auto', whiteSpace: 'normal' }, title: t('cli.teamModeDescription') }, t('cli.teamMode')),
+                  createElement(Switch, {
+                    checked: teamMode.enabled,
+                    disabled: teamMode.pending,
+                    onChange: teamMode.select,
+                    label: t('cli.teamModeToggle'),
+                  }),
+                ),
+                teamMode.failure !== null && createElement('div', { role: 'alert', style: { padding: '0 10px 6px', fontSize: uiFontSize(12), color: dshThemeColor.labelTertiary } },
+                  t('cli.teamModeFailed', { message: teamMode.failure })),
+              )]
+            : []),
           // 档位开关固定在「模型」行上方，与模型/思考等级同处一个弹层。
           ...(serviceTierAvailable
             ? [createElement('div', { key: 'service-tier', className: 'codingns4dsh-service-tier', style: serviceTierRowStyle },
@@ -985,6 +1056,17 @@ function ModelSlot(props: CliSlotProps): ReactElement | null {
         : nativeMenuStyle,
     }, ...menu),
     translationSettings,
+    teamMode.confirmingDisable && createElement(DshModal, {
+      open: true,
+      title: t('cli.teamModeDisableTitle'),
+      closeLabel: t('cli.teamModeDisableClose'),
+      description: t('cli.teamModeDisableDescription'),
+      onClose: teamMode.cancelDisable,
+      footer: createElement(Fragment, null,
+        createElement(DshButton, { type: 'button', variant: 'outline', ...{ 'data-modal-autofocus': true }, onClick: teamMode.cancelDisable }, t('cli.teamModeDisableCancel')),
+        createElement(DshButton, { type: 'button', variant: 'primary', onClick: teamMode.confirmDisable }, t('cli.teamModeDisableConfirm')),
+      ),
+    }, createElement('p', { style: { margin: 0 } }, t('cli.teamModeDisableWarning'))),
   )
 }
 
