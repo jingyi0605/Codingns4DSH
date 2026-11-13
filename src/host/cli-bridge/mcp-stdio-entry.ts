@@ -257,11 +257,7 @@ async function callSearch(args: Record<string, unknown>): Promise<Record<string,
     })
     const payload = await readJsonRecord(response)
     if (!response.ok || payload?.ok !== true) {
-      const message = typeof payload?.error === 'string' && payload.error.trim() !== ''
-        ? payload.error.trim()
-        : `HTTP ${String(response.status)}`
-      const code = typeof payload?.errorCode === 'string' && payload.errorCode.trim() !== '' ? `${payload.errorCode.trim()}: ` : ''
-      return textResult(`Web search failed: ${code}${message}`, true)
+      return textResult(webFailure('web-search', payload, response.status), true)
     }
     const text = typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : JSON.stringify(payload)
     return textResult(text, false)
@@ -281,17 +277,45 @@ async function callFetch(args: Record<string, unknown>): Promise<Record<string, 
     })
     const payload = await readJsonRecord(response)
     if (!response.ok || payload?.ok !== true) {
-      const message = typeof payload?.error === 'string' && payload.error.trim() !== ''
-        ? payload.error.trim()
-        : `HTTP ${String(response.status)}`
-      const code = typeof payload?.errorCode === 'string' && payload.errorCode.trim() !== '' ? `${payload.errorCode.trim()}: ` : ''
-      return textResult(`Web fetch failed: ${code}${message}`, true)
+      return textResult(webFailure('web-fetch', payload, response.status), true)
     }
     const text = typeof payload.text === 'string' && payload.text.trim() !== '' ? payload.text : JSON.stringify(payload)
     return textResult(text, false)
   } catch (error) {
     return textResult(`The fetch bridge is unreachable: ${error instanceof Error ? error.message : String(error)}`, true)
   }
+}
+
+/**
+ * Render a web failure as one machine-readable JSON text block.
+ *
+ * The model needs to tell a transient transport failure (retry later) from a
+ * missing credential or a rejected key (stop and ask the user), and the plain
+ * `fetch failed` message hides that difference. Only stable fields travel here:
+ * the bridge's own error code, cause codes, attempt count, and the sanitized
+ * detail the Host already wrote; response bodies and query text never do.
+ */
+function webFailure(
+  kind: 'web-search' | 'web-fetch',
+  payload: Record<string, unknown> | undefined,
+  status: number,
+): string {
+  const subject = kind === 'web-search' ? 'Web search' : 'Web fetch'
+  const message = typeof payload?.error === 'string' && payload.error.trim() !== ''
+    ? payload.error.trim()
+    : `HTTP ${String(status)}`
+  const errorCode = typeof payload?.errorCode === 'string' && payload.errorCode.trim() !== '' ? payload.errorCode.trim() : undefined
+  const attempts = typeof payload?.attempts === 'number' && Number.isFinite(payload.attempts) ? payload.attempts : undefined
+  const causes = Array.isArray(payload?.causes) ? payload.causes.filter((item): item is string => typeof item === 'string') : []
+  const retryable = typeof payload?.retryable === 'boolean' ? payload.retryable : undefined
+  return `${subject} failed: ${message}\n${JSON.stringify({
+    ok: false,
+    kind,
+    ...(errorCode === undefined ? {} : { errorCode }),
+    ...(retryable === undefined ? {} : { retryable }),
+    ...(attempts === undefined ? {} : { attempts }),
+    ...(causes.length === 0 ? {} : { causes }),
+  })}`
 }
 
 function boundedWaitTimeout(value: unknown): number {

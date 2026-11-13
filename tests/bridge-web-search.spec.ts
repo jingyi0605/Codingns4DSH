@@ -438,6 +438,72 @@ test('MCP web_search 经过 Host /v1/search 返回不可信来源', async () => 
   }
 })
 
+test('MCP web_search 失败时返回结构化诊断，而不是只有 fetch failed', async () => {
+  const failing = {
+    async search() {
+      throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'UND_ERR_CONNECT_TIMEOUT', hostname: 'api.deepseek.com' } })
+    },
+  }
+  const server = await startSubagentBridgeServer({
+    dispatch: async () => { throw new Error('unexpected dispatch') },
+    search: (input, signal) => dispatchBridgeSearch(input, { web: failing }, signal),
+    fetch: (input, signal) => dispatchBridgeFetch(input, { web: failing }, signal),
+  })
+  const child = spawn(process.execPath, bridgeEntryArgs(), {
+    env: {
+      ...process.env,
+      CODINGNS_BRIDGE_URL: server.runtime.baseUrl,
+      CODINGNS_BRIDGE_TOKEN: server.runtime.token,
+      CODINGNS_DSH_SESSION_ID: 's1',
+      CODINGNS_ADAPTER_ID: 'claude-code',
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
+  const responses = new Map<unknown, any>()
+  let buffer = ''
+  child.stdout.setEncoding('utf8')
+  child.stdout.on('data', (chunk: string) => {
+    buffer += chunk
+    let index = buffer.indexOf('\n')
+    while (index >= 0) {
+      const line = buffer.slice(0, index).trim()
+      buffer = buffer.slice(index + 1)
+      if (line !== '') {
+        const message = JSON.parse(line)
+        responses.set(message.id, message)
+      }
+      index = buffer.indexOf('\n')
+    }
+  })
+  const send = (message: Record<string, unknown>): void => { child.stdin.write(`${JSON.stringify(message)}\n`) }
+  const waitFor = async (id: number): Promise<any> => {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      if (responses.has(id)) return responses.get(id)
+      await delay(50)
+    }
+    throw new Error(`MCP 响应超时: ${String(id)}`)
+  }
+  try {
+    send({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'web_search', arguments: { queries: ['公开资料'] } } })
+    const call = await waitFor(1)
+    assert.equal(call.result.isError, true)
+    const text = String(call.result.content?.[0]?.text)
+    assert.match(text, /^Web search failed: fetch failed \(transport error UND_ERR_CONNECT_TIMEOUT, target api\.deepseek\.com\)/u)
+    const structured = JSON.parse(text.slice(text.indexOf('\n') + 1))
+    assert.deepEqual(structured, {
+      ok: false,
+      kind: 'web-search',
+      retryable: true,
+      // 单条查询的传输失败按有界重试处理，只发一次就耗尽的是重试预算。
+      attempts: 2,
+      causes: ['UND_ERR_CONNECT_TIMEOUT'],
+    })
+  } finally {
+    child.kill()
+    await server.close()
+  }
+})
+
 test('Command Code Mod 在普通会话与 Team 会话都注册 web_search', async () => {
   const previous = { ...process.env }
   try {
