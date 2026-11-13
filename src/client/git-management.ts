@@ -21,6 +21,8 @@ import { notifyGitWorkspaceChanged } from './git-workspace-events.js'
 import { readNativeService, readNativeWorkspaceListStore, readNativeWorkspaceSnapshot } from './native-workspace-store.js'
 import { parseVirtualSessionId, parseVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
 import { uiFontSize } from './font-scale.js'
+import type { GitWorktreeItem, GitWorktreeSnapshot } from '../shared/contracts/git.js'
+import { branchOptionValue, buildBranchOptions, isSameWorktreePath, parseBranchOptionValue, pickWorktree, sameWorktreeList, selectWorktreeForDirectory, worktreeOptionValue, worktreeRequestPath, type BranchOption, type ManualWorktreeChoice } from './git-worktree-selection.js'
 
 // 单列 Git 视图需要一个稳定的分段控件；这里保持 React 结构简单，避免引入额外依赖。
 function SegmentedControl<Value extends string>({ id, value, options, onChange, label, disabled }: { readonly id: string; readonly value: Value; readonly options: readonly { readonly value: Value; readonly label: string; readonly title?: string; readonly disabled?: boolean }[]; readonly onChange: (next: Value) => void; readonly label: string; readonly disabled?: boolean }): ReactElement {
@@ -200,6 +202,16 @@ function GitPanel(props: GitTabProps): ReactElement {
   const [diffView, setDiffView] = useState<GitCommitDiff | null>(null)
   const [fileDiff, setFileDiff] = useState<{ readonly path: string; readonly staged: boolean; readonly diff: GitDiff } | null>(null)
   const [activeColumn, setActiveColumn] = useState<'files' | 'history'>('files')
+  const [worktrees, setWorktrees] = useState<readonly GitWorktreeItem[]>([])
+  // 会话目录再次变化时，用户的手动选择作废，重新跟随会话。
+  const sessionDirectory = useSessionWorkingDirectory(props.uiContext, sessionId)
+  const [manualWorktree, setManualWorktree] = useState<ManualWorktreeChoice | null>(null)
+  const selectedWorktree = pickWorktree(worktrees, sessionDirectory, manualWorktree)
+  const worktreePath = worktreeRequestPath(selectedWorktree)
+  // 轮询任务在 Effect 闭包里运行，通过 ref 读取最新的会话目录和手动选择。
+  const selectionRef = useRef({ directory: sessionDirectory, manual: manualWorktree })
+  selectionRef.current = { directory: sessionDirectory, manual: manualWorktree }
+  const pollRef = useRef<{ refresh(options?: { readonly afterPending?: boolean }): Promise<void> } | null>(null)
   const [historyScope, setHistoryScope] = useState<GitHistoryScope>('all')
   const [historyTotalCount, setHistoryTotalCount] = useState(0)
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false)
@@ -232,23 +244,29 @@ function GitPanel(props: GitTabProps): ReactElement {
     setDiffView(null)
     setFileDiff(null)
     const load = async (resolvedWorkspaceId: string, signal: AbortSignal): Promise<boolean | void> => {
-      const cached = readCache(resolvedWorkspaceId)
+      // 旧 Host 没有 git/worktrees：读取失败按「只有主检出」处理。
+      const nextWorktrees = await call<GitWorktreeSnapshot>(props.rpc, 'git/worktrees', { workspaceId: resolvedWorkspaceId }, signal).then((value) => value.worktrees, () => [] as readonly GitWorktreeItem[])
+      if (disposed) return
+      setWorktrees((current) => sameWorktreeList(current, nextWorktrees) ? current : nextWorktrees)
+      const targetPath = worktreeRequestPath(pickWorktree(nextWorktrees, selectionRef.current.directory, selectionRef.current.manual))
+      const cacheScope = cacheId(resolvedWorkspaceId, targetPath)
+      const cached = readCache(cacheScope)
       // 已经手动展开历史后，定时刷新只能更新状态和分支，不能用首屏缓存覆盖已加载的分页。
       if (cached !== null && !historyExpanded.current) { setStatus(cached.status); setHistory(cached.history); setHistoryTotalCount(cached.historyTotalCount); setBranches(cached.branches) }
       try {
-        const nextStatus = await call<GitStatus>(props.rpc, 'git/status', { workspaceId: resolvedWorkspaceId }, signal)
+        const nextStatus = await call<GitStatus>(props.rpc, 'git/status', scoped(resolvedWorkspaceId, targetPath), signal)
         if (disposed) return
         if (nextStatus.snapshot.enabled === false) {
-          setStatus(nextStatus); setHistory([]); setHistoryTotalCount(0); setBranches(null); writeCache(resolvedWorkspaceId, { status: nextStatus, history: [], historyTotalCount: 0, branches: null }); setToast(null)
+          setStatus(nextStatus); setHistory([]); setHistoryTotalCount(0); setBranches(null); writeCache(cacheScope, { status: nextStatus, history: [], historyTotalCount: 0, branches: null }); setToast(null)
           return
         }
         const [nextHistory, nextBranches] = await Promise.all([
-          historyExpanded.current ? Promise.resolve(null) : call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { workspaceId: resolvedWorkspaceId, limit: INITIAL_HISTORY_LIMIT, offset: 0, scope: historyScope }, signal),
-          call<GitBranchSnapshot>(props.rpc, 'git/branches', { workspaceId: resolvedWorkspaceId }, signal),
+          historyExpanded.current ? Promise.resolve(null) : call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { ...scoped(resolvedWorkspaceId, targetPath), limit: INITIAL_HISTORY_LIMIT, offset: 0, scope: historyScope }, signal),
+          call<GitBranchSnapshot>(props.rpc, 'git/branches', scoped(resolvedWorkspaceId, targetPath), signal),
         ])
         if (disposed) return
         const normalizedBranches = normalizeBranchSnapshot(nextBranches)
-        if (nextHistory !== null) { setHistory(nextHistory.items); setHistoryTotalCount(nextHistory.totalCount); writeCache(resolvedWorkspaceId, { status: nextStatus, history: nextHistory.items, historyTotalCount: nextHistory.totalCount, branches: normalizedBranches }) }
+        if (nextHistory !== null) { setHistory(nextHistory.items); setHistoryTotalCount(nextHistory.totalCount); writeCache(cacheScope, { status: nextStatus, history: nextHistory.items, historyTotalCount: nextHistory.totalCount, branches: normalizedBranches }) }
         setStatus(nextStatus); setBranches(normalizedBranches)
       } catch (error) {
         if (!disposed) notify('error', error instanceof Error ? error.message : String(error))
@@ -262,7 +280,8 @@ function GitPanel(props: GitTabProps): ReactElement {
       writeGitWorkspaceOpen(resolvedWorkspaceId, true)
       setWorkspaceId(resolvedWorkspaceId)
       const poll = startSerialPolling((signal) => load(resolvedWorkspaceId, signal), 5_000)
-      cleanupTimer = () => poll.dispose()
+      pollRef.current = poll
+      cleanupTimer = () => { pollRef.current = null; poll.dispose() }
     }).catch((error: unknown) => { if (!disposed) notify('error', error instanceof Error ? error.message : String(error)) })
     return () => { disposed = true; cleanupTimer?.() }
   }, [props.remote, props.rpc, props.uiContext, sessionId, historyScope, projectedWorkspaceId])
@@ -291,21 +310,21 @@ function GitPanel(props: GitTabProps): ReactElement {
     const preserveExpandedHistory = action === 'git/status' && historyExpanded.current
     if (!preserveExpandedHistory) historyExpanded.current = false
     try {
-      const value = await call(props.rpc, action, { workspaceId: targetWorkspaceId, ...payload })
+      const value = await call(props.rpc, action, { ...scoped(targetWorkspaceId, worktreePath), ...payload })
       if (action !== 'git/status') notifyGitWorkspaceChanged(targetWorkspaceId)
       onSuccess?.(value)
-      const nextStatus = await call<GitStatus>(props.rpc, 'git/status', { workspaceId: targetWorkspaceId })
+      const nextStatus = await call<GitStatus>(props.rpc, 'git/status', scoped(targetWorkspaceId, worktreePath))
       setStatus(nextStatus)
       if (nextStatus.snapshot.enabled !== false) {
         const [nextHistory, nextBranches] = await Promise.all([
-          preserveExpandedHistory ? Promise.resolve(null) : call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { workspaceId: targetWorkspaceId, limit: INITIAL_HISTORY_LIMIT, offset: 0, scope: historyScope }),
-          call<GitBranchSnapshot>(props.rpc, 'git/branches', { workspaceId: targetWorkspaceId }),
+          preserveExpandedHistory ? Promise.resolve(null) : call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { ...scoped(targetWorkspaceId, worktreePath), limit: INITIAL_HISTORY_LIMIT, offset: 0, scope: historyScope }),
+          call<GitBranchSnapshot>(props.rpc, 'git/branches', scoped(targetWorkspaceId, worktreePath)),
         ])
         const normalizedBranches = normalizeBranchSnapshot(nextBranches)
-        if (nextHistory !== null) { setHistory(nextHistory.items); setHistoryTotalCount(nextHistory.totalCount); writeCache(targetWorkspaceId, { status: nextStatus, history: nextHistory.items, historyTotalCount: nextHistory.totalCount, branches: normalizedBranches }) }
+        if (nextHistory !== null) { setHistory(nextHistory.items); setHistoryTotalCount(nextHistory.totalCount); writeCache(cacheId(targetWorkspaceId, worktreePath), { status: nextStatus, history: nextHistory.items, historyTotalCount: nextHistory.totalCount, branches: normalizedBranches }) }
         setBranches(normalizedBranches)
       } else {
-        setHistory([]); setHistoryTotalCount(0); setBranches(null); writeCache(targetWorkspaceId, { status: nextStatus, history: [], historyTotalCount: 0, branches: null })
+        setHistory([]); setHistoryTotalCount(0); setBranches(null); writeCache(cacheId(targetWorkspaceId, worktreePath), { status: nextStatus, history: [], historyTotalCount: 0, branches: null })
       }
       notify('success', operation === undefined ? t('git.operationCompleted') : t('git.operationDone', { operation: gitOperationLabel(operation, t) }))
     }
@@ -330,7 +349,7 @@ function GitPanel(props: GitTabProps): ReactElement {
     setGenerating(true)
     notify('info', t('git.generatingMessage'))
     try {
-      const draft = await call<GitCommitMessageDraft>(props.rpc, 'git/generate-message', { workspaceId }, abort.signal)
+      const draft = await call<GitCommitMessageDraft>(props.rpc, 'git/generate-message', scoped(workspaceId, worktreePath), abort.signal)
       if (abort.signal.aborted) return
       setSubject(draft.message)
       setToast(null)
@@ -350,7 +369,7 @@ function GitPanel(props: GitTabProps): ReactElement {
     if (workspaceId === undefined) return
     setBusy(true)
     notify('info', t('git.readingCommitDiff'))
-    void call<GitCommitDiff>(props.rpc, 'git/commit-diff', { workspaceId, commitHash }).then((value) => {
+    void call<GitCommitDiff>(props.rpc, 'git/commit-diff', { ...scoped(workspaceId, worktreePath), commitHash }).then((value) => {
       setDiffView(value)
       setToast(null)
     }).catch((error: unknown) => notify('error', error instanceof Error ? error.message : String(error))).finally(() => setBusy(false))
@@ -359,7 +378,7 @@ function GitPanel(props: GitTabProps): ReactElement {
     if (workspaceId === undefined) return
     setBusy(true)
     notify('info', t('git.readingFileDiff'))
-    void call<GitDiff>(props.rpc, 'git/diff', { workspaceId, path, staged }).then((value) => {
+    void call<GitDiff>(props.rpc, 'git/diff', { ...scoped(workspaceId, worktreePath), path, staged }).then((value) => {
       setFileDiff({ path, staged, diff: value })
       setToast(null)
     }).catch((error: unknown) => notify('error', error instanceof Error ? error.message : String(error))).finally(() => setBusy(false))
@@ -368,10 +387,25 @@ function GitPanel(props: GitTabProps): ReactElement {
     if (workspaceId === undefined || historyLoadingMore || history.length >= historyTotalCount) return
     setHistoryLoadingMore(true)
     historyExpanded.current = true
-    void call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { workspaceId, limit: HISTORY_PAGE_SIZE, offset: history.length, scope: historyScope }).then((page) => {
+    void call<{ items: readonly GitHistoryItem[]; totalCount: number }>(props.rpc, 'git/history', { ...scoped(workspaceId, worktreePath), limit: HISTORY_PAGE_SIZE, offset: history.length, scope: historyScope }).then((page) => {
       setHistory((current) => [...current, ...page.items.filter((item) => !current.some((existing) => existing.commitHash === item.commitHash))])
       setHistoryTotalCount(page.totalCount)
     }).catch((error: unknown) => { historyExpanded.current = history.length > INITIAL_HISTORY_LIMIT; notify('error', error instanceof Error ? error.message : String(error)) }).finally(() => setHistoryLoadingMore(false))
+  }
+  // 一个下拉框同时表达分支与检出目录；会话所在目录对应的检出带「自动」标签。
+  const followedWorktree = selectWorktreeForDirectory(worktrees, sessionDirectory)
+  const branchOptions = buildBranchOptions(branches?.local.map((branch) => branch.name) ?? [], worktrees, followedWorktree)
+  const activeWorktree = selectedWorktree ?? worktrees.find((item) => item.branch !== null && item.branch === branches?.currentBranch) ?? worktrees.find((item) => item.main)
+  const branchValue = worktrees.length > 1 && activeWorktree !== undefined ? worktreeOptionValue(activeWorktree) : branchOptionValue(branches?.currentBranch ?? '')
+  const switchBranchOption = (value: string): void => {
+    const parsed = parseBranchOptionValue(value)
+    if (parsed === undefined) return
+    if (parsed.kind === 'branch') { void run('git/switch', { branchName: parsed.key, create: false }, (result) => setBranches(normalizeBranchSnapshot(result as GitBranchSnapshot))); return }
+    // 选回自动推荐的检出等于恢复跟随会话；选别的检出则只在当前会话目录下有效。
+    const next = followedWorktree !== undefined && isSameWorktreePath(parsed.key, followedWorktree.path) ? null : { path: parsed.key, forDirectory: sessionDirectory }
+    selectionRef.current = { directory: sessionDirectory, manual: next }
+    setManualWorktree(next)
+    void pollRef.current?.refresh({ afterPending: true })
   }
   const changes = status?.changes ?? []
   const staged = changes.filter((item) => hasStagedChanges(item))
@@ -425,7 +459,7 @@ function GitPanel(props: GitTabProps): ReactElement {
         unstaged.length > 0 ? createElement(ChangeSection, { title: t('git.unstagedFiles'), staged: false, items: unstaged, busy, onOpenDiff: openFileDiff, onAction: (action, path) => void run(`git/${action}`, { targets: [path] }), onBatchAction: (action, paths) => void run(`git/${action}`, { targets: paths }), onBulkAction: () => void run('git/stage', { targets: unstaged.map((item) => item.path) }), t }) : null,
       ),
       createElement('div', { className: gitPanelClass.column, style: columnStyle, 'data-git-column': 'history' },
-        createElement(HistorySection, { history, totalCount: historyTotalCount, hasMore: history.length < historyTotalCount, loadingMore: historyLoadingMore, onLoadMore: loadMoreHistory, branches, busy, scope: historyScope, hasRemote: Boolean(status?.snapshot.hasRemote || branches?.remote.length), onScopeChange: setHistoryScope, onSwitch: (branchName) => void run('git/switch', { branchName, create: false }, (value) => setBranches(normalizeBranchSnapshot(value as GitBranchSnapshot))), onCopy: copyCommitHash, onCopyMessage: copyCommitMessage, onViewDiff: openCommitDiff, onUndo: () => runGitOperation('undo'), t }),
+        createElement(HistorySection, { history, totalCount: historyTotalCount, hasMore: history.length < historyTotalCount, loadingMore: historyLoadingMore, onLoadMore: loadMoreHistory, branches, branchOptions, branchValue, busy, scope: historyScope, hasRemote: Boolean(status?.snapshot.hasRemote || branches?.remote.length), onScopeChange: setHistoryScope, onSwitch: switchBranchOption, onCopy: copyCommitHash, onCopyMessage: copyCommitMessage, onViewDiff: openCommitDiff, onUndo: () => runGitOperation('undo'), t }),
       ),
     ) : null,
   )
@@ -606,7 +640,7 @@ function diffLineStyle(kind: ParsedDiffLine['kind']): CSSProperties {
   return diffLineBaseStyle
 }
 
-function HistorySection({ history, totalCount, hasMore, loadingMore, onLoadMore, branches, busy, scope, hasRemote, onScopeChange, onSwitch, onCopy, onCopyMessage, onViewDiff, onUndo, t }: { readonly history: readonly GitHistoryItem[]; readonly totalCount: number; readonly hasMore: boolean; readonly loadingMore: boolean; readonly onLoadMore: () => void; readonly branches: GitBranchSnapshot | null; readonly busy: boolean; readonly scope: GitHistoryScope; readonly hasRemote: boolean; readonly onScopeChange: (scope: GitHistoryScope) => void; readonly onSwitch: (branchName: string) => void; readonly onCopy: (commitHash: string) => void; readonly onCopyMessage: (message: string) => void; readonly onViewDiff: (commitHash: string) => void; readonly onUndo: () => void; readonly t: CodingNsTranslator }): ReactElement {
+function HistorySection({ history, totalCount, hasMore, loadingMore, onLoadMore, branches, busy, scope, hasRemote, onScopeChange, branchOptions, branchValue, onSwitch, onCopy, onCopyMessage, onViewDiff, onUndo, t }: { readonly history: readonly GitHistoryItem[]; readonly totalCount: number; readonly hasMore: boolean; readonly loadingMore: boolean; readonly onLoadMore: () => void; readonly branches: GitBranchSnapshot | null; readonly busy: boolean; readonly scope: GitHistoryScope; readonly hasRemote: boolean; readonly onScopeChange: (scope: GitHistoryScope) => void; readonly branchOptions: readonly BranchOption[]; readonly branchValue: string; readonly onSwitch: (value: string) => void; readonly onCopy: (commitHash: string) => void; readonly onCopyMessage: (message: string) => void; readonly onViewDiff: (commitHash: string) => void; readonly onUndo: () => void; readonly t: CodingNsTranslator }): ReactElement {
   const graph = buildHistoryGraph(history)
   const graphWidth = graph.laneCount * GRAPH_LANE_WIDTH
   const rows: ReactElement[] = []
@@ -634,7 +668,7 @@ function HistorySection({ history, totalCount, hasMore, loadingMore, onLoadMore,
         createElement('option', { value: 'head' }, t('git.currentBranch')),
         createElement('option', { value: 'all' }, t('git.allBranches')),
         ),
-        branches === null ? null : createElement('select', { value: branches.currentBranch, disabled: busy, className: gitPanelClass.select, style: branchSelectStyle, title: t('git.switchBranch'), 'aria-label': t('git.switchBranch'), onChange: (event: { currentTarget: { value: string } }) => onSwitch(event.currentTarget.value) }, ...branches.local.map((branch) => createElement('option', { key: branch.name, value: branch.name }, branch.name))),
+        branches === null ? null : createElement('select', { value: branchValue, disabled: busy, className: gitPanelClass.select, style: branchSelectStyle, title: t(branchOptions.some((option) => option.auto) ? 'git.branchAutoHint' : 'git.switchBranch'), 'aria-label': t('git.switchBranch'), onChange: (event: { currentTarget: { value: string } }) => onSwitch(event.currentTarget.value) }, ...branchOptions.map((option) => createElement('option', { key: option.value, value: option.value }, branchOptionLabel(option, t)))),
       ),
     ),
     history.length === 0
@@ -1046,6 +1080,29 @@ async function readCurrentSession(api: GitSessionApi | undefined, sessionId: str
   return sessionItem(asRecord(items.find((item) => asRecord(item)?.sessionId === sessionId)))
 }
 
+/**
+ * 读取会话"当前所在目录"。头部 cwd 不可变，进入 worktree 后只有 `workingDirectory`
+ * 投影会变化；已加载的基线优先，其次是列表摘要里的值。
+ */
+export function readSessionWorkingDirectory(uiContext: Context | undefined, sessionId: string): string | undefined {
+  const store = asRecord(readNativeService(uiContext, 'sessions', 'list'))
+  const snapshot = typeof store?.getSnapshot === 'function' ? asRecord((store as { getSnapshot(): unknown }).getSnapshot()) : undefined
+  if (snapshot === undefined) return undefined
+  const loaded = asRecord(asRecord(asRecord(snapshot.projectionsBySession)?.[sessionId])?.values)?.workingDirectory
+  const summary = asRecord(asRecord(asRecord(snapshot.byId)?.[sessionId])?.projectionValues)?.workingDirectory
+  for (const value of [loaded, summary]) if (typeof value === 'string' && value.trim() !== '') return value.trim()
+  return undefined
+}
+
+function useSessionWorkingDirectory(uiContext: Context | undefined, sessionId: string): string | undefined {
+  const store = asRecord(readNativeService(uiContext, 'sessions', 'list')) as { subscribe?: (listener: () => void) => () => void } | undefined
+  return useSyncExternalStore(
+    (listener) => typeof store?.subscribe === 'function' ? store.subscribe(listener) : noSubscribe(),
+    () => readSessionWorkingDirectory(uiContext, sessionId),
+    () => undefined,
+  )
+}
+
 function sessionItem(session: Record<string, unknown> | undefined): SessionItem | undefined {
   if (session === undefined) return undefined
   const workspaceId = typeof session.workspaceId === 'string' && session.workspaceId.trim() !== '' ? session.workspaceId : undefined
@@ -1087,9 +1144,18 @@ function unwrapRemoteValue(value: unknown): unknown {
   if (record === undefined || typeof record.ok !== 'boolean') return value
   return record.ok ? record.value : undefined
 }
-function cacheKey(workspaceId: string): string { return `codingns4dsh.git.${workspaceId}` }
-function readCache(workspaceId: string): GitPanelCache | null { try { const value = JSON.parse(localStorage.getItem(cacheKey(workspaceId)) ?? 'null') as { status?: GitStatus; history?: readonly GitHistoryItem[]; historyTotalCount?: number; branches?: GitBranchSnapshot | null } | null; if (!value?.status || typeof value.historyTotalCount !== 'number') return null; return { status: value.status, history: value.history ?? [], historyTotalCount: value.historyTotalCount, branches: normalizeBranchSnapshot(value.branches ?? null) } } catch { return null } }
-function writeCache(workspaceId: string, value: GitPanelCache): void { try { localStorage.setItem(cacheKey(workspaceId), JSON.stringify(value)) } catch { /* 浏览器禁用存储时仅失去缓存 */ } }
+/** 选项文字：分支名；游离 HEAD 的检出显示「目录名 · 游离 HEAD」；自动推荐的检出名称后带「自动」。 */
+function branchOptionLabel(option: BranchOption, t: CodingNsTranslator): string {
+  const folder = (option.worktree?.path ?? '').replaceAll('\\', '/').split('/').filter(Boolean).at(-1) ?? ''
+  const name = option.name !== '' ? option.name : t('git.worktreeLinked', { name: folder, branch: t('git.worktreeDetached') })
+  return option.auto ? t('git.branchAuto', { name }) : name
+}
+function cacheKey(scope: string): string { return `codingns4dsh.git.${scope}` }
+/** 主检出沿用旧缓存键；linked worktree 按目录分开缓存，避免切换时闪出别的检出的数据。 */
+function cacheId(workspaceId: string, worktreePath: string | undefined): string { return worktreePath === undefined ? workspaceId : `${workspaceId}\u0000${worktreePath}` }
+function scoped(workspaceId: string, worktreePath: string | undefined): { readonly workspaceId: string; readonly worktreePath?: string } { return worktreePath === undefined ? { workspaceId } : { workspaceId, worktreePath } }
+function readCache(scope: string): GitPanelCache | null { try { const value = JSON.parse(localStorage.getItem(cacheKey(scope)) ?? 'null') as { status?: GitStatus; history?: readonly GitHistoryItem[]; historyTotalCount?: number; branches?: GitBranchSnapshot | null } | null; if (!value?.status || typeof value.historyTotalCount !== 'number') return null; return { status: value.status, history: value.history ?? [], historyTotalCount: value.historyTotalCount, branches: normalizeBranchSnapshot(value.branches ?? null) } } catch { return null } }
+function writeCache(scope: string, value: GitPanelCache): void { try { localStorage.setItem(cacheKey(scope), JSON.stringify(value)) } catch { /* 浏览器禁用存储时仅失去缓存 */ } }
 function normalizeBranchSnapshot(value: GitBranchSnapshot | null): GitBranchSnapshot | null {
   if (value === null) return null
   const normalize = (item: GitBranchSnapshot['local'][number], fallbackRemote: boolean): GitBranchSnapshot['local'][number] | null => {
@@ -1242,7 +1308,7 @@ const refreshActionStyle: CSSProperties = { minHeight: 32, padding: '6px 12px', 
 // 主按钮沿用 DSH 品牌填充与前景色，暗色下自动变成浅底深字，与内置主按钮一致。
 const submitActionStyle: CSSProperties = { ...refreshActionStyle }
 const primaryButtonStyle: CSSProperties = { minHeight: 30, padding: '5px 12px', borderRadius: 8, fontSize: uiFontSize(12) }
-const branchSelectStyle: CSSProperties = { maxWidth: 150, borderRadius: 8, padding: '3px 5px', fontSize: uiFontSize(11) }
+const branchSelectStyle: CSSProperties = { maxWidth: 170, borderRadius: 8, padding: '3px 5px', fontSize: uiFontSize(11) }
 const scopeSelectStyle: CSSProperties = { ...branchSelectStyle, maxWidth: 92 }
 const loadMoreButtonStyle: CSSProperties = { minHeight: 30, borderRadius: 8, padding: '4px 9px', fontSize: uiFontSize(12) }
 const menuStyle: CSSProperties = { position: 'relative', flex: '0 0 auto', marginLeft: 'auto' }
