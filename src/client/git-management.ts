@@ -21,8 +21,8 @@ import { notifyGitWorkspaceChanged } from './git-workspace-events.js'
 import { readNativeService, readNativeWorkspaceListStore, readNativeWorkspaceSnapshot } from './native-workspace-store.js'
 import { parseVirtualSessionId, parseVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
 import { uiFontSize } from './font-scale.js'
-import type { GitWorktreeItem, GitWorktreeSnapshot } from '../shared/contracts/git.js'
-import { branchOptionValue, buildBranchOptions, isSameWorktreePath, parseBranchOptionValue, pickWorktree, sameWorktreeList, selectWorktreeForDirectory, worktreeOptionValue, worktreeRequestPath, type BranchOption, type ManualWorktreeChoice } from './git-worktree-selection.js'
+import type { GitSessionWorktree, GitWorktreeItem, GitWorktreeSnapshot } from '../shared/contracts/git.js'
+import { branchOptionValue, buildBranchOptions, followKey, isSameWorktreePath, parseBranchOptionValue, pickWorktree, recommendWorktree, sameWorktreeList, worktreeOptionValue, worktreeRequestPath, type BranchOption, type ManualWorktreeChoice } from './git-worktree-selection.js'
 
 // 单列 Git 视图需要一个稳定的分段控件；这里保持 React 结构简单，避免引入额外依赖。
 function SegmentedControl<Value extends string>({ id, value, options, onChange, label, disabled }: { readonly id: string; readonly value: Value; readonly options: readonly { readonly value: Value; readonly label: string; readonly title?: string; readonly disabled?: boolean }[]; readonly onChange: (next: Value) => void; readonly label: string; readonly disabled?: boolean }): ReactElement {
@@ -206,11 +206,14 @@ function GitPanel(props: GitTabProps): ReactElement {
   // 会话目录再次变化时，用户的手动选择作废，重新跟随会话。
   const sessionDirectory = useSessionWorkingDirectory(props.uiContext, sessionId)
   const [manualWorktree, setManualWorktree] = useState<ManualWorktreeChoice | null>(null)
-  const selectedWorktree = pickWorktree(worktrees, sessionDirectory, manualWorktree)
+  // 外部 Agent 不会更新会话目录；Host 根据它最近写入的文件推断所在检出。
+  const [inferredWorktreePath, setInferredWorktreePath] = useState<string | null>(null)
+  const follow = { directory: sessionDirectory, inferredPath: inferredWorktreePath }
+  const selectedWorktree = pickWorktree(worktrees, follow, manualWorktree)
   const worktreePath = worktreeRequestPath(selectedWorktree)
   // 轮询任务在 Effect 闭包里运行，通过 ref 读取最新的会话目录和手动选择。
-  const selectionRef = useRef({ directory: sessionDirectory, manual: manualWorktree })
-  selectionRef.current = { directory: sessionDirectory, manual: manualWorktree }
+  const selectionRef = useRef({ follow, manual: manualWorktree })
+  selectionRef.current = { follow, manual: manualWorktree }
   const pollRef = useRef<{ refresh(options?: { readonly afterPending?: boolean }): Promise<void> } | null>(null)
   const [historyScope, setHistoryScope] = useState<GitHistoryScope>('all')
   const [historyTotalCount, setHistoryTotalCount] = useState(0)
@@ -248,7 +251,13 @@ function GitPanel(props: GitTabProps): ReactElement {
       const nextWorktrees = await call<GitWorktreeSnapshot>(props.rpc, 'git/worktrees', { workspaceId: resolvedWorkspaceId }, signal).then((value) => value.worktrees, () => [] as readonly GitWorktreeItem[])
       if (disposed) return
       setWorktrees((current) => sameWorktreeList(current, nextWorktrees) ? current : nextWorktrees)
-      const targetPath = worktreeRequestPath(pickWorktree(nextWorktrees, selectionRef.current.directory, selectionRef.current.manual))
+      // 只有仓库存在多个检出、且是本机会话时才需要推断；推断失败只是没有额外线索。
+      const inferredPath = nextWorktrees.length > 1 && parseVirtualSessionId(sessionId) === null
+        ? await call<GitSessionWorktree>(props.rpc, 'git/session-worktree', { workspaceId: resolvedWorkspaceId, sessionId }, signal).then((value) => value.path, () => null)
+        : null
+      if (disposed) return
+      setInferredWorktreePath((current) => current === inferredPath ? current : inferredPath)
+      const targetPath = worktreeRequestPath(pickWorktree(nextWorktrees, { directory: selectionRef.current.follow.directory, inferredPath }, selectionRef.current.manual))
       const cacheScope = cacheId(resolvedWorkspaceId, targetPath)
       const cached = readCache(cacheScope)
       // 已经手动展开历史后，定时刷新只能更新状态和分支，不能用首屏缓存覆盖已加载的分页。
@@ -393,7 +402,7 @@ function GitPanel(props: GitTabProps): ReactElement {
     }).catch((error: unknown) => { historyExpanded.current = history.length > INITIAL_HISTORY_LIMIT; notify('error', error instanceof Error ? error.message : String(error)) }).finally(() => setHistoryLoadingMore(false))
   }
   // 一个下拉框同时表达分支与检出目录；会话所在目录对应的检出带「自动」标签。
-  const followedWorktree = selectWorktreeForDirectory(worktrees, sessionDirectory)
+  const followedWorktree = recommendWorktree(worktrees, follow)
   const branchOptions = buildBranchOptions(branches?.local.map((branch) => branch.name) ?? [], worktrees, followedWorktree)
   const activeWorktree = selectedWorktree ?? worktrees.find((item) => item.branch !== null && item.branch === branches?.currentBranch) ?? worktrees.find((item) => item.main)
   const branchValue = worktrees.length > 1 && activeWorktree !== undefined ? worktreeOptionValue(activeWorktree) : branchOptionValue(branches?.currentBranch ?? '')
@@ -402,8 +411,8 @@ function GitPanel(props: GitTabProps): ReactElement {
     if (parsed === undefined) return
     if (parsed.kind === 'branch') { void run('git/switch', { branchName: parsed.key, create: false }, (result) => setBranches(normalizeBranchSnapshot(result as GitBranchSnapshot))); return }
     // 选回自动推荐的检出等于恢复跟随会话；选别的检出则只在当前会话目录下有效。
-    const next = followedWorktree !== undefined && isSameWorktreePath(parsed.key, followedWorktree.path) ? null : { path: parsed.key, forDirectory: sessionDirectory }
-    selectionRef.current = { directory: sessionDirectory, manual: next }
+    const next = followedWorktree !== undefined && isSameWorktreePath(parsed.key, followedWorktree.path) ? null : { path: parsed.key, forKey: followKey(follow) }
+    selectionRef.current = { follow, manual: next }
     setManualWorktree(next)
     void pollRef.current?.refresh({ afterPending: true })
   }

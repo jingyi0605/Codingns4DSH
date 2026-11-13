@@ -37,26 +37,53 @@ export function isSameWorktreePath(left: string, right: string): boolean {
   return normalizePath(left) === normalizePath(right)
 }
 
-/** 用户在下拉框里手动选的检出目录；只对选择时的会话目录有效。 */
-export interface ManualWorktreeChoice {
-  readonly path: string
-  readonly forDirectory: string | undefined
+/** 系统判断会话所在检出的两条线索。 */
+export interface WorktreeFollow {
+  /** 会话的当前目录（DSH 的 workingDirectory 投影）。 */
+  readonly directory: string | undefined
+  /** 由会话最近写入的文件推断出的检出路径；没有依据时为 null。 */
+  readonly inferredPath: string | null
 }
 
 /**
- * 面板最终显示的检出目录：手动选择优先，但会话目录一变就作废，重新跟随会话。
+ * 自动推荐的检出。
+ *
+ * 会话目录落在 linked worktree 里是 DSH 明确记录的事实，直接采用。
+ * 会话目录在主检出（或不在任何检出）时，再看写入路径：外部 Agent 常把 worktree 建在仓库外面，
+ * 并不会更新会话目录，写入的文件才是它实际所在的位置。
+ */
+export function recommendWorktree(worktrees: readonly GitWorktreeItem[], follow: WorktreeFollow): GitWorktreeItem | undefined {
+  const byDirectory = selectWorktreeForDirectory(worktrees, follow.directory)
+  if (byDirectory !== undefined && !byDirectory.main) return byDirectory
+  const inferred = follow.inferredPath === null ? undefined : worktrees.find((item) => isSameWorktreePath(item.path, follow.inferredPath as string))
+  return inferred ?? byDirectory
+}
+
+/** 推荐依据的指纹；任何一条线索变化，用户的手动选择就作废。 */
+export function followKey(follow: WorktreeFollow): string {
+  return `${follow.directory ?? ''}\u0000${follow.inferredPath ?? ''}`
+}
+
+/** 用户在下拉框里手动选的检出目录；只对选择时的推荐依据有效。 */
+export interface ManualWorktreeChoice {
+  readonly path: string
+  readonly forKey: string
+}
+
+/**
+ * 面板最终显示的检出目录：手动选择优先，但推荐依据一变就作废，重新跟随会话。
  * 手动选择的目录已不在列表里（例如被删除）时同样作废。
  */
 export function pickWorktree(
   worktrees: readonly GitWorktreeItem[],
-  directory: string | undefined,
+  follow: WorktreeFollow,
   manual: ManualWorktreeChoice | null,
 ): GitWorktreeItem | undefined {
-  if (manual !== null && manual.forDirectory === directory) {
+  if (manual !== null && manual.forKey === followKey(follow)) {
     const chosen = worktrees.find((item) => isSameWorktreePath(item.path, manual.path))
     if (chosen !== undefined) return chosen
   }
-  return selectWorktreeForDirectory(worktrees, directory)
+  return recommendWorktree(worktrees, follow)
 }
 
 /** 请求里携带的 worktreePath；主检出不带，Host 直接用工作区目录，缓存键和旧版一致。 */
