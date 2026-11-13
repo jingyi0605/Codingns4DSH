@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildBranchOptions, parseBranchOptionValue, pickWorktree, selectWorktreeForDirectory, worktreeRequestPath } from '../data/build/dist/client/git-worktree-selection.js'
+import { buildBranchOptions, followKey, parseBranchOptionValue, pickWorktree, recommendWorktree, selectWorktreeForDirectory, worktreeRequestPath } from '../data/build/dist/client/git-worktree-selection.js'
 
 const main = { path: '/code/repo', branch: 'main', main: true }
 const linked = { path: '/code/repo/.agents/worktrees/feature', branch: 'feature', main: false }
@@ -31,15 +31,37 @@ test('没有会话目录时不选择任何检出', () => {
   assert.equal(selectWorktreeForDirectory(worktrees, '  '), undefined)
 })
 
-test('手动选择只在会话目录不变时生效，目录变化后重新跟随会话', () => {
-  const manual = { path: main.path, forDirectory: linked.path }
-  assert.equal(pickWorktree(worktrees, linked.path, manual), main)
-  assert.equal(pickWorktree(worktrees, outer.path, manual), outer)
-  assert.equal(pickWorktree(worktrees, linked.path, null), linked)
+const at = (directory, inferredPath = null) => ({ directory, inferredPath })
+
+test('手动选择只在推荐依据不变时生效，依据变化后重新跟随会话', () => {
+  const manual = { path: main.path, forKey: followKey(at(linked.path)) }
+  assert.equal(pickWorktree(worktrees, at(linked.path), manual), main)
+  assert.equal(pickWorktree(worktrees, at(outer.path), manual), outer)
+  assert.equal(pickWorktree(worktrees, at(linked.path), null), linked)
 })
 
 test('手动选择的检出已被删除时回退到会话所在的检出', () => {
-  assert.equal(pickWorktree([main], '/code/repo/src', { path: linked.path, forDirectory: '/code/repo/src' }), main)
+  assert.equal(pickWorktree([main], at('/code/repo/src'), { path: linked.path, forKey: followKey(at('/code/repo/src')) }), main)
+})
+
+test('外部 Agent 的会话目录停在主检出时，用写入路径推断出的检出作为推荐', () => {
+  assert.equal(recommendWorktree(worktrees, at('/code/repo', outer.path)), outer)
+  assert.equal(pickWorktree(worktrees, at('/code/repo', outer.path), null), outer)
+})
+
+test('会话目录已在 linked worktree 里时以 DSH 的记录为准，不被推断覆盖', () => {
+  assert.equal(recommendWorktree(worktrees, at(linked.path, outer.path)), linked)
+})
+
+test('推断出的路径不在检出列表里时沿用会话目录', () => {
+  assert.equal(recommendWorktree(worktrees, at('/code/repo', '/code/gone')), main)
+  assert.equal(recommendWorktree(worktrees, at(undefined, null)), undefined)
+})
+
+test('推断结果变化时手动选择作废', () => {
+  const manual = { path: main.path, forKey: followKey(at('/code/repo', null)) }
+  assert.equal(pickWorktree(worktrees, at('/code/repo', null), manual), main)
+  assert.equal(pickWorktree(worktrees, at('/code/repo', outer.path), manual), outer)
 })
 
 test('主检出不带 worktreePath，linked worktree 才带', () => {
