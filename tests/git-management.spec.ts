@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile as execFileCallback } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { promisify } from 'node:util'
 import test from 'node:test'
@@ -353,7 +353,7 @@ test('Git Client 与 Host 接线包含侧栏面板和所有版本 RPC', async ()
   assert.doesNotMatch(source, /name: 'main'/u)
   assert.match(source, /String\(props\.sessionId\)/u)
   assert.doesNotMatch(source, /info\.tab\.sessionId/u)
-  for (const marker of ['git/status', 'git/init', 'git/diff', 'git/stage', 'git/unstage', 'git/discard', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/switch', 'git/fetch', 'git/pull', 'git/push', 'git/undo']) {
+  for (const marker of ['git/status', 'git/init', 'git/diff', 'git/stage', 'git/unstage', 'git/discard', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/worktrees', 'git/switch', 'git/fetch', 'git/pull', 'git/push', 'git/undo']) {
     assert.match(hostRpc, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
   }
 })
@@ -440,4 +440,79 @@ test('旧宿主的多个会话解析并发共享一次 session/list 基线', asy
   assert.deepEqual(await Promise.all([first, second]), ['workspace-a', 'workspace-b'])
   assert.equal(await resolveGitWorkspaceId(remote, 'missing'), undefined)
   assert.equal(listCalls, 1)
+})
+
+async function createRepositoryWithWorktree(): Promise<{ root: string; linked: string; outside: string }> {
+  const parent = await mkdtemp(`${tmpdir()}/codingns-git-worktree-`)
+  const root = `${parent}/repo`
+  const outside = `${parent}/outside`
+  await mkdir(root, { recursive: true })
+  await mkdir(outside, { recursive: true })
+  await git(root, ['init', '-b', 'main'])
+  await git(root, ['config', 'user.email', 'test@example.com'])
+  await git(root, ['config', 'user.name', 'Test'])
+  await writeFile(`${root}/README.md`, '# main\n', 'utf8')
+  await git(root, ['add', '.'])
+  await git(root, ['commit', '-m', 'init'])
+  const linked = `${root}/.agents/worktrees/feature`
+  await git(root, ['worktree', 'add', '-b', 'feature', linked])
+  return { root, linked, outside }
+}
+
+test('Git Host 列出同一仓库的主检出和 linked worktree', async () => {
+  const { root, linked } = await createRepositoryWithWorktree()
+  try {
+    const { table } = startGitFeature(new Map([['workspace-1', root]]))
+    const result = await rpc(table, 'git/worktrees', { workspaceId: 'workspace-1' }) as { worktrees: readonly { path: string; branch: string | null; main: boolean }[] }
+    assert.deepEqual(result.worktrees.map((item) => [item.branch, item.main]), [['main', true], ['feature', false]])
+    assert.equal(result.worktrees[1]?.path, await realpath(linked))
+  } finally {
+    await rm(root.replace(/\/repo$/u, ''), { recursive: true, force: true })
+  }
+})
+
+test('Git Host 非仓库目录返回空的 worktree 列表', async () => {
+  const directory = await mkdtemp(`${tmpdir()}/codingns-git-worktree-none-`)
+  try {
+    const { table } = startGitFeature(new Map([['workspace-1', directory]]))
+    assert.deepEqual(await rpc(table, 'git/worktrees', { workspaceId: 'workspace-1' }), { worktrees: [] })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('Git Host 按 worktreePath 在对应检出里执行，且不影响主检出', async () => {
+  const { root, linked } = await createRepositoryWithWorktree()
+  try {
+    const { table } = startGitFeature(new Map([['workspace-1', root]]))
+    await writeFile(`${linked}/feature.txt`, 'only in feature\n', 'utf8')
+    const mainStatus = await rpc(table, 'git/status', { workspaceId: 'workspace-1' }) as { snapshot: { branch: string }; changes: readonly { path: string }[] }
+    const linkedStatus = await rpc(table, 'git/status', { workspaceId: 'workspace-1', worktreePath: linked }) as { snapshot: { branch: string }; changes: readonly { path: string }[] }
+    assert.equal(mainStatus.snapshot.branch, 'main')
+    // 嵌套在主检出之内的 linked worktree 有自己的状态，不能让主检出显示成脏。
+    assert.deepEqual(mainStatus.changes, [])
+    assert.equal((mainStatus as unknown as { snapshot: { isDirty: boolean } }).snapshot.isDirty, false)
+    assert.equal(linkedStatus.snapshot.branch, 'feature')
+    assert.deepEqual(linkedStatus.changes.map((item) => item.path), ['feature.txt'])
+
+    await rpc(table, 'git/stage', { workspaceId: 'workspace-1', worktreePath: linked, targets: ['feature.txt'] })
+    await rpc(table, 'git/commit', { workspaceId: 'workspace-1', worktreePath: linked, subject: 'add feature file' })
+    assert.equal(await gitOutput(linked, ['log', '-1', '--format=%s']), 'add feature file')
+    assert.equal(await gitOutput(root, ['log', '-1', '--format=%s']), 'init')
+  } finally {
+    await rm(root.replace(/\/repo$/u, ''), { recursive: true, force: true })
+  }
+})
+
+test('Git Host 拒绝不属于当前仓库的 worktreePath', async () => {
+  const { root, outside } = await createRepositoryWithWorktree()
+  try {
+    const { table } = startGitFeature(new Map([['workspace-1', root]]))
+    await git(outside, ['init', '-b', 'main'])
+    for (const worktreePath of [outside, `${root}/.agents`, '/', `${root}/missing`]) {
+      await assert.rejects(() => rpc(table, 'git/status', { workspaceId: 'workspace-1', worktreePath }), /GIT_WORKTREE_UNAVAILABLE/u)
+    }
+  } finally {
+    await rm(root.replace(/\/repo$/u, ''), { recursive: true, force: true })
+  }
 })
