@@ -4,6 +4,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import { ClaudeCodeDriver } from '../src/host/cli-adapters/claude-driver.js'
 import { createSubagentBridgeRuntime, getSubagentBridge, setSubagentBridge } from '../src/host/cli-bridge/bridge-holder.js'
+import { claudeAllowedBridgeTools } from '../data/build/dist/host/cli-bridge/injections.js'
 import type { CodingNsAgentEvent, CodingNsCliTurnInput } from '../src/shared/contracts/cli-adapter.js'
 
 const providerSessionId = 'retained-claude-conversation'
@@ -75,7 +76,12 @@ for (const role of ['ordinary', 'lead', 'teammate'] as const) {
     assert.equal(events.filter(event => event.type === 'session-binding').length, resumed ? 0 : 1)
     assert.equal(f.launches(), 1, 'The adapter must leave retries to the existing Claude invocation')
     assert.equal(f.input.filter(message => message.type === 'user').length, 1, 'A retry must not replay the prompt')
-    assert.equal(f.args().includes('--allowedTools'), role !== 'ordinary')
+    // 桥接工具对所有角色显式授权；普通会话改用派发工具名，联网工具不变。
+    assert.equal(f.args().includes('--allowedTools'), true)
+    assert.equal(
+      f.args()[f.args().indexOf('--allowedTools') + 1],
+      claudeAllowedBridgeTools(role !== 'ordinary'),
+    )
     assert.equal(f.args().includes('--resume'), resumed)
     assert.equal(f.args()[f.args().indexOf('--model') + 1], 'sonnet', 'Retries must not silently change models')
     assert.equal(f.killed(), true, 'The actual terminal result still releases the process')

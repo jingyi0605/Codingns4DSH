@@ -9,7 +9,7 @@ import { createAgentTeamAdapter, DshAgentTeamAdapter, type TeamAgent } from '../
 import { CodingNsTeamDispatcher } from '../data/build/dist/host/cli-bridge/team-dispatch.js'
 import { createSubagentBridgeRuntime, setSubagentBridge } from '../data/build/dist/host/cli-bridge/bridge-holder.js'
 import { startSubagentBridgeServer } from '../data/build/dist/host/cli-bridge/bridge-server.js'
-import { claudeBridgeArgs, codexBridgeArgs, codexBridgeDeveloperInstructions, acpBridgeMcpServers, openCodeBridgeMcpConfig, commandCodeNativeAgentEnvironment } from '../data/build/dist/host/cli-bridge/injections.js'
+import { claudeBridgeArgs, claudeAllowedBridgeTools, codexBridgeArgs, codexBridgeDeveloperInstructions, acpBridgeMcpServers, openCodeBridgeMcpConfig, commandCodeNativeAgentEnvironment } from '../data/build/dist/host/cli-bridge/injections.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 import { CodingNsCliSessionStore } from '../data/build/dist/host/cli-adapters/session-store.js'
 import { registerNativeTeamSubagentProviders } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
@@ -409,6 +409,8 @@ test('Team discovery uses one role-specific tool and injected transports carry s
     assert.match(args[args.indexOf('--append-system-prompt') + 1]!, /mcp__codingns__web_search/)
     assert.match(args[args.indexOf('--append-system-prompt') + 1]!, /mcp__codingns__web_fetch/)
     assert.equal(args[args.indexOf('--allowedTools') + 1], 'mcp__codingns__agent_team,mcp__codingns__web_search,mcp__codingns__web_fetch')
+    // Team 会话不再覆盖普通会话的授权形态：两种形态都在同一处生成。
+    assert.equal(claudeAllowedBridgeTools(true), args[args.indexOf('--allowedTools') + 1])
     assert.match(codexBridgeDeveloperInstructions('root')!, /codingns.agent_team/)
     assert.match(codexBridgeDeveloperInstructions('root')!, /codingns.web_search/)
     assert.match(codexBridgeDeveloperInstructions('root')!, /codingns.web_fetch/)
@@ -507,4 +509,50 @@ test('late native Team service installation and removal update feature tools wit
     await features.disable('cliAdapters')
     assert.equal(registered.has('agent_team'), false)
   } finally { await features.disable('cliAdapters'); await remove?.(); await h.dispose() }
+})
+
+test('Team 模式被手动关闭与 Team 服务被移除是两种状态，外部成员只在前者降级为普通会话', async () => {
+  const root: TeamAgent = { id: 'root', session: { header: { id: 'root' } } }
+  const agents = new Map<string, TeamAgent>([['root', root]])
+  let teamEnabled = true
+  const service = {
+    isEnabled: () => teamEnabled,
+    listTasks: () => [],
+    getTask: () => ({}),
+    createTask: async () => ({}),
+    updateTask: async () => ({}),
+  }
+  const subagents = {
+    namesOf: () => ({ self: 'lead' }),
+    rootOf: () => root,
+    listDescendants: async () => [],
+    startActivation: async () => ({}),
+  }
+  const registry = new CodingNsCliAdapterRegistry([])
+  let adapter: DshAgentTeamAdapter | undefined = new DshAgentTeamAdapter(service, { get: id => agents.get(id), list: () => [...agents.values()] }, undefined, subagents)
+  let bridgeEnabled = true
+  const dispatcher = new CodingNsTeamDispatcher({ adapter: () => adapter, registry, enabled: () => bridgeEnabled })
+  try {
+    registry.setSession('root', { adapterId: 'dsh' })
+    // 开启：有身份，不属于“被关闭”。
+    assert.equal(dispatcher.identity('root')?.role, 'lead')
+    assert.equal(dispatcher.isTeamModeDisabled('root'), false)
+    // 手动关闭：没有身份，且明确识别为“被关闭”。
+    teamEnabled = false
+    assert.equal(dispatcher.identity('root'), undefined)
+    assert.equal(dispatcher.isTeamModeDisabled('root'), true)
+    // 桥接设置关闭、会话不存在都不能被当成“被关闭”，调用方应继续阻断。
+    bridgeEnabled = false
+    assert.equal(dispatcher.isTeamModeDisabled('root'), false)
+    bridgeEnabled = true
+    assert.equal(dispatcher.isTeamModeDisabled('missing'), false)
+    // Team 服务被移除：同样没有身份，但不是“被关闭”。
+    adapter.dispose()
+    adapter = undefined
+    assert.equal(dispatcher.identity('root'), undefined)
+    assert.equal(dispatcher.isTeamModeDisabled('root'), false)
+  } finally {
+    adapter?.dispose()
+    await registry.dispose()
+  }
 })

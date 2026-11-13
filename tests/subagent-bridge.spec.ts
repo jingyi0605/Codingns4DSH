@@ -83,7 +83,10 @@ test('子代理桥接注入：Command Code 始终屏蔽原生 agent，桥接开�
     const config = JSON.parse(claude[configIndex + 1]!)
     assert.equal(config.mcpServers.codingns.env.CODINGNS_BRIDGE_TOKEN, ACTIVE_RUNTIME.token)
     assert.ok(String(config.mcpServers.codingns.args[0]).endsWith('mcp-stdio-entry.js'))
-    assert.deepEqual(claude.slice(configIndex + 2, configIndex + 5), ['--append-system-prompt', claude[configIndex + 3], '--disallowedTools'])
+    // 系统提示后紧跟显式的工具授权（Team 令牌存在时用 agent_team），再屏蔽内建子代理。
+    assert.deepEqual(claude.slice(configIndex + 2, configIndex + 5), ['--append-system-prompt', claude[configIndex + 3], '--allowedTools'])
+    // 普通会话（无 Team 令牌）也必须显式授权联网工具，协调工具用 agent_subagent。
+    assert.equal(claude[configIndex + 5], 'mcp__codingns__agent_subagent,mcp__codingns__web_search,mcp__codingns__web_fetch')
     assert.deepEqual(claude.slice(-3), ['--disallowedTools', 'Task', 'Agent'])
     assert.ok(existsSync(sourceEntry(bridgeMcpEntryPath())))
 
