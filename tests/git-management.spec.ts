@@ -353,7 +353,7 @@ test('Git Client 与 Host 接线包含侧栏面板和所有版本 RPC', async ()
   assert.doesNotMatch(source, /name: 'main'/u)
   assert.match(source, /String\(props\.sessionId\)/u)
   assert.doesNotMatch(source, /info\.tab\.sessionId/u)
-  for (const marker of ['git/status', 'git/init', 'git/diff', 'git/stage', 'git/unstage', 'git/discard', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/worktrees', 'git/switch', 'git/fetch', 'git/pull', 'git/push', 'git/undo']) {
+  for (const marker of ['git/status', 'git/init', 'git/diff', 'git/stage', 'git/unstage', 'git/discard', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/worktrees', 'git/session-worktree', 'git/switch', 'git/fetch', 'git/pull', 'git/push', 'git/undo']) {
     assert.match(hostRpc, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
   }
 })
@@ -511,6 +511,72 @@ test('Git Host 拒绝不属于当前仓库的 worktreePath', async () => {
     await git(outside, ['init', '-b', 'main'])
     for (const worktreePath of [outside, `${root}/.agents`, '/', `${root}/missing`]) {
       await assert.rejects(() => rpc(table, 'git/status', { workspaceId: 'workspace-1', worktreePath }), /GIT_WORKTREE_UNAVAILABLE/u)
+    }
+  } finally {
+    await rm(root.replace(/\/repo$/u, ''), { recursive: true, force: true })
+  }
+})
+
+function sessionWriting(...paths: string[]) {
+  return {
+    get: () => ({ snapshotEvents: () => paths.flatMap((path, index) => [
+      { type: 'tool/call', data: { callId: `write-${index}`, name: 'write', arguments: JSON.stringify({ file_path: path, content: 'x' }) } },
+      { type: 'tool/result', data: { message: { role: 'tool', toolCallId: `write-${index}`, content: [] } } },
+    ]) }),
+  }
+}
+
+function startGitFeatureWithSession(roots: Map<string, string>, nativeSessions: unknown): { table: CodingNsRpcTable } {
+  const table = new CodingNsRpcTable()
+  const resources: ResourceScope = { disposers: [], add(disposer) { this.disposers.push(disposer) } }
+  const feature = createGitManagementFeature()
+  feature.start({
+    descriptor: feature.descriptor,
+    resources,
+    services: { rpc: table, resolveWorkspaceRoot: (workspaceId: string) => roots.get(workspaceId) ?? null, nativeSessions } as never,
+  })
+  return { table }
+}
+
+test('Git Host 根据会话最近写入的文件推断它所在的 worktree，包括仓库目录之外的', async () => {
+  const { root, linked } = await createRepositoryWithWorktree()
+  const outsideParent = await mkdtemp(`${tmpdir()}/codingns-git-outside-wt-`)
+  const external = `${outsideParent}/external`
+  try {
+    await git(root, ['worktree', 'add', '-b', 'external', external])
+    const roots = new Map([['workspace-1', root]])
+    const ask = (...paths: string[]) => rpc(startGitFeatureWithSession(roots, sessionWriting(...paths)).table, 'git/session-worktree', { workspaceId: 'workspace-1', sessionId: 's' })
+    assert.deepEqual(await ask(`${external}/novel.md`), { path: await realpath(external) })
+    assert.deepEqual(await ask(`${linked}/a.txt`), { path: await realpath(linked) })
+    // 最近一次写入优先。
+    assert.deepEqual(await ask(`${external}/old.md`, `${root}/README.md`), { path: await realpath(root) })
+    assert.deepEqual(await ask(`${root}/README.md`, `${external}/new.md`), { path: await realpath(external) })
+    // 文件还没落盘（目录存在、文件不存在）也能按所在目录判断。
+    assert.deepEqual(await ask(`${external}/not-created-yet/deep/file.md`), { path: await realpath(external) })
+  } finally {
+    await rm(root.replace(/\/repo$/u, ''), { recursive: true, force: true })
+    await rm(outsideParent, { recursive: true, force: true })
+  }
+})
+
+test('Git Host 没有依据时不推断：无写入、写入在仓库之外、只有主检出', async () => {
+  const { root, outside } = await createRepositoryWithWorktree()
+  try {
+    const roots = new Map([['workspace-1', root]])
+    const ask = (nativeSessions: unknown) => rpc(startGitFeatureWithSession(roots, nativeSessions).table, 'git/session-worktree', { workspaceId: 'workspace-1', sessionId: 's' })
+    assert.deepEqual(await ask(sessionWriting()), { path: null })
+    assert.deepEqual(await ask(sessionWriting(`${outside}/elsewhere.md`)), { path: null })
+    assert.deepEqual(await ask(undefined), { path: null })
+    // 相对路径需要会话当时的目录才能还原，不猜。
+    assert.deepEqual(await ask(sessionWriting('relative/file.md')), { path: null })
+
+    const lone = await mkdtemp(`${tmpdir()}/codingns-git-lone-`)
+    try {
+      await git(lone, ['init', '-b', 'main'])
+      const table = startGitFeatureWithSession(new Map([['workspace-1', lone]]), sessionWriting(`${lone}/a.md`)).table
+      assert.deepEqual(await rpc(table, 'git/session-worktree', { workspaceId: 'workspace-1', sessionId: 's' }), { path: null })
+    } finally {
+      await rm(lone, { recursive: true, force: true })
     }
   } finally {
     await rm(root.replace(/\/repo$/u, ''), { recursive: true, force: true })

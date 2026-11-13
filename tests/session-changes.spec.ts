@@ -249,3 +249,17 @@ test('没有 uiConversation.views 时仍注册 conversation.view 标签', () => 
   dispose?.()
   for (const disposer of disposers) disposer()
 })
+
+test('会话写入过的绝对路径按最近写入排序，不限于某个工作区，且不猜相对路径', async () => {
+  const { readSessionWrittenPaths } = await import('../data/build/dist/host/session-changes.js')
+  const write = (id: string, path: string) => [
+    { type: 'tool/call', data: { callId: id, name: 'write', arguments: JSON.stringify({ file_path: path }) } },
+    { type: 'tool/result', data: { message: { role: 'tool', toolCallId: id, content: [] } } },
+  ]
+  const paths = await readSessionWrittenPaths({
+    nativeSessions: { get: () => ({ snapshotEvents: () => [
+      ...write('a', '/repo-a/one.md'), ...write('b', '/elsewhere/two.md'), ...write('c', 'relative.md'), ...write('d', '/repo-a/one.md'),
+    ] }) },
+  } as never, 'session-1')
+  assert.deepEqual(paths, ['/elsewhere/two.md', '/repo-a/one.md'])
+})
