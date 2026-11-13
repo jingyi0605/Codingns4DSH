@@ -225,8 +225,33 @@ export function createCliAdaptersFeature(options: {
         ...(context.services.settings === undefined ? {} : { settings: context.services.settings }),
         ...(context.services.nativeSessions === undefined ? {} : { nativeSessions: context.services.nativeSessions }),
       })
-      const disposeForkAdapterBinding = installForkAdapterBinding(nativeSessions?.controller, nativeSessions, sessionStore, registry)
+      // 冷启动时 Host 创建 bridge 早于 DSH 的 sessionController 就绪，bridge.controller
+      // 因此可能是 undefined；只在启动瞬间取一次会让 fork 钩子永远装不上，fork 出来的
+      // 子会话就成了默认 DSH 会话。所以已有 controller 时立即安装，同时订阅
+      // sessionController 就绪事件，晚到的 controller 也会被包装。
+      let forkBoundController: unknown
+      const bindForkAdapter = (controller: CodingNsNativeSessionController | undefined): (() => void) | undefined => {
+        if (controller === undefined || controller === forkBoundController) return undefined
+        const dispose = installForkAdapterBinding(controller, nativeSessions, sessionStore, registry)
+        if (dispose === undefined) return undefined
+        forkBoundController = controller
+        return () => {
+          if (forkBoundController === controller) forkBoundController = undefined
+          dispose()
+        }
+      }
+      const disposeForkAdapterBinding = bindForkAdapter(nativeSessions?.controller)
       if (disposeForkAdapterBinding !== undefined) context.resources.add(disposeForkAdapterBinding)
+      const forkControllerScope = context.services.dshContext?.inject?.(['sessionController'], (scoped) => {
+        const controller = asRecord(scoped.get('sessionController'))
+        if (typeof controller?.fork !== 'function') return undefined
+        const dispose = bindForkAdapter(controller as unknown as CodingNsNativeSessionController)
+        if (dispose === undefined) return undefined
+        // 钩子随本 Feature 释放，不依赖 inject 作用域是否回收回调返回值。
+        context.resources.add(dispose)
+        return dispose
+      })
+      if (forkControllerScope !== undefined) context.resources.add(() => forkControllerScope.dispose())
       setAdapterRegistry(registry)
       const teamInputs = new TeamInputTracker()
       context.resources.add(() => teamInputs.clear())
@@ -1755,8 +1780,10 @@ function installForkAdapterBinding(
   }
   return () => {
     try {
+      // Cordis 代理上的赋值会落到真实服务实例，`fork` 原本在原型上；没有自有描述符时
+      // 删除自有属性才能还原，而不是在实例上再留一个指向原函数的自有属性。
       if (originalDescriptor !== undefined) Object.defineProperty(controller, 'fork', originalDescriptor)
-      else controller.fork = original
+      else delete controller.fork
     } catch { /* A replaced Host controller owns the current method. */ }
   }
 }
