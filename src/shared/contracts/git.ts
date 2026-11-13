@@ -132,6 +132,20 @@ export interface GitBranchSnapshot {
   readonly remote: readonly GitBranchItem[]
 }
 
+/** 同一仓库下的一个检出目录；主检出和 linked worktree 都用同一个结构。 */
+export interface GitWorktreeItem {
+  /** 规范化后的绝对路径（已解析符号链接），用于和会话目录比较。 */
+  readonly path: string
+  /** 当前检出的本地分支；游离 HEAD 或裸仓库时为 null。 */
+  readonly branch: string | null
+  /** 是否为仓库的主检出（`git worktree list` 的第一项）。 */
+  readonly main: boolean
+}
+
+export interface GitWorktreeSnapshot {
+  readonly worktrees: readonly GitWorktreeItem[]
+}
+
 export interface GitCommitResult {
   readonly commitHash: string
   readonly summary: string

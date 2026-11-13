@@ -1,5 +1,6 @@
 import { execFile as execFileCallback } from 'node:child_process'
 import { promisify } from 'node:util'
+import { realpath } from 'node:fs/promises'
 import { isAbsolute, relative, resolve } from 'node:path'
 import type { FeatureModule } from '../../shared/contracts/feature.js'
 import type {
@@ -16,6 +17,8 @@ import type {
   GitHistoryRef,
   GitHistoryScope,
   GitStatus,
+  GitWorktreeItem,
+  GitWorktreeSnapshot,
 } from '../../shared/contracts/git.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import type { CodingNsHostServices } from './types.js'
@@ -75,9 +78,14 @@ export function createGitManagementFeature(options: { readonly llm?: NativeLlmTe
         if (action === 'models') return llm?.catalog() ?? { models: [], default: null, errors: ['The native model service is unavailable.'] }
         const input = record(payload)
         const workspaceId = requiredString(input.workspaceId, 'workspaceId')
-        const root = context.services.resolveManagedWorkspaceRoot?.(workspaceId)
+        const workspaceRoot = context.services.resolveManagedWorkspaceRoot?.(workspaceId)
           ?? context.services.resolveWorkspaceRoot?.(workspaceId)
-        if (root === null || root === undefined) throw new CodingNsRpcError('GIT_WORKSPACE_UNAVAILABLE', '当前 Workspace 没有可用的本地目录')
+        if (workspaceRoot === null || workspaceRoot === undefined) throw new CodingNsRpcError('GIT_WORKSPACE_UNAVAILABLE', '当前 Workspace 没有可用的本地目录')
+        if (action === 'worktrees') return readWorktrees(workspaceRoot)
+        // 会话可能在同一仓库的另一个 worktree 里工作；只接受 `git worktree list` 列出的目录。
+        const root = typeof input.worktreePath === 'string' && input.worktreePath.trim() !== ''
+          ? await resolveWorktreeRoot(workspaceRoot, input.worktreePath.trim())
+          : workspaceRoot
         switch (action) {
           case 'generate-message': {
             const settings = normalizeGitManagementSettings(context.services.settings?.get()?.gitManagement)
@@ -119,7 +127,10 @@ async function readStatus(workspaceId: string, root: string): Promise<GitStatus>
   let result: { stdout: string; stderr: string }
   try {
     // 必须按文件返回未跟踪项；Git 默认会把整个未跟踪目录折叠成一个目录项。
-    result = await runGit(root, ['status', '--porcelain=v1', '-z', '--branch', '--untracked-files=all'])
+    // 嵌套在本检出之内的其他 linked worktree（DSH 默认建在 .agents/worktrees 下）会显示成一个
+    // 未跟踪目录并让 isDirty 恒为真；它们有自己的状态，这里用 pathspec 排除。
+    const nested = await nestedWorktreePathspecs(root)
+    result = await runGit(root, ['status', '--porcelain=v1', '-z', '--branch', '--untracked-files=all', ...(nested.length === 0 ? [] : ['--', '.', ...nested])])
   } catch (error) {
     if (!isNotGitRepositoryError(error)) throw error
     return {
@@ -415,6 +426,45 @@ function parseHistoryRefs(decoration: string, refByShortName: ReadonlyMap<string
     refs.push({ name: record.shortName, kind: record.kind, remoteName: record.remoteName })
   }
   return refs
+}
+
+/** 位于 root 之内的其他检出目录，转成 git 的排除 pathspec；查询失败时不排除，保持原有行为。 */
+async function nestedWorktreePathspecs(root: string): Promise<string[]> {
+  const [{ worktrees }, self] = await Promise.all([readWorktrees(root).catch(() => ({ worktrees: [] as GitWorktreeItem[] })), realpath(root).catch(() => root)])
+  return worktrees.flatMap((item) => {
+    const path = relative(self, item.path)
+    return path === '' || path.startsWith('..') || isAbsolute(path) ? [] : [`:(exclude)${path.replaceAll('\\', '/')}`]
+  })
+}
+
+/** 列出工作区所在仓库的全部检出目录；非 Git 目录返回空列表。 */
+async function readWorktrees(root: string): Promise<GitWorktreeSnapshot> {
+  let output: string
+  try {
+    output = (await runGit(root, ['worktree', 'list', '--porcelain'])).stdout
+  } catch (error) {
+    if (isNotGitRepositoryError(error)) return { worktrees: [] }
+    throw error
+  }
+  const worktrees: GitWorktreeItem[] = []
+  for (const [index, block] of output.split(/\n\n+/u).entries()) {
+    const lines = block.split('\n')
+    const rawPath = lines.find((line) => line.startsWith('worktree '))?.slice('worktree '.length)
+    // 裸仓库没有工作文件；目录已被删除（prunable）的检出也无法在面板里使用。
+    if (rawPath === undefined || lines.includes('bare')) continue
+    const path = await realpath(rawPath).catch(() => undefined)
+    if (path === undefined) continue
+    const ref = lines.find((line) => line.startsWith('branch '))?.slice('branch '.length)
+    worktrees.push({ path, branch: ref?.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : null, main: index === 0 })
+  }
+  return { worktrees }
+}
+
+async function resolveWorktreeRoot(workspaceRoot: string, requested: string): Promise<string> {
+  const target = await realpath(requested).catch(() => undefined)
+  const match = target === undefined ? undefined : (await readWorktrees(workspaceRoot)).worktrees.find((item) => item.path === target)
+  if (match === undefined) throw new CodingNsRpcError('GIT_WORKTREE_UNAVAILABLE', '该目录不是当前仓库的 worktree')
+  return match.path
 }
 
 async function readBranches(root: string): Promise<GitBranchSnapshot> {
