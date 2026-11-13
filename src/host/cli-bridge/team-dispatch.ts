@@ -38,6 +38,26 @@ export class CodingNsTeamDispatcher {
     } catch { return undefined }
   }
 
+  /**
+   * 原生 Team 的会话开关是否处于关闭状态。
+   *
+   * rc.2 起 Team 按根会话手动开启；关闭只隐藏 Team 工具和指引，成员与任务照旧保留。
+   * 这和“Team 服务被移除、适配器缺失”不同：前者外部成员应当降级成普通会话继续工作，
+   * 后者才是需要用户修复的错误。无法确认时返回 false，让调用方按错误处理。
+   */
+  isTeamModeDisabled(sessionId: string): boolean {
+    if (!this.options.enabled()) return false
+    const adapter = this.options.adapter()
+    const agent = adapter?.resolveAgent(sessionId)
+    if (!adapter || !agent) return false
+    try {
+      adapter.identity(agent)
+      return false
+    } catch (error) {
+      return (error as { code?: unknown } | null)?.code === 'TEAM_BRIDGE_DISABLED'
+    }
+  }
+
   access(sessionId: string): TeamSessionAccess | undefined {
     const identity = this.identity(sessionId)
     const adapter = this.options.adapter()

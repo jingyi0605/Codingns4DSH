@@ -768,7 +768,9 @@ export function createCliAdaptersFeature(options: {
           if (sessionId !== '' && storedConfig.adapterId === 'dsh' && selectedExternalAdapter !== undefined) {
             config = registry.setSession(sessionId, config)
           }
-          if (config.teamId && !teamDispatcher.identity(sessionId)) {
+          // Team 模式被手动关闭时没有 Team 令牌，外部成员这一回合按普通会话继续；
+          // 其余情况（服务被移除、适配器缺失）仍然阻断，避免成员带着失效身份运行。
+          if (config.teamId && !teamDispatcher.identity(sessionId) && !teamDispatcher.isTeamModeDisabled(sessionId)) {
             throw Object.assign(new Error('The native Team identity is unavailable. Restore its Team profile and adapter before continuing.'), { code: 'TEAM_SERVICE_UNAVAILABLE' })
           }
           const turnInput = extractTurnInput(messages, context.services.dshContext, teamInputs.take(sessionId, messages))
