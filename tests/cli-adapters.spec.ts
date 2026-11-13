@@ -4147,6 +4147,78 @@ test('native DSH fork immediately persists the source external adapter binding',
   }
 })
 
+test('sessionController 晚于 bridge 就绪时仍会安装 fork 钩子，释放时还原原型方法', async () => {
+  const table = new CodingNsRpcTable()
+  const sessionStore = new CodingNsCliSessionStore()
+  const parent = { id: 'late-source', header: { id: 'late-source', isSeeded: false }, snapshotEvents: () => [] }
+  const proto = { async fork() { return { sessionId: 'late-child' } } }
+  const controller = Object.create(proto) as { fork(request: { readonly sessionId: string }): Promise<{ readonly sessionId: string }> }
+  let ready: ((scoped: { get(name: string): unknown }) => unknown) | undefined
+  let disposedScope = false
+  const dshContext = {
+    get() { return undefined },
+    inject(names: readonly string[], callback: (scoped: { get(name: string): unknown }) => unknown) {
+      assert.deepEqual(names, ['sessionController'])
+      ready = callback
+      return { dispose() { disposedScope = true } }
+    },
+  }
+  // 冷启动：bridge 创建时 sessionController 还不存在。
+  const nativeSessions = {
+    available: true,
+    supportsEvents: false,
+    store: undefined,
+    controller: undefined,
+    get(sessionId: string) { return sessionId === 'late-source' ? parent : undefined },
+    list() { return [parent] },
+    async listRemote() { return [parent] },
+    async ensure() { return null },
+    async flush() {},
+    subscribe() { return () => {} },
+  }
+  sessionStore.upsert('late-source', { adapterId: 'codex', modelId: 'gpt-6.1-sol' })
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } as const },
+  }], {}, { sessionStore })
+  const features = new FeatureRegistry({ rpc: table, nativeSessions: nativeSessions as never, dshContext: dshContext as never })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  try {
+    assert.notEqual(ready, undefined)
+    assert.equal(Object.hasOwn(controller, 'fork'), false)
+    // sessionController 晚到：钩子此时才装上。
+    ready?.({ get: (name) => name === 'sessionController' ? controller : undefined })
+    assert.equal(Object.hasOwn(controller, 'fork'), true)
+    assert.deepEqual(await controller.fork({ sessionId: 'late-source' }), { sessionId: 'late-child' })
+    assert.equal(sessionStore.get('late-child')?.adapterId, 'codex')
+  } finally {
+    await features.disable('cliAdapters')
+  }
+  assert.equal(disposedScope, true)
+  // 释放后 fork 回到原型方法，不残留指向旧闭包的自有属性。
+  assert.equal(Object.hasOwn(controller, 'fork'), false)
+})
+
+test('DSH 0.2.2 的 fork 子会话头部没有 parentSession，仍按继承前缀里的外部 model/selection 识别适配器', () => {
+  const store = new CodingNsCliSessionStore()
+  // stage0 真实形态：头部只有 isSeeded，没有 parentSession；继承前缀含外部模型选择。
+  const child = {
+    id: 'rc2-fork-child',
+    header: { id: 'rc2-fork-child', cwd: '/workspace', isSeeded: true, agentPreset: 'standard' },
+    snapshotEvents() {
+      return [
+        { type: 'session/end-seed', seq: 3, data: {} },
+        { type: 'model/selection', seq: 4, data: { provider: 'codingns-cli-codex', model: 'gpt-6.1-sol' } },
+      ]
+    },
+  }
+  assert.deepEqual(store.migrateLegacySessions([child]), { migrated: 1, unresolved: 0 })
+  assert.equal(store.get('rc2-fork-child')?.adapterId, 'codex')
+})
+
 test('委派 RPC 接受空任务并返回派发内核的能力诊断', async () => {
   const table = new CodingNsRpcTable()
   const features = new FeatureRegistry({ rpc: table })
