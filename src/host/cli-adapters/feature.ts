@@ -460,6 +460,7 @@ export function createCliAdaptersFeature(options: {
             return registry.interrupt(sessionId)
           }
           case 'team/status': return context.services.nativeTeam?.diagnostic() ?? registry.teamDiagnostic()
+          case 'team/mode': return Promise.resolve(requireTeam(context).invoke('mode', payload, signal)).then(() => ({ enabled: asRecord(payload)?.enabled === true }))
           case 'team/members': return requireTeam(context).invoke('members', payload)
           case 'team/tasks': return requireTeam(context).invoke('tasks', payload)
           case 'team/task': return requireTeam(context).invoke('task', payload)

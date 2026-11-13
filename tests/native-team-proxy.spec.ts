@@ -62,3 +62,26 @@ test('原生 Team Proxy 转发时保留 TeamService 的 this 绑定', async () =
   const spawned = await proxy.invoke('spawn', { sessionId: 'session-1', name: 'reviewer' })
   assert.deepEqual(spawned, { member: { id: 'child-reviewer' } })
 })
+
+test('原生 Team Proxy 的 mode 操作调用 setEnabled 并保留 this 与取消信号', async () => {
+  const root = { id: 'root', session: { id: 'root' } }
+  const calls: unknown[][] = []
+  const service = {
+    marker: 'service',
+    async setEnabled(this: { marker: string }, agent: unknown, enabled: boolean, signal?: AbortSignal) {
+      calls.push([this.marker, agent, enabled, signal instanceof AbortSignal])
+    },
+  }
+  const proxy = new DshNativeTeamProxy(service, { get: (id) => id === 'root' ? root : undefined, list: () => [root] })
+  await proxy.invoke('mode', { sessionId: 'root', enabled: true })
+  assert.deepEqual(calls, [['service', root, true, true]])
+})
+
+test('原生 Team Proxy 的 mode 操作拒绝非布尔值、缺失会话和缺失 setEnabled', () => {
+  const root = { id: 'root', session: { id: 'root' } }
+  const agents = { get: (id: string) => id === 'root' ? root : undefined, list: () => [root] }
+  const proxy = new DshNativeTeamProxy({ setEnabled() {} }, agents)
+  assert.throws(() => proxy.invoke('mode', { sessionId: 'root', enabled: 'yes' }), /DSH_TEAM_INVALID_ENABLED/u)
+  assert.throws(() => proxy.invoke('mode', { sessionId: 'missing', enabled: true }), /DSH_TEAM_AGENT_NOT_FOUND/u)
+  assert.throws(() => new DshNativeTeamProxy({}, agents).invoke('mode', { sessionId: 'root', enabled: true }), /DSH_TEAM_OPERATION_UNAVAILABLE/u)
+})

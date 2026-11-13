@@ -19,6 +19,8 @@ export interface NativeTeamService {
   updateTask?: (agent: unknown, request: Record<string, unknown>) => unknown
   waitForChange?: (agent: unknown, timeoutMs: number, signal: AbortSignal) => unknown
   interrupt?: (agent: unknown, targetName: string) => unknown
+  /** rc.2 起的按会话 Team 开关；只允许根会话调用。 */
+  setEnabled?: (agent: unknown, enabled: boolean, signal?: AbortSignal) => unknown
 }
 
 export interface AgentRegistry {
@@ -75,6 +77,8 @@ export class DshNativeTeamProxy implements CodingNsNativeTeamProxy {
     const input = asRecord(payload)
     const agent = this.findAgent(readString(input, 'sessionId'))
     if (agent === undefined) throw new Error('DSH_TEAM_AGENT_NOT_FOUND')
+    // Team 开关属于会话级设置，外部 Agent 会话没有原生模型菜单，由插件菜单经此入口写入。
+    if (action === 'mode') return requiredCall(service.setEnabled, service, agent, readBoolean(input, 'enabled'), signal)
     if (this.modernAdapter !== undefined && typeof service.membership !== 'function') {
       const { sessionId: _sessionId, ...operation } = input
       const translated = action === 'task/create' ? 'task_create'
@@ -149,6 +153,12 @@ function readString(value: Record<string, unknown>, key: string): string {
 function readRequired(value: Record<string, unknown>, key: string): string {
   const result = readString(value, key)
   if (result === '') throw new Error(`DSH_TEAM_INVALID_${key.toUpperCase()}`)
+  return result
+}
+
+function readBoolean(value: Record<string, unknown>, key: string): boolean {
+  const result = value[key]
+  if (typeof result !== 'boolean') throw new Error(`DSH_TEAM_INVALID_${key.toUpperCase()}`)
   return result
 }
 
