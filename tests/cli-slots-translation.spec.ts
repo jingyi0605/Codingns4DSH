@@ -26,6 +26,8 @@ function createProbe(adapterId = 'dsh', options: {
   failSessionSet?: boolean
   modelGroups?: readonly CodingNsCliModelGroup[]
   modelId?: string
+  teamMember?: boolean
+  failTeamMode?: boolean
 } = {}) {
   const registered = new Map<string, { component: (props: any) => ReactElement | null; props: Record<string, unknown> }>()
   let selection = { adapterId, modelId: options.modelId ?? 'test-model', effortId: 'high', translationEnabled: 'translationEnabled' in options ? options.translationEnabled : true }
@@ -39,7 +41,11 @@ function createProbe(adapterId = 'dsh', options: {
         if (options.failSessionSet) throw new Error('session update failed')
         value = selection = { ...selection, ...payload }
       }
-      else if (endpoint === 'cli/catalog') value = SESSION_TRANSLATION_ADAPTER_IDS.map((id) => ({ id, name: id, installed: true, enabled: true }))
+      else if (endpoint === 'cli/team/mode') {
+        if (options.failTeamMode) throw new Error('flush failed')
+        value = { enabled: payload.enabled }
+      }
+      else if (endpoint === 'cli/catalog') value = SESSION_TRANSLATION_ADAPTER_IDS.map((id) => ({ id, name: id, installed: true, enabled: true, ...(options.teamMember === undefined ? {} : { team: { member: options.teamMember, lead: options.teamMember } }) }))
       else if (endpoint === 'cli/models') value = {
         groups: options.modelGroups ?? [{ id: adapterId, name: adapterId, models: [{ id: 'test-model', name: 'Test model', efforts: ['high'] }] }],
         currentModel: options.modelId ?? 'test-model', currentEffort: 'high',
@@ -773,4 +779,122 @@ test('模型与思考档位子面板不提供返回按钮，Escape 先回根菜�
     if (original === undefined) Reflect.deleteProperty(globalThis, 'document')
     else Object.defineProperty(globalThis, 'document', original)
   }
+})
+
+test('外部 Agent 模型菜单在 Team 投影可用且 Agent 支持 Team 时显示启用开关，并写入 Host', async () => {
+  const probe = createProbe('codex', { teamMember: true })
+  const slot = probe.registered.get('codingns4dsh-model')!
+  const renderer = createHookRenderer(slot.component, { ...slot.props, useProjection: (key: string) => key === 'agentTeam' ? { enabled: false, tasks: [] } : undefined }, { checkHookOrder: true })
+  try {
+    renderer.render()
+    await flush()
+    renderer.render()
+    await flush()
+    elementWhere(renderer.render(), (element) => element.type === 'button' && element.props['aria-haspopup'] === 'menu')!.props.onClick()
+    const row = elementWhere(renderer.render(), (element) => element.key === 'team-mode')
+    assert.ok(row, 'team row is shown')
+    const toggle = elementWhere(row, (element) => element.props.label === t('cli.teamModeToggle'))!
+    assert.equal(toggle.props.checked, false)
+    toggle.props.onChange(true)
+    await flush()
+    assert.deepEqual(probe.calls.filter((call) => call.endpoint === 'cli/team/mode').map((call) => call.payload), [{ sessionId: probe.sessionId, enabled: true }])
+  } finally { renderer.dispose(); probe.dispose() }
+})
+
+test('Team 开关只反映 DSH 投影，不做乐观更新；写入失败时给出提示', async () => {
+  const probe = createProbe('claude-code', { teamMember: true, failTeamMode: true })
+  const slot = probe.registered.get('codingns4dsh-model')!
+  const renderer = createHookRenderer(slot.component, { ...slot.props, useProjection: () => ({ enabled: false, tasks: [] }) }, { checkHookOrder: true })
+  try {
+    renderer.render()
+    await flush()
+    renderer.render()
+    await flush()
+    elementWhere(renderer.render(), (element) => element.type === 'button' && element.props['aria-haspopup'] === 'menu')!.props.onClick()
+    elementWhere(renderer.render(), (element) => element.props.label === t('cli.teamModeToggle'))!.props.onChange(true)
+    await flush()
+    const row = elementWhere(renderer.render(), (element) => element.key === 'team-mode')!
+    assert.equal(elementWhere(row, (element) => element.props.label === t('cli.teamModeToggle'))!.props.checked, false)
+    const alert = elementWhere(row, (element) => element.props.role === 'alert')
+    assert.ok(alert)
+    assert.match(String(alert.props.children), /flush failed/u)
+  } finally { renderer.dispose(); probe.dispose() }
+})
+
+test('没有 Team 投影、或 Agent 不支持 Team、或原生 DSH 会话时不显示插件的 Team 开关', async () => {
+  const cases: Array<[string, { teamMember?: boolean }, (key: string) => unknown]> = [
+    ['codex', { teamMember: true }, () => undefined],
+    ['codex', { teamMember: false }, () => ({ enabled: true, tasks: [] })],
+    ['codex', {}, () => ({ enabled: true, tasks: [] })],
+  ]
+  for (const [adapterId, options, useProjection] of cases) {
+    const probe = createProbe(adapterId, options)
+    const slot = probe.registered.get('codingns4dsh-model')!
+    const renderer = createHookRenderer(slot.component, { ...slot.props, useProjection }, { checkHookOrder: true })
+    try {
+      renderer.render()
+      await flush()
+      renderer.render()
+      await flush()
+      elementWhere(renderer.render(), (element) => element.type === 'button' && element.props['aria-haspopup'] === 'menu')!.props.onClick()
+      assert.equal(elementWhere(renderer.render(), (element) => element.key === 'team-mode'), undefined, JSON.stringify(options))
+    } finally { renderer.dispose(); probe.dispose() }
+  }
+  const native = createProbe('dsh', { teamMember: true })
+  const slot = native.registered.get('codingns4dsh-model')!
+  const renderer = createHookRenderer(slot.component, { ...slot.props, useProjection: () => ({ enabled: true, tasks: [] }) }, { checkHookOrder: true })
+  try {
+    renderer.render()
+    await flush()
+    assert.equal(elementWhere(renderer.render(), (element) => element.key === 'team-mode'), undefined)
+  } finally { renderer.dispose(); native.dispose() }
+})
+
+test('已使用过的外部 Agent 会话停用 Team 前先确认，取消不写入，确认后才写入 Host', async () => {
+  const probe = createProbe('codex', { teamMember: true })
+  const slot = probe.registered.get('codingns4dsh-model')!
+  const used = { ...slot.props, useSession: (select: (value: any) => unknown) => select({ sessionId: probe.sessionId, blank: false, promptAttempted: true }), useProjection: () => ({ enabled: true, tasks: [] }) }
+  const renderer = createHookRenderer(slot.component, used, { checkHookOrder: true })
+  try {
+    renderer.render()
+    await flush()
+    renderer.render()
+    await flush()
+    elementWhere(renderer.render(), (element) => element.type === 'button' && element.props['aria-haspopup'] === 'menu')!.props.onClick()
+    const teamCalls = () => probe.calls.filter((call) => call.endpoint === 'cli/team/mode')
+    elementWhere(renderer.render(), (element) => element.props.label === t('cli.teamModeToggle'))!.props.onChange(false)
+    await flush()
+    const dialog = () => elementWhere(renderer.render(), (element) => element.props.title === t('cli.teamModeDisableTitle'))
+    assert.ok(dialog(), 'confirmation is shown')
+    assert.equal(teamCalls().length, 0, 'nothing is written before confirming')
+    dialog()!.props.onClose()
+    await flush()
+    assert.equal(dialog(), undefined, 'cancel closes the dialog')
+    assert.equal(teamCalls().length, 0)
+    elementWhere(renderer.render(), (element) => element.props.label === t('cli.teamModeToggle'))!.props.onChange(false)
+    await flush()
+    const confirm = elementWhere(dialog()!.props.footer, (element) => element.props.variant === 'primary')!
+    confirm.props.onClick()
+    await flush()
+    assert.deepEqual(teamCalls().map((call) => call.payload), [{ sessionId: probe.sessionId, enabled: false }])
+    assert.equal(dialog(), undefined)
+  } finally { renderer.dispose(); probe.dispose() }
+})
+
+test('空白外部 Agent 会话停用 Team 不需要确认，开启也不需要确认', async () => {
+  const probe = createProbe('codex', { teamMember: true })
+  const slot = probe.registered.get('codingns4dsh-model')!
+  const blank = { ...slot.props, useSession: (select: (value: any) => unknown) => select({ sessionId: probe.sessionId, blank: true }), useProjection: () => ({ enabled: true, tasks: [] }) }
+  const renderer = createHookRenderer(slot.component, blank, { checkHookOrder: true })
+  try {
+    renderer.render()
+    await flush()
+    renderer.render()
+    await flush()
+    elementWhere(renderer.render(), (element) => element.type === 'button' && element.props['aria-haspopup'] === 'menu')!.props.onClick()
+    elementWhere(renderer.render(), (element) => element.props.label === t('cli.teamModeToggle'))!.props.onChange(false)
+    await flush()
+    assert.equal(elementWhere(renderer.render(), (element) => element.props.title === t('cli.teamModeDisableTitle')), undefined)
+    assert.deepEqual(probe.calls.filter((call) => call.endpoint === 'cli/team/mode').map((call) => call.payload), [{ sessionId: probe.sessionId, enabled: false }])
+  } finally { renderer.dispose(); probe.dispose() }
 })
