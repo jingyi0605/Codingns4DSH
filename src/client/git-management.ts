@@ -22,7 +22,7 @@ import { readNativeService, readNativeWorkspaceListStore, readNativeWorkspaceSna
 import { parseVirtualSessionId, parseVirtualWorkspaceId } from '../shared/contracts/peer-host.js'
 import { uiFontSize } from './font-scale.js'
 import type { GitSessionWorktree, GitWorktreeItem, GitWorktreeSnapshot } from '../shared/contracts/git.js'
-import { branchOptionValue, buildBranchOptions, followKey, isSameWorktreePath, parseBranchOptionValue, pickWorktree, recommendWorktree, sameWorktreeList, worktreeOptionValue, worktreeRequestPath, type BranchOption, type ManualWorktreeChoice } from './git-worktree-selection.js'
+import { branchOptionValue, buildBranchOptions, followKey, groupBranchOptions, isSameWorktreePath, parseBranchOptionValue, pickWorktree, recommendWorktree, sameWorktreeList, worktreeOptionValue, worktreeRequestPath, type BranchOption, type ManualWorktreeChoice } from './git-worktree-selection.js'
 
 // 单列 Git 视图需要一个稳定的分段控件；这里保持 React 结构简单，避免引入额外依赖。
 function SegmentedControl<Value extends string>({ id, value, options, onChange, label, disabled }: { readonly id: string; readonly value: Value; readonly options: readonly { readonly value: Value; readonly label: string; readonly title?: string; readonly disabled?: boolean }[]; readonly onChange: (next: Value) => void; readonly label: string; readonly disabled?: boolean }): ReactElement {
@@ -677,7 +677,11 @@ function HistorySection({ history, totalCount, hasMore, loadingMore, onLoadMore,
         createElement('option', { value: 'head' }, t('git.currentBranch')),
         createElement('option', { value: 'all' }, t('git.allBranches')),
         ),
-        branches === null ? null : createElement('select', { value: branchValue, disabled: busy, className: gitPanelClass.select, style: branchSelectStyle, title: t(branchOptions.some((option) => option.auto) ? 'git.branchAutoHint' : 'git.switchBranch'), 'aria-label': t('git.switchBranch'), onChange: (event: { currentTarget: { value: string } }) => onSwitch(event.currentTarget.value) }, ...branchOptions.map((option) => createElement('option', { key: option.value, value: option.value }, branchOptionLabel(option, t)))),
+        branches === null ? null : createElement('select', { value: branchValue, disabled: busy, className: gitPanelClass.select, style: branchSelectStyle, title: t(branchOptions.some((option) => option.auto) ? 'git.branchAutoHint' : 'git.switchBranch'), 'aria-label': t('git.switchBranch'), onChange: (event: { currentTarget: { value: string } }) => onSwitch(event.currentTarget.value) }, ...groupBranchOptions(branchOptions).map((group) => {
+          const items = group.options.map((option) => createElement('option', { key: option.value, value: option.value }, branchOptionLabel(option, t)))
+          // 检出目录只换查看位置；空闲分支才会在当前检出里执行切换，分开展示避免混淆。
+          return group.kind === null ? createElement(Fragment, { key: 'flat' }, ...items) : createElement('optgroup', { key: group.kind, label: group.kind === 'worktree' ? t('git.groupWorktrees') : t('git.groupBranches') }, ...items)
+        })),
       ),
     ),
     history.length === 0

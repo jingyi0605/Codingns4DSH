@@ -156,3 +156,23 @@ export function buildBranchOptions(
     ...localBranches.filter((name) => !occupied.has(name)).map((name): BranchOption => ({ value: branchOptionValue(name), kind: 'branch', name, auto: false })),
   ]
 }
+
+/**
+ * 下拉框的分组。
+ *
+ * 检出目录只是换面板查看的位置，不改动任何检出；空闲分支才会对当前检出执行 `git switch`。
+ * 两者混在一起看起来都是「切换」，所以有多个检出时分成两组，由调用方用 optgroup 展示。
+ * 只有一个检出时不分组（和旧版一致）。
+ */
+export interface BranchOptionGroup {
+  /** 分组标识；null 表示不分组、直接平铺。 */
+  readonly kind: 'worktree' | 'branch' | null
+  readonly options: readonly BranchOption[]
+}
+
+export function groupBranchOptions(options: readonly BranchOption[]): readonly BranchOptionGroup[] {
+  const worktrees = options.filter((option) => option.kind === 'worktree')
+  if (worktrees.length === 0) return [{ kind: null, options }]
+  const branches = options.filter((option) => option.kind === 'branch')
+  return [{ kind: 'worktree', options: worktrees }, ...(branches.length === 0 ? [] : [{ kind: 'branch' as const, options: branches }])]
+}
