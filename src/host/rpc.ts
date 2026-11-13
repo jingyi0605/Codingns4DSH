@@ -297,7 +297,7 @@ const CODINGNS_RPC_ENDPOINTS = [
   'debug/config/get', 'debug/config/save', 'debug/config/update', 'debug/config/delete', 'debug/profile/list', 'debug/profile/launch',
   'debug/runtime/get', 'debug/runtime/list', 'debug/runtime/stop',
   'debug/port/check', 'debug/port/terminate', 'debug/port/kill', 'debug/proxy/get', 'debug/proxy/enable', 'debug/proxy/disable',
-  'git/status', 'git/models', 'git/generate-message', 'git/init', 'git/diff', 'git/stage', 'git/unstage', 'git/discard', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/worktrees', 'git/switch', 'git/fetch', 'git/pull', 'git/push', 'git/undo',
+  'git/status', 'git/models', 'git/generate-message', 'git/init', 'git/diff', 'git/stage', 'git/unstage', 'git/discard', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/worktrees', 'git/session-worktree', 'git/switch', 'git/fetch', 'git/pull', 'git/push', 'git/undo',
   'fileManagement/session-changes', 'fileManagement/read', 'fileManagement/download', 'fileManagement/write', 'fileManagement/create-file', 'fileManagement/create-directory', 'fileManagement/rename', 'fileManagement/copy', 'fileManagement/move', 'fileManagement/delete', 'fileManagement/git-ignore',
   'workspaceMcp/status', 'workspaceMcp/generate-key', 'workspaceMcp/webhook-list', 'workspaceMcp/webhook-create',
   'workspaceMcp/webhook-update', 'workspaceMcp/webhook-rotate-secret', 'workspaceMcp/webhook-delete', 'workspaceMcp/webhook-test',

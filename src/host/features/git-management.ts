@@ -1,7 +1,7 @@
 import { execFile as execFileCallback } from 'node:child_process'
 import { promisify } from 'node:util'
 import { realpath } from 'node:fs/promises'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { FeatureModule } from '../../shared/contracts/feature.js'
 import type {
   GitBranchItem,
@@ -16,12 +16,14 @@ import type {
   GitHistoryPage,
   GitHistoryRef,
   GitHistoryScope,
+  GitSessionWorktree,
   GitStatus,
   GitWorktreeItem,
   GitWorktreeSnapshot,
 } from '../../shared/contracts/git.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import type { CodingNsHostServices } from './types.js'
+import { readSessionWrittenPaths } from '../session-changes.js'
 import { createNativeLlmTextAdapter, type NativeLlmTextAdapter } from '../../dsh-capabilities/host/llm-text-adapter.js'
 import { MAX_GIT_COMMIT_MESSAGE_CHARS, normalizeGitManagementSettings } from '../../shared/contracts/git.js'
 import { generateGitCommitMessage } from './git-commit-message.js'
@@ -82,6 +84,7 @@ export function createGitManagementFeature(options: { readonly llm?: NativeLlmTe
           ?? context.services.resolveWorkspaceRoot?.(workspaceId)
         if (workspaceRoot === null || workspaceRoot === undefined) throw new CodingNsRpcError('GIT_WORKSPACE_UNAVAILABLE', '当前 Workspace 没有可用的本地目录')
         if (action === 'worktrees') return readWorktrees(workspaceRoot)
+        if (action === 'session-worktree') return readSessionWorktree(context.services, workspaceRoot, requiredString(input.sessionId, 'sessionId'))
         // 会话可能在同一仓库的另一个 worktree 里工作；只接受 `git worktree list` 列出的目录。
         const root = typeof input.worktreePath === 'string' && input.worktreePath.trim() !== ''
           ? await resolveWorktreeRoot(workspaceRoot, input.worktreePath.trim())
@@ -435,6 +438,41 @@ async function nestedWorktreePathspecs(root: string): Promise<string[]> {
     const path = relative(self, item.path)
     return path === '' || path.startsWith('..') || isAbsolute(path) ? [] : [`:(exclude)${path.replaceAll('\\', '/')}`]
   })
+}
+
+/**
+ * 外部 Agent 常把 worktree 建在仓库目录之外，会话的工作目录记录不会变化。
+ * 它写入的文件才是实际所在位置：取最近一次写入的绝对路径，落在哪个检出里就是哪个。
+ * 只在写入路径确实属于本仓库的某个检出时才给出答案，否则返回 null，由调用方沿用会话目录。
+ */
+async function readSessionWorktree(services: CodingNsHostServices, workspaceRoot: string, sessionId: string): Promise<GitSessionWorktree> {
+  const written = await readSessionWrittenPaths(services, sessionId).catch(() => [] as readonly string[])
+  if (written.length === 0) return { path: null }
+  const { worktrees } = await readWorktrees(workspaceRoot)
+  if (worktrees.length <= 1) return { path: null }
+  // 最近的写入优先；已被删除的路径 realpath 会失败，退回按目录逐级向上找存在的祖先。
+  for (const candidate of [...written].reverse()) {
+    const resolved = await realpathOfNearestAncestor(candidate)
+    if (resolved === undefined) continue
+    let owner: GitWorktreeItem | undefined
+    for (const item of worktrees) {
+      if ((resolved === item.path || resolved.startsWith(item.path + sep)) && (owner === undefined || item.path.length > owner.path.length)) owner = item
+    }
+    if (owner !== undefined) return { path: owner.path }
+  }
+  return { path: null }
+}
+
+async function realpathOfNearestAncestor(path: string): Promise<string | undefined> {
+  let current = path
+  for (let depth = 0; depth < 64; depth += 1) {
+    const real = await realpath(current).catch(() => undefined)
+    if (real !== undefined) return current === path ? real : join(real, relative(current, path))
+    const parent = dirname(current)
+    if (parent === current) return undefined
+    current = parent
+  }
+  return undefined
 }
 
 /** 列出工作区所在仓库的全部检出目录；非 Git 目录返回空列表。 */

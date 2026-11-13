@@ -146,6 +146,11 @@ export interface GitWorktreeSnapshot {
   readonly worktrees: readonly GitWorktreeItem[]
 }
 
+/** 根据会话最近写入的文件推断它正在操作的检出目录；没有依据时 path 为 null。 */
+export interface GitSessionWorktree {
+  readonly path: string | null
+}
+
 export interface GitCommitResult {
   readonly commitHash: string
   readonly summary: string

@@ -30,6 +30,25 @@ export async function readSessionChangedFiles(
   sessionId: string,
   workspaceRoot: string,
 ): Promise<SessionChangedFiles> {
+  return { paths: [...await collectSessionPaths(services, sessionId, workspaceRoot)].sort() }
+}
+
+/**
+ * 会话成功写入过的文件的绝对路径，按最近一次写入的先后排列（最后一项最新），不限于某个工作区。
+ *
+ * 外部 Agent 常把 worktree 建在仓库目录之外，会话的工作目录记录不会变化，
+ * 写入路径是判断它实际在哪个检出里工作的唯一线索。只收录绝对路径；
+ * 相对路径需要会话当时的目录才能还原，这里不猜。
+ */
+export async function readSessionWrittenPaths(services: CodingNsHostServices, sessionId: string): Promise<readonly string[]> {
+  return [...await collectSessionPaths(services, sessionId, null)]
+}
+
+async function collectSessionPaths(
+  services: CodingNsHostServices,
+  sessionId: string,
+  workspaceRoot: string | null,
+): Promise<Set<string>> {
   let session = services.nativeSessions?.get(sessionId)
   if (session === undefined && services.nativeSessions?.listRemote !== undefined) {
     try {
@@ -39,13 +58,13 @@ export async function readSessionChangedFiles(
       // 原生列表接口不可用时继续走 JSONL 降级。
     }
   }
-  const root = resolve(workspaceRoot)
+  const root = workspaceRoot === null ? null : resolve(workspaceRoot)
   const nativeEvents = snapshotEvents(session)
   const nativePaths = extractToolPaths(nativeEvents, root)
-  if (nativePaths.size > 0) return { paths: [...nativePaths].sort() }
+  if (nativePaths.size > 0) return nativePaths
 
   const jsonlPath = findJsonlReference(session)
-  if (jsonlPath === undefined) return { paths: [] }
+  if (jsonlPath === undefined) return new Set()
   try {
     const content = await readFile(jsonlPath, 'utf8')
     const events = content.split(/\r?\n/u).flatMap((line) => {
@@ -56,10 +75,10 @@ export async function readSessionChangedFiles(
         return []
       }
     })
-    return { paths: [...extractToolPaths(events, root)].sort() }
+    return extractToolPaths(events, root)
   } catch {
     // JSONL 是降级数据源；文件不存在或不可读时保持可解释的空结果。
-    return { paths: [] }
+    return new Set()
   }
 }
 
@@ -76,7 +95,7 @@ function snapshotEvents(value: unknown): readonly unknown[] {
   return Array.isArray(value.events) ? value.events : []
 }
 
-function extractToolPaths(events: readonly unknown[], workspaceRoot: string): Set<string> {
+function extractToolPaths(events: readonly unknown[], workspaceRoot: string | null): Set<string> {
   const paths = new Set<string>()
   const calls = new Map<string, ToolCallRecord>()
   const callsWithoutId: ToolCallRecord[] = []
@@ -201,7 +220,7 @@ function isMutatingTool(value: string): boolean {
 function collectResultDiffPaths(
   data: Record<string, unknown>,
   message: Record<string, unknown> | undefined,
-  workspaceRoot: string,
+  workspaceRoot: string | null,
   paths: Set<string>,
 ): void {
   for (const value of [data.meta, data.metadata, message?.meta, message?.metadata]) {
@@ -209,7 +228,7 @@ function collectResultDiffPaths(
   }
 }
 
-function collectDiffPaths(value: unknown, workspaceRoot: string, paths: Set<string>): void {
+function collectDiffPaths(value: unknown, workspaceRoot: string | null, paths: Set<string>): void {
   if (Array.isArray(value)) {
     for (const item of value) collectDiffPaths(item, workspaceRoot, paths)
     return
@@ -221,7 +240,7 @@ function collectDiffPaths(value: unknown, workspaceRoot: string, paths: Set<stri
   }
 }
 
-function collectDiffEntryPaths(value: unknown, workspaceRoot: string, paths: Set<string>): void {
+function collectDiffEntryPaths(value: unknown, workspaceRoot: string | null, paths: Set<string>): void {
   if (Array.isArray(value)) {
     for (const item of value) collectDiffEntryPaths(item, workspaceRoot, paths)
     return
@@ -233,7 +252,7 @@ function collectDiffEntryPaths(value: unknown, workspaceRoot: string, paths: Set
   }
 }
 
-function collectNestedMutationPaths(value: unknown, workspaceRoot: string, paths: Set<string>): void {
+function collectNestedMutationPaths(value: unknown, workspaceRoot: string | null, paths: Set<string>): void {
   if (typeof value === 'string') {
     const trimmed = value.trim()
     if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) return
@@ -266,7 +285,7 @@ function isSuccessfulNestedTool(value: Record<string, unknown>): boolean {
   return !['failed', 'failure', 'error', 'cancelled', 'canceled', 'aborted'].includes(status)
 }
 
-function collectInputPaths(value: unknown, workspaceRoot: string, paths: Set<string>): void {
+function collectInputPaths(value: unknown, workspaceRoot: string | null, paths: Set<string>): void {
   if (typeof value !== 'string') {
     if (Array.isArray(value)) {
       for (const item of value) collectInputPaths(item, workspaceRoot, paths)
@@ -294,7 +313,7 @@ function collectInputPaths(value: unknown, workspaceRoot: string, paths: Set<str
   }
 }
 
-function collectPathValues(value: unknown, workspaceRoot: string, paths: Set<string>): void {
+function collectPathValues(value: unknown, workspaceRoot: string | null, paths: Set<string>): void {
   if (typeof value === 'string') {
     addPath(value, workspaceRoot, paths)
     return
@@ -308,13 +327,23 @@ function collectPathValues(value: unknown, workspaceRoot: string, paths: Set<str
   }
 }
 
-function addPath(value: string, workspaceRoot: string, paths: Set<string>): void {
+function addPath(value: string, workspaceRoot: string | null, paths: Set<string>): void {
   const trimmed = value.trim().replace(/^['"]+|['"]+$/gu, '')
   if (trimmed === '' || trimmed === '.' || trimmed === './') return
+  if (workspaceRoot === null) {
+    // 不属于任何工作区的查询：只有绝对路径能还原，相对路径需要会话当时的目录，这里不猜。
+    if (!isAbsolute(trimmed)) return
+    const absolute = normalize(trimmed)
+    paths.delete(absolute)
+    paths.add(absolute)
+    return
+  }
   const candidate = isAbsolute(trimmed) ? normalize(trimmed) : resolve(workspaceRoot, trimmed)
   const relativePath = relative(workspaceRoot, candidate).replaceAll('\\', '/')
   if (relativePath === '' || relativePath.startsWith('../') || isAbsolute(relativePath)) return
-  paths.add(relativePath.replace(/^\.\//u, ''))
+  const normalized = relativePath.replace(/^\.\//u, '')
+  paths.delete(normalized)
+  paths.add(normalized)
 }
 
 function findJsonlReference(value: unknown, depth = 0): string | undefined {
