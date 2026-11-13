@@ -1251,15 +1251,46 @@ function selectExternalModelForSession(
   sessionId: string,
   session: CodingNsCliSessionConfig,
 ): void {
-  if (dshContext === undefined || sessionId.trim() === '' || session.adapterId === 'dsh') return
+  if (dshContext === undefined || sessionId.trim() === '') return
   try {
     const agents = asRecord(dshContext.get('agents'))
     const get = agents?.get
     if (typeof get !== 'function') return
-    selectExternalModelForAgent(get.call(agents, sessionId), session)
+    const agent = get.call(agents, sessionId)
+    if (session.adapterId === 'dsh') restoreNativeModelForAgent(agent, session, dshContext)
+    else selectExternalModelForAgent(agent, session)
   } catch {
     // A cold Session may not have a live Agent yet; agent/created retries the selection.
   }
+}
+
+/**
+ * 切回 DeepSeek Harness 时，把会话里残留的外部虚拟 Provider 换回原生默认模型。
+ *
+ * 选择外部 Agent 会往 DSH 会话写入 `codingns-cli-*` 的模型选择，而原生模型目录不含
+ * 这些虚拟 Provider。不还原的话，原生选择器解析不出当前模型，会显示“请选择模型”
+ * 并直接展开列表。这里只在当前选择确实是虚拟 Provider 时才写，且通过 `agent.model.select`
+ * 只记录会话事件；不能走 `selectModel`，它会同时改写全局默认模型。
+ */
+function restoreNativeModelForAgent(
+  agent: unknown,
+  session: CodingNsCliSessionConfig,
+  dshContext: NonNullable<CodingNsHostServices['dshContext']>,
+): void {
+  // Team 成员的原生路由由 Team 自己维护。
+  if (session.teamId) return
+  const modelOwner = asRecord(asRecord(agent)?.model)
+  if (typeof modelOwner?.current !== 'function' || typeof modelOwner.select !== 'function') return
+  if (fromCliProviderId(asRecord(modelOwner.current.call(modelOwner))?.provider) === undefined) return
+  const defaults = asRecord(readOptionalContextService(dshContext, 'agentDefaultModel'))
+  if (typeof defaults?.currentSelection !== 'function') return
+  const native = asRecord(defaults.currentSelection.call(defaults))
+  if (typeof native?.provider !== 'string' || typeof native.model !== 'string' || fromCliProviderId(native.provider) !== undefined) return
+  modelOwner.select.call(modelOwner, {
+    provider: native.provider,
+    model: native.model,
+    ...(typeof native.reasoningEffort === 'string' ? { reasoningEffort: native.reasoningEffort } : {}),
+  })
 }
 
 /** DSH Context 可能在测试或嵌入式宿主里缺少目标服务；缺失时按不可用处理。 */

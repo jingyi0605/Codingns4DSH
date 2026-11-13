@@ -2766,6 +2766,45 @@ test('外部 Agent 在 DSH 准备首个 step 前选择自己的模型路由', as
   await features.disable('cliAdapters')
 })
 
+test('切回 DeepSeek Harness 时把残留的外部虚拟 Provider 换回原生默认模型', async () => {
+  const table = new CodingNsRpcTable()
+  const registry = new CodingNsCliAdapterRegistry([{
+    descriptor: { id: 'codex', name: 'Codex' },
+    async detect() { return { installed: true, version: '1.0.0', command: 'codex' } },
+    async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
+    async *executeTurn() { yield { type: 'finish', reason: 'stop' } },
+  }])
+  const calls: unknown[] = []
+  const nativeDefault = { provider: 'magpie', model: 'tokenrhythm/deepseek-v4.1-flash-1017', reasoningEffort: 'high' }
+  const makeAgent = (id: string, current: { provider: string; model: string } | undefined) => ({
+    id,
+    model: { current: () => current, select(selection: unknown) { calls.push([id, selection]) } },
+  })
+  const agents = new Map([
+    ['switched-back', makeAgent('switched-back', { provider: 'codingns-cli-codex', model: 'auto/gpt-6.1-sol' })],
+    ['native', makeAgent('native', { provider: 'deepseek-official', model: 'deepseek-flash' })],
+  ])
+  const dshContext = {
+    get(name: string) {
+      if (name === 'agents') return { get: (id: string) => agents.get(id) }
+      if (name === 'agentDefaultModel') return { currentSelection: () => nativeDefault, saveSelection: () => assert.fail('Must not change the global default') }
+      return undefined
+    },
+    on: () => () => undefined,
+  }
+  const features = new FeatureRegistry({ rpc: table, events: { on() { return () => undefined } }, dshContext: dshContext as never })
+  features.register(createCliAdaptersFeature({ registry }))
+  await features.start('cliAdapters')
+  const rpc = table.resolve('cli/session/set')!
+  await rpc.handler('session/set', { sessionId: 'switched-back', adapterId: 'dsh' })
+  assert.deepEqual(calls, [['switched-back', nativeDefault]])
+  calls.length = 0
+  // 当前选择已经是原生模型时不重复写入，也不覆盖用户在原生选择器里的选择。
+  await rpc.handler('session/set', { sessionId: 'native', adapterId: 'dsh' })
+  assert.deepEqual(calls, [])
+  await features.disable('cliAdapters')
+})
+
 test('翻译 LLM 请求旁路外部 Agent 接管', async () => {
   const table = new CodingNsRpcTable()
   let listener: ((options: unknown, next: () => AsyncIterable<unknown>) => AsyncIterable<unknown>) | undefined
