@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { buildBranchOptions, followKey, parseBranchOptionValue, pickWorktree, recommendWorktree, selectWorktreeForDirectory, worktreeRequestPath } from '../data/build/dist/client/git-worktree-selection.js'
+import { buildBranchOptions, followKey, groupBranchOptions, parseBranchOptionValue, pickWorktree, recommendWorktree, selectWorktreeForDirectory, worktreeRequestPath } from '../data/build/dist/client/git-worktree-selection.js'
 
 const main = { path: '/code/repo', branch: 'main', main: true }
 const linked = { path: '/code/repo/.agents/worktrees/feature', branch: 'feature', main: false }
@@ -106,4 +106,18 @@ test("选项 value 能还原成动作，路径里带冒号也不会被截断", (
   assert.deepEqual(parseBranchOptionValue(second.value), { kind: "worktree", key: "/code/a:b" })
   assert.deepEqual(parseBranchOptionValue("branch:release/1.0"), { kind: "branch", key: "release/1.0" })
   assert.equal(parseBranchOptionValue("garbage"), undefined)
+})
+
+test("有多个检出时下拉框分成「工作副本」和「切换分支」两组，只有一个检出时不分组", () => {
+  const groups = groupBranchOptions(buildBranchOptions(["main", "feature", "idle"], worktrees, linked))
+  assert.deepEqual(groups.map((group) => [group.kind, group.options.map((option) => option.name)]), [
+    ["worktree", ["main", "feature", "hotfix"]],
+    ["branch", ["idle"]],
+  ])
+  assert.deepEqual(groupBranchOptions(buildBranchOptions(["main", "dev"], [main], main)).map((group) => group.kind), [null])
+})
+
+test("所有分支都被检出占用时不出现空的「切换分支」分组", () => {
+  const groups = groupBranchOptions(buildBranchOptions(["main", "feature", "hotfix"], worktrees, linked))
+  assert.deepEqual(groups.map((group) => group.kind), ["worktree"])
 })
