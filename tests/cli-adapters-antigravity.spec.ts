@@ -512,6 +512,30 @@ test('Antigravity result 非成功状态转换为 error 终态', async () => {
   driver.dispose()
 })
 
+test('Antigravity 成功态 result 携带上一轮遗留 error 时仍以 stop 结算并保留正文', async () => {
+  const { driver } = scriptedDriver([[
+    {
+      event: 'result',
+      result: {
+        conversation_id: 'agy-stale-error',
+        status: 'SUCCESS',
+        response: '本轮结算文本',
+        error: 'FAILED_PRECONDITION (code 400): User location is not supported for the API use.',
+        num_turns: 1,
+      },
+    },
+  ]])
+
+  const chunks = await collect(driver, { sessionId: 'agy-stale-error', prompt: '继续' })
+
+  assert.deepEqual(chunks, [
+    { type: 'session-binding', providerSessionId: 'agy-stale-error' },
+    { type: 'text-delta', text: '本轮结算文本', messageId: 'assistant-antigravity-agy-stale-error-0' },
+    { type: 'finish', reason: 'stop' },
+  ])
+  driver.dispose()
+})
+
 test('Antigravity 失败终态仍保留本轮已发生的真实用量', async () => {
   const { driver } = scriptedDriver([[
     agentResponseUsage(1, { input_tokens: 11758, output_tokens: 47, cache_read_tokens: 0, total_tokens: 11805 }),
