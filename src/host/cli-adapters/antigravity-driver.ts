@@ -271,6 +271,10 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       // 单轮汇总事件补上，否则 token-meter 会把累计值按轮反复累加。
       const sanitizedResult = { ...result }
       delete sanitizedResult.usage
+      // AGY 会把会话库里上一轮遗留的 error 字符串带进后续轮次的 result，即使本轮
+      // status 已经是成功。通用解析会把任何 error 字段当成失败，导致已经生成完
+      // 的结算文本被一个 finish:error 吞掉。成功态以 status 为准，丢弃陈旧 error。
+      if (isSuccessStatus(result.status)) delete sanitizedResult.error
       chunks = genericEventChunks({ ...value, usage: undefined, result: sanitizedResult }, cancelled)
     } else {
       chunks = genericEventChunks(value, cancelled)
@@ -285,7 +289,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     // step_update 一定包含 agent_response 增量。
     if (result !== null) {
       const status = typeof result.status === 'string' ? result.status.trim().toLowerCase() : ''
-      if (status !== '' && !['success', 'succeeded', 'completed', 'complete', 'done'].includes(status)) {
+      if (status !== '' && !isSuccessStatus(result.status)) {
         const failureMessage = typeof result.error === 'string' && result.error.trim() !== ''
           ? result.error.trim()
           : `Antigravity result status: ${String(result.status)}`
@@ -472,6 +476,13 @@ interface AntigravityTurnUsage {
 
 function readRecord(value: unknown): Record<string, unknown> | null {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null
+}
+
+const ANTIGRAVITY_SUCCESS_STATUSES: readonly string[] = ['success', 'succeeded', 'completed', 'complete', 'done']
+
+/** result.status 明确是成功态；缺失或非字符串不算成功，交给原有逻辑处理。 */
+function isSuccessStatus(status: unknown): boolean {
+  return typeof status === 'string' && ANTIGRAVITY_SUCCESS_STATUSES.includes(status.trim().toLowerCase())
 }
 
 function readAntigravityUsage(value: unknown): AntigravityUsage | null {
