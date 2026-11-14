@@ -111,8 +111,10 @@ test('bundle patch and example profile use DSH native shapes', async () => {
   assert.match(patch, /name: '@jingyi0605\/codingns4dsh'/u)
   assert.match(patch, /id:\s*terminal-controller[\s\S]*?name:\s*'@deepseek-ai\/dsh-api-terminal-controller'[\s\S]*?disabled:\s*true/u)
   assert.match(patch, /id:\s*ui-sidebar-terminal[\s\S]*?name:\s*'@deepseek-ai\/dsh-client-ui-sidebar-terminal'[\s\S]*?disabled:\s*true/u)
-  assert.doesNotMatch(patch, /id:\s*directory-picker[\s\S]*?disabled:\s*true/u, 'Bundle patch must preserve DSH adaptive directory picker')
-  assert.doesNotMatch(patch, /dsh-(?:host|client-ui)-directory-picker-(?:auto|browse|native)/u, 'Bundle patch must not mount a second directory-picker backend or surface')
+  assert.match(patch, /id:\s*directory-picker[\s\S]*?name:\s*'@deepseek-ai\/dsh-host-directory-picker-auto'[\s\S]*?disabled:\s*true/u)
+  assert.match(patch, /id:\s*directory-picker-browse[\s\S]*?name:\s*'@deepseek-ai\/dsh-host-directory-picker-browse'/u)
+  assert.match(patch, /id:\s*ui-directory-picker-browse[\s\S]*?name:\s*'@deepseek-ai\/dsh-client-ui-directory-picker-browse'/u)
+  assert.doesNotMatch(patch, /dsh-(?:host|client-ui)-directory-picker-native/u, 'Bundle patch must keep the workspace chooser in the web modal')
   assert.doesNotMatch(patch, /dsh-realtime-voice|dsh-multi-model-provider/u, '可选模型 Bundle 不得由补丁重复插入')
   const profile = JSON.parse(await readFile(join(root, 'profile/package.json'), 'utf8'))
   assert.deepEqual(profile.dsh.profile.bundles, [
