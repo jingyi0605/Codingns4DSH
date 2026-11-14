@@ -7,8 +7,17 @@
 - id: ui-sidebar-terminal
   name: '@deepseek-ai/dsh-client-ui-sidebar-terminal'
   disabled: true
-# DSH owns the adaptive directory-picker pair. It selects exactly one matching
-# Host backend and Client surface for local or remote deployments.
+# The workspace chooser must stay in the web modal. The adaptive picker can
+# select the native system dialog on a local Host, which makes the remote Host
+# tab unavailable and gives the same Add Workspace action two different flows.
+- id: directory-picker
+  name: '@deepseek-ai/dsh-host-directory-picker-auto'
+  disabled: true
+- insert:
+    - id: directory-picker-browse
+      name: '@deepseek-ai/dsh-host-directory-picker-browse'
+    - id: ui-directory-picker-browse
+      name: '@deepseek-ai/dsh-client-ui-directory-picker-browse'
 - insert:
     - id: '@jingyi0605/codingns4dsh'
       name: '@jingyi0605/codingns4dsh'
