@@ -45,7 +45,7 @@ test('newer runtime fixtures warn without failing the dependency matrix', () => 
   const result = runMatrix(makeRuntimeRoot('0.2.2'))
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
   assert.match(result.stderr, /newer than the latest tested/u)
-  assert.match(result.stderr, /0\.2\.2-rc\.2/u)
+  assert.match(result.stderr, new RegExp(SUPPORTED_DSH_VERSION.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'))
 })
 
 test('Desktop runtime 低于最低支持版本时被拒绝', () => {
