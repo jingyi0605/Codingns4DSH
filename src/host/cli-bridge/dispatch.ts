@@ -2,7 +2,7 @@ import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { dispatchNativeSubagent, isNativeSubagentSession, nativeSubagentEventCursor, nativeSubagentFailureNeedsReview, nativeSubagentFailureReviewFields, nativeSubagentParentSessionId, readNativeSubagentLifecycle, reviewNativeSubagentFailure, sendNativeSubagentMessage, sendNativeSubagentParentMessage, trackNativeSubagentFollowup, waitNativeSubagentLifecycle, type NativeParentAgent } from '../cli-adapters/native-subagent-dispatch.js'
 import { getSingleDelegationTarget, isDelegationTargetAllowed } from '../cli-adapters/delegation-authorization.js'
 import { getNativeSubagents } from '../cli-adapters/native-subagent-holder.js'
-import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS, hasNativeSubagentStart } from '../cli-adapters/native-team-subagent.js'
+import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS, hasNativeSubagentStart, isExternalSubagentId, looksLikeModelId } from '../cli-adapters/native-team-subagent.js'
 import { getAdapterRegistry } from '../cli-adapters/registry-holder.js'
 import { getSubagentBridge } from './bridge-holder.js'
 import type { SubagentBridgeDispatchRequest, SubagentBridgeDispatchResult } from './bridge-server.js'
@@ -82,9 +82,18 @@ export async function dispatchBridgeSubagent(
     return { ok: true, completed: false, status: 'running', text: 'The follow-up message was sent to the subagent.', childSessionId, ...(sent.messageId === undefined ? {} : { messageId: sent.messageId }) }
   }
   const authorizedTarget = getSingleDelegationTarget(request.sessionId)
-  const adapterId = (request.agent ?? authorizedTarget?.adapterId ?? resolveSessionAdapter(request.sessionId) ?? '').trim()
-  if (!EXTERNAL_SUBAGENT_IDS.includes(adapterId as typeof EXTERNAL_SUBAGENT_IDS[number])) {
-    return bridgeFailure(`Unsupported external Agent: ${adapterId === '' ? '(unspecified)' : adapterId}`)
+  const requestedAgent = request.agent?.trim() ?? ''
+  const fallbackAdapterId = (authorizedTarget?.adapterId ?? resolveSessionAdapter(request.sessionId) ?? '').trim()
+  let adapterId = isExternalSubagentId(requestedAgent) ? requestedAgent : fallbackAdapterId
+  let inferredModelId: string | undefined
+  if (requestedAgent !== '' && !isExternalSubagentId(requestedAgent)) {
+    if (!looksLikeModelId(requestedAgent) || request.model?.trim() !== '') {
+      return bridgeFailure(`Invalid agent "${requestedAgent}". agent must be an adapter ID (${EXTERNAL_SUBAGENT_IDS.join(', ')}); put model IDs in model.`)
+    }
+    inferredModelId = requestedAgent
+  }
+  if (!isExternalSubagentId(adapterId)) {
+    return bridgeFailure(`No supported adapter could be inferred for model "${requestedAgent || request.model || '(unspecified)'}". Pass agent as one of ${EXTERNAL_SUBAGENT_IDS.join(', ')}.`)
   }
   const registry = getAdapterRegistry()
   if (registry !== undefined) {

@@ -1,9 +1,10 @@
 import { AGENT_SUBAGENT_DESCRIPTIONS } from './subagent-tool-descriptions.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { getNativeSubagents } from './native-subagent-holder.js'
-import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS, hasNativeSubagentStart } from './native-team-subagent.js'
+import { enqueueTeamSubagentSelection, EXTERNAL_SUBAGENT_IDS, hasNativeSubagentStart, isExternalSubagentId, looksLikeModelId } from './native-team-subagent.js'
 import { dispatchNativeSubagent, isNativeSubagentSession, nativeSubagentEventCursor, NATIVE_SUBAGENT_TIMEOUT_MS, nativeSubagentFailureNeedsReview, nativeSubagentFailureReviewFields, nativeSubagentParentSessionId, readNativeSubagentLifecycle, reviewNativeSubagentFailure, sendNativeSubagentMessage, sendNativeSubagentParentMessage, trackNativeSubagentFollowup, waitNativeSubagentLifecycle, type NativeParentAgent } from './native-subagent-dispatch.js'
-import { getDelegationModel, isDelegationTargetAllowed } from './delegation-authorization.js'
+import { getDelegationModel, getSingleDelegationTarget, isDelegationTargetAllowed } from './delegation-authorization.js'
+import { getAdapterRegistry } from './registry-holder.js'
 
 export function createAgentSubagentTool(options: { readonly nativeSessions?: CodingNsNativeSessionBridge | undefined } = {}): Record<string, unknown> {
   return {
@@ -12,9 +13,9 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
     parameters: {
       type: 'object',
       properties: {
-      agent: { type: 'string', enum: [...EXTERNAL_SUBAGENT_IDS] },
+      agent: { type: 'string', enum: [...EXTERNAL_SUBAGENT_IDS], description: AGENT_SUBAGENT_DESCRIPTIONS.agent.zh },
       prompt: { type: 'string', description: AGENT_SUBAGENT_DESCRIPTIONS.prompt.zh },
-      model: { type: 'string' },
+      model: { type: 'string', description: AGENT_SUBAGENT_DESCRIPTIONS.model.zh },
       cwd: { type: 'string', description: AGENT_SUBAGENT_DESCRIPTIONS.cwd.zh },
       run_in_background: { type: 'boolean' },
       action: { type: 'string', enum: ['start', 'read', 'wait', 'send'] },
@@ -38,7 +39,7 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
     // 由 enqueueTeamSubagentSelection 保证同一 Provider 的单飞约束，工具本身可以并行执行。
     isConcurrencySafe: () => true,
     async execute(args: Record<string, unknown>, exec: { signal?: AbortSignal; agent?: NativeParentAgent }) {
-      const adapterId = typeof args.agent === 'string' ? args.agent.trim() : ''
+      const requestedAgent = typeof args.agent === 'string' ? args.agent.trim() : ''
       const prompt = typeof args.prompt === 'string' ? args.prompt.trim() : ''
       const native = getNativeSubagents()
       const parentAgent = exec.agent
@@ -96,7 +97,18 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
         }
         return { ok: false, status: 'failed', childSessionId, error: sent.error ?? '子代理消息发送失败。', ...nativeSubagentFailureReviewFields(reviewed) }
       }
-      if (!EXTERNAL_SUBAGENT_IDS.includes(adapterId as typeof EXTERNAL_SUBAGENT_IDS[number]) || prompt === '') throw new Error('agent 与 prompt 均不能为空且必须使用受支持的 Agent')
+      const authorizedTarget = getSingleDelegationTarget(parentId)
+      const sessionAdapterId = readSessionAdapterId(parentId) ?? 'dsh'
+      const adapterId = isExternalSubagentId(requestedAgent)
+        ? requestedAgent
+        : authorizedTarget?.adapterId ?? sessionAdapterId ?? ''
+      const modelFromAgent = requestedAgent !== '' && !isExternalSubagentId(requestedAgent) && looksLikeModelId(requestedAgent)
+        ? requestedAgent
+        : undefined
+      if (requestedAgent !== '' && !isExternalSubagentId(requestedAgent) && modelFromAgent === undefined) {
+        throw new Error(`agent must be an adapter ID (${EXTERNAL_SUBAGENT_IDS.join(', ')}); put model IDs in model`)
+      }
+      if (!isExternalSubagentId(adapterId) || prompt === '') throw new Error(`agent and prompt are required; agent must be one of ${EXTERNAL_SUBAGENT_IDS.join(', ')}`)
       if (!isDelegationTargetAllowed(parentId, adapterId)) {
         throw new Error(`DELEGATE_TARGET_NOT_ALLOWED: 当前对话未授权使用 ${adapterId}`)
       }
@@ -105,7 +117,7 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
       // 工具参数/适配器默认值，保持向后兼容。
       const authorizedModelId = getDelegationModel(parentId, adapterId)
       const requestedModelId = typeof args.model === 'string' && args.model.trim() !== '' ? args.model.trim() : undefined
-      const modelId = authorizedModelId ?? requestedModelId
+      const modelId = authorizedModelId ?? requestedModelId ?? modelFromAgent
       const dependsOn = Array.isArray(args.depends_on)
         ? args.depends_on.filter((value): value is string => typeof value === 'string' && value.trim() !== '').map((value) => value.trim())
         : []
@@ -156,5 +168,14 @@ export function createAgentSubagentTool(options: { readonly nativeSessions?: Cod
         ...(lifecycle === undefined ? {} : nativeSubagentFailureReviewFields(lifecycle)),
       }
     },
+  }
+}
+
+function readSessionAdapterId(sessionId: string): string | undefined {
+  try {
+    const adapterId = getAdapterRegistry()?.getSession(sessionId).adapterId
+    return isExternalSubagentId(adapterId) ? adapterId : undefined
+  } catch {
+    return undefined
   }
 }

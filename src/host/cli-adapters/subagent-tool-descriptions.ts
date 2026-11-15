@@ -8,6 +8,14 @@ export const AGENT_SUBAGENT_DESCRIPTIONS = {
     zh: '完整、自包含的子任务说明。',
     en: 'Complete, self-contained instructions for the subtask.',
   },
+  agent: {
+    zh: '外部 Agent 适配器 ID，例如 dsh、codex、claude-code、gemini、command-code、opencode、grok 或 pi。不要把模型名填入 agent；模型名应填入 model。',
+    en: 'External Agent adapter ID, such as dsh, codex, claude-code, gemini, command-code, opencode, grok, or pi. Do not put a model name in agent; put model names in model.',
+  },
+  model: {
+    zh: '可选模型 ID。与 agent 适配器 ID 分开填写。',
+    en: 'Optional model ID. Keep it separate from the agent adapter ID.',
+  },
   cwd: {
     zh: '子代理的起始目录；相对路径相对父会话当前目录解析，缺省继承父会话目录。仅在 DSH 0.2.1-alpha.2 及以上生效。',
     en: 'The starting directory for the child. Relative paths are resolved against the parent session directory; defaults to inheriting that directory. Effective only in DSH 0.2.1-alpha.2 and later.',

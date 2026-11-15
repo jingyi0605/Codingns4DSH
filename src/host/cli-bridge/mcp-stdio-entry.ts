@@ -44,8 +44,8 @@ const TOOL_DEFINITION = TEAM_TOKEN !== '' ? {
     type: 'object',
     properties: {
       prompt: { type: 'string', description: 'A complete, self-contained subtask description.' },
-      agent: { type: 'string', description: 'External coding Agent id; defaults to the current session Agent.' },
-      model: { type: 'string', description: 'Optional model override.' },
+      agent: { type: 'string', description: 'Adapter ID only: dsh, codex, claude-code, gemini, command-code, opencode, grok, pi, or another supported adapter. Do not put a model name here; use model.' },
+      model: { type: 'string', description: 'Optional model ID. Keep this separate from agent.' },
       description: { type: 'string', description: 'Short title for the subtask.' },
       subagent_type: { type: 'string', description: 'Subagent type hint (explore/plan/general).' },
       action: { type: 'string', enum: ['start', 'read', 'wait', 'send'] },

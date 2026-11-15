@@ -453,6 +453,40 @@ test('agent_subagent 工具定义满足 dsh-tools 注册契约且向 startContin
   setNativeSubagents(undefined)
 })
 
+test('agent_subagent keeps adapter IDs separate from model IDs and defaults native sessions to dsh', async () => {
+  const started: Record<string, any>[] = []
+  setNativeSubagents({
+    registerProvider: () => undefined,
+    startContinuable: async (spec) => {
+      started.push(spec as Record<string, any>)
+      return { childId: `child-${String(started.length)}`, messageId: `message-${String(started.length)}` }
+    },
+  })
+  const tool = createAgentSubagentTool({ nativeSessions: { get: () => undefined, subscribe: () => () => undefined } as never })
+  const exec = { agent: { id: 'parent-routing', options: { subagentDepth: 0 }, session: { header: { id: 'parent-routing' } } } }
+  try {
+    const modelShaped = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { agent: 'gpt-6.1-sol', prompt: '使用指定模型执行', run_in_background: true },
+      exec,
+    )
+    const omittedAgent = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { prompt: '使用当前原生 Agent 执行', run_in_background: true },
+      exec,
+    )
+    assert.equal(modelShaped.agent, 'dsh')
+    assert.equal(omittedAgent.agent, 'dsh')
+    assert.deepEqual(started.map(spec => ({
+      provider: spec.provider,
+      agentOptions: spec.request.agentOptions,
+    })), [
+      { provider: 'spawn', agentOptions: { model: 'gpt-6.1-sol' } },
+      { provider: 'spawn', agentOptions: undefined },
+    ])
+  } finally {
+    setNativeSubagents(undefined)
+  }
+})
+
 test('agent_subagent 默认后台返回并允许同一父会话并发创建', async () => {
   let started = 0
   setNativeSubagents({

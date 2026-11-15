@@ -8,6 +8,20 @@ export const EXTERNAL_SUBAGENT_IDS = [
   'dsh', 'mcode', 'zcode', 'claude-code', 'codex', 'kimi', 'gemini', 'pi', 'opencode', 'grok', 'command-code',
 ] as const
 
+export function isExternalSubagentId(value: unknown): value is typeof EXTERNAL_SUBAGENT_IDS[number] {
+  return typeof value === 'string' && EXTERNAL_SUBAGENT_IDS.includes(value as typeof EXTERNAL_SUBAGENT_IDS[number])
+}
+
+/**
+ * Models can be provider-specific and therefore cannot be allowlisted here.
+ * This conservative shape check is only used to turn an accidentally supplied
+ * model into a useful routing error or a compatibility path; adapter IDs
+ * always take precedence.
+ */
+export function looksLikeModelId(value: string): boolean {
+  return value.includes('/') || /\d/u.test(value) || /^(?:auto|gpt|claude|gemini|deepseek|glm|qwen|kimi|sonnet|opus|haiku|o\d)/iu.test(value)
+}
+
 export function externalTeamProvider(adapterId: string): string {
   // DSH 原生的进程内 spawn 后端默认注册名就是 `spawn`。`dsh` 目标直接复用
   // 这个 Provider，不能注册一个 `codingns-external-dsh` 的空壳，否则会把
