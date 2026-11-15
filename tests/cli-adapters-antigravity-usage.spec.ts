@@ -39,7 +39,17 @@ const QUOTA_SUMMARY = {
       ],
       displayName: 'Claude and GPT models',
     },
+    {
+      buckets: [
+        { bucketId: 'gemini-4-weekly', displayName: 'Gemini 4 Argon Weekly Limit', window: 'weekly', resetTime: '2026-11-21T16:31:02Z', remainingFraction: 1 },
+      ],
+      displayName: 'Gemini 4 Argon',
+    },
   ],
+}
+
+const PARTIAL_QUOTA_SUMMARY = {
+  groups: [QUOTA_SUMMARY.groups[1]],
 }
 
 /** 与 `agy --print /usage` 实测输出同形（制表符分隔）。 */
@@ -48,6 +58,7 @@ const USAGE_TEXT = [
   'Gemini Models\tFive Hour Limit Remaining\t98%\t2026-10-05T19:09:53Z',
   'Claude and GPT models\tWeekly Limit Remaining\t96%\t2026-10-12T14:56:40Z',
   'Claude and GPT models\tFive Hour Limit Remaining\t92%\t2026-10-05T19:56:40Z',
+  'Gemini 4 Argon\tGemini 4 Argon Weekly Limit\t100%\t2026-11-21T16:31:02Z',
   '',
 ].join('\n')
 
@@ -146,7 +157,7 @@ test('Antigravity 只有 Gemini / GPT-OSS 支持 --effort，Claude 系列不支�
   assert.equal(antigravitySupportsEffort(null), true)
 })
 
-test('Antigravity 凭据读取器返回两组额度、套餐档位与账号名', async () => {
+test('Antigravity 凭据读取器返回三组额度、套餐档位与账号名', async () => {
   const calls: Array<{ url: string; authorization: string | null; userAgent: string | null; body: string | undefined }> = []
   const service = new AntigravitySubscriptionService({ homeDirectory: makeHome(), fetch: stubFetch(calls, {}), platform: 'linux' })
 
@@ -155,12 +166,13 @@ test('Antigravity 凭据读取器返回两组额度、套餐档位与账号名',
   assert.equal(usage.planType, 'free-tier')
   assert.equal(usage.paidPlanType, 'Google AI Pro')
   assert.equal(usage.accountName, 'user@example.com')
-  // 两个分组都带出来，各自的 5 小时与周窗口都在
-  assert.deepEqual(usage.groups?.map((group) => group.id), ['gemini', 'third-party'])
+  // All upstream groups are retained, including the Gemini 4 group with only a weekly window.
+  assert.deepEqual(usage.groups?.map((group) => group.id), ['gemini', 'third-party', 'gemini-4'])
   const gemini = usage.groups?.[0]
   assert.deepEqual(gemini?.windows.map((entry) => entry.kind), ['weekly', 'five-hour'])
   assert.equal(gemini?.windows[1]?.window.remainingPercent, 97.9996)
   assert.equal(usage.groups?.[1]?.windows[1]?.window.remainingPercent, 97.2433)
+  assert.deepEqual(usage.groups?.[2]?.windows.map((entry) => entry.kind), ['weekly'])
   // 主窗口跟随会话模型：默认按 Gemini 组
   assert.equal(usage.primary?.remainingPercent, 97.9996)
   assert.equal(usage.secondary?.remainingPercent, 99.0795)
@@ -208,11 +220,25 @@ test('Antigravity 凭据优先读系统钥匙串（agy 1.2.17 起不再写文件
   const usage = await service.read()
   assert.deepEqual(spawnCalls[0], ['security', 'find-generic-password', '-s', 'gemini', '-a', 'antigravity', '-w'])
   assert.equal(usage?.accountName, 'keychain@example.com')
-  assert.equal(usage?.groups?.length, 2)
+  assert.equal(usage?.groups?.length, 3)
   for (const call of keychainCalls) assert.equal(call.authorization, 'Bearer keychain-token')
 })
 
-test('Antigravity 没有凭据时回退到 agy --print /usage，并给出两组额度', async () => {
+test('Antigravity 用量摘要缺少其它分组时从 agy /usage 补齐三组额度', async () => {
+  const usage = await new AntigravitySubscriptionService({
+    homeDirectory: makeHome(),
+    platform: 'linux',
+    fetch: stubFetch([], { quota: () => Response.json(PARTIAL_QUOTA_SUMMARY) }),
+    resolveCommand: () => '/fake/agy',
+    spawn: ((command: string, args: string[]) => stubUsageSpawn(USAGE_TEXT)(command, args, {} as never)) as never,
+  }).read({ modelId: 'claude-sonnet-5-5-medium' })
+
+  assert.deepEqual(usage?.groups?.map((group) => group.id), ['third-party', 'gemini', 'gemini-4'])
+  assert.equal(usage?.groups?.[0]?.windows[1]?.window.remainingPercent, 97.2433)
+  assert.equal(usage?.primary?.remainingPercent, 97.2433)
+})
+
+test('Antigravity 没有凭据时回退到 agy --print /usage，并给出三组额度', async () => {
   const commands: string[][] = []
   const service = new AntigravitySubscriptionService({
     homeDirectory: mkdtempSync(join(tmpdir(), 'codingns-antigravity-empty-')),
@@ -229,7 +255,7 @@ test('Antigravity 没有凭据时回退到 agy --print /usage，并给出两组�
   assert.deepEqual(commands[0], ['/fake/agy', '--print', '/usage'])
   assert.equal(usage?.planType, null)
   assert.equal(usage?.accountName, undefined)
-  assert.deepEqual(usage?.groups?.map((group) => group.id), ['gemini', 'third-party'])
+  assert.deepEqual(usage?.groups?.map((group) => group.id), ['gemini', 'third-party', 'gemini-4'])
   // 上游只给整数百分比，读取器按百分数还原成比例
   assert.equal(usage?.groups?.[0]?.windows[1]?.window.remainingPercent, 98)
   assert.equal(usage?.groups?.[1]?.windows[1]?.window.remainingPercent, 92)
@@ -248,8 +274,8 @@ test('Antigravity 主窗口跟随会话模型选择对应分组', async () => {
   assert.equal(claude?.primary?.remainingPercent, 97.2433)
   assert.equal(claude?.secondary?.remainingPercent, 98.1216)
   assert.equal(claude?.primary?.resetsAt, Date.parse('2026-10-05T19:56:40Z') / 1000)
-  // 两个分组始终都在，切换模型只影响底部入口用哪一组
-  assert.equal(claude?.groups?.length, 2)
+  // All groups remain in the popover; switching models only changes the compact entry's group.
+  assert.equal(claude?.groups?.length, 3)
 
   const fromSettings = await new AntigravitySubscriptionService({
     homeDirectory: makeHome(),
@@ -262,10 +288,11 @@ test('Antigravity 主窗口跟随会话模型选择对应分组', async () => {
 
 test('Antigravity /usage 文本解析与分组 id 归类', () => {
   const groups = parseAntigravityUsageOutput(USAGE_TEXT)
-  assert.deepEqual(groups.map((group) => group.displayName), ['Gemini Models', 'Claude and GPT models'])
+  assert.deepEqual(groups.map((group) => group.displayName), ['Gemini Models', 'Claude and GPT models', 'Gemini 4 Argon'])
   assert.deepEqual(groups[0]?.windows.map((window) => window.kind), ['weekly', 'five-hour'])
   assert.equal(groups[1]?.windows[1]?.remainingFraction, 0.92)
   assert.equal(groups[1]?.windows[1]?.resetsAt, Date.parse('2026-10-05T19:56:40Z') / 1000)
+  assert.deepEqual(groups[2]?.windows.map((window) => window.kind), ['weekly'])
   // 非表格行、缺列、非数字百分比都要忽略
   assert.deepEqual(parseAntigravityUsageOutput('no output produced'), [])
   assert.deepEqual(parseAntigravityUsageOutput('A\tB\tnot-a-percent\t2026-01-01T00:00:00Z'), [])
@@ -278,10 +305,23 @@ test('Antigravity /usage 文本解析与分组 id 归类', () => {
 
   // API 响应同样解析成窗口草稿
   const apiGroups = readAntigravityQuotaGroups(QUOTA_SUMMARY)
-  assert.deepEqual(apiGroups.map((group) => group.displayName), ['Gemini Models', 'Claude and GPT models'])
+  assert.deepEqual(apiGroups.map((group) => group.displayName), ['Gemini Models', 'Claude and GPT models', 'Gemini 4 Argon'])
   assert.equal(apiGroups[0]?.windows.length, 2)
+  assert.equal(apiGroups[2]?.windows.length, 1)
   assert.deepEqual(readAntigravityQuotaGroups(null), [])
   assert.deepEqual(readAntigravityQuotaGroups({ groups: [{ buckets: [{ bucketId: 'x' }] }] }), [])
+})
+
+test('Antigravity Gemini 4 models select the Gemini 4 quota group', async () => {
+  const usage = await new AntigravitySubscriptionService({
+    homeDirectory: makeHome(),
+    fetch: stubFetch([], {}),
+    platform: 'linux',
+  }).read({ modelId: 'gemini-4-argon-medium' })
+
+  assert.equal(usage?.primary, null)
+  assert.equal(usage?.secondary?.remainingPercent, 100)
+  assert.equal(usage?.groups?.find((group) => group.id === 'gemini-4')?.displayName, 'Gemini 4 Argon')
 })
 
 test('Antigravity 钥匙串密文按 go-keyring-base64 解包', () => {
@@ -343,7 +383,7 @@ test('Antigravity 无凭据且拿不到 CLI 输出时安静降级', async () => 
     resolveCommand: () => '/fake/agy',
     spawn: ((command: string, args: string[]) => stubUsageSpawn(USAGE_TEXT)(command, args, {} as never)) as never,
   }).read()
-  assert.equal(fallback?.groups?.length, 2)
+  assert.equal(fallback?.groups?.length, 3)
 })
 
 test('ProviderSubscriptionService 把 antigravity 路由到官方用量读取器并透传模型', async () => {
