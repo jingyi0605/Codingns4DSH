@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
@@ -8,6 +9,7 @@ import { promptWithAttachmentPaths } from './attachment-utils.js'
 import { commandEnvironment, runAsyncCommand, terminateChildProcess, withCommandSignal, type CodingNsChildProcess } from './process-utils.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
+import { normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 
 const ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS = 30_000
 
@@ -111,6 +113,8 @@ export interface AntigravityDriverOptions {
  */
 export class AntigravityDriver extends StandardStreamDriver implements CodingNsCliDriver {
   private readonly observedText = new WeakMap<object, string>()
+  /** step_index is unique only within one CLI execution; resumed and concurrent turns need separate scopes. */
+  private readonly toolCallScopes = new WeakMap<object, { readonly id: string; readonly settledSteps: Set<number> }>()
   /** 本轮各次模型调用的用量；result 到达时汇总成单轮用量。 */
   private readonly turnUsages = new WeakMap<object, AntigravityTurnState>()
   /** 会话级累计用量基线；AGY 的 result.usage 是整个会话的累计值。 */
@@ -182,7 +186,12 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       runtimeEnv: { ...magpie.env, ...input.runtimeEnv },
       ...(magpie.settings === undefined ? {} : { magpieSettings: magpie.settings }),
     }
-    yield* super.executeTurn(prepared)
+    this.toolCallScopes.set(prepared, { id: randomUUID(), settledSteps: new Set() })
+    try {
+      yield* super.executeTurn(prepared)
+    } finally {
+      this.toolCallScopes.delete(prepared)
+    }
   }
 
   private async readMagpieEnvironment(signal: AbortSignal): Promise<{
@@ -259,18 +268,15 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       this.collectStepUsage(input, step)
       const sanitized = { ...step }
       delete sanitized.usage
-      // 工具的完成态在 step 的 state 字段，tool_info 里没有 status。不映射的话，没有
-      // output 的 write_file/edit_file 永远停在 running，被拒绝的写入（state=ERROR）
-      // 也会在回合结束时被当成成功，错误计入「修改文件」。
-      const toolInfo = readRecord(step.tool_info)
-      if (step.step_type === 'tool' && toolInfo !== null) sanitized.tool_info = normalizeAntigravityToolInfo(toolInfo, step)
       // AGY 把真实事件类型放在 step_update.step_type，而外层 event 永远是
       // step_update。把它提升成 genericEventChunks 能识别的 type，才能保留
       // agent_response 正文和 tool 生命周期。
       if (typeof sanitized.step_type === 'string' && sanitized.step_type.trim() !== '') {
         sanitized.type = sanitized.step_type
       }
-      chunks = genericEventChunks({ ...value, event: sanitized }, cancelled)
+      chunks = step.step_type === 'tool'
+        ? this.parseToolStep(step, input)
+        : genericEventChunks({ ...value, event: sanitized }, cancelled)
       const observation = this.buildPerformanceObservation(input, step)
       if (observation !== null) chunks.unshift(observation)
     } else if (result !== null) {
@@ -311,7 +317,14 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         if (delta.length > 0) chunks.unshift({ type: 'text-delta', text: delta })
       }
       const conversationId = readConversationId(result, input)
-      const cumulative = readAntigravityUsage(result.usage)
+      const reportedCumulative = readAntigravityUsage(result.usage)
+      // Parameter/input failures may carry an all-zero usage envelope. It is not
+      // evidence that the existing session baseline was reset.
+      const cumulative = status !== '' && !isSuccessStatus(result.status)
+        && reportedCumulative !== null
+        && Object.values(reportedCumulative).every(count => count === 0)
+        ? null
+        : reportedCumulative
       const turn = this.takeTurnUsage(input, cumulative, conversationId)
       if (cumulative !== null) this.rememberCumulativeUsage(conversationId, cumulative)
       const usageEvent = this.buildUsageEvent(input, turn)
@@ -326,21 +339,70 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     return chunks
   }
 
+  /**
+   * AGY keeps lifecycle state and step_index outside tool_info. A single step
+   * can therefore emit ACTIVE, updates, and DONE snapshots without a provider
+   * call id. Stabilize those snapshots into one scoped call identity and
+   * suppress terminal replays after the step has settled.
+   */
+  private parseToolStep(step: Record<string, unknown>, input: CodingNsCliTurnInput): CodingNsAgentEvent[] {
+    const info = readRecord(step.tool_info) ?? {}
+    const name = typeof info.name === 'string' && info.name.trim() !== '' ? info.name : step.tool_name
+    const toolName = typeof name === 'string' && name.trim() !== '' ? name.trim() : 'tool'
+    const scope = this.toolCallScopes.get(input)
+    const index = step.step_index
+    const stepIndex = typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : undefined
+    if (stepIndex !== undefined && scope?.settledSteps.has(stepIndex)) return []
+    const callId = scope === undefined || stepIndex === undefined
+      ? undefined
+      : `antigravity-${scope.id}-step-${stepIndex}`
+    const parameters = readRecord(info.parameters)
+    const args = parameters === null ? null : { ...parameters }
+    if (args !== null) {
+      const aliases = toolName === 'run_command' ? { CommandLine: 'command' }
+        : toolName === 'write_file' ? { Path: 'file_path', Content: 'content' }
+          : toolName === 'edit_file' ? { Path: 'file_path', Target: 'old_string', Replacement: 'new_string' }
+            : toolName === 'read_file' ? { Path: 'file_path' }
+              : {}
+      for (const [source, target] of Object.entries(aliases)) {
+        if (args[target] === undefined && args[source] !== undefined) args[target] = args[source]
+        delete args[source]
+      }
+    }
+    const serializedInput = serializeToolValue(args ?? info.parameters)
+    const output = serializeToolValue(info.output)
+    const error = serializeToolValue(info.error)
+    const status = error !== undefined ? 'failed' : normalizeToolStatus(step.state, 'running')
+    if (stepIndex !== undefined && (status === 'completed' || status === 'failed')) {
+      scope?.settledSteps.add(stepIndex)
+    }
+    return [{
+      type: 'tool-event',
+      toolName: toolName === 'run_command' ? 'bash' : toolName,
+      status,
+      ...(callId === undefined ? {} : { callId }),
+      ...(serializedInput === undefined ? {} : { input: serializedInput }),
+      ...(output === undefined ? {} : { output, outputMode: 'snapshot' }),
+      ...(error === undefined ? {} : { error }),
+    }]
+  }
+
   /** 收下一次模型调用的用量；同一 step_index 重复上报时以后者为准。 */
   private collectStepUsage(input: CodingNsCliTurnInput, step: Record<string, unknown>): void {
     const usage = readAntigravityUsage(step.usage)
-    if (usage === null) return
+    if (usage === null && step.step_type !== 'agent_response') return
     const state = this.turnUsages.get(input) ?? {
       calls: new Map<number, AntigravityUsage>(),
-      lastInputTokens: undefined,
-      lastCacheReadTokens: undefined,
+      lastResponseStepIndex: undefined,
     }
     const stepIndex = typeof step.step_index === 'number' && Number.isFinite(step.step_index)
       ? step.step_index
       : state.calls.size
-    state.calls.set(stepIndex, usage)
-    state.lastInputTokens = usage.input_tokens
-    state.lastCacheReadTokens = usage.cache_read_tokens
+    if (usage !== null) state.calls.set(stepIndex, usage)
+    if (step.step_type === 'agent_response'
+      && (state.lastResponseStepIndex === undefined || stepIndex >= state.lastResponseStepIndex)) {
+      state.lastResponseStepIndex = stepIndex
+    }
     this.turnUsages.set(input, state)
   }
 
@@ -357,16 +419,22 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   ): AntigravityTurnUsage {
     const state = this.turnUsages.get(input)
     this.turnUsages.delete(input)
-    const lastInputTokens = state?.lastInputTokens
-    const lastCacheReadTokens = state?.lastCacheReadTokens
+    const lastResponse = state?.lastResponseStepIndex === undefined
+      ? undefined
+      : state.calls.get(state.lastResponseStepIndex)
+    const contextTokens = lastResponse === undefined
+      ? undefined
+      : lastResponse.input_tokens + lastResponse.cache_read_tokens
     const summed = state === undefined ? null : sumAntigravityUsage(state.calls.values())
-    if (summed !== null) return { usage: summed, lastInputTokens, lastCacheReadTokens }
-    if (cumulative === null) return { usage: null, lastInputTokens, lastCacheReadTokens }
+    if (summed !== null) return { usage: summed, contextTokens }
+    if (cumulative === null) return { usage: null, contextTokens }
     const baseline = this.cumulativeUsages.get(conversationId)
     return {
-      usage: baseline === undefined ? cumulative : subtractAntigravityUsage(cumulative, baseline),
-      lastInputTokens,
-      lastCacheReadTokens,
+      // A first observation of a resumed session has no trustworthy baseline.
+      usage: baseline === undefined
+        ? (input.providerSessionId?.trim() ? null : cumulative)
+        : subtractAntigravityUsage(cumulative, baseline),
+      contextTokens,
     }
   }
 
@@ -387,8 +455,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
    * `output_tokens` 已经包含 `thinking_tokens`。实测（agy 1.5.9）所有模型的
    * `input_tokens` 都只含未缓存输入，缓存命中单独放在 `cache_read_tokens`：Gemini 一次
    * 调用里 `input_tokens=2553`、`cache_read_tokens=7571`，缓存读取大于输入，不可能含在
-   * 输入里。因此一律改传 `cache_read_input_tokens`，让 `usageChunk` 把完整输入还原成
-   * 未缓存输入 + 缓存读取；按 Gemini 口径解释会把缓存命中率算成 100%。
+   * 输入里。因此一律把缓存作为独立桶传给 `usageChunk`，保留未缓存输入和缓存读取的分离口径。
    */
   private buildUsageEvent(input: CodingNsCliTurnInput, turn: AntigravityTurnUsage): CodingNsAgentEvent | null {
     if (turn.usage === null) return null
@@ -401,14 +468,14 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     if (event === null || event.type !== 'usage') return null
     const contextWindow = this.resolveContextWindow(input.modelId)
     if (contextWindow === undefined || contextWindow <= 0) return event
-    // 最后一次模型调用的完整提示规模（未缓存输入 + 缓存读取）就是当前上下文占用。
-    // 退回累计差时没有逐次明细，只能用本轮输入合计近似。
-    const contextTokens = (turn.lastInputTokens ?? event.inputTokens) + (turn.lastCacheReadTokens ?? 0)
+    // Only the last agent_response provides a defensible current-context size.
     return {
       ...event,
       contextWindow,
-      contextTokens,
-      contextUsageRatio: Number(Math.min(1, contextTokens / contextWindow).toFixed(6)),
+      ...(turn.contextTokens === undefined ? {} : {
+        contextTokens: turn.contextTokens,
+        contextUsageRatio: Number(Math.min(1, turn.contextTokens / contextWindow).toFixed(6)),
+      }),
     }
   }
 
@@ -471,46 +538,6 @@ function antigravityPermissionArgs(permission: CodingNsCliTurnInput['permission'
   return ['--mode', 'plan']
 }
 
-/** AGY step 的 state 对应的公共工具状态；未知值交给通用解析器按事件类型推断。 */
-function antigravityToolStatus(state: unknown): 'running' | 'completed' | 'failed' | undefined {
-  const normalized = typeof state === 'string' ? state.trim().toUpperCase() : ''
-  if (normalized === 'ACTIVE') return 'running'
-  if (normalized === 'DONE') return 'completed'
-  if (normalized === 'ERROR' || normalized === 'FAILED' || normalized === 'CANCELLED') return 'failed'
-  return undefined
-}
-
-/**
- * 把 AGY 的工具 step 整理成通用解析器和修改文件检测能识别的形态。
- *
- * 实测（agy 1.5.9）：ACTIVE 与 DONE 是同一个 step_index 的两次上报，但线协议没有
- * call id，也没有 tool_info.status。缺少 call id 时每次上报都会被当成一次新调用，
- * ACTIVE 那条永远不结算；缺少状态时没有 output 的写入类工具无法区分成功和被拒绝。
- * 文件工具的参数名是大写的 `Path`/`Content`/`Target`/`Replacement`，需要换成
- * 公共 edit/write 工具使用的 `file_path`/`content`/`old_string`/`new_string`。
- */
-function normalizeAntigravityToolInfo(toolInfo: Record<string, unknown>, step: Record<string, unknown>): Record<string, unknown> {
-  const normalized: Record<string, unknown> = { ...toolInfo }
-  const status = antigravityToolStatus(step.state)
-  if (status !== undefined) normalized.status = status
-  if (typeof step.step_index === 'number' && Number.isFinite(step.step_index)) normalized.callId = `agy-step-${step.step_index}`
-  const name = typeof toolInfo.name === 'string' ? toolInfo.name : typeof step.tool_name === 'string' ? step.tool_name : ''
-  const parameters = readRecord(toolInfo.parameters)
-  if (parameters !== null && ANTIGRAVITY_FILE_TOOLS.has(name)) {
-    const { Path, Content, Target, Replacement, ...rest } = parameters
-    normalized.parameters = {
-      ...rest,
-      ...(typeof Path === 'string' ? { file_path: Path } : {}),
-      ...(typeof Content === 'string' ? { content: Content } : {}),
-      ...(typeof Target === 'string' ? { old_string: Target } : {}),
-      ...(typeof Replacement === 'string' ? { new_string: Replacement } : {}),
-    }
-  }
-  return normalized
-}
-
-const ANTIGRAVITY_FILE_TOOLS: ReadonlySet<string> = new Set(['write_file', 'edit_file'])
-
 /** 将 AGY 的最终正文快照与前面已发出的增量对齐，避免重复渲染。 */
 function appendOrSyncText(current: string, snapshot: string): string {
   if (snapshot === current || current.startsWith(snapshot) || current.trim() === snapshot.trim() || current.endsWith(snapshot) || current.includes(snapshot.trim())) return ''
@@ -521,8 +548,8 @@ function appendOrSyncText(current: string, snapshot: string): string {
 /**
  * AGY 的原始用量结构。
  *
- * 字段名保持 CLI 线协议原样，直接交给 `usageChunk` 折算成公共 usage 事件：
- * `input_tokens` 是完整提示规模（缓存读取含在其中），`output_tokens` 含思考。
+ * 字段名保持 CLI 线协议原样：input 不含缓存读取，output 已含思考，
+ * total 为上游 input + output，不强制改成 DSH 所有互斥桶之和。
  */
 interface AntigravityUsage {
   readonly input_tokens: number
@@ -533,15 +560,13 @@ interface AntigravityUsage {
 
 interface AntigravityTurnState {
   readonly calls: Map<number, AntigravityUsage>
-  lastInputTokens: number | undefined
-  lastCacheReadTokens: number | undefined
+  lastResponseStepIndex: number | undefined
 }
 
 /** 一次汇总后的单轮用量，以及最后一次调用用于推导上下文占用的规模。 */
 interface AntigravityTurnUsage {
   readonly usage: AntigravityUsage | null
-  readonly lastInputTokens: number | undefined
-  readonly lastCacheReadTokens: number | undefined
+  readonly contextTokens: number | undefined
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -562,12 +587,17 @@ function readAntigravityUsage(value: unknown): AntigravityUsage | null {
   const output = tokenCount(record.output_tokens)
   const cacheRead = tokenCount(record.cache_read_tokens)
   const total = tokenCount(record.total_tokens)
-  if (input === 0 && output === 0 && cacheRead === 0 && total === 0) return null
+  // Explicit zero usage is a valid cumulative baseline; only an absent envelope
+  // should be treated as missing usage.
+  if (![record.input_tokens, record.output_tokens, record.cache_read_tokens, record.total_tokens]
+    .some(count => typeof count === 'number' && Number.isFinite(count) && count >= 0)) return null
   return {
     input_tokens: input,
     output_tokens: output,
     cache_read_tokens: cacheRead,
-    total_tokens: total > 0 ? total : input + output,
+    total_tokens: typeof record.total_tokens === 'number' && Number.isFinite(record.total_tokens) && record.total_tokens >= 0
+      ? total
+      : input + output,
   }
 }
 
@@ -593,14 +623,15 @@ function sumAntigravityUsage(values: Iterable<AntigravityUsage>): AntigravityUsa
     : null
 }
 
-function subtractAntigravityUsage(current: AntigravityUsage, previous: AntigravityUsage): AntigravityUsage {
-  // 会话被清空或换到新会话时累计值会回退；此时不给出负数用量，直接采用当前值。
-  if (current.input_tokens < previous.input_tokens || current.output_tokens < previous.output_tokens) return current
+function subtractAntigravityUsage(current: AntigravityUsage, previous: AntigravityUsage): AntigravityUsage | null {
+  // Any bucket rollback makes the current-turn delta unknowable.
+  if (current.input_tokens < previous.input_tokens || current.output_tokens < previous.output_tokens
+    || current.cache_read_tokens < previous.cache_read_tokens || current.total_tokens < previous.total_tokens) return null
   return {
     input_tokens: current.input_tokens - previous.input_tokens,
     output_tokens: current.output_tokens - previous.output_tokens,
-    cache_read_tokens: Math.max(0, current.cache_read_tokens - previous.cache_read_tokens),
-    total_tokens: Math.max(0, current.total_tokens - previous.total_tokens),
+    cache_read_tokens: current.cache_read_tokens - previous.cache_read_tokens,
+    total_tokens: current.total_tokens - previous.total_tokens,
   }
 }
 

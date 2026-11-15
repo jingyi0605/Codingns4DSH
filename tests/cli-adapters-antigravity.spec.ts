@@ -287,7 +287,7 @@ test('Antigravity 缺少 step 用量时用会话累计差值补齐单轮用量',
   const { driver } = scriptedDriver([
     [resultEvent({ input_tokens: 100, output_tokens: 10, total_tokens: 110 }, { response: '一' })],
     [resultEvent({ input_tokens: 260, output_tokens: 25, total_tokens: 285 }, { response: '二' })],
-    // 会话被重置时累计值回退，不能给出负数用量。
+    // 会话被重置时累计值回退，不能推测本轮精确用量。
     [resultEvent({ input_tokens: 120, output_tokens: 8, total_tokens: 128 }, { response: '三' })],
   ])
 
@@ -300,8 +300,7 @@ test('Antigravity 缺少 step 用量时用会话累计差值补齐单轮用量',
   assert.equal(usageOf(first).outputTokens, 10)
   assert.equal(usageOf(second).inputTokens, 160)
   assert.equal(usageOf(second).outputTokens, 15)
-  assert.equal(usageOf(third).inputTokens, 120)
-  assert.equal(usageOf(third).outputTokens, 8)
+  assert.equal(usageOf(third), undefined)
   driver.dispose()
 })
 
@@ -388,15 +387,124 @@ test('Antigravity 文件工具按 step_index 配对生命周期，并换成公�
   ]])
 
   const tools = (await collect(driver, {})).filter((chunk) => chunk.type === 'tool-event')
-  assert.deepEqual(tools.map((tool) => [tool.toolName, tool.callId, tool.status]), [
-    ['write_file', 'agy-step-2', 'running'],
-    ['write_file', 'agy-step-2', 'completed'],
-    ['edit_file', 'agy-step-4', 'running'],
-    ['edit_file', 'agy-step-4', 'failed'],
+  assert.deepEqual(tools.map((tool) => [tool.toolName, tool.status]), [
+    ['write_file', 'running'],
+    ['write_file', 'completed'],
+    ['edit_file', 'running'],
+    ['edit_file', 'failed'],
   ])
+  assert.match(tools[0].callId, /^antigravity-[0-9a-f-]+-step-2$/u)
+  assert.equal(tools[0].callId, tools[1].callId)
+  assert.match(tools[2].callId, /^antigravity-[0-9a-f-]+-step-4$/u)
+  assert.equal(tools[2].callId, tools[3].callId)
   assert.deepEqual(JSON.parse(tools[0].input), { file_path: '/w/a.txt' })
   assert.deepEqual(JSON.parse(tools[2].input), { file_path: '/w/b.txt', old_string: 'old', new_string: 'new' })
   driver.dispose()
+})
+
+test('Antigravity 每轮工具调用使用独立命名空间，并忽略已结算 step 的终态重放', async () => {
+  const tool = (state: string, output?: string): Record<string, unknown> => stepUpdate({
+    step_index: 1,
+    state,
+    step_type: 'tool',
+    tool_name: 'run_command',
+    tool_info: {
+      name: 'run_command',
+      ...(state === 'ACTIVE' ? { parameters: { CommandLine: 'pwd' } } : {}),
+      ...(output === undefined ? {} : { output }),
+    },
+  })
+  const { driver } = scriptedDriver([
+    [tool('ACTIVE'), tool('DONE', 'first'), tool('DONE', 'replayed'), resultEvent(undefined)],
+    [tool('ACTIVE'), tool('DONE', 'second'), resultEvent(undefined)],
+  ])
+
+  try {
+    const first = (await collect(driver, {})).filter((chunk) => chunk.type === 'tool-event')
+    const second = (await collect(driver, { providerSessionId: 'agy-provider-session' })).filter((chunk) => chunk.type === 'tool-event')
+    assert.deepEqual(first.map((toolEvent) => [toolEvent.status, toolEvent.output]), [
+      ['running', undefined],
+      ['completed', 'first'],
+    ])
+    assert.deepEqual(second.map((toolEvent) => [toolEvent.status, toolEvent.output]), [
+      ['running', undefined],
+      ['completed', 'second'],
+    ])
+    assert.notEqual(first[0]?.callId, second[0]?.callId)
+    assert.equal(first[0]?.callId, first[1]?.callId)
+    assert.equal(second[0]?.callId, second[1]?.callId)
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 恢复会话首次只有累计用量时建立基线，不把历史累计量记为当前回合', async () => {
+  const { driver } = scriptedDriver([
+    [resultEvent({ input_tokens: 100, output_tokens: 10, cache_read_tokens: 200, total_tokens: 110 })],
+    [resultEvent({ input_tokens: 140, output_tokens: 15, cache_read_tokens: 500, total_tokens: 155 })],
+  ])
+
+  try {
+    const first = await collect(driver, { providerSessionId: 'agy-provider-session' })
+    const second = await collect(driver, { providerSessionId: 'agy-provider-session' })
+    assert.equal(first.find((chunk) => chunk.type === 'usage'), undefined)
+    const usage = second.find((chunk) => chunk.type === 'usage')
+    assert.equal(usage.inputTokens, 40)
+    assert.equal(usage.outputTokens, 5)
+    assert.equal(usage.cacheReadTokens, 300)
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 任一累计桶回退时省略无法确认的差值，并在下一轮重新建立基线', async () => {
+  const { driver } = scriptedDriver([
+    [resultEvent({ input_tokens: 100, output_tokens: 10, cache_read_tokens: 200, total_tokens: 110 })],
+    [resultEvent({ input_tokens: 140, output_tokens: 15, cache_read_tokens: 150, total_tokens: 155 })],
+    [resultEvent({ input_tokens: 150, output_tokens: 18, cache_read_tokens: 170, total_tokens: 175 })],
+  ])
+
+  try {
+    await collect(driver, {})
+    const rollback = await collect(driver, { providerSessionId: 'agy-provider-session' })
+    const recovered = await collect(driver, { providerSessionId: 'agy-provider-session' })
+    assert.equal(rollback.find((chunk) => chunk.type === 'usage'), undefined)
+    const usage = recovered.find((chunk) => chunk.type === 'usage')
+    assert.equal(usage.inputTokens, 10)
+    assert.equal(usage.outputTokens, 3)
+    assert.equal(usage.cacheReadTokens, 20)
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 失败回合的全零 usage 不清空既有累计基线', async () => {
+  const { driver } = scriptedDriver([
+    [resultEvent({ input_tokens: 100, output_tokens: 10, cache_read_tokens: 200, total_tokens: 110 })],
+    [resultEvent({ input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, total_tokens: 0 }, { status: 'ERROR', error: 'invalid input' })],
+    [resultEvent({ input_tokens: 140, output_tokens: 15, cache_read_tokens: 500, total_tokens: 155 })],
+  ])
+
+  try {
+    await collect(driver, {})
+    const failed = await collect(driver, { providerSessionId: 'agy-provider-session' })
+    const recovered = await collect(driver, { providerSessionId: 'agy-provider-session' })
+    assert.equal(failed.find((chunk) => chunk.type === 'usage'), undefined)
+    const usage = recovered.find((chunk) => chunk.type === 'usage')
+    assert.equal(usage.inputTokens, 40)
+    assert.equal(usage.outputTokens, 5)
+    assert.equal(usage.cacheReadTokens, 300)
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 最后一个 agent_response 缺少 usage 时不沿用旧调用的上下文占用', async () => {
+  const { driver } = scriptedDriver([[
+    agentResponseUsage(1, { input_tokens: 10, output_tokens: 1, cache_read_tokens: 80 }),
+    stepUpdate({ step_index: 3, state: 'DONE', step_type: 'agent_response', text_delta: '完成' }),
+    resultEvent({ input_tokens: 30, output_tokens: 3, cache_read_tokens: 170, total_tokens: 33 }),
+  ]], { contextWindow: 1_000 })
+
+  try {
+    const chunks = await collect(driver, { modelId: 'gemini-3.8-flash' })
+    const usage = chunks.find((chunk) => chunk.type === 'usage')
+    assert.equal(usage.contextWindow, 1_000)
+    assert.equal(usage.contextTokens, undefined)
+    assert.equal(usage.contextUsageRatio, undefined)
+  } finally { driver.dispose() }
 })
 
 test('Antigravity 不给 Claude 模型下发 --effort，避免整轮被 CLI 拒绝', async () => {
