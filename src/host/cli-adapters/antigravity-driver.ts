@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
@@ -8,6 +9,7 @@ import { promptWithAttachmentPaths } from './attachment-utils.js'
 import { commandEnvironment, runAsyncCommand, terminateChildProcess, withCommandSignal, type CodingNsChildProcess } from './process-utils.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
+import { normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 
 const ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS = 30_000
 
@@ -111,6 +113,8 @@ export interface AntigravityDriverOptions {
  */
 export class AntigravityDriver extends StandardStreamDriver implements CodingNsCliDriver {
   private readonly observedText = new WeakMap<object, string>()
+  /** step_index 只在一次 CLI 执行内标识调用；恢复/并发回合必须有独立命名空间。 */
+  private readonly toolCallScopes = new WeakMap<object, { readonly id: string; readonly settledSteps: Set<number> }>()
   /** 本轮各次模型调用的用量；result 到达时汇总成单轮用量。 */
   private readonly turnUsages = new WeakMap<object, AntigravityTurnState>()
   /** 会话级累计用量基线；AGY 的 result.usage 是整个会话的累计值。 */
@@ -182,7 +186,12 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       runtimeEnv: { ...magpie.env, ...input.runtimeEnv },
       ...(magpie.settings === undefined ? {} : { magpieSettings: magpie.settings }),
     }
-    yield* super.executeTurn(prepared)
+    this.toolCallScopes.set(prepared, { id: randomUUID(), settledSteps: new Set() })
+    try {
+      yield* super.executeTurn(prepared)
+    } finally {
+      this.toolCallScopes.delete(prepared)
+    }
   }
 
   private async readMagpieEnvironment(signal: AbortSignal): Promise<{
@@ -265,7 +274,9 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       if (typeof sanitized.step_type === 'string' && sanitized.step_type.trim() !== '') {
         sanitized.type = sanitized.step_type
       }
-      chunks = genericEventChunks({ ...value, event: sanitized }, cancelled)
+      chunks = step.step_type === 'tool'
+        ? this.parseToolStep(step, input)
+        : genericEventChunks({ ...value, event: sanitized }, cancelled)
     } else if (result !== null) {
       // result.usage 是会话累计值，绝不能当作单轮用量交给 DSH；剥掉后由下面的
       // 单轮汇总事件补上，否则 token-meter 会把累计值按轮反复累加。
@@ -313,6 +324,51 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       this.observedText.delete(input)
     }
     return chunks
+  }
+
+  /**
+   * AGY 的状态和索引在 step 外层，name/parameters/output/error 在 tool_info。
+   * 不能让通用解析器将 ACTIVE/DONE 当成两个匿名调用，也不能按输出存在与否
+   * 推断完成：ACTIVE 可携带输出快照，DONE 也可能完全没有 output。
+   */
+  private parseToolStep(step: Record<string, unknown>, input: CodingNsCliTurnInput): CodingNsAgentEvent[] {
+    const info = readRecord(step.tool_info) ?? {}
+    const name = typeof info.name === 'string' && info.name.trim() !== '' ? info.name : step.tool_name
+    const toolName = typeof name === 'string' && name.trim() !== '' ? name.trim() : 'tool'
+    const scope = this.toolCallScopes.get(input)
+    const index = step.step_index
+    const stepIndex = typeof index === 'number' && Number.isSafeInteger(index) && index >= 0 ? index : undefined
+    // DONE 后 Registry 可能已切换到新的 DSH step；终态快照重放不能再声明调用。
+    if (stepIndex !== undefined && scope?.settledSteps.has(stepIndex)) return []
+    const callId = scope === undefined || stepIndex === undefined ? undefined : `antigravity-${scope.id}-step-${stepIndex}`
+    const parameters = readRecord(info.parameters)
+    const args = parameters === null ? null : { ...parameters }
+    if (args !== null) {
+      // 只映射 AGY 已提供的参数；CLI 省略的正文、diff 和图片不能从磁盘补造。
+      const aliases = toolName === 'run_command' ? { CommandLine: 'command' }
+        : toolName === 'write_file' ? { Path: 'file_path', Content: 'content' }
+          : toolName === 'edit_file' ? { Path: 'file_path', Target: 'old_string', Replacement: 'new_string' }
+            : toolName === 'read_file' ? { Path: 'file_path' }
+              : {}
+      for (const [source, target] of Object.entries(aliases)) {
+        if (args[target] === undefined && args[source] !== undefined) args[target] = args[source]
+        delete args[source]
+      }
+    }
+    const serializedInput = serializeToolValue(args ?? info.parameters)
+    const output = serializeToolValue(info.output)
+    const error = serializeToolValue(info.error)
+    const status = error !== undefined ? 'failed' : normalizeToolStatus(step.state, 'running')
+    if (stepIndex !== undefined && (status === 'completed' || status === 'failed')) scope?.settledSteps.add(stepIndex)
+    return [{
+      type: 'tool-event',
+      toolName: toolName === 'run_command' ? 'bash' : toolName,
+      status,
+      ...(callId === undefined ? {} : { callId }),
+      ...(serializedInput === undefined ? {} : { input: serializedInput }),
+      ...(output === undefined ? {} : { output, outputMode: 'snapshot' }),
+      ...(error === undefined ? {} : { error }),
+    }]
   }
 
   /** 收下一次模型调用的用量；同一 step_index 重复上报时以后者为准。 */

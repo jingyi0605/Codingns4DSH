@@ -3,6 +3,9 @@ import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { AntigravityDriver } from '../data/build/dist/host/cli-adapters/antigravity-driver.js'
+import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
+import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
+import type { CodingNsNativeSessionBridge } from '../data/build/dist/host/native-session-bridge.js'
 
 /**
  * 造一个只回放固定 NDJSON 的 agy 子进程；每次调用消费一组输出行。
@@ -56,6 +59,204 @@ async function collect(driver: AntigravityDriver, input: Record<string, unknown>
 function stepUpdate(payload: Record<string, unknown>): Record<string, unknown> {
   return { event: 'step_update', step_update: { conversation_id: 'agy-provider-session', ...payload } }
 }
+
+function historySink() {
+  const calls: Parameters<NonNullable<CodingNsNativeSessionBridge['appendToolCall']>>[1][] = []
+  const results: Array<{
+    callId: string
+    result: Parameters<NonNullable<CodingNsNativeSessionBridge['appendToolResult']>>[1]
+  }> = []
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'antigravity', sessionId: 'agy-session',
+    nativeSessions: {
+      appendToolCall(sessionId, call) {
+        calls.push(call)
+        return { sessionId, turn: 1, step: 1, callId: call.callId, callSeq: calls.length }
+      },
+      appendToolResult(handle, result) {
+        results.push({ callId: handle.callId, result })
+        return true
+      },
+    },
+  })
+  return { calls, results, projector }
+}
+
+test('Antigravity 同一 step 的 ACTIVE、更新和 DONE 只写入一条原生工具历史', async () => {
+  const { driver } = scriptedDriver([[
+    stepUpdate({ step_index: 0, step_type: 'tool', state: 'ACTIVE', tool_name: 'run_command', tool_info: { name: 'run_command', parameters: { CommandLine: 'pwd' } } }),
+    stepUpdate({ step_index: 0, step_type: 'tool', state: 'ACTIVE', tool_name: 'run_command', tool_info: { name: 'run_command', output: '/work' } }),
+    stepUpdate({ step_index: 0, step_type: 'tool', state: 'DONE', tool_name: 'run_command', tool_info: { name: 'run_command', output: '/workspace' } }),
+    resultEvent(undefined),
+  ]])
+  const sink = historySink()
+  try {
+    for await (const event of driver.executeTurn({ sessionId: 'agy-session', messages: [], prompt: '执行' })) {
+      await sink.projector.push(event)
+      if (event.type === 'tool-event' && event.status === 'running') assert.equal(sink.results.length, 0)
+    }
+    assert.equal(sink.calls.length, 1)
+    assert.equal(sink.calls[0]?.name, 'bash')
+    assert.deepEqual(JSON.parse(sink.calls[0]!.arguments), { command: 'pwd' })
+    assert.deepEqual(sink.results, [{ callId: sink.calls[0]!.callId, result: { output: '/workspace', isError: false } }])
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 合法重复命令、交错并发和重复完成快照保持调用与结果归属', async () => {
+  const tool = (index: number, state: string, info: Record<string, unknown>) => stepUpdate({
+    step_index: index, step_type: 'tool', state, tool_info: { name: 'run_command', ...info },
+  })
+  const { driver } = scriptedDriver([[
+    tool(1, 'ACTIVE', { parameters: { CommandLine: 'pwd' } }),
+    tool(2, 'ACTIVE', { parameters: { CommandLine: 'pwd' } }),
+    tool(2, 'DONE', { output: 'second' }),
+    tool(1, 'DONE', { output: 'first' }),
+    tool(1, 'DONE', { output: 'first' }),
+    tool(3, 'ACTIVE', { parameters: { CommandLine: 'pwd' } }),
+    tool(3, 'DONE', { output: 'third' }),
+    resultEvent(undefined),
+  ]])
+  const sink = historySink()
+  try {
+    for (const event of await collect(driver, {})) await sink.projector.push(event)
+    assert.equal(sink.calls.length, 3)
+    assert.equal(new Set(sink.calls.map((call) => call.callId)).size, 3)
+    assert.deepEqual(sink.results.map(({ callId, result }) => [callId, result.output]), [
+      [sink.calls[1]!.callId, 'second'], [sink.calls[0]!.callId, 'first'], [sink.calls[2]!.callId, 'third'],
+    ])
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 经 Registry 分步后并发工具整批结算，完成快照重放不再声明历史', async () => {
+  const tool = (index: number, state: string, info: Record<string, unknown>) => stepUpdate({
+    step_index: index, step_type: 'tool', state, tool_info: { name: 'run_command', ...info },
+  })
+  const { driver, calls: processes } = scriptedDriver([[
+    tool(1, 'ACTIVE', { parameters: { CommandLine: 'pwd' } }),
+    tool(2, 'ACTIVE', { parameters: { CommandLine: 'pwd' } }),
+    tool(2, 'ACTIVE', { output: 'partial' }),
+    tool(2, 'DONE', { output: 'second' }),
+    tool(1, 'DONE', { output: 'first' }),
+    tool(1, 'DONE', { output: 'first' }),
+    tool(3, 'ACTIVE', { parameters: { CommandLine: 'pwd' } }),
+    tool(3, 'DONE', { output: 'third' }),
+    resultEvent(undefined),
+  ]])
+  const registry = new CodingNsCliAdapterRegistry([driver])
+  const steps: ReturnType<typeof historySink>[] = []
+  try {
+    for (let index = 0; index < 5; index++) {
+      const sink = historySink()
+      steps.push(sink)
+      let boundary = false
+      for await (const event of registry.execute({ adapterId: 'antigravity', sessionId: 'agy-session', messages: [], prompt: '执行', splitToolSteps: true })) {
+        await sink.projector.push(event)
+        if (event.type === 'step-boundary') boundary = true
+      }
+      await sink.projector.complete()
+      if (!boundary) break
+    }
+    assert.equal(steps.length, 3)
+    assert.deepEqual(steps.map((sink) => sink.calls.length), [2, 1, 0])
+    assert.deepEqual(steps.map((sink) => sink.results.map(({ result }) => result.output)), [['second', 'first'], ['third'], []])
+    assert.equal(new Set(steps.flatMap((sink) => sink.calls.map((call) => call.callId))).size, 3)
+    assert.equal(processes.length, 1)
+  } finally { await registry.dispose() }
+})
+
+test('Antigravity 恢复回合和并发回合复用 step_index 时仍使用独立身份', async () => {
+  const { driver } = scriptedDriver([[
+    stepUpdate({ step_index: 2, step_type: 'tool', state: 'ACTIVE', tool_info: { name: 'read_file', parameters: { Path: '/workspace/a.txt' } } }),
+    stepUpdate({ step_index: 2, step_type: 'tool', state: 'DONE', tool_info: { name: 'read_file' } }),
+    resultEvent(undefined),
+  ]])
+  const sink = historySink()
+  const input = { sessionId: 'agy-session', providerSessionId: 'agy-provider-session', messages: [], prompt: '继续' }
+  try {
+    const first = await collect(driver, input)
+    const resumed = await collect(driver, input)
+    const concurrent = await Promise.all([collect(driver, input), collect(driver, input)])
+    const turns = [first, resumed, ...concurrent]
+    const ids = turns.map((events) => events.find((event) => event.type === 'tool-event').callId)
+    assert.equal(new Set(ids).size, 4)
+    for (const events of turns) {
+      // 同一个历史 sink 也不能将不同回合的索引复用误合并。
+      for (const event of events.filter((event) => event.type === 'tool-event')) await sink.projector.push(event)
+    }
+    await sink.projector.complete()
+    assert.equal(sink.calls.length, 4)
+    assert.equal(sink.results.length, 4)
+    assert.ok(sink.calls.every((call) => JSON.parse(call.arguments).file_path === '/workspace/a.txt'))
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 保存协议提供的写入正文、编辑参数和结构化工具错误', async () => {
+  const { driver } = scriptedDriver([[
+    stepUpdate({ step_index: 1, step_type: 'tool', state: 'DONE', tool_info: { name: 'write_file', parameters: { Path: '/workspace/a.txt', Content: 'hello', Overwrite: true } } }),
+    stepUpdate({ step_index: 2, step_type: 'tool', state: 'DONE', tool_info: { name: 'edit_file', parameters: { Path: '/workspace/a.txt', Target: 'hello', Replacement: 'world' }, output: 'edited' } }),
+    stepUpdate({ step_index: 3, step_type: 'tool', state: 'ACTIVE', tool_name: 'read_file', tool_info: { parameters: { Path: '/workspace/missing' } } }),
+    stepUpdate({ step_index: 3, step_type: 'tool', state: 'ERROR', tool_name: 'read_file', tool_info: { error: { type: 'not_found', message: 'File not found' } } }),
+    resultEvent(undefined),
+  ]])
+  const sink = historySink()
+  try {
+    for (const event of await collect(driver, {})) await sink.projector.push(event)
+    assert.equal(sink.calls.length, 3)
+    assert.equal(sink.results.length, 3)
+    assert.deepEqual(sink.results[0]?.result, { output: '', isError: false, meta: { diffs: [{ path: '/workspace/a.txt', oldText: null, newText: 'hello' }] } })
+    assert.deepEqual(sink.results[1]?.result, { output: 'edited', isError: false, meta: { diffs: [{ path: '/workspace/a.txt', oldText: 'hello', newText: 'world' }] } })
+    assert.equal(sink.results[2]?.callId, sink.calls[2]?.callId)
+    assert.equal(sink.results[2]?.result.isError, true)
+    assert.match(sink.results[2]!.result.error!, /File not found/u)
+    assert.deepEqual(JSON.parse(sink.results[2]!.result.error!), { type: 'not_found', message: 'File not found' })
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 缺失的正文、读取结果和图片不从路径补造，DONE 即闭合无输出调用', async () => {
+  const { driver } = scriptedDriver([[
+    stepUpdate({ step_index: 1, step_type: 'tool', state: 'ACTIVE', tool_info: { name: 'write_file', parameters: { Path: '/workspace/a.txt' } } }),
+    stepUpdate({ step_index: 1, step_type: 'tool', state: 'DONE', tool_info: { name: 'write_file' } }),
+    stepUpdate({ step_index: 2, step_type: 'tool', state: 'DONE', tool_info: { name: 'read_file', parameters: { Path: '/workspace/image.png' } } }),
+    resultEvent(undefined),
+  ]])
+  const sink = historySink()
+  try {
+    for (const event of await collect(driver, {})) {
+      await sink.projector.push(event)
+      if (event.type === 'tool-event' && event.status === 'completed') assert.equal(sink.results.length, sink.calls.length)
+      assert.equal(event.outputImages, undefined)
+    }
+    assert.equal(sink.calls.length, 2)
+    assert.ok(sink.calls.every((call) => !('content' in JSON.parse(call.arguments))))
+    assert.deepEqual(sink.results.map(({ result }) => result), [{ output: '', isError: false }, { output: '', isError: false }])
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 结束、失败、取消和进程提前退出只闭合已有调用', async () => {
+  for (const ending of ['stop', 'failure', 'cancel', 'exit'] as const) {
+    const controller = new AbortController()
+    const { driver } = scriptedDriver([[
+      stepUpdate({ step_index: 1, step_type: 'tool', state: 'ACTIVE', tool_info: { name: 'run_command', parameters: { CommandLine: 'pwd' } } }),
+      ...(ending === 'stop' ? [resultEvent(undefined)] : ending === 'failure' ? [resultEvent(undefined, { status: 'FAILURE', error: 'upstream failure' })] : []),
+    ]])
+    const sink = historySink()
+    try {
+      try {
+        for await (const event of driver.executeTurn({ sessionId: 'agy-session', messages: [], prompt: '执行', signal: controller.signal })) {
+          await sink.projector.push(event)
+          if (ending === 'cancel' && event.type === 'tool-event') controller.abort()
+        }
+      } catch (error) {
+        assert.equal(ending, 'exit')
+        await sink.projector.fail(String(error))
+      }
+      assert.equal(sink.calls.length, 1, ending)
+      assert.equal(sink.results.length, 1, ending)
+      assert.equal(sink.results[0]?.callId, sink.calls[0]?.callId, ending)
+      assert.equal(sink.results[0]?.result.isError, ending !== 'stop', ending)
+    } finally { driver.dispose() }
+  }
+})
 
 function magpieDriver(readEnv: () => { status: number; stdout: string }, options: { command?: () => string | null } = {}) {
   const calls: Array<{ args: readonly string[]; env: NodeJS.ProcessEnv }> = []
