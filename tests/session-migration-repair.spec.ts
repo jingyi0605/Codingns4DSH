@@ -296,6 +296,128 @@ test('missing declarations for reused IDs are repaired once with result referenc
   }
 })
 
+test('外部工具跨 step/回合复用 ID 时修复分页冲突，压缩重放结果仍归属于原调用', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codingns-repair-tool-identity-'))
+  try {
+    for (const compressed of [false, true]) {
+      const path = join(root, `session.v4.jsonl${compressed ? '.zstd' : ''}`)
+      const rows = sampleCrossTurnToolEvents()
+      const original = compressed ? encodeZstd(rows) : encodeNone(rows)
+      await writeFile(path, original)
+      assert.equal(await repairLegacySessionLog(path), true)
+      const bytes = await readFile(path)
+      const { events } = compressed ? decodeZstd(bytes) : decodeNone(bytes)
+      const calls = events.filter((event) => event.type === 'tool/call')
+      assert.equal(new Set(calls.map((event) => event.data.callId)).size, 3)
+      for (const call of calls) {
+        const declaration = events[call.seq - 1]!
+        assert.equal(declaration.data.message.content[0].id, call.data.callId)
+        assert.equal(declaration.data.message.content[0].arguments, '{"text":"external-tool-2"}')
+        const results = events.filter((event) => event.type === 'tool/result'
+          && event.data.turn === call.data.turn && event.data.step === call.data.step)
+        assert.ok(results.length > 0)
+        for (const result of results) {
+          assert.equal(result.data.message.toolCallId, call.data.callId)
+          assert.equal(result.data.message.source.callId, call.data.callId)
+          assert.deepEqual(result.data.message.content, [{ type: 'text', text: 'external-tool-2' }])
+        }
+      }
+      // 默认分页只收到旧调用的压缩重放结果，随后遇到下一回合的同名调用。
+      const tail = events.slice(11)
+      assert.equal(tail[0]!.type, 'tool/result')
+      assert.notEqual(tail[0]!.data.message.source.callId, calls[2]!.data.callId)
+      assert.deepEqual(events.map((event) => event.seq), rows.slice(1).map((event) => event.seq))
+      assert.deepEqual(events.map((event) => event.sourceEventSeqs), rows.slice(1).map((event) => event.sourceEventSeqs))
+      assert.deepEqual(events.at(-2), rows.at(-2))
+      assert.deepEqual(await readFile(`${path}.codingns-repair-backup`), original)
+      assert.equal(await repairLegacySessionLog(path), false)
+      assert.deepEqual(await readFile(path), bytes)
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('V3 外部工具身份修复同时更新 wrapper 和 source，保持 V3 消息格式', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codingns-repair-v3-identity-'))
+  try {
+    const path = join(root, 'session.v3.jsonl.zstd')
+    const rows = sampleCrossTurnToolEvents()
+    rows[0]!.version = 3
+    for (const event of rows) {
+      if (event.type !== 'tool/result') continue
+      const message = event.data.message
+      message.role = 'user'
+      message.content = [{ type: 'tool-result', toolCallId: message.toolCallId, content: message.content }]
+      delete message.toolCallId
+    }
+    await writeFile(path, encodeZstd(rows))
+    assert.equal(await repairLegacySessionLog(path), true)
+    const { events } = decodeZstd(await readFile(path))
+    const ids = events.filter((event) => event.type === 'tool/call').map((event) => event.data.callId)
+    assert.equal(new Set(ids).size, 3)
+    for (const event of events.filter((event) => event.type === 'tool/result')) {
+      const message = event.data.message
+      assert.equal(message.role, 'user')
+      assert.ok(ids.includes(message.source.callId))
+      assert.equal(message.content[0].toolCallId, message.source.callId)
+      assert.deepEqual(message.content[0].content, [{ type: 'text', text: 'external-tool-2' }])
+    }
+    assert.equal(await repairLegacySessionLog(path), false)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+test('原生工具跨回合复用 ID 不触发外部历史修复', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'codingns-repair-native-identity-'))
+  try {
+    const path = join(root, 'session.v4.jsonl')
+    const rows = sampleCrossTurnToolEvents().filter((event) => event.seq !== 11)
+    rows.slice(1).forEach((event, index) => {
+      event.seq = index
+      if (event.sourceEventSeqs) event.sourceEventSeqs = event.sourceEventSeqs.map((seq: number) => seq > 11 ? seq - 1 : seq)
+    })
+    for (const event of rows) {
+      if (event.type !== 'assistant/message') continue
+      const data = event.data as Record<string, any>
+      data.stream = []
+      data.message.id = `native-${String(event.seq)}`
+      data.message.source = { kind: 'model', provider: 'deepseek', model: 'deepseek' }
+    }
+    const original = encodeNone(rows)
+    await writeFile(path, original)
+    assert.equal(await repairLegacySessionLog(path), false)
+    assert.deepEqual(await readFile(path), original)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
+function sampleCrossTurnToolEvents(): Array<Record<string, any>> {
+  const rows: Array<Record<string, any>> = [{ type: 'session', version: 4 }]
+  const push = (event: Record<string, unknown>) => { rows.push({ ...event, seq: rows.length - 1 }) }
+  for (const [turn, step] of [[1, 1], [1, 2], [2, 1]]) {
+    push({ type: 'step/start', data: { turn, step } })
+    if (turn === 2) {
+      const oldResult = structuredClone(rows.find((event) => event.type === 'tool/result' && event.data.step === 2))
+      push(oldResult!)
+    }
+    push({ type: 'assistant/message', data: { turn, step, stream: [], message: {
+      id: `external-tool-external-tool-2-${turn}-${step}`, role: 'assistant',
+      source: { kind: 'model', plugin: 'codingns4dsh', provider: 'antigravity', model: 'antigravity' },
+      content: [{ type: 'tool-call', id: 'external-tool-2', name: 'read', arguments: '{"text":"external-tool-2"}' }],
+    } }, surfaceOp: 'append' })
+    const callSeq = rows.length - 1
+    push({ type: 'tool/call', data: { turn, step, callId: 'external-tool-2', name: 'read', arguments: '{"text":"external-tool-2"}' } })
+    push({ type: 'tool/result', data: { turn, step, message: {
+      id: `result-${turn}-${step}`, role: 'tool', toolCallId: 'external-tool-2',
+      source: { kind: 'tool', callId: 'external-tool-2' }, content: [{ type: 'text', text: 'external-tool-2' }],
+    } }, sourceEventSeqs: [callSeq], surfaceOp: 'append' })
+    push({ type: 'step/end', data: { turn, step } })
+  }
+  push({ type: 'assistant/message', data: { turn: 2, step: 2, stream: [], message: {
+    id: 'final', role: 'assistant', source: { kind: 'model', provider: 'codingns-cli-antigravity', model: 'test' },
+    content: [{ type: 'text', text: '完整的最终答复' }],
+  } }, surfaceOp: 'append' })
+  push({ type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
+  return rows
+}
+
 test('修复失败时保持原文件不变', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codingns-repair-failure-'))
   try {

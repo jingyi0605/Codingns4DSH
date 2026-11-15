@@ -50,7 +50,7 @@ interface ParsedLog {
 }
 
 /**
- * 在官方 v3->v4 迁移前修复外部 Agent 写入的裸 tool/call。
+ * 在 open 前修复外部 Agent 的裸 tool/call 和跨 step 重用的调用身份。
  * 每个文件独立处理，单文件失败不会影响其他历史会话。
  */
 export async function repairLegacySessionLogs(options: LegacySessionRepairOptions): Promise<LegacySessionRepairReport> {
@@ -144,9 +144,10 @@ export async function repairLegacySessionLog(path: string, signal?: AbortSignal)
   const generation = sessionHeaderVersion(parsed.header)
   if (generation !== undefined && generation > 4) return false
   const repaired = repairEvents(parsed.events, isV4Log(path, parsed.header))
-  if (repaired === null) return false
+  const scoped = scopeExternalToolIdentities(repaired ?? parsed.events)
+  if (repaired === null && scoped === parsed.events) return false
   throwIfAborted(signal)
-  await publishRepair(path, parsed.header, repaired, parsed.compression, source, signal)
+  await publishRepair(path, parsed.header, scoped, parsed.compression, source, signal)
   return true
 }
 
@@ -367,6 +368,77 @@ function toolResultCallId(event: SessionEvent): string | null {
   return isRecord(wrapper) && wrapper.type === 'tool-result' && typeof wrapper.toolCallId === 'string'
     ? wrapper.toolCallId
     : null
+}
+
+/**
+ * 旧版外部工具投影器在每个 step 都从 external-tool-1 重新计数。
+ * 分页可能先收到压缩重放的旧结果，再收到同 ID 的新调用，令 DSH 的共享节点
+ * 组装器误判为 update-before-start。只隔离跨 step 复用的外部 ID，不改原生调用、
+ * 正文或 seq；压缩重放事件以其 data.turn/step 归属原调用，而非当前打开的回合。
+ */
+function scopeExternalToolIdentities(events: readonly SessionEvent[]): readonly SessionEvent[] {
+  const external = new Set<string>()
+  const scopesById = new Map<string, Set<string>>()
+  const usedIds = new Set<string>()
+  for (const event of events) {
+    const data = isRecord(event.data) ? event.data : undefined
+    if (!data || !Number.isSafeInteger(data.turn) || !Number.isSafeInteger(data.step)) continue
+    const scope = `${data.turn}:${data.step}`
+    if (event.type === 'tool/call' && typeof data.callId === 'string') {
+      usedIds.add(data.callId)
+      let scopes = scopesById.get(data.callId)
+      if (scopes === undefined) scopesById.set(data.callId, scopes = new Set())
+      scopes.add(scope)
+    }
+    if (event.type !== 'assistant/message' || !isRecord(data.message)) continue
+    const message = data.message
+    const source = isRecord(message.source) ? message.source : undefined
+    const pluginMessage = source?.plugin === 'codingns4dsh' || source?.provider === 'codingns-external'
+      || typeof message.id === 'string' && message.id.startsWith('external-tool-')
+        && Array.isArray(data.stream) && data.stream.length === 0
+    if (!pluginMessage || !Array.isArray(message.content)) continue
+    for (const block of message.content) {
+      if (isRecord(block) && block.type === 'tool-call' && typeof block.id === 'string') {
+        external.add(JSON.stringify([scope, block.id]))
+        usedIds.add(block.id)
+      }
+    }
+  }
+  const replacements = new Map<string, string>()
+  for (const [id, scopes] of scopesById) {
+    if (scopes.size < 2) continue
+    for (const scope of scopes) {
+      const key = JSON.stringify([scope, id])
+      if (!external.has(key)) continue
+      const base = `codingns-history-${scope.replace(':', '-')}-${id}`
+      let replacement = base
+      for (let suffix = 1; usedIds.has(replacement); suffix += 1) replacement = `${base}-${suffix}`
+      usedIds.add(replacement)
+      replacements.set(key, replacement)
+    }
+  }
+  if (replacements.size === 0) return events
+  return events.map((event) => {
+    const data = isRecord(event.data) ? event.data : undefined
+    if (!data) return event
+    const replaceId = (id: unknown): unknown => typeof id === 'string'
+      ? replacements.get(JSON.stringify([`${data.turn}:${data.step}`, id])) ?? id : id
+    if (event.type === 'tool/call') return { ...event, data: { ...data, callId: replaceId(data.callId) } }
+    if (!isRecord(data.message)) return event
+    const message = data.message
+    if (event.type === 'assistant/message' && Array.isArray(message.content)) {
+      return { ...event, data: { ...data, message: { ...message, content: message.content.map((block: unknown) =>
+        isRecord(block) && block.type === 'tool-call' ? { ...block, id: replaceId(block.id) } : block) } } }
+    }
+    if (event.type !== 'tool/result') return event
+    return { ...event, data: { ...data, message: {
+      ...message,
+      ...(message.toolCallId === undefined ? {} : { toolCallId: replaceId(message.toolCallId) }),
+      ...(isRecord(message.source) ? { source: { ...message.source, callId: replaceId(message.source.callId) } } : {}),
+      ...(Array.isArray(message.content) ? { content: message.content.map((block: unknown) =>
+        isRecord(block) && block.type === 'tool-result' ? { ...block, toolCallId: replaceId(block.toolCallId) } : block) } : {}),
+    } } }
+  })
 }
 
 function createDeclaration(event: SessionEvent, call: { callId: string; name: string; arguments: string; turn: number; step: number }, seq: number): SessionEvent {
