@@ -49,7 +49,7 @@ const CREDENTIAL_FILE_NAMES = ['antigravity-oauth-token', 'auth.json', 'credenti
 const ANTIGRAVITY_USAGE_COMMAND_TIMEOUT_MS = 20_000
 
 export interface AntigravitySubscriptionReadOptions {
-  /** 当前会话选中的模型；用于在 Gemini 与 Claude/GPT 两个配额组之间选择主窗口。 */
+  /** The selected model determines which Antigravity quota group supplies the compact entry. */
   readonly modelId?: string | undefined
 }
 
@@ -89,15 +89,17 @@ interface AntigravityCredentials {
 /**
  * Antigravity 官方用量读取器。
  *
- * 两条只读来源，互为兜底：
+ * 两条只读来源：
  *
  * 1. `v1internal:retrieveUserQuotaSummary`（首选）：按配额组返回 5 小时与周两个窗口，
  *    带精确的 `remainingFraction`；`loadCodeAssist` 顺带给出套餐档位，账号名从
  *    CLI 保存的 `id_token`（JWT）读取。凭据来自系统钥匙串或旧版凭据文件，只读、不出 Host。
- * 2. `agy --print /usage`（兜底）：CLI 自己的内置命令，输出制表符分隔的
- *    “分组 / 窗口 / 百分比 / 重置时间”，不依赖本插件能读到凭据。
+ * 2. `agy --print /usage`（补全与兜底）：CLI 自己的内置命令，输出制表符分隔的
+ *    “分组 / 窗口 / 百分比 / 重置时间”。部分账号的 API 摘要只返回当前模型所属组，
+ *    因此 API 返回不完整时也要用它补齐其它组。
  *
- * 两组额度互相独立：Gemini 一组、Claude 与 GPT-OSS 一组，每组各有 5 小时与周窗口。
+ * Quota groups are independent: Gemini, Claude/GPT, and newer Gemini 4 groups can each
+ * expose their own windows.
  * 任一来源失败时安静降级，不占用底部栏空间。
  */
 export class AntigravitySubscriptionService {
@@ -135,7 +137,8 @@ export class AntigravitySubscriptionService {
       ])
       const groups = readAntigravityQuotaGroups(summary)
       if (groups.length > 0) {
-        return this.buildUsage(groups, tier, credentials.accountName, options.modelId)
+        const supplemental = groups.length < 3 ? await this.readQuotaFromCli() : null
+        return this.buildUsage(mergeAntigravityQuotaGroups(groups, supplemental ?? []), tier, credentials.accountName, options.modelId)
       }
     }
     // 凭据不可用（钥匙串未授权、旧文件被清理、未登录）时改问 CLI 自己。
@@ -410,18 +413,17 @@ export function readAntigravityQuotaGroups(value: unknown): readonly Antigravity
 }
 
 /**
- * 按会话模型选择配额组。
+ * Select the quota group belonging to the active model.
  *
- * Antigravity 把 Gemini 与 Claude/GPT 分成两组独立额度，上游分组名分别是
- * “Gemini Models” 与 “Claude and GPT models”。模型未知时退回第一组
- * （AGY 默认 Agent 模型是 Gemini）。
+ * Antigravity currently reports separate groups for “Gemini Models”, “Claude and GPT
+ * models”, and “Gemini 4 Argon”. Unknown models use the first returned group.
  */
 export function selectAntigravityQuotaGroup(
   groups: readonly AntigravityQuotaGroupDraft[],
   modelId: string | null,
 ): AntigravityQuotaGroupDraft | null {
-  const thirdParty = antigravityQuotaGroupPrefix(modelId) === '3p-'
-  const matched = groups.find((group) => isThirdPartyGroupName(group.displayName) === thirdParty)
+  const prefix = antigravityQuotaGroupPrefix(modelId)
+  const matched = groups.find((group) => antigravityQuotaGroupPrefixForDisplayName(group.displayName) === prefix)
   return matched ?? groups[0] ?? null
 }
 
@@ -429,14 +431,18 @@ function selectAntigravityQuotaGroupIn(
   groups: readonly CliSubscriptionGroup[],
   modelId: string | null,
 ): CliSubscriptionGroup | null {
-  const thirdParty = antigravityQuotaGroupPrefix(modelId) === '3p-'
-  const matched = groups.find((group) => group.id === (thirdParty ? 'third-party' : 'gemini'))
-    ?? groups.find((group) => isThirdPartyGroupName(group.displayName) === thirdParty)
+  const prefix = antigravityQuotaGroupPrefix(modelId)
+  const expectedId = prefix === '3p-' ? 'third-party' : prefix === 'gemini-4-' ? 'gemini-4' : 'gemini'
+  const matched = groups.find((group) => group.id === expectedId)
+    ?? groups.find((group) => antigravityQuotaGroupPrefixForDisplayName(group.displayName) === prefix)
   return matched ?? groups[0] ?? null
 }
 
 export function antigravityQuotaGroupPrefix(modelId: string | null): string {
-  return modelId !== null && /^(?:claude|gpt-oss)/u.test(modelId.trim().toLowerCase()) ? '3p-' : 'gemini-'
+  const normalized = modelId?.trim().toLowerCase() ?? ''
+  if (/^(?:claude|gpt-oss)/u.test(normalized)) return '3p-'
+  if (/^gemini-4(?:-|$)/u.test(normalized)) return 'gemini-4-'
+  return 'gemini-'
 }
 
 function toContractGroups(drafts: readonly AntigravityQuotaGroupDraft[]): readonly CliSubscriptionGroup[] {
@@ -451,12 +457,44 @@ function toContractGroups(drafts: readonly AntigravityQuotaGroupDraft[]): readon
   }))
 }
 
+/** Merge precise API windows with CLI-only groups and windows missing from the API summary. */
+function mergeAntigravityQuotaGroups(
+  primary: readonly AntigravityQuotaGroupDraft[],
+  supplemental: readonly AntigravityQuotaGroupDraft[],
+): readonly AntigravityQuotaGroupDraft[] {
+  const merged = primary.map((group) => ({ ...group, windows: [...group.windows] }))
+  for (const supplementalGroup of supplemental) {
+    const id = quotaGroupId(supplementalGroup.displayName)
+    const existing = merged.find((group) => quotaGroupId(group.displayName) === id)
+    if (existing === undefined) {
+      merged.push({ ...supplementalGroup, windows: [...supplementalGroup.windows] })
+      continue
+    }
+    const knownKinds = new Set(existing.windows.map((window) => window.kind))
+    const missingWindows = supplementalGroup.windows.filter((window) => !knownKinds.has(window.kind))
+    if (missingWindows.length > 0) {
+      const index = merged.indexOf(existing)
+      merged[index] = { ...existing, windows: [...existing.windows, ...missingWindows] }
+    }
+  }
+  return merged
+}
+
 /** 分组 id 供客户端本地化；未知分组回退到上游展示名。 */
 function quotaGroupId(displayName: string): string {
   if (isThirdPartyGroupName(displayName)) return 'third-party'
   const normalized = displayName.trim().toLowerCase()
+  if (/\bgemini[\s-]*4\b/u.test(normalized)) return 'gemini-4'
   if (normalized.includes('gemini')) return 'gemini'
   return normalized.replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '') || 'other'
+}
+
+function antigravityQuotaGroupPrefixForDisplayName(displayName: string): string {
+  const normalized = displayName.trim().toLowerCase()
+  if (isThirdPartyGroupName(displayName)) return '3p-'
+  if (/\bgemini[\s-]*4\b/u.test(normalized)) return 'gemini-4-'
+  if (normalized.includes('gemini')) return 'gemini-'
+  return normalized.replace(/[^a-z0-9]+/gu, '-') || 'other-'
 }
 
 function isThirdPartyGroupName(displayName: string): boolean {
