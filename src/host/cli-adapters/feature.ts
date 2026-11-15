@@ -76,6 +76,7 @@ import { codexPerformanceProjection } from './codex-performance-projection.js'
 import { claudePerformanceProjection } from './claude-performance-projection.js'
 import { grokContextProjection, grokPerformanceProjection } from './grok-performance-projection.js'
 import { piPerformanceProjection } from './pi-performance-projection.js'
+import { antigravityPerformanceProjection } from './antigravity-performance-projection.js'
 import { countSessionTurnSteps } from './session-performance-projection.js'
 import type { SessionPerformanceAdapter } from '../../dsh-capabilities/host/session-performance-adapter.js'
 import { fromCliProviderId, toCliProviderId } from '../../shared/cli-provider-route.js'
@@ -194,7 +195,7 @@ export function createCliAdaptersFeature(options: {
         const performance = createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext)
           .getProfile(context.services.dshContext).capabilities.get('session.external-performance')?.value as SessionPerformanceAdapter | undefined
         if (performance !== undefined) {
-          for (const projection of [codexPerformanceProjection, claudePerformanceProjection, grokPerformanceProjection, grokContextProjection, piPerformanceProjection]) {
+          for (const projection of [codexPerformanceProjection, claudePerformanceProjection, grokPerformanceProjection, grokContextProjection, piPerformanceProjection, antigravityPerformanceProjection]) {
             context.resources.add(await performance.install(projection))
           }
         }

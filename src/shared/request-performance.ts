@@ -10,7 +10,7 @@ export interface RequestPerformance {
 export interface RequestPerformanceBatch {
   readonly id: string
   /** Older batches without a source belong to Grok. */
-  readonly adapterId?: 'claude-code' | 'grok' | 'pi'
+  readonly adapterId?: 'claude-code' | 'grok' | 'pi' | 'antigravity'
   readonly samples: readonly RequestPerformance[]
 }
 
@@ -18,3 +18,4 @@ export const CLAUDE_PERFORMANCE_PROJECTION = 'codingnsClaudeStats'
 export const GROK_PERFORMANCE_PROJECTION = 'codingnsGrokStats'
 export const GROK_CONTEXT_PROJECTION = 'codingnsGrokContext'
 export const PI_PERFORMANCE_PROJECTION = 'codingnsPiStats'
+export const ANTIGRAVITY_PERFORMANCE_PROJECTION = 'codingnsAntigravityStats'
