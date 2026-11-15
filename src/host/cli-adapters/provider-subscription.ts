@@ -15,7 +15,7 @@ import { CodeBuddySubscriptionService, type CodeBuddySubscriptionOptions } from 
 import { AntigravitySubscriptionService, type AntigravitySubscriptionOptions } from './antigravity-subscription.js'
 import { CustomUpstreamClassifier, mergeCustomUpstreamCandidates, type CustomUpstreamClassifierOptions, type CustomUpstreamReadResult } from './custom-upstream-classifier.js'
 import { readDshDefaultProvider, readDshProviderSource } from './dsh-config.js'
-import { readZcodeProviderConfigs, type ZcodeProviderConfigOptions } from './zcode-provider-config.js'
+import { readZcodeProviderConfigsAsync, readPreferredZcodeProviderConfig, type ZcodeProviderConfigOptions } from './zcode-provider-config.js'
 import { R4SubscriptionService, isR4Source, type R4SubscriptionOptions } from './r4-subscription.js'
 
 type FetchLike = typeof fetch
@@ -147,13 +147,14 @@ export class ProviderSubscriptionService {
   /** 余额属于当前模型的原生 Provider，不能用其它账号或 Start Plan 冒充。 */
   private async readZcode(providerId?: string, modelId?: string): Promise<CliSubscriptionUsage | null> {
     const slash = modelId?.indexOf('/') ?? -1
-    const selectedId = slash > 0 ? modelId!.slice(0, slash)
+    let selectedId = slash > 0 ? modelId!.slice(0, slash)
       : providerId !== 'zcode' ? providerId : undefined
     const explicitlyConfigured = this.newApi.hasConfiguredSource('zcode', selectedId)
       || this.sub2api.hasConfiguredSource('zcode', selectedId)
     if (explicitlyConfigured) return (await this.readCustomUpstream('zcode', selectedId))?.usage ?? null
+    if (selectedId === undefined) selectedId = (await readPreferredZcodeProviderConfig(this.zcodeProviderOptions))?.providerId
     if (selectedId === undefined) return this.zcode.read()
-    const provider = readZcodeProviderConfigs(selectedId, this.zcodeProviderOptions)[0]
+    const provider = (await readZcodeProviderConfigsAsync(selectedId, this.zcodeProviderOptions))[0]
     if (provider === undefined) return null
     if (provider.accessMode === 'start-plan' || provider.accessMode === 'off-peak') return this.zcode.read()
     const source = provider.source

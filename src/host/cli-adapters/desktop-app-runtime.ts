@@ -68,6 +68,7 @@ function candidateRoots(appDirName: string): string[] {
       roots.add(join(drive + ':\\', 'Program Files', appDirName))
       roots.add(join(drive + ':\\', 'Program Files (x86)', appDirName))
       roots.add(join(drive + ':\\', appDirName))
+      roots.add(join(drive + ':\\', 'APP', 'ZCode'))
     }
   }
   if (!WINDOWS) {

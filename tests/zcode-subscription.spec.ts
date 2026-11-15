@@ -96,6 +96,7 @@ test('ProviderSubscriptionService 将 zcode 路由到余额读取器', async () 
   writeFileSync(join(root, 'telemetry-state.json'), JSON.stringify({ deviceMid: 'device-test-3' }), 'utf8')
   const service = new ProviderSubscriptionService({
     zcode: {
+      homeDirectory: root,
       appVersion: '3.14.4',
       credentialsPath: join(root, 'credentials.json'),
       telemetryPath: join(root, 'telemetry-state.json'),

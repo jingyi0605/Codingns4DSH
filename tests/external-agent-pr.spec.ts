@@ -225,7 +225,6 @@ test('ZCode 设置选择普通套餐时不被同时存在的 Start Plan JWT 遮�
   const settingsPath = join(root, '.zcode', 'v2', 'setting.json')
   const credentialsPath = join(root, '.zcode', 'v2', 'credentials.json')
   const builtinPath = join(root, 'zcode-builtin.json')
-  const previousHome = process.env.HOME
   const rules = [
     {
       providerId: 'account:bigmodel-individual-coding-plan',
@@ -243,18 +242,21 @@ test('ZCode 设置选择普通套餐时不被同时存在的 Start Plan JWT 遮�
   }), 'utf8')
   writeFileSync(settingsPath, JSON.stringify({ providerFamilyConnectionSelections: { bigmodel: { kind: 'individual-coding-plan' } } }), 'utf8')
   writeFileSync(builtinPath, JSON.stringify({ revision: 1, config: { providerConfigRules: { providerRules: rules } } }), 'utf8')
-  process.env.HOME = root
   const updates: Record<string, any>[] = []
   const runtime = {
     appId: 'zcode', appName: 'ZCode', installRoot: root, entry: '/tmp/zcode.cjs', appVersion: '3.14.4',
     env: { ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: builtinPath },
   }
   const driver = new ZcodeAppServerDriver({
+    homeDirectory: root,
+    desktopRuntime: runtime,
     binaries: ['fake-zcode'],
     spawnSync: (() => ({ status: 1, stdout: '', stderr: '' })) as never,
     spawn: fakeRpcSpawn((request, stdout) => {
       if (request.method === 'provider/updateAccountConfig') {
         updates.push(request.params as Record<string, any>)
+        stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`)
+      } else if (request.method === 'session/close') {
         stdout.write(`${JSON.stringify({ id: request.id, result: {} })}\n`)
       } else if (request.method === 'session/create') {
         stdout.write(`${JSON.stringify({ id: request.id, result: {
@@ -279,14 +281,12 @@ test('ZCode 设置选择普通套餐时不被同时存在的 Start Plan JWT 遮�
       'account:bigmodel-individual-coding-plan',
       'account:bigmodel-start-plan',
     ])
-    assert.equal(updates.length, 1)
+    assert.equal(updates.length, 2)
     assert.equal((updates[0]?.states as Record<string, any>)['account:bigmodel-individual-coding-plan'].current, true)
     assert.equal((updates[0]?.states as Record<string, any>)['account:bigmodel-individual-coding-plan'].entitled, true)
     assert.equal((updates[0]?.states as Record<string, any>)['account:bigmodel-start-plan'].current, false)
   } finally {
     driver.dispose()
-    if (previousHome === undefined) delete process.env.HOME
-    else process.env.HOME = previousHome
   }
 })
 
