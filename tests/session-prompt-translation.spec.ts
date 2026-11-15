@@ -170,6 +170,9 @@ function subagentAssembly() {
   return { sections: [], tools: [{ name: 'agent_subagent', description: tool.description as string, parameters: tool.parameters }] }
 }
 
+/** One model request per fixed built-in description; follow the table as it grows. */
+const BUILT_IN_DESCRIPTION_COUNT = Object.keys(AGENT_SUBAGENT_DESCRIPTIONS).length
+
 test('built-in subagent prose uses local English with a cold cache and preserves the schema', async t => {
   const f = fixture(); t.after(() => f.dispose())
   const assembly = subagentAssembly()
@@ -181,7 +184,7 @@ test('built-in subagent prose uses local English with a cold cache and preserves
   }
   assert.deepEqual(translated, JSON.parse(expected))
   assert.deepEqual(assembly, snapshot)
-  assert.equal(f.requests.length, 0, 'none of the five built-in fields require a provider request')
+  assert.equal(f.requests.length, 0, 'none of the built-in fields require a provider request')
   await f.recovery.translateInput('session', 'dsh', original)
   assert.equal(f.requests.length, 1, 'actual user input still follows normal translation')
 })
@@ -194,15 +197,15 @@ test('custom rules and other target languages retain model translation for built
   assert.equal(f.requests.length, 0)
   f.service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationRules: ['Use formal language.'] })
   await f.context.translateAssembly(assembly, scope)
-  assert.equal(f.requests.length, 5)
+  assert.equal(f.requests.length, BUILT_IN_DESCRIPTION_COUNT)
   assert.ok(f.requests.every(request => request.system.includes('Use formal language.')))
   f.service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, inputLanguage: 'fr' })
   await f.context.translateAssembly(assembly, scope)
-  assert.equal(f.requests.length, 10)
-  assert.ok(f.requests.slice(5).every(request => request.system.includes('French')))
+  assert.equal(f.requests.length, BUILT_IN_DESCRIPTION_COUNT * 2)
+  assert.ok(f.requests.slice(BUILT_IN_DESCRIPTION_COUNT).every(request => request.system.includes('French')))
   f.service.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
   await f.context.translateAssembly(assembly, scope)
-  assert.equal(f.requests.length, 10, 'removing custom rules restores the local path')
+  assert.equal(f.requests.length, BUILT_IN_DESCRIPTION_COUNT * 2, 'removing custom rules restores the local path')
 })
 
 test('local tool prose does not replace modified descriptions, other tools, or human messages', async t => {
