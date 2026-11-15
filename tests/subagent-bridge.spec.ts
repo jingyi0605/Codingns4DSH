@@ -617,8 +617,12 @@ test('桥接派发：解析父会话并把子代理绑定为原生可续子会�
       { sessionId: 's1', prompt: '分析当前项目' },
       {
         agents: { get: (id: string) => id === 's1'
-          ? { id: 'agent-s1', session: { header: { id: 's1' } } }
-          : id === 'child-77' ? { id: 'agent-child-77', session: { header: { id: 'child-77' } } } : undefined },
+          ? { id: 'agent-stale', session: { header: { id: 'child-77' } } }
+          : id === 'child-77' ? { id: 'agent-child-77', session: { header: { id: 'child-77' } } } : undefined,
+          list: () => [
+            { id: 'agent-s1', session: { header: { id: 's1' } } },
+            { id: 'agent-child-77', session: { header: { id: 'child-77' } } },
+          ] },
         nativeSessions: sessions as never,
       },
     )

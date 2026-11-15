@@ -115,7 +115,7 @@ export async function dispatchBridgeSubagent(
       : 'DELEGATE_DEPENDENCY_FAILED_REVIEW_REQUIRED: a prerequisite subagent failed; call read/wait to inspect it before recreating or taking it over.')
   }
   const modelId = request.model?.trim() === ''
-    ? authorizedTarget?.modelId
+    ? authorizedTarget?.modelId ?? inferredModelId
     : request.model?.trim() ?? authorizedTarget?.modelId
   try {
     const result = await dispatchNativeSubagent(native, deps.nativeSessions, {
@@ -175,15 +175,30 @@ function resolveSessionAdapter(sessionId: string): string | undefined {
 
 function findAgentBySession(agents: BridgeAgentRegistry | undefined, sessionId: string): NativeParentAgent | undefined {
   if (agents === undefined) return undefined
+  let fallbackAgent: NativeParentAgent | undefined
   if (sessionId !== '' && typeof agents.get === 'function') {
     const direct = agents.get(sessionId)
-    if (direct !== undefined) return direct as NativeParentAgent
+    if (direct !== undefined) {
+      const candidate = direct as NativeParentAgent
+      if (agentSessionId(candidate) === sessionId) return candidate
+      if (fallbackAgent === undefined && candidate.id !== undefined) fallbackAgent = candidate
+    }
   }
-  for (const candidate of agents.list?.() ?? []) {
-    const session = readUnknown(candidate, 'session')
-    if (readUnknown(session, 'id') === sessionId || readUnknown(candidate, 'id') === sessionId) return candidate as NativeParentAgent
+  for (const value of agents.list?.() ?? []) {
+    const candidate = value as NativeParentAgent
+    if (agentSessionId(candidate) === sessionId) return candidate
+    if (fallbackAgent === undefined && candidate.id === sessionId) fallbackAgent = candidate
   }
-  return undefined
+  return fallbackAgent
+}
+
+function agentSessionId(agent: NativeParentAgent): string | undefined {
+  const session = readUnknown(agent, 'session')
+  const header = readUnknown(session, 'header')
+  const headerId = readUnknown(header, 'id')
+  if (typeof headerId === 'string' && headerId.trim() !== '') return headerId.trim()
+  const sessionId = readUnknown(session, 'id')
+  return typeof sessionId === 'string' && sessionId.trim() !== '' ? sessionId.trim() : undefined
 }
 
 function readUnknown(value: unknown, key: string): unknown {
