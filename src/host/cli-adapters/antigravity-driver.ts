@@ -3,7 +3,7 @@ import { dirname } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, genericEventChunks } from './standard-stream-driver.js'
-import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, antigravityUsageExcludesCacheFromInput, isProviderDefaultModel, knownAntigravityContextWindow, parseAntigravityModels, resolveAntigravityModelId } from './model-catalog.js'
+import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, isProviderDefaultModel, knownAntigravityContextWindow, parseAntigravityModels, resolveAntigravityModelId } from './model-catalog.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
 import { commandEnvironment, runAsyncCommand, terminateChildProcess, withCommandSignal, type CodingNsChildProcess } from './process-utils.js'
 import { usageChunk } from './rpc-driver-utils.js'
@@ -97,9 +97,8 @@ export interface AntigravityDriverOptions {
    */
   readonly resolveContextWindow?: (modelId: string | undefined) => number | undefined
   /**
-   * 会话实际模型解析。AGY 的 usage 缓存字段口径随模型 Provider 不同（Claude 与
-   * Gemini 的 `input_tokens` 含义不一致），默认读 AGY 设置文件判断
-   * `provider-default` 实际使用的模型。
+   * 会话实际模型解析，用于校验 effort 支持情况；默认读 AGY 设置文件判断
+   * `provider-default` 实际使用的模型。usage 字段口径不依赖模型身份。
    */
   readonly resolveModelId?: (modelId: string | undefined) => string | null
 }
@@ -285,7 +284,8 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     // step_update 一定包含 agent_response 增量。
     if (result !== null) {
       const status = typeof result.status === 'string' ? result.status.trim().toLowerCase() : ''
-      if (status !== '' && !['success', 'succeeded', 'completed', 'complete', 'done'].includes(status)) {
+      const failed = status !== '' && !['success', 'succeeded', 'completed', 'complete', 'done'].includes(status)
+      if (failed) {
         const failureMessage = typeof result.error === 'string' && result.error.trim() !== ''
           ? result.error.trim()
           : `Antigravity result status: ${String(result.status)}`
@@ -300,7 +300,11 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         if (delta.length > 0) chunks.unshift({ type: 'text-delta', text: delta })
       }
       const conversationId = readConversationId(result, input)
-      const cumulative = readAntigravityUsage(result.usage)
+      const reportedCumulative = readAntigravityUsage(result.usage)
+      // 官方参数/输入错误信封携带全零 usage，不能据此清空既有会话基线。
+      // 非零失败用量和已收到的 step 用量仍照常结算。
+      const cumulative = failed && reportedCumulative !== null && Object.values(reportedCumulative).every(count => count === 0)
+        ? null : reportedCumulative
       const turn = this.takeTurnUsage(input, cumulative, conversationId)
       if (cumulative !== null) this.rememberCumulativeUsage(conversationId, cumulative)
       const usageEvent = this.buildUsageEvent(input, turn)
@@ -318,18 +322,22 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   /** 收下一次模型调用的用量；同一 step_index 重复上报时以后者为准。 */
   private collectStepUsage(input: CodingNsCliTurnInput, step: Record<string, unknown>): void {
     const usage = readAntigravityUsage(step.usage)
-    if (usage === null) return
+    // 新响应即使没有 usage，也必须使较早调用的上下文占用失效。
+    if (usage === null && step.step_type !== 'agent_response') return
     const state = this.turnUsages.get(input) ?? {
       calls: new Map<number, AntigravityUsage>(),
-      lastInputTokens: undefined,
-      lastCacheReadTokens: undefined,
+      lastResponseStepIndex: undefined,
     }
     const stepIndex = typeof step.step_index === 'number' && Number.isFinite(step.step_index)
       ? step.step_index
       : state.calls.size
-    state.calls.set(stepIndex, usage)
-    state.lastInputTokens = usage.input_tokens
-    state.lastCacheReadTokens = usage.cache_read_tokens
+    if (usage !== null) state.calls.set(stepIndex, usage)
+    // checkpoint 也可能携带用量，需要结算，但不能覆盖当前主模型上下文。
+    // 旧 step 的重复通知可以修正该调用用量，不能倒退最后一次调用的身份。
+    if (step.step_type === 'agent_response'
+      && (state.lastResponseStepIndex === undefined || stepIndex >= state.lastResponseStepIndex)) {
+      state.lastResponseStepIndex = stepIndex
+    }
     this.turnUsages.set(input, state)
   }
 
@@ -346,16 +354,18 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   ): AntigravityTurnUsage {
     const state = this.turnUsages.get(input)
     this.turnUsages.delete(input)
-    const lastInputTokens = state?.lastInputTokens
-    const lastCacheReadTokens = state?.lastCacheReadTokens
+    const lastResponse = state?.lastResponseStepIndex === undefined ? undefined : state.calls.get(state.lastResponseStepIndex)
+    const contextTokens = lastResponse === undefined ? undefined : lastResponse.input_tokens + lastResponse.cache_read_tokens
     const summed = state === undefined ? null : sumAntigravityUsage(state.calls.values())
-    if (summed !== null) return { usage: summed, lastInputTokens, lastCacheReadTokens }
-    if (cumulative === null) return { usage: null, lastInputTokens, lastCacheReadTokens }
+    if (summed !== null) return { usage: summed, contextTokens }
+    if (cumulative === null) return { usage: null, contextTokens }
     const baseline = this.cumulativeUsages.get(conversationId)
     return {
-      usage: baseline === undefined ? cumulative : subtractAntigravityUsage(cumulative, baseline),
-      lastInputTokens,
-      lastCacheReadTokens,
+      // 首次观察恢复会话时不知道历史累计基线，不能把整段历史作为当前回合结算。
+      usage: baseline === undefined
+        ? (input.providerSessionId?.trim() ? null : cumulative)
+        : subtractAntigravityUsage(cumulative, baseline),
+      contextTokens,
     }
   }
 
@@ -373,35 +383,31 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   /**
    * 把单轮用量映射成公共 usage 事件，并补上 AGY 不报告的上下文容量。
    *
-   * `output_tokens` 已经包含 `thinking_tokens`，缓存字段则按模型 Provider 分成两种
-   * 口径（见 `antigravityUsageExcludesCacheFromInput`）：Gemini 的 `input_tokens`
-   * 是完整提示规模，Claude 的 `input_tokens` 不含缓存读取。后者必须换成
-   * `cache_read_input_tokens` 再交给 `usageChunk`，否则未缓存输入会被算成 0。
+   * AGY 在协议层已经把输入和缓存读取分桶，与模型前缀无关；`output_tokens`
+   * 包含思考，`total_tokens` 则是上游的 input + output（不含缓存读取）。
+   * 使用共享转换器的独立缓存桶字段，不让它把缓存从未缓存输入中再次扣除。
    */
   private buildUsageEvent(input: CodingNsCliTurnInput, turn: AntigravityTurnUsage): CodingNsAgentEvent | null {
     if (turn.usage === null) return null
-    const modelId = this.resolveModelId(input.modelId)
-    const excludesCache = antigravityUsageExcludesCacheFromInput(modelId)
-    const event = usageChunk(excludesCache
-      ? {
-          input_tokens: turn.usage.input_tokens,
-          output_tokens: turn.usage.output_tokens,
-          cache_read_input_tokens: turn.usage.cache_read_tokens,
-          total_tokens: turn.usage.total_tokens,
-        }
-      : turn.usage)
+    const event = usageChunk({
+      input_tokens: turn.usage.input_tokens,
+      output_tokens: turn.usage.output_tokens,
+      cache_read_input_tokens: turn.usage.cache_read_tokens,
+      total_tokens: turn.usage.total_tokens,
+    })
     if (event === null || event.type !== 'usage') return null
     const contextWindow = this.resolveContextWindow(input.modelId)
     if (contextWindow === undefined || contextWindow <= 0) return event
-    // 最后一次模型调用的提示规模就是当前上下文占用；Claude 口径还要补回缓存读取。
-    // 退回累计差时没有逐次明细，只能用本轮输入合计近似。
-    const contextTokens = (turn.lastInputTokens ?? event.inputTokens)
-      + (excludesCache ? (turn.lastCacheReadTokens ?? 0) : 0)
+    // 只有最后一次 agent_response 的输入 + 缓存可作为上下文占用。
+    // 累计差值或 checkpoint 用量无法证明当前上下文规模，只补容量，不伪造分子。
+    const contextTokens = turn.contextTokens
     return {
       ...event,
       contextWindow,
-      contextTokens,
-      contextUsageRatio: Number(Math.min(1, contextTokens / contextWindow).toFixed(6)),
+      ...(contextTokens === undefined ? {} : {
+        contextTokens,
+        contextUsageRatio: Number(Math.min(1, contextTokens / contextWindow).toFixed(6)),
+      }),
     }
   }
 
@@ -447,8 +453,8 @@ function appendOrSyncText(current: string, snapshot: string): string {
 /**
  * AGY 的原始用量结构。
  *
- * 字段名保持 CLI 线协议原样，直接交给 `usageChunk` 折算成公共 usage 事件：
- * `input_tokens` 是完整提示规模（缓存读取含在其中），`output_tokens` 含思考。
+ * 字段名保持 CLI 线协议原样：input 不含缓存读取，output 已含思考，
+ * total 为上游 input + output，不强制改成 DSH 所有互斥桶之和。
  */
 interface AntigravityUsage {
   readonly input_tokens: number
@@ -459,15 +465,13 @@ interface AntigravityUsage {
 
 interface AntigravityTurnState {
   readonly calls: Map<number, AntigravityUsage>
-  lastInputTokens: number | undefined
-  lastCacheReadTokens: number | undefined
+  lastResponseStepIndex: number | undefined
 }
 
 /** 一次汇总后的单轮用量，以及最后一次调用用于推导上下文占用的规模。 */
 interface AntigravityTurnUsage {
   readonly usage: AntigravityUsage | null
-  readonly lastInputTokens: number | undefined
-  readonly lastCacheReadTokens: number | undefined
+  readonly contextTokens: number | undefined
 }
 
 function readRecord(value: unknown): Record<string, unknown> | null {
@@ -481,12 +485,16 @@ function readAntigravityUsage(value: unknown): AntigravityUsage | null {
   const output = tokenCount(record.output_tokens)
   const cacheRead = tokenCount(record.cache_read_tokens)
   const total = tokenCount(record.total_tokens)
-  if (input === 0 && output === 0 && cacheRead === 0 && total === 0) return null
+  // 显式零累计值也是有效基线（例如会话重置）；不能当作缺少 usage 丢掉。
+  if (![record.input_tokens, record.output_tokens, record.cache_read_tokens, record.total_tokens]
+    .some(count => typeof count === 'number' && Number.isFinite(count) && count >= 0)) return null
   return {
     input_tokens: input,
     output_tokens: output,
     cache_read_tokens: cacheRead,
-    total_tokens: total > 0 ? total : input + output,
+    // 缺省时沿用已知 CLI 口径；显式总量（包括零）必须原样保留。
+    total_tokens: typeof record.total_tokens === 'number' && Number.isFinite(record.total_tokens) && record.total_tokens >= 0
+      ? total : input + output,
   }
 }
 
@@ -512,14 +520,16 @@ function sumAntigravityUsage(values: Iterable<AntigravityUsage>): AntigravityUsa
     : null
 }
 
-function subtractAntigravityUsage(current: AntigravityUsage, previous: AntigravityUsage): AntigravityUsage {
-  // 会话被清空或换到新会话时累计值会回退；此时不给出负数用量，直接采用当前值。
-  if (current.input_tokens < previous.input_tokens || current.output_tokens < previous.output_tokens) return current
+function subtractAntigravityUsage(current: AntigravityUsage, previous: AntigravityUsage): AntigravityUsage | null {
+  // 回退可能来自重置或上游修正，无法证明当前值就是本轮用量。
+  // 任一桶回退时停止推测本轮差值；调用方仍保存当前累计值，供后续重新建立差分。
+  if (current.input_tokens < previous.input_tokens || current.output_tokens < previous.output_tokens
+    || current.cache_read_tokens < previous.cache_read_tokens || current.total_tokens < previous.total_tokens) return null
   return {
     input_tokens: current.input_tokens - previous.input_tokens,
     output_tokens: current.output_tokens - previous.output_tokens,
-    cache_read_tokens: Math.max(0, current.cache_read_tokens - previous.cache_read_tokens),
-    total_tokens: Math.max(0, current.total_tokens - previous.total_tokens),
+    cache_read_tokens: current.cache_read_tokens - previous.cache_read_tokens,
+    total_tokens: current.total_tokens - previous.total_tokens,
   }
 }
 

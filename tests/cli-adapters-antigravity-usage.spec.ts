@@ -17,7 +17,6 @@ import {
 import {
   antigravityModelIdFromLabel,
   antigravitySupportsEffort,
-  antigravityUsageExcludesCacheFromInput,
   knownAntigravityContextWindow,
   resolveAntigravityModelId,
 } from '../data/build/dist/host/cli-adapters/model-catalog.js'
@@ -126,16 +125,14 @@ test('Antigravity provider-default 按 AGY 设置文件里的模型取窗口', (
   assert.equal(knownAntigravityContextWindow(undefined, { readFile: () => { throw new Error('ENOENT') } }), 1_048_576)
 })
 
-test('Antigravity 实际模型解析与缓存口径按模型 Provider 区分', () => {
+test('Antigravity 实际模型解析保留显式身份，默认模型读取失败时返回未知', () => {
   const read = (label: string) => () => JSON.stringify({ model: label })
   assert.equal(resolveAntigravityModelId('gemini-3.8-flash'), 'gemini-3.8-flash')
   assert.equal(resolveAntigravityModelId(undefined, { readFile: read('Claude Sonnet 4.6 (Thinking)') }), 'claude-sonnet-4.6')
   assert.equal(resolveAntigravityModelId(undefined, { readFile: () => { throw new Error('ENOENT') } }), null)
 
-  assert.equal(antigravityUsageExcludesCacheFromInput('claude-sonnet-4-6'), true)
-  assert.equal(antigravityUsageExcludesCacheFromInput('claude-opus-4.6'), true)
-  assert.equal(antigravityUsageExcludesCacheFromInput('gemini-3.8-flash'), false)
-  assert.equal(antigravityUsageExcludesCacheFromInput(null), false)
+  assert.equal(resolveAntigravityModelId('gemini-4-hydrogen'), 'gemini-4-hydrogen')
+  assert.equal(resolveAntigravityModelId('magpie/hl/claude-opus-5-5'), 'magpie/hl/claude-opus-5-5')
 })
 
 test('Antigravity 只有 Gemini / GPT-OSS 支持 --effort，Claude 系列不支持', () => {

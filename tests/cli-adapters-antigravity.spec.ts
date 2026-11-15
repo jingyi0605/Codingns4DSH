@@ -2,7 +2,9 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
+import { readFileSync } from 'node:fs'
 import { AntigravityDriver } from '../data/build/dist/host/cli-adapters/antigravity-driver.js'
+import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 
 /**
  * 造一个只回放固定 NDJSON 的 agy 子进程；每次调用消费一组输出行。
@@ -20,7 +22,7 @@ function scriptedDriver(
     binaries: ['fake-agy'],
     spawnSync: (() => ({ status: 0, stdout: 'agy 1.2.17', stderr: '' })) as never,
     resolveContextWindow: options.contextWindow === undefined ? () => undefined : () => options.contextWindow,
-    // 默认按 Gemini 口径（input_tokens 含缓存）；Claude 口径由用例显式指定。
+    // 模型解析与本机设置隔离；用量口径不应依赖该解析结果。
     resolveModelId: () => options.modelId ?? null,
     spawn: ((command: string, args: string[]) => {
       calls.push([command, ...args])
@@ -287,7 +289,7 @@ test('Antigravity 缺少 step 用量时用会话累计差值补齐单轮用量',
   const { driver } = scriptedDriver([
     [resultEvent({ input_tokens: 100, output_tokens: 10, total_tokens: 110 }, { response: '一' })],
     [resultEvent({ input_tokens: 260, output_tokens: 25, total_tokens: 285 }, { response: '二' })],
-    // 会话被重置时累计值回退，不能给出负数用量。
+    // 累计值回退时无法确认当前回合差值，只重建基线。
     [resultEvent({ input_tokens: 120, output_tokens: 8, total_tokens: 128 }, { response: '三' })],
   ])
 
@@ -300,8 +302,7 @@ test('Antigravity 缺少 step 用量时用会话累计差值补齐单轮用量',
   assert.equal(usageOf(first).outputTokens, 10)
   assert.equal(usageOf(second).inputTokens, 160)
   assert.equal(usageOf(second).outputTokens, 15)
-  assert.equal(usageOf(third).inputTokens, 120)
-  assert.equal(usageOf(third).outputTokens, 8)
+  assert.equal(usageOf(third), undefined)
   driver.dispose()
 })
 
@@ -319,9 +320,194 @@ test('Antigravity 为单轮用量补上上下文窗口与当前上下文占用',
   driver.dispose()
 })
 
+test('Antigravity 原生 Hydrogen 逐次用量重建三轮统计，并经 DSH 投影保留未缓存输入', async () => {
+  // 这些是只读 SQLite 提取的逐次数字，不是保存下来的 stdout 事件。
+  const fixture = JSON.parse(readFileSync(new URL('./fixtures/antigravity-token-usage.json', import.meta.url), 'utf8'))
+  const expected = [
+    [115082, 30452, 1616775, 145534, 92810],
+    [40429, 20036, 1365001, 60465, 119814],
+    [38662, 11415, 1788783, 50077, 139539],
+  ]
+  let input = 0, output = 0, cache = 0, thinking = 0
+  const turns = fixture.turns.map((rows: number[][]) => {
+    const steps = rows.map(([index, i, o, c, t]) => {
+      input += i; output += o; cache += c; thinking += t
+      return agentResponseUsage(index, { input_tokens: i, output_tokens: o, cache_read_tokens: c, thinking_tokens: t, total_tokens: i + o })
+    })
+    // result 是按官方累计协议构造的校验值，不能作为真实 result 抓包证据。
+    return [...steps, resultEvent({ input_tokens: input, output_tokens: output, cache_read_tokens: cache, thinking_tokens: thinking, total_tokens: input + output })]
+  })
+  const { driver } = scriptedDriver(turns, { modelId: fixture.modelId, contextWindow: 1_048_576 })
+  try {
+    for (const [turn, [i, o, c, total, context]] of expected.entries()) {
+      const chunks = await collect(driver, { modelId: fixture.modelId, ...(turn === 0 ? {} : { providerSessionId: 'agy-provider-session' }) })
+      const usages = chunks.filter(chunk => chunk.type === 'usage')
+      assert.equal(usages.length, 1)
+      const usage = usages[0]
+      assert.equal(usage.inputTokens, i)
+      assert.equal(usage.uncachedInputTokens, i)
+      assert.equal(usage.outputTokens, o)
+      assert.equal(usage.cacheReadTokens, c)
+      assert.equal(usage.totalTokens, total) // 保留 CLI 的 input + output，不另加缓存。
+      assert.equal(usage.cacheHitRate, Number((c / (i + c) * 100).toFixed(4)))
+      assert.equal(usage.contextTokens, context) // 最后一次调用，不能用本轮合计。
+      const samples: unknown[] = []
+      const projector = new CodingNsDshMessageProjector({
+        adapterId: 'antigravity', modelId: fixture.modelId, sessionId: `native-turn-${turn}`,
+        nativeSessions: { appendUsageSample(_id, sample) { samples.push(sample); return true } },
+      })
+      await projector.push(usage)
+      const projected = await projector.push({ type: 'finish', reason: 'stop' })
+      assert.deepEqual(projected.find(chunk => chunk.type === 'usage')?.usage, {
+        inputTokens: i, outputTokens: o, cacheReadTokens: c, totalTokens: total,
+      })
+      assert.equal((samples[0] as { inputTokens: number }).inputTokens, i)
+    }
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 非零缓存口径不依赖模型前缀、别名或实际模型解析成功', async () => {
+  for (const modelId of ['gemini-3.8-flash', 'gemini-4-hydrogen', 'gpt-oss-120b', 'claude-sonnet-4-6', 'magpie/hl/claude-opus-5-5', null]) {
+    const { driver } = scriptedDriver([[
+      agentResponseUsage(1, { input_tokens: 100, output_tokens: 20, cache_read_tokens: 40, total_tokens: 120 }),
+      resultEvent(undefined),
+    ]], { modelId, contextWindow: 1000 })
+    try {
+      const usage = (await collect(driver, { modelId: modelId ?? 'provider-default' })).find(chunk => chunk.type === 'usage')
+      assert.equal(usage.uncachedInputTokens, 100, String(modelId))
+      assert.equal(usage.cacheHitRate, 28.5714)
+      assert.equal(usage.contextTokens, 140)
+    } finally { driver.dispose() }
+  }
+})
+
+test('Antigravity 重复 step 快照只替换一次，旧 step 和 checkpoint 不覆盖最后调用的上下文', async () => {
+  const { driver } = scriptedDriver([[
+    agentResponseUsage(1, { input_tokens: 10, output_tokens: 1, cache_read_tokens: 80 }),
+    agentResponseUsage(3, { input_tokens: 20, output_tokens: 2, cache_read_tokens: 90 }),
+    agentResponseUsage(3, { input_tokens: 20, output_tokens: 2, cache_read_tokens: 90 }),
+    agentResponseUsage(1, { input_tokens: 12, output_tokens: 1, cache_read_tokens: 80 }),
+    stepUpdate({ step_index: 4, state: 'DONE', step_type: 'checkpoint', usage: { input_tokens: 5, output_tokens: 1 } }),
+    resultEvent(undefined),
+  ]], { contextWindow: 1000 })
+  try {
+    const usages = (await collect(driver, {})).filter(chunk => chunk.type === 'usage')
+    assert.equal(usages.length, 1)
+    assert.equal(usages[0].inputTokens, 37)
+    assert.equal(usages[0].cacheReadTokens, 170)
+    assert.equal(usages[0].outputTokens, 4)
+    assert.equal(usages[0].contextTokens, 110)
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 最后一次响应缺少用量时不沿用较早调用的上下文占用', async () => {
+  const { driver } = scriptedDriver([[
+    agentResponseUsage(1, { input_tokens: 10, output_tokens: 1, cache_read_tokens: 80 }),
+    stepUpdate({ step_index: 3, state: 'DONE', step_type: 'agent_response', text_delta: '完成' }),
+    resultEvent({ input_tokens: 30, output_tokens: 3, cache_read_tokens: 170, total_tokens: 33 }),
+  ]], { contextWindow: 1000 })
+  try {
+    const usage = (await collect(driver, {})).find(chunk => chunk.type === 'usage')
+    assert.equal(usage.contextWindow, 1000)
+    assert.equal(usage.contextTokens, undefined)
+    assert.equal(usage.contextUsageRatio, undefined)
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 累计差值保留缓存且不推测上下文，失败回合也只结算本轮', async () => {
+  const { driver } = scriptedDriver([
+    [resultEvent({ input_tokens: 100, output_tokens: 10, cache_read_tokens: 200, total_tokens: 110 })],
+    [resultEvent({ input_tokens: 140, output_tokens: 15, cache_read_tokens: 500, total_tokens: 155 }, { status: 'ERROR', error: 'failed' })],
+    [resultEvent({ input_tokens: 150, output_tokens: 18, cache_read_tokens: 550, total_tokens: 168 })],
+  ], { contextWindow: 1000 })
+  try {
+    for (const [turn, [i, o, c]] of [[100, 10, 200], [40, 5, 300], [10, 3, 50]].entries()) {
+      const chunks = await collect(driver, turn === 0 ? {} : { providerSessionId: 'agy-provider-session' })
+      const usage = chunks.find(chunk => chunk.type === 'usage')
+      assert.equal(usage.uncachedInputTokens, i)
+      assert.equal(usage.outputTokens, o)
+      assert.equal(usage.cacheReadTokens, c)
+      assert.equal(usage.contextWindow, 1000)
+      assert.equal(usage.contextTokens, undefined)
+      assert.equal(usage.contextUsageRatio, undefined)
+      assert.equal(chunks.at(-1).reason, turn === 1 ? 'error' : 'stop')
+    }
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 首次接入已恢复会话且无 step 时只建立累计基线', async () => {
+  const { driver } = scriptedDriver([
+    [resultEvent({ input_tokens: 100, output_tokens: 10, cache_read_tokens: 200, total_tokens: 110 })],
+    [resultEvent({ input_tokens: 140, output_tokens: 15, cache_read_tokens: 500, total_tokens: 155 })],
+  ])
+  try {
+    assert.equal((await collect(driver, { providerSessionId: 'agy-provider-session' })).some(chunk => chunk.type === 'usage'), false)
+    const usage = (await collect(driver, { providerSessionId: 'agy-provider-session' })).find(chunk => chunk.type === 'usage')
+    assert.equal(usage.uncachedInputTokens, 40)
+    assert.equal(usage.cacheReadTokens, 300)
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 任一累计桶回退时不混合不同基线，也不伪造当前回合精确值', async () => {
+  for (const rollback of [
+    { input_tokens: 120, output_tokens: 8, cache_read_tokens: 250, total_tokens: 128 },
+    { input_tokens: 120, output_tokens: 12, cache_read_tokens: 150, total_tokens: 132 },
+    { input_tokens: 120, output_tokens: 12, cache_read_tokens: 250, total_tokens: 100 },
+    { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, total_tokens: 0 },
+  ]) {
+    const next = { input_tokens: rollback.input_tokens + 10, output_tokens: rollback.output_tokens + 2, cache_read_tokens: rollback.cache_read_tokens + 20, total_tokens: rollback.total_tokens + 12 }
+    const { driver } = scriptedDriver([
+      [resultEvent({ input_tokens: 100, output_tokens: 10, cache_read_tokens: 200, total_tokens: 110 })],
+      [resultEvent(rollback)], [resultEvent(next)],
+    ])
+    try {
+      await collect(driver, {})
+      assert.equal((await collect(driver, { providerSessionId: 'agy-provider-session' })).some(chunk => chunk.type === 'usage'), false)
+      const usage = (await collect(driver, { providerSessionId: 'agy-provider-session' })).find(chunk => chunk.type === 'usage')
+      assert.equal(usage.uncachedInputTokens, 10)
+      assert.equal(usage.outputTokens, 2)
+      assert.equal(usage.cacheReadTokens, 20)
+    } finally { driver.dispose() }
+  }
+})
+
+test('Antigravity ERROR 空用量信封不能把既有会话累计基线重置为零', async () => {
+  // 官方 headless 协议的参数/输入错误信封返回全零 usage，并非会话清空。
+  const { driver } = scriptedDriver([
+    [resultEvent({ input_tokens: 100, output_tokens: 10, cache_read_tokens: 200, total_tokens: 110 })],
+    [resultEvent({ input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, total_tokens: 0 }, { status: 'ERROR', error: 'invalid input' })],
+    [resultEvent({ input_tokens: 140, output_tokens: 15, cache_read_tokens: 500, total_tokens: 155 })],
+  ])
+  try {
+    await collect(driver, {})
+    const failed = await collect(driver, { providerSessionId: 'agy-provider-session' })
+    assert.equal(failed.some(chunk => chunk.type === 'usage'), false)
+    assert.equal(failed.at(-1).reason, 'error')
+    const usage = (await collect(driver, { providerSessionId: 'agy-provider-session' })).find(chunk => chunk.type === 'usage')
+    assert.equal(usage.uncachedInputTokens, 40)
+    assert.equal(usage.cacheReadTokens, 300)
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 保留上游显式总量，不用缓存桶或思考字段重写它', async () => {
+  for (const total of [0, 999]) {
+    const { driver } = scriptedDriver([[
+      agentResponseUsage(1, { input_tokens: 100, output_tokens: 20, cache_read_tokens: 400, thinking_tokens: 15, total_tokens: total }),
+      resultEvent(undefined),
+    ]])
+    try {
+      const usage = (await collect(driver, {})).find(chunk => chunk.type === 'usage')
+      assert.equal(usage.totalTokens, total)
+      assert.equal(usage.outputTokens, 20)
+      assert.equal(usage.uncachedInputTokens, 100)
+      assert.equal(usage.cacheReadTokens, 400)
+    } finally { driver.dispose() }
+  }
+})
+
 test('Antigravity Claude 模型沿用 Anthropic 口径，缓存读取不计入未缓存输入', async () => {
   // 实测 claude-sonnet-4-6 首轮：input_tokens=3968、cache_read_tokens=9619，
-  // input_tokens 只含未缓存输入；Gemini 口径下同一组数字会算出 0 未缓存输入。
+  // input_tokens 只含未缓存输入；旧的非 Claude 转换会把同一组数字算成 0。
   const { driver } = scriptedDriver([[
     agentResponseUsage(1, { input_tokens: 3968, output_tokens: 15, cache_read_tokens: 9619, total_tokens: 3983 }),
     resultEvent({ input_tokens: 3968, output_tokens: 15, cache_read_tokens: 9619, total_tokens: 3983 }),

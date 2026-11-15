@@ -433,7 +433,7 @@ export function knownAntigravityContextWindow(
  *
  * 显式模型 id 直接返回；`provider-default` 时读取 AGY 自己的设置文件
  * （`~/.gemini/antigravity-cli/settings.json` 的 `model` 展示名）并还原成模型键。
- * 读不到时返回 null，调用方按 AGY 默认 Agent 模型（Gemini 系）处理。
+ * 读不到时返回 null；模型身份不决定 Antigravity 的 usage 字段口径。
  */
 export function resolveAntigravityModelId(
   modelId: string | undefined,
@@ -442,21 +442,6 @@ export function resolveAntigravityModelId(
   const normalized = modelId?.trim().toLowerCase()
   if (normalized !== undefined && normalized !== '' && normalized !== 'provider-default') return normalized
   return readAntigravitySelectedModel(options)
-}
-
-/**
- * Antigravity 的缓存字段语义随模型 Provider 不同，实测（agy 1.2.17）：
- *
- * - Claude 模型沿用 Anthropic 口径：`input_tokens` 只含未缓存输入，缓存命中单独放在
- *   `cache_read_tokens`（首轮 3968 + 9619，第二轮 682 + 13120）。
- * - Gemini / GPT-OSS 模型：`input_tokens` 是完整提示规模，`cache_read_tokens` 在本机
- *   全部 16 条历史样本里恒为 0。
- *
- * 两者都满足 `total_tokens = input_tokens + output_tokens`，无法用总量区分；只有
- * Claude 口径需要把缓存读取从输入里排除，因此按模型前缀判定。
- */
-export function antigravityUsageExcludesCacheFromInput(modelId: string | null): boolean {
-  return modelId !== null && modelId.startsWith('claude')
 }
 
 /**
