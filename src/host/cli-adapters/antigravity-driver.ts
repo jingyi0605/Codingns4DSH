@@ -3,7 +3,7 @@ import { dirname } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, genericEventChunks } from './standard-stream-driver.js'
-import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, antigravityUsageExcludesCacheFromInput, isProviderDefaultModel, knownAntigravityContextWindow, parseAntigravityModels, resolveAntigravityModelId } from './model-catalog.js'
+import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, isProviderDefaultModel, knownAntigravityContextWindow, parseAntigravityModels, resolveAntigravityModelId } from './model-catalog.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
 import { commandEnvironment, runAsyncCommand, terminateChildProcess, withCommandSignal, type CodingNsChildProcess } from './process-utils.js'
 import { usageChunk } from './rpc-driver-utils.js'
@@ -259,6 +259,11 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       this.collectStepUsage(input, step)
       const sanitized = { ...step }
       delete sanitized.usage
+      // 工具的完成态在 step 的 state 字段，tool_info 里没有 status。不映射的话，没有
+      // output 的 write_file/edit_file 永远停在 running，被拒绝的写入（state=ERROR）
+      // 也会在回合结束时被当成成功，错误计入「修改文件」。
+      const toolInfo = readRecord(step.tool_info)
+      if (step.step_type === 'tool' && toolInfo !== null) sanitized.tool_info = normalizeAntigravityToolInfo(toolInfo, step)
       // AGY 把真实事件类型放在 step_update.step_type，而外层 event 永远是
       // step_update。把它提升成 genericEventChunks 能识别的 type，才能保留
       // agent_response 正文和 tool 生命周期。
@@ -266,6 +271,8 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         sanitized.type = sanitized.step_type
       }
       chunks = genericEventChunks({ ...value, event: sanitized }, cancelled)
+      const observation = this.buildPerformanceObservation(input, step)
+      if (observation !== null) chunks.unshift(observation)
     } else if (result !== null) {
       // result.usage 是会话累计值，绝不能当作单轮用量交给 DSH；剥掉后由下面的
       // 单轮汇总事件补上，否则 token-meter 会把累计值按轮反复累加。
@@ -377,36 +384,59 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   /**
    * 把单轮用量映射成公共 usage 事件，并补上 AGY 不报告的上下文容量。
    *
-   * `output_tokens` 已经包含 `thinking_tokens`，缓存字段则按模型 Provider 分成两种
-   * 口径（见 `antigravityUsageExcludesCacheFromInput`）：Gemini 的 `input_tokens`
-   * 是完整提示规模，Claude 的 `input_tokens` 不含缓存读取。后者必须换成
-   * `cache_read_input_tokens` 再交给 `usageChunk`，否则未缓存输入会被算成 0。
+   * `output_tokens` 已经包含 `thinking_tokens`。实测（agy 1.5.9）所有模型的
+   * `input_tokens` 都只含未缓存输入，缓存命中单独放在 `cache_read_tokens`：Gemini 一次
+   * 调用里 `input_tokens=2553`、`cache_read_tokens=7571`，缓存读取大于输入，不可能含在
+   * 输入里。因此一律改传 `cache_read_input_tokens`，让 `usageChunk` 把完整输入还原成
+   * 未缓存输入 + 缓存读取；按 Gemini 口径解释会把缓存命中率算成 100%。
    */
   private buildUsageEvent(input: CodingNsCliTurnInput, turn: AntigravityTurnUsage): CodingNsAgentEvent | null {
     if (turn.usage === null) return null
-    const modelId = this.resolveModelId(input.modelId)
-    const excludesCache = antigravityUsageExcludesCacheFromInput(modelId)
-    const event = usageChunk(excludesCache
-      ? {
-          input_tokens: turn.usage.input_tokens,
-          output_tokens: turn.usage.output_tokens,
-          cache_read_input_tokens: turn.usage.cache_read_tokens,
-          total_tokens: turn.usage.total_tokens,
-        }
-      : turn.usage)
+    const event = usageChunk({
+      input_tokens: turn.usage.input_tokens,
+      output_tokens: turn.usage.output_tokens,
+      cache_read_input_tokens: turn.usage.cache_read_tokens,
+      total_tokens: turn.usage.total_tokens,
+    })
     if (event === null || event.type !== 'usage') return null
     const contextWindow = this.resolveContextWindow(input.modelId)
     if (contextWindow === undefined || contextWindow <= 0) return event
-    // 最后一次模型调用的提示规模就是当前上下文占用；Claude 口径还要补回缓存读取。
+    // 最后一次模型调用的完整提示规模（未缓存输入 + 缓存读取）就是当前上下文占用。
     // 退回累计差时没有逐次明细，只能用本轮输入合计近似。
-    const contextTokens = (turn.lastInputTokens ?? event.inputTokens)
-      + (excludesCache ? (turn.lastCacheReadTokens ?? 0) : 0)
+    const contextTokens = (turn.lastInputTokens ?? event.inputTokens) + (turn.lastCacheReadTokens ?? 0)
     return {
       ...event,
       contextWindow,
       contextTokens,
       contextUsageRatio: Number(Math.min(1, contextTokens / contextWindow).toFixed(6)),
     }
+  }
+
+  /**
+   * 用 AGY 自己报告的单次模型调用耗时合成吞吐样本。
+   *
+   * AGY 的 agent_response step 带 `duration_seconds` 和该次调用的 `output_tokens`。DSH 自己
+   * 按 usage 到达时间算速度时，外部 Agent 的事件几乎同时落盘，会得出上千万 tok/s 的假数字，
+   * 因此必须由驱动提供真实耗时。没有用量、耗时或输出的 step 不产出样本。
+   */
+  private buildPerformanceObservation(input: CodingNsCliTurnInput, step: Record<string, unknown>): CodingNsAgentEvent | null {
+    if (step.step_type !== 'agent_response' || typeof step.state !== 'string' || step.state.trim().toUpperCase() !== 'DONE') return null
+    const usage = readAntigravityUsage(step.usage)
+    const duration = step.duration_seconds
+    if (usage === null || usage.output_tokens <= 0 || typeof duration !== 'number' || !Number.isFinite(duration) || duration <= 0) return null
+    const stepIndex = typeof step.step_index === 'number' && Number.isFinite(step.step_index) ? step.step_index : 0
+    const conversationId = readConversationId(step, input)
+    const completedAt = this.eventTime()
+    const startedAt = completedAt - Math.round(duration * 1000)
+    const sample = {
+      id: `${conversationId}:${stepIndex}:${completedAt}`,
+      startedAt,
+      // AGY 不报告首 token 时刻；取调用起点，让整次耗时都算解码时间，首字延迟恒为 0 而不是编造。
+      firstTokenAt: startedAt,
+      completedAt,
+      outputTokens: usage.output_tokens,
+    }
+    return { type: 'usage-observation', requestPerformance: { adapterId: 'antigravity', id: sample.id, samples: [sample] } }
   }
 
   protected buildArgs(input: AntigravityTurnInput): readonly string[] {
@@ -440,6 +470,46 @@ function antigravityPermissionArgs(permission: CodingNsCliTurnInput['permission'
   if (permission?.sandboxMode === 'workspace-write' && permission.approvalPolicy === 'never') return ['--mode', 'accept-edits']
   return ['--mode', 'plan']
 }
+
+/** AGY step 的 state 对应的公共工具状态；未知值交给通用解析器按事件类型推断。 */
+function antigravityToolStatus(state: unknown): 'running' | 'completed' | 'failed' | undefined {
+  const normalized = typeof state === 'string' ? state.trim().toUpperCase() : ''
+  if (normalized === 'ACTIVE') return 'running'
+  if (normalized === 'DONE') return 'completed'
+  if (normalized === 'ERROR' || normalized === 'FAILED' || normalized === 'CANCELLED') return 'failed'
+  return undefined
+}
+
+/**
+ * 把 AGY 的工具 step 整理成通用解析器和修改文件检测能识别的形态。
+ *
+ * 实测（agy 1.5.9）：ACTIVE 与 DONE 是同一个 step_index 的两次上报，但线协议没有
+ * call id，也没有 tool_info.status。缺少 call id 时每次上报都会被当成一次新调用，
+ * ACTIVE 那条永远不结算；缺少状态时没有 output 的写入类工具无法区分成功和被拒绝。
+ * 文件工具的参数名是大写的 `Path`/`Content`/`Target`/`Replacement`，需要换成
+ * 公共 edit/write 工具使用的 `file_path`/`content`/`old_string`/`new_string`。
+ */
+function normalizeAntigravityToolInfo(toolInfo: Record<string, unknown>, step: Record<string, unknown>): Record<string, unknown> {
+  const normalized: Record<string, unknown> = { ...toolInfo }
+  const status = antigravityToolStatus(step.state)
+  if (status !== undefined) normalized.status = status
+  if (typeof step.step_index === 'number' && Number.isFinite(step.step_index)) normalized.callId = `agy-step-${step.step_index}`
+  const name = typeof toolInfo.name === 'string' ? toolInfo.name : typeof step.tool_name === 'string' ? step.tool_name : ''
+  const parameters = readRecord(toolInfo.parameters)
+  if (parameters !== null && ANTIGRAVITY_FILE_TOOLS.has(name)) {
+    const { Path, Content, Target, Replacement, ...rest } = parameters
+    normalized.parameters = {
+      ...rest,
+      ...(typeof Path === 'string' ? { file_path: Path } : {}),
+      ...(typeof Content === 'string' ? { content: Content } : {}),
+      ...(typeof Target === 'string' ? { old_string: Target } : {}),
+      ...(typeof Replacement === 'string' ? { new_string: Replacement } : {}),
+    }
+  }
+  return normalized
+}
+
+const ANTIGRAVITY_FILE_TOOLS: ReadonlySet<string> = new Set(['write_file', 'edit_file'])
 
 /** 将 AGY 的最终正文快照与前面已发出的增量对齐，避免重复渲染。 */
 function appendOrSyncText(current: string, snapshot: string): string {

@@ -20,7 +20,7 @@ function scriptedDriver(
     binaries: ['fake-agy'],
     spawnSync: (() => ({ status: 0, stdout: 'agy 1.2.17', stderr: '' })) as never,
     resolveContextWindow: options.contextWindow === undefined ? () => undefined : () => options.contextWindow,
-    // 默认按 Gemini 口径（input_tokens 含缓存）；Claude 口径由用例显式指定。
+    // 实测所有模型的 input_tokens 都不含缓存读取；modelId 只影响上下文窗口和 --effort。
     resolveModelId: () => options.modelId ?? null,
     spawn: ((command: string, args: string[]) => {
       calls.push([command, ...args])
@@ -319,9 +319,9 @@ test('Antigravity 为单轮用量补上上下文窗口与当前上下文占用',
   driver.dispose()
 })
 
-test('Antigravity Claude 模型沿用 Anthropic 口径，缓存读取不计入未缓存输入', async () => {
+test('Antigravity 缓存读取不计入未缓存输入，Claude 与 Gemini 口径一致', async () => {
   // 实测 claude-sonnet-4-6 首轮：input_tokens=3968、cache_read_tokens=9619，
-  // input_tokens 只含未缓存输入；Gemini 口径下同一组数字会算出 0 未缓存输入。
+  // input_tokens 只含未缓存输入；把它当成完整提示会算出 0 未缓存输入。
   const { driver } = scriptedDriver([[
     agentResponseUsage(1, { input_tokens: 3968, output_tokens: 15, cache_read_tokens: 9619, total_tokens: 3983 }),
     resultEvent({ input_tokens: 3968, output_tokens: 15, cache_read_tokens: 9619, total_tokens: 3983 }),
@@ -335,6 +335,67 @@ test('Antigravity Claude 模型沿用 Anthropic 口径，缓存读取不计入�
   assert.equal(usage.cacheHitRate, Number((9619 / (3968 + 9619) * 100).toFixed(4)))
   // 上下文占用 = 未缓存输入 + 缓存读取，缓存不能漏出分母。
   assert.equal(usage.contextTokens, 13587)
+  driver.dispose()
+})
+
+test('Antigravity Gemini 的 input_tokens 同样不含缓存读取，缓存命中率不会被算成 100%', async () => {
+  // agy 1.5.9 实测 Gemini 一次调用：input_tokens=2553、cache_read_tokens=7571。
+  // 缓存读取大于输入，说明 input_tokens 只含未缓存部分；旧实现把它当完整提示，命中率恒为 100%。
+  const { driver } = scriptedDriver([[
+    agentResponseUsage(3, { input_tokens: 2553, output_tokens: 65, cache_read_tokens: 7571, total_tokens: 2618 }),
+    resultEvent({ input_tokens: 2553, output_tokens: 65, cache_read_tokens: 7571, total_tokens: 2618 }),
+  ]], { contextWindow: 1_048_576, modelId: 'gemini-3.8-flash' })
+
+  const chunks = await collect(driver, { modelId: 'gemini-3.8-flash' })
+  const usage = chunks.find((chunk) => chunk.type === 'usage')
+  assert.equal(usage.uncachedInputTokens, 2553)
+  assert.equal(usage.cacheReadTokens, 7571)
+  assert.equal(usage.cacheHitRate, Number((7571 / (2553 + 7571) * 100).toFixed(4)))
+  assert.equal(usage.contextTokens, 2553 + 7571)
+  driver.dispose()
+})
+
+test('Antigravity 用 step 的 duration_seconds 产出请求速度样本，不编造首字延迟', async () => {
+  const { driver } = scriptedDriver([[
+    { event: 'init', conversation_id: 'agy-provider-session' },
+    stepUpdate({ step_index: 1, state: 'DONE', step_type: 'agent_response', duration_seconds: 16.5, usage: { input_tokens: 9603, output_tokens: 424, thinking_tokens: 392, cache_read_tokens: 0, total_tokens: 10027 } }),
+    // 没有耗时或输出的 step 不产出样本
+    stepUpdate({ step_index: 3, state: 'DONE', step_type: 'agent_response', usage: { input_tokens: 5, output_tokens: 0, total_tokens: 5 } }),
+    resultEvent({ input_tokens: 9608, output_tokens: 424, total_tokens: 10032 }),
+  ]])
+
+  const chunks = await collect(driver, {})
+  const observations = chunks.filter((chunk) => chunk.type === 'usage-observation')
+  assert.equal(observations.length, 1)
+  const batch = observations[0].requestPerformance
+  assert.equal(batch.adapterId, 'antigravity')
+  const [sample] = batch.samples
+  assert.equal(sample.outputTokens, 424)
+  assert.equal(sample.completedAt - sample.startedAt, 16_500)
+  assert.equal(sample.firstTokenAt, sample.startedAt)
+  driver.dispose()
+})
+
+test('Antigravity 文件工具按 step_index 配对生命周期，并换成公共 edit/write 参数名', async () => {
+  // agy 1.5.9 实测：线协议没有 call id 和 tool_info.status，参数名是大写的 Path/Content/Target/Replacement。
+  const { driver } = scriptedDriver([[
+    { event: 'init', conversation_id: 'agy-provider-session' },
+    stepUpdate({ step_index: 2, state: 'ACTIVE', step_type: 'tool', tool_name: 'write_file', tool_info: { name: 'write_file', parameters: { Path: '/w/a.txt' } } }),
+    stepUpdate({ step_index: 2, state: 'DONE', step_type: 'tool', tool_name: 'write_file', duration_seconds: 0.1, tool_info: { name: 'write_file', parameters: { Path: '/w/a.txt' } } }),
+    stepUpdate({ step_index: 4, state: 'ACTIVE', step_type: 'tool', tool_name: 'edit_file', tool_info: { name: 'edit_file', parameters: { Path: '/w/b.txt', Target: 'old', Replacement: 'new' } } }),
+    stepUpdate({ step_index: 4, state: 'ERROR', step_type: 'tool', tool_name: 'edit_file', tool_info: { name: 'edit_file', parameters: { Path: '/w/b.txt', Target: 'old', Replacement: 'new' }, error: { type: 'TOOL_ERROR', message: 'denied' } } }),
+    resultEvent(undefined),
+  ]])
+
+  const tools = (await collect(driver, {})).filter((chunk) => chunk.type === 'tool-event')
+  assert.deepEqual(tools.map((tool) => [tool.toolName, tool.callId, tool.status]), [
+    ['write_file', 'agy-step-2', 'running'],
+    ['write_file', 'agy-step-2', 'completed'],
+    ['edit_file', 'agy-step-4', 'running'],
+    ['edit_file', 'agy-step-4', 'failed'],
+  ])
+  assert.deepEqual(JSON.parse(tools[0].input), { file_path: '/w/a.txt' })
+  assert.deepEqual(JSON.parse(tools[2].input), { file_path: '/w/b.txt', old_string: 'old', new_string: 'new' })
   driver.dispose()
 })
 
