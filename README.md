@@ -83,7 +83,7 @@ Agent、终端和项目文件在运行 DSH 的电脑（Host）上处理；浏览
 | **OpenCode** | Skill、权限确认、提问、用量 | 支持本地 CLI 或已有服务，以及原生技能调用 |
 | **Grok Build** | Skill、权限确认、提问、用量 | 支持原生技能目录与结构化提问 |
 | **MiniMax Code** | 权限确认、提问、用量 | 默认接入支持交互；显式思考档位的执行模式不支持交互回传。<br>上游贡献者：[chenjunyi000](https://github.com/chenjunyi000)<br>提交 PR [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6)、[#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
-| **ZCode** | 模型选择、会话续接、用量 | 支持 CLI 或桌面应用内置运行时。<br>上游贡献者：[chenjunyi000](https://github.com/chenjunyi000)<br>提交 PR [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6)、[#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
+| **ZCode** | 模型选择、会话续接、原生工作流、子智能体进度、用量 | 支持 CLI 或桌面应用内置运行时。<br>上游贡献者：[chenjunyi000](https://github.com/chenjunyi000)<br>提交 PR [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6)、[#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
 | **CodeBuddy** | 权限确认、提问、用量 | 自动识别国内／国际版。<br>CodexHost 上游贡献者：[mouzhi](https://github.com/mouzhi)<br>首次适配 [f30b000](https://github.com/BytePioneer-AI/codex-host/commit/f30b000f88950c40844b071eec2f6f385c6bcb49) |
 | **WorkBuddy** | 权限确认、提问、思考强度 | 安装并登录 WorkBuddy 后，直接启动内置 CLI；无需打开桌面窗口或先发送消息。<br>CodexHost 上游贡献者：[BytePioneer-AI（ChongWen）](https://github.com/BytePioneer-AI)<br>首次适配 [6e9f365](https://github.com/BytePioneer-AI/codex-host/commit/6e9f365e2bf8ac61716f8250475530ae790f2d2f) |
 | **Cursor CLI** | 权限确认、提问、思考强度 | CodexHost 上游贡献者：[mouzhi](https://github.com/mouzhi)<br>首次适配 [ad6ba8e](https://github.com/BytePioneer-AI/codex-host/commit/ad6ba8e04d294c473d2dcad99880496ff39c1f7e) |
@@ -116,6 +116,10 @@ ZCode 模型菜单区分个人／团队 Coding Plan 与 Start Plan，同名模�
     </tr>
   </table>
 </div>
+
+### ZCode 原生工作流与子智能体
+
+在会话中要求 ZCode 创建原生工作流，随后通过标题旁的进度入口查看参与者、任务结果与只读时间线。父回合结束后的自动回复继续进入 DSH 正文与持久历史。面板支持按生命周期折叠和三／二／单列响应式布局。详见[使用说明与示例](docs/zcode-workflows.md)。
 
 ### 会话增强与订阅用量
 

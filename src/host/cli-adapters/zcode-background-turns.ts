@@ -55,7 +55,11 @@ export class ZcodeBackgroundTurns {
   }
   release(id: string): void { this.turns.delete(id) }
   cancel(): void {
-    for (const t of this.turns.values()) { t.cancelled = true; t.queue.close() }
+    for (const t of this.turns.values()) {
+      t.cancelled = true; t.queue.close()
+      if (t.nativeTurnId) this.rememberEnd(t.nativeTurnId)
+    }
+    this.turns.clear()
     this.active = undefined; this.foreground = false
   }
   /** Returns true when the foreground listener must not consume this notification. */

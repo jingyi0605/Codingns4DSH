@@ -93,7 +93,8 @@ function readSessionRows(db: DatabaseSync, columns: ReadonlySet<string>, parentI
   const parentId = sessionColumn(columns, 'parent_id', 'parent_session_id')
   const outcome = columns.has('last_outcome') ? 'last_outcome' : "'' AS last_outcome"
   const rows = db.prepare(`SELECT id,${parentId} AS parent_id,${taskType} AS task_type,title,directory,time_created,time_updated,${outcome}
-    FROM session WHERE ${parentId} IN (${parentIds.map(() => '?').join(',')}) LIMIT 400`).all(...parentIds)
+    FROM session WHERE ${parentId} IN (${parentIds.map(() => '?').join(',')})
+      AND ${taskType} IN ('subagent_child','workflow_child') ORDER BY time_updated DESC,id LIMIT 401`).all(...parentIds)
   return rows.map((row): SessionRow => ({
     id: text(row.id, 200),
     parentId: text(row.parent_id, 200),
@@ -202,7 +203,7 @@ function nodeLabel(input: unknown, fallback: string): string {
 function readDwfNodes(db: DatabaseSync, runId: string): DwfNodeRow[] {
   const rows = db.prepare(`SELECT site_id,ordinal,kind,status,actor_site_id,actor_ordinal,
       substr(input_json,1,12001) AS input_json, substr(result_json,1,12001) AS result_json, substr(error_json,1,4001) AS error_json,
-      time_created,time_updated FROM dwf_node WHERE run_id=? ORDER BY id LIMIT 500`).all(runId)
+      time_created,time_updated FROM dwf_node WHERE run_id=? ORDER BY id LIMIT 501`).all(runId)
   return rows.map((row): DwfNodeRow => ({
     siteId: text(row.site_id, 200),
     ordinal: number(row.ordinal),
@@ -342,14 +343,15 @@ function readSubagentType(title: string): string {
 export function readZcodeSubagents(databasePath: string, parentSessionIds: readonly string[]): ZcodeSubagentSnapshot {
   let opened: { db: DatabaseSync; columns: ReadonlySet<string> } | null
   try { opened = openReadOnly(databasePath) } catch (error) {
-    return { available: false, reason: error instanceof Error && error.message === 'schema-unsupported' ? 'schema-unsupported' : 'database-missing', runs: [], hasMore: false }
+    return { available: false, reason: error instanceof Error && error.message === 'schema-unsupported' ? 'schema-unsupported' : 'database-unavailable', runs: [], hasMore: false }
   }
   if (opened === null) return { available: false, reason: 'database-missing', runs: [], hasMore: false }
   const { db, columns } = opened
   try {
     const ids = [...new Set(parentSessionIds.filter(id => SESSION_ID.test(id)))].slice(0, 2)
     if (ids.length === 0) return { available: true, reason: null, runs: [], hasMore: false }
-    const sessions = readSessionRows(db, columns, ids)
+    const allSessions = readSessionRows(db, columns, ids)
+    const sessions = allSessions.slice(0, 400)
     const byId = new Map(sessions.map(session => [session.id, session]))
     const runRows = db.prepare(`SELECT id,name,status,spent_tokens,resumed_from,result_json,failure_json,time_created,time_updated
       FROM dwf_run WHERE parent_session_id IN (${ids.map(() => '?').join(',')})
@@ -357,10 +359,11 @@ export function readZcodeSubagents(databasePath: string, parentSessionIds: reado
     const runs: ZcodeSubagentRun[] = []
     for (const runRow of runRows.slice(0, 20)) {
       const runId = text(runRow.id, 200)
-      const nodes = readDwfNodes(db, runId)
+      const allNodes = readDwfNodes(db, runId)
+      const nodes = allNodes.slice(0, 500)
       const actorRows = db.prepare(`SELECT site_id,ordinal,name,resolved_model,session_id,time_created,time_updated
-        FROM dwf_actor WHERE run_id=? ORDER BY id LIMIT 200`).all(runId)
-      const agents = actorRows.flatMap((actor, index): ZcodeSubagentSummary[] => {
+        FROM dwf_actor WHERE run_id=? ORDER BY id LIMIT 201`).all(runId)
+      const agents = actorRows.slice(0, 200).flatMap((actor, index): ZcodeSubagentSummary[] => {
         const childId = text(actor.session_id, 200)
         const session = childId === '' ? undefined : byId.get(childId)
         // 参与者还没有子会话（排队/未启动）时也保留，否则步骤树会缺行。
@@ -387,7 +390,7 @@ export function readZcodeSubagents(databasePath: string, parentSessionIds: reado
         agents,
         artifacts: agents.flatMap(agent => agent.artifacts).slice(0, ARTIFACT_LIMIT),
         phases: readRunPhases(db, runId, nodes),
-        truncated: agents.length < actorRows.length,
+        truncated: agents.length < actorRows.length || allNodes.length > 500 || allSessions.length > 400,
       })
     }
     const nativeSessions = sessions.filter(session => session.taskType === 'subagent_child')
@@ -424,7 +427,7 @@ export function readZcodeSubagents(databasePath: string, parentSessionIds: reado
         truncated: nativeSessions.length > agents.length,
       })
     }
-    return { available: true, reason: null, runs, hasMore: runRows.length > 20 }
+    return { available: true, reason: null, runs, hasMore: runRows.length > 20 || allSessions.length > 400 }
   } finally { try { db.close() } catch { /* 只读句柄关闭失败不影响结果 */ } }
 }
 

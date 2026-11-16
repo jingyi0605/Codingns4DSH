@@ -573,8 +573,9 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   /** 复用同 cwd 的常驻 app 进程；cwd 变化或进程死亡时重建并重新挂载会话。 */
   private async getSession(input: CodingNsCliTurnInput): Promise<ZcodeSession> {
     const previous = this.sessions.get(input.sessionId)
-    if (previous !== undefined && previous.cwd === input.cwd && !previous.rpc.isClosed) return previous
-    if (previous !== undefined) cancelZcodeInteractions(previous)
+    if (previous !== undefined && previous.cwd === input.cwd && !previous.rpc.isClosed
+      && (input.providerSessionId === undefined || previous.acpSessionId === input.providerSessionId)) return previous
+    if (previous !== undefined) { previous.background.cancel(); cancelZcodeInteractions(previous) }
     previous?.rpc.dispose()
     const rpc = this.startAppServer(input.runtimeEnv)
     const session: ZcodeSession = {
@@ -911,7 +912,8 @@ async function readZcodeSessionData(rpc: JsonRpcProcess, method: 'session/usage'
 /** 原生参数在交互 RPC 发出前就会校验，必须在模型调用工具前说明约束。 */
 async function enableZcodeWorkflows(rpc: JsonRpcProcess, cwd: string | undefined, signal?: AbortSignal): Promise<boolean> {
   try {
-    const response = await rpc.request('workspace/updateDynamicWorkflowPolicy', { workspace: zcodeWorkspace(cwd), enabled: true, mode: 'alwaysOn' }, { signal, killOnAbort: false })
+    const timeout = AbortSignal.timeout(10_000)
+    const response = await rpc.request('workspace/updateDynamicWorkflowPolicy', { workspace: zcodeWorkspace(cwd), enabled: true, mode: 'alwaysOn' }, { signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]), killOnAbort: false })
     return record(response).enabled === true
   } catch (error) {
     // Older CLI versions have no workflow policy API. Keep ordinary turns usable.

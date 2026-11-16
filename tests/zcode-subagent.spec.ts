@@ -49,7 +49,7 @@ function fixture(): { path: string; db: DatabaseSync } {
   message.run('m-native-hidden', 'sess_native_1', 13, 13, JSON.stringify({ role: 'user', semantics: { uiVisibility: 'hidden' } }))
   part.run('p-native-3', 'm-native-hidden', 'sess_native_1', 13, 13, JSON.stringify({ type: 'text', text: 'hidden model context' }))
   message.run('m-wf-1', 'sess_wf_1', 31, 31, JSON.stringify({ role: 'assistant' }))
-  part.run('p-wf-1', 'm-wf-1', 'sess_wf_1', 31, 31, JSON.stringify({ type: 'text', text: '报告已写入 reports/2026-11-15-a6700-报告.md' }))
+  part.run('p-wf-1', 'm-wf-1', 'sess_wf_1', 31, 31, JSON.stringify({ type: 'text', text: '报告已写入 reports/workflow-report.md' }))
   part.run('p-wf-2', 'm-wf-1', 'sess_wf_1', 32, 32, JSON.stringify({ type: 'tool', tool: 'Write', state: { status: 'completed', input: { file_path: 'E:/work/reports/workflow-report.md' }, output: 'ok' } }))
   part.run('p-wf-3', 'm-wf-1', 'sess_wf_1', 33, 33, JSON.stringify({ type: 'tool', tool: 'Read', state: { status: 'completed', input: { file_path: 'E:/work/secret.bin' }, output: 'noise' } }))
   part.run('p-wf-4', 'm-wf-1', 'sess_wf_1', 34, 34, JSON.stringify({ type: 'tool', tool: 'Bash', state: { status: 'error', error: 'build gate failed' } }))
@@ -167,6 +167,24 @@ test('三页时间线不重叠、不遗漏，缺列明确降级', () => {
     db.exec('ALTER TABLE dwf_actor RENAME COLUMN name TO unsupported_name')
     assert.equal(readZcodeSubagents(path, [PARENT]).reason, 'schema-unsupported')
   } finally { db.close() }
+})
+
+test('读取上限显示截断，数据库锁冲突不会伪装成空结果', async () => {
+  const { path, db } = fixture()
+  const service = new ZcodeSubagentService({ get: () => ({ adapterId: 'zcode', providerSessionId: PARENT }) } as never, path)
+  try {
+    const insert = db.prepare('INSERT INTO dwf_actor(run_id,site_id,ordinal,name,time_created,time_updated) VALUES(?,?,?,?,?,?)')
+    for (let i = 0; i < 201; i++) insert.run('dwfrun-1', `extra-${i}`, 1, 'Queued actor', 1, 1)
+    const snapshot = readZcodeSubagents(path, [PARENT])
+    assert.equal(snapshot.runs[0]?.agents.length, 200)
+    assert.equal(snapshot.runs[0]?.truncated, true)
+    db.exec('BEGIN EXCLUSIVE')
+    try {
+      const locked = await service.read({ sessionId: 'bound' })
+      assert.equal(locked.available, false)
+      assert.equal(locked.reason, 'database-unavailable')
+    } finally { db.exec('ROLLBACK') }
+  } finally { service.dispose(); db.close() }
 })
 
 test('状态归一化不把未知取值当成成功', () => {

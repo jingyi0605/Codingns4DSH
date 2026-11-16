@@ -6,4 +6,3 @@ export const ZCODE_WORKFLOW_ACTIVE_STATUSES = ['running', 'pending', 'queued', '
 export function workflowIsActive(status: string): boolean {
   return (ZCODE_WORKFLOW_ACTIVE_STATUSES as readonly string[]).includes(status.trim().toLowerCase())
 }
-

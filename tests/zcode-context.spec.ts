@@ -12,8 +12,7 @@ test('ZCode composer uses the current provider context rather than all prompts b
   slots.register({ name: 'root', children: { 'conversation.composer.bar': { kind: 'single', scope: 'session-maybe' } } }, (() => null) as never)
   const Native = (props: any) => createElement('span', undefined, JSON.stringify(props.useProjection('contextPressure')))
   slots.register({ name: 'conversation.composer.bar', children: { 'conversation.composer.dock': { kind: 'list', scope: 'session' } } }, Native as never)
-  // Sanitized values from the actual ZCode/DSH parent session: the durable
-  // usage sample has contextTokens=125171, separate from input+cache=248995.
+  // Synthetic occupancy deliberately differs from billable input plus cache.
   const nativePressure = { pressureTokens: 248995, contextWindow: 1_000_000 }
   const providerPressure = { pressureTokens: 125171, contextWindow: 1_000_000 }
   const dispose = createSessionPerformancePresentation({ slots }).install(() => 'zcode', createElement, { useMemo, useSyncExternalStore })

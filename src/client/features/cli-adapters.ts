@@ -1,3 +1,4 @@
+import { registerZcodeWorkflowUi } from '../zcode-workflow.js'
 import { createElement, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { CSSProperties, ReactElement } from 'react'
 import type {
@@ -153,6 +154,7 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
         dshVersion: context.services.dshVersion,
       }))
     }
+    context.resources.add(registerZcodeWorkflowUi(context.services))
     const slots = context.services.slots
     if (slots === undefined) return
     context.resources.add(registerExternalToolStreamUi(context.services))

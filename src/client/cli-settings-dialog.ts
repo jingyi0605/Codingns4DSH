@@ -5,9 +5,10 @@ import { dshThemeColor } from './theme.js'
 const styleId = 'codingns-cli-settings-dialog'
 
 /** Native top-layer dialogs escape settings containment and isolate nested dialog focus. */
-export function CliSettingsDialog({ titleId, wide = false, onClose, children }: {
+export function CliSettingsDialog({ titleId, wide = false, className, onClose, children }: {
   readonly titleId: string
   readonly wide?: boolean
+  readonly className?: string
   readonly onClose: () => void
   readonly children?: ReactNode
 }): ReactElement {
@@ -22,7 +23,7 @@ export function CliSettingsDialog({ titleId, wide = false, onClose, children }: 
 .codingns-cli-dialog[data-wide="true"]{width:min(960px,calc(100vw - 32px));height:min(820px,calc(100dvh - 32px))}
 .codingns-cli-dialog[open]{display:flex;flex-direction:column}
 .codingns-cli-dialog::backdrop{background:var(--dsw-alias-bg-mask-1,rgba(0,0,0,.45))}
-@media(max-width:600px){.codingns-cli-dialog[data-wide="true"]{width:100%;height:100dvh;max-height:100dvh;border:0;border-radius:0;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}}`
+@media(max-width:767.98px){.codingns-cli-dialog[data-wide="true"]{width:100%;height:100dvh;max-height:100dvh;border:0;border-radius:0;padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}}`
       document.head.appendChild(style)
     }
     const opener = document.activeElement as HTMLElement | null
@@ -31,7 +32,7 @@ export function CliSettingsDialog({ titleId, wide = false, onClose, children }: 
     return () => { if (dialog?.open) dialog.close(); if (opener?.isConnected) opener.focus() }
   }, [])
   const dialog = createElement('dialog', {
-    ref, className: 'codingns-cli-dialog', 'data-wide': wide, 'aria-labelledby': titleId, 'aria-modal': true,
+    ref, className: ['codingns-cli-dialog', className].filter(Boolean).join(' '), 'data-wide': wide, 'aria-labelledby': titleId, 'aria-modal': true,
     onCancel: (event: { preventDefault(): void; stopPropagation(): void }) => { event.preventDefault(); event.stopPropagation(); onClose() },
     onKeyDown: (event: { key: string; stopPropagation(): void }) => { if (event.key === 'Escape') event.stopPropagation() },
     onPointerDown: (event: { target: unknown; currentTarget: HTMLDialogElement; clientX: number; clientY: number }) => {
