@@ -3,6 +3,8 @@ import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { AntigravityDriver } from '../data/build/dist/host/cli-adapters/antigravity-driver.js'
+import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
+import type { CodingNsAgentEvent } from '../src/shared/contracts/cli-adapter.js'
 
 /**
  * 造一个只回放固定 NDJSON 的 agy 子进程；每次调用消费一组输出行。
@@ -548,6 +550,73 @@ test('Antigravity 不给 Claude 模型下发 --effort，避免整轮被 CLI 拒�
   await collect(gemini.driver, { modelId: 'gemini-3.8-flash', effortId: 'medium' })
   assert.deepEqual(gemini.calls[0]?.slice(-2), ['--effort', 'medium'])
   gemini.driver.dispose()
+})
+
+test('Antigravity 续接和并发执行复用 step_index 时，工具身份仍按执行隔离', async () => {
+  const { driver } = scriptedDriver([[
+    stepUpdate({ step_index: 2, step_type: 'tool', state: 'ACTIVE', tool_info: { name: 'read_file', parameters: { Path: '/work/a.txt' } } }),
+    stepUpdate({ step_index: 2, step_type: 'tool', state: 'DONE', tool_info: { name: 'read_file', output: 'ok' } }),
+    resultEvent(undefined),
+  ]])
+  try {
+    const input = { providerSessionId: 'agy-provider-session', prompt: '继续' }
+    const turns = [await collect(driver, input), await collect(driver, input), ...await Promise.all([
+      collect(driver, input), collect(driver, input),
+    ])]
+    const ids = turns.map((events) => {
+      const tools = events.filter((event) => event.type === 'tool-event')
+      assert.equal(tools.length, 2)
+      assert.equal(tools[0].callId, tools[1].callId)
+      assert.ok(tools[0].callId)
+      return tools[0].callId
+    })
+    assert.equal(new Set(ids).size, turns.length)
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 缺少 tool_info 的状态更新仍沿用同一 step 的工具身份', async () => {
+  const { driver } = scriptedDriver([[
+    stepUpdate({ step_index: 2, step_type: 'tool', state: 'ACTIVE', tool_name: 'read_file', tool_info: { parameters: { Path: '/work/a.txt' } } }),
+    stepUpdate({ step_index: 2, step_type: 'tool', state: 'DONE', tool_name: 'read_file' }),
+    resultEvent(undefined),
+  ]])
+  try {
+    const tools = (await collect(driver, {})).filter((event) => event.type === 'tool-event')
+    assert.equal(tools.length, 2)
+    assert.equal(tools[0].callId, tools[1].callId)
+    assert.equal(tools[1].status, 'completed')
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 分步续读忽略已结算工具的重复终态，后续工具和正文不丢失', async () => {
+  const tool = (index: number, state: string) => stepUpdate({
+    step_index: index, step_type: 'tool', state,
+    tool_info: { name: 'read_file', parameters: { Path: '/work/a.txt' }, ...(state === 'DONE' ? { output: 'ok' } : {}) },
+  })
+  const { driver, calls } = scriptedDriver([[
+    tool(1, 'ACTIVE'), tool(1, 'DONE'), tool(1, 'DONE'),
+    tool(2, 'ACTIVE'), tool(2, 'DONE'),
+    resultEvent(undefined, { response: '最终答复' }),
+  ]])
+  const registry = new CodingNsCliAdapterRegistry([driver])
+  const steps: CodingNsAgentEvent[][] = []
+  try {
+    for (let index = 0; index < 4; index += 1) {
+      const events = []
+      for await (const event of registry.execute({ adapterId: 'antigravity', sessionId: 'agy-session', messages: [], prompt: '执行', splitToolSteps: true })) events.push(event)
+      steps.push(events)
+      if (!events.some((event) => event.type === 'step-boundary')) break
+    }
+    assert.deepEqual(steps.map((events) => events.filter((event) => event.type === 'tool-event').length), [2, 2, 0])
+    const ids = steps.slice(0, 2).map((events) => {
+      const tools = events.filter((event) => event.type === 'tool-event')
+      assert.equal(tools[0].callId, tools[1].callId)
+      return tools[0].callId
+    })
+    assert.notEqual(ids[0], ids[1])
+    assert.equal(steps.at(-1)?.filter((event) => event.type === 'text-delta').map((event) => event.text).join(''), '最终答复')
+    assert.equal(calls.length, 1)
+  } finally { await registry.dispose() }
 })
 
 test('Antigravity 从 agy models 动态加载模型并合并思考档位', async () => {
