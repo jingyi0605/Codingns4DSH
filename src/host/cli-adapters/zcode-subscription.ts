@@ -1,6 +1,6 @@
-import { createDecipheriv, createHash } from 'node:crypto'
+import { decryptZcodeCredential } from './zcode-credentials.js'
 import { existsSync, readFileSync } from 'node:fs'
-import { homedir, platform, userInfo } from 'node:os'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { CliSubscriptionUsage, ProviderBalanceUsage } from '../../shared/contracts/subscription.js'
 import { resolveZCodeDesktopRuntime } from './desktop-app-runtime.js'
@@ -74,7 +74,7 @@ export class ZcodeSubscriptionService {
     const appVersion = this.options.appVersion?.trim() || runtime?.appVersion?.trim() || process.env.ZCODE_APP_VERSION?.trim() || ''
     if (appVersion === '') return null
 
-    const token = readZcodeJwtToken(this.credentialsPath(), this.options.credentialSecret)
+    const token = await readZcodeJwtToken(this.credentialsPath(), this.options.credentialSecret)
     const deviceMid = readDeviceMid(this.telemetryPath())
     if (token === null || deviceMid === null) return null
 
@@ -185,14 +185,13 @@ function normalizeBalance(payload: ZcodeBalanceEnvelope, upstreamUrl: string): P
   }
 }
 
-function readZcodeJwtToken(path: string, secret: string | undefined): string | null {
+async function readZcodeJwtToken(path: string, secret: string | undefined): Promise<string | null> {
   if (!existsSync(path)) return null
   try {
     const value = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
     const raw = value[ZCODE_JWT_TOKEN_KEY]
     if (typeof raw !== 'string' || raw.trim() === '') return null
-    const decrypted = decryptCredential(raw, secret)
-    return decrypted.trim() === '' ? null : decrypted.trim()
+    return await decryptZcodeCredential(raw, { credentialPath: path, ...(secret ? { env: { ...process.env, ZCODE_CREDENTIAL_SECRET: secret } } : {}) })
   } catch {
     return null
   }
@@ -207,26 +206,6 @@ function readDeviceMid(path: string): string | null {
   } catch {
     return null
   }
-}
-
-function decryptCredential(value: string, configuredSecret: string | undefined): string {
-  if (!value.startsWith('enc:v1:')) return value
-  const [ivRaw, authTagRaw, cipherRaw] = value.slice('enc:v1:'.length).split('.')
-  if (!ivRaw || !authTagRaw || !cipherRaw) throw new Error('ZCode 凭据密文格式无效')
-  const iv = Buffer.from(ivRaw, 'base64url')
-  const authTag = Buffer.from(authTagRaw, 'base64url')
-  const cipherText = Buffer.from(cipherRaw, 'base64url')
-  if (iv.length !== 12 || authTag.length !== 16) throw new Error('ZCode 凭据密文长度无效')
-  const secret = configuredSecret?.trim() || process.env.ZCODE_CREDENTIAL_SECRET?.trim() || fallbackCredentialSecret()
-  const decipher = createDecipheriv('aes-256-gcm', createHash('sha256').update(secret).digest(), iv)
-  decipher.setAuthTag(authTag)
-  return Buffer.concat([decipher.update(cipherText), decipher.final()]).toString('utf8')
-}
-
-function fallbackCredentialSecret(): string {
-  let username = 'unknown'
-  try { username = userInfo().username } catch { /* 沙箱环境可能无法读取用户名。 */ }
-  return `zcode-credential-fallback:${platform()}:${homedir()}:${username}`
 }
 
 function textValue(value: unknown): string | null {

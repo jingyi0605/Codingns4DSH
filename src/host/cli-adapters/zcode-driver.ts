@@ -1,8 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { createDecipheriv, createHash } from 'node:crypto'
+import { createHash } from 'node:crypto'
+import { decryptZcodeCredential } from './zcode-credentials.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { homedir, userInfo } from 'node:os'
+import { homedir } from 'node:os'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentPermissionResponse,
@@ -20,6 +21,8 @@ import { readZcodeInteraction, zcodePermissionMode, type ZcodeInteraction } from
 import { ZcodeTurnTelemetry } from './zcode-telemetry.js'
 
 export interface ZcodeCliDriverOptions {
+  readonly homeDirectory?: string
+  readonly desktopRuntime?: CodingNsDesktopAppRuntime | null
   readonly binaries?: readonly string[]
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
@@ -82,10 +85,14 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   private readonly sessions = new Map<string, ZcodeSession>()
   private readonly processes = new Set<JsonRpcProcess>()
   private cachedCatalog: CodingNsCliModelCatalog | null = null
+  private cachedCatalogFingerprint: string | undefined
+  private readonly homeDirectory: string
   /** 模型目录声明的默认思考档位；切换 DeepSeek 时服务端要求显式传入。 */
   private readonly defaultEfforts = new Map<string, string>()
 
   constructor(options: ZcodeCliDriverOptions = {}) {
+    this.homeDirectory = options.homeDirectory ?? homedir()
+    this.cachedRuntime = options.desktopRuntime
     this.binaries = options.binaries ?? ['zcode', 'zcode.cmd']
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
@@ -106,27 +113,61 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     return binary
   }
 
+  /** 登录态或原生套餐配置变化时，同时作废 Host 和驱动的目录缓存。 */
+  catalogFingerprint(): string {
+    const runtime = this.resolveRuntime()
+    const hash = createHash('sha256')
+    for (const file of [runtime?.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE,
+      runtime?.env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE ?? join(this.homeDirectory, '.zcode', 'v2', 'provider_config.json'),
+      join(this.homeDirectory, '.zcode', 'v2', 'setting.json'), join(this.homeDirectory, '.zcode', 'v2', 'credentials.json')]) {
+      hash.update(file ?? '')
+      try { if (file) hash.update(readFileSync(file)) } catch { hash.update('missing') }
+    }
+    return hash.digest('hex')
+  }
+
+  private invalidateChangedCatalog(): void {
+    const fingerprint = this.catalogFingerprint()
+    if (fingerprint !== this.cachedCatalogFingerprint) {
+      this.cachedCatalog = null
+      this.defaultEfforts.clear()
+      this.cachedCatalogFingerprint = fingerprint
+    }
+  }
+
+  private rememberCatalog(value: unknown): void {
+    const catalog = catalogFromZcodeSnapshot(value)
+    this.rememberDefaultEfforts(value)
+    if (catalog.groups.length > 0) this.cachedCatalog = mergeZcodeCatalogs(this.cachedCatalog, catalog)
+  }
+
   async listModels(): Promise<CodingNsCliModelCatalog> {
     if (!(await this.detect()).installed) return emptyCatalog()
+    this.invalidateChangedCatalog()
     if (this.cachedCatalog !== null) return this.cachedCatalog
     let rpc: JsonRpcProcess | null = null
+    let result: CodingNsCliModelCatalog | null = null
     try {
       rpc = this.startAppServer()
       this.installServerRequestHandler(rpc)
-      await this.syncAccountProviderConfig(rpc)
-      const created = await rpc.request('session/create', {
-        workspace: zcodeWorkspace(process.cwd()),
-        persistence: 'deferred',
-      })
-      const catalog = catalogFromZcodeSnapshot(created)
-      this.rememberDefaultEfforts(created)
-      if (catalog.groups.length > 0) this.cachedCatalog = catalog
-      return catalog.groups.length > 0 ? catalog : ZCODE_CATALOG
-    } catch {
+      const snapshot = await this.syncAccountProviderConfig(rpc)
+      const candidates = zcodeAccountCatalogCandidates(snapshot)
+      // 原生只公开 current account-plan。逐连接读取原生目录，合并后关闭
+      // deferred 探测会话；不改用户套餐设置，也不启动模型回合。
+      for (const providerId of [undefined, ...candidates]) {
+        if (providerId !== undefined) await this.syncAccountProviderConfig(rpc, undefined, providerId)
+        const created = await rpc.request('session/create', { workspace: zcodeWorkspace(process.cwd()), persistence: 'deferred' })
+        const catalog = catalogFromZcodeSnapshot(created)
+        this.rememberDefaultEfforts(created)
+        result = mergeZcodeCatalogs(result, catalog)
+        const id = readSessionId(created)
+        if (id) await rpc.request('session/close', { sessionId: id }).catch(() => undefined)
+      }
+      if (result !== null && result.groups.length > 0) this.cachedCatalog = result
       return this.cachedCatalog ?? ZCODE_CATALOG
-    } finally {
-      rpc?.dispose()
-    }
+    } catch {
+      return result !== null && result.groups.length > 0 ? result : this.cachedCatalog ?? ZCODE_CATALOG
+    } finally { rpc?.dispose() }
   }
 
   async probeSession(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult> {
@@ -159,7 +200,11 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
 
   private async *executePreparedTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     if (!(await this.detect()).installed) throw new Error('ZCode 未安装')
+    this.invalidateChangedCatalog()
     const session = await this.getSession(input)
+    const requestedProvider = input.modelId?.startsWith('account:') ? input.modelId.split('/')[0] : undefined
+    // 每轮激活所选连接，避免恢复后的会话仍使用上轮套餐。
+    await this.syncAccountProviderConfig(session.rpc, input.signal, requestedProvider)
     session.permission = input.permission
     session.emittedInteractions.clear()
     // 每轮都清掉上一轮的终态痕迹；常驻 session 可能连续发送多轮。
@@ -169,7 +214,6 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     session.failureMessage = undefined
     if (session.acpSessionId === '') {
       let created: unknown
-      await this.syncAccountProviderConfig(session.rpc, input.signal)
       if (input.providerSessionId !== undefined) {
         try {
           created = await session.rpc.request('session/resume', { sessionId: input.providerSessionId, workspace: zcodeWorkspace(input.cwd) }, { signal: input.signal, killOnAbort: false })
@@ -186,9 +230,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
         }, { signal: input.signal, killOnAbort: false })
       }
       session.acpSessionId = readSessionId(created) ?? input.sessionId
-      const catalog = catalogFromZcodeSnapshot(created)
-      this.rememberDefaultEfforts(created)
-      if (catalog.groups.length > 0) this.cachedCatalog = catalog
+      this.rememberCatalog(created)
       session.supportsContextSnapshot = isRecord(created) && isRecord(created.projection)
     }
     yield { type: 'session-binding', providerSessionId: session.acpSessionId }
@@ -346,6 +388,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     this.cachedRuntime = undefined
     this.cachedBinary = null
     this.cachedCatalog = null
+    this.cachedCatalogFingerprint = undefined
     this.defaultEfforts.clear()
   }
 
@@ -356,7 +399,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
 
   private startAppServer(runtimeEnv?: Readonly<Record<string, string>>): JsonRpcProcess {
     if (this.cachedBinary !== null) {
-      return new JsonRpcProcess({ command: this.cachedBinary, args: ['app-server'], env: { ...(runtimeEnv ?? {}) }, wireFormat: 'zcode', spawn: this.runSpawn })
+      return new JsonRpcProcess({ command: this.cachedBinary, args: ['app-server'], env: { ...this.resolveRuntime()?.env, ...(runtimeEnv ?? {}) }, wireFormat: 'zcode', spawn: this.runSpawn })
     }
     const runtime = this.resolveRuntime()
     if (runtime !== null) {
@@ -412,40 +455,50 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       const interaction = readZcodeInteraction(request)
       // 创建、恢复和回合结束后的历史交互不能挂起；没有活动消费者时安全拒绝。
       return interaction === null || !session.acceptingInteractions
-        ? handleZcodeServerRequest(request) : pendingZcodeInteraction(session, interaction).promise
+        ? handleZcodeServerRequest(request, this.homeDirectory) : pendingZcodeInteraction(session, interaction).promise
     })
     return session
   }
 
   private installServerRequestHandler(rpc: JsonRpcProcess): void {
-    rpc.setServerRequestHandler((request) => handleZcodeServerRequest(request))
+    rpc.setServerRequestHandler((request) => handleZcodeServerRequest(request, this.homeDirectory))
   }
 
-  private async syncAccountProviderConfig(rpc: JsonRpcProcess, signal?: AbortSignal): Promise<void> {
-    if (this.cachedBinary !== null) return
+  private async syncAccountProviderConfig(rpc: JsonRpcProcess, signal?: AbortSignal, providerId?: string): Promise<Record<string, unknown> | null> {
     const runtime = this.resolveRuntime()
-    if (runtime === null) return
-    const snapshot = readZcodeAccountProviderSnapshot(runtime)
-    if (snapshot === null) return
+    const snapshot = runtime === null ? null : readZcodeAccountProviderSnapshot(runtime, this.homeDirectory, providerId)
+    if (snapshot === null) {
+      // 独立 CLI 没有桌面端快照时，沿用其原生登录及模型目录；setModel 的
+      // 返回值仍会核对实际来源，不能因缺少桌面应用而拒绝已有 CLI 账号。
+      if (providerId !== undefined && runtime !== null) throw new Error(`ZCode 账号连接不可用: ${providerId}`)
+      return null
+    }
     try {
       await rpc.request('provider/updateAccountConfig', snapshot, { signal, killOnAbort: false })
     } catch (error) {
-      // 旧版 app-server 没有该方法时仍允许使用默认模型；新版本的真实
-      // Provider 目录则必须在 create 前完成同步，失败直接交给 create 处理。
       if (!isMethodUnavailable(error)) throw error
+      if (providerId !== undefined) throw new Error(`ZCode 当前版本无法切换套餐连接: ${providerId}`)
     }
+    return snapshot
   }
 
   private async applyModelSelection(session: ZcodeSession, input: CodingNsCliTurnInput): Promise<void> {
     if ((input.modelId === undefined || input.modelId.trim() === '' || input.modelId === 'provider-default') &&
       (input.effortId === undefined || input.effortId.trim() === '')) return
+    if (input.modelId?.startsWith('account:') && !this.cachedCatalog?.groups.some(group => group.models.some(model => model.id === input.modelId))) {
+      await this.listModels()
+    }
     const selection = resolveZcodeModelSelection(input.modelId, input.effortId, this.cachedCatalog, this.defaultEfforts)
     if (selection === null) throw new Error(`ZCode 模型选择无效: ${input.modelId ?? 'provider-default'}`)
-    await session.rpc.request('session/setModel', {
+    const applied = await session.rpc.request('session/setModel', {
       sessionId: session.acpSessionId,
       model: selection,
       persistAsWorkspaceLastUsed: false,
     }, { signal: input.signal, killOnAbort: false })
+    const actual = catalogFromZcodeSnapshot(applied).currentModel
+    if (String(selection.providerId).startsWith('account:') && actual !== null && actual !== `${selection.providerId}/${selection.modelId}`) {
+      throw new Error(`ZCode 返回的套餐模型与所选不一致，已停止发送: ${actual}`)
+    }
   }
 
   private rememberDefaultEfforts(value: unknown): void {
@@ -696,6 +749,28 @@ function catalogFromZcodeSnapshot(value: unknown): CodingNsCliModelCatalog {
   }
 }
 
+function mergeZcodeCatalogs(previous: CodingNsCliModelCatalog | null, next: CodingNsCliModelCatalog): CodingNsCliModelCatalog {
+  if (previous === null) return next
+  const groups = new Map(previous.groups.map(group => [group.id, group]))
+  for (const group of next.groups) {
+    const old = groups.get(group.id)
+    const models = new Map(old?.models.map(model => [model.id, model]) ?? [])
+    for (const model of group.models) models.set(model.id, model)
+    groups.set(group.id, { ...group, models: [...models.values()] })
+  }
+  return { ...previous, groups: [...groups.values()], currentModel: previous.currentModel ?? next.currentModel, currentEffort: previous.currentEffort ?? next.currentEffort }
+}
+
+function zcodeAccountCatalogCandidates(snapshot: Record<string, unknown> | null): string[] {
+  const states = isRecord(snapshot?.states) ? snapshot.states : {}
+  const active = Object.keys(states).find(id => states[id]?.current === true)
+  if (!active) return []
+  const family = active.replace(/-(?:individual-coding-plan|team-coding-plan|start-plan)$/u, '')
+  if (family === active) return []
+  return Object.keys(states).filter(id => id !== active && states[id]?.entitled === true
+    && [`${family}-start-plan`, `${family}-individual-coding-plan`, `${family}-team-coding-plan`].includes(id))
+}
+
 function resolveZcodeModelSelection(
   modelId: string | undefined,
   effortId: string | undefined,
@@ -721,15 +796,21 @@ function resolveZcodeModelSelection(
   }
 }
 
-function readZcodeAccountProviderSnapshot(runtime: CodingNsDesktopAppRuntime): Record<string, unknown> | null {
+function readZcodeAccountProviderSnapshot(runtime: CodingNsDesktopAppRuntime, homeDirectory = homedir(), selectedProviderId?: string): Record<string, unknown> | null {
   const file = runtime.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE
   if (typeof file !== 'string' || file.trim() === '') return null
   try {
     const document = JSON.parse(readFileSync(file, 'utf8')) as Record<string, any>
     const rules = document.config?.providerConfigRules?.providerRules
     if (!Array.isArray(rules)) return null
-    const settings = readJsonFile(join(homedir(), '.zcode', 'v2', 'setting.json'))
-    const preferred = resolvePreferredAccountProvider(rules, settings)
+    const settings = readJsonFile(join(homeDirectory, '.zcode', 'v2', 'setting.json'))
+    const preferred = selectedProviderId ?? resolvePreferredAccountProvider(rules, settings,
+      rule => accountProviderHasCredentials(rule, homeDirectory),
+      () => accountProviderHasCredentials({ config: { access: { mode: 'start-plan' } } }, homeDirectory) === true)
+    if (selectedProviderId !== undefined) {
+      const selected = rules.find(rule => isRecord(rule) && rule.providerId === selectedProviderId)
+      if (!selected || accountProviderHasCredentials(selected, homeDirectory) !== true) throw new Error(`ZCode 套餐连接凭据不可用: ${selectedProviderId}`)
+    }
     const providers: Record<string, unknown> = {}
     const states: Record<string, unknown> = {}
     for (const rule of rules) {
@@ -738,7 +819,7 @@ function readZcodeAccountProviderSnapshot(runtime: CodingNsDesktopAppRuntime): R
       // ZCode 的试用额度属于 start-plan，和设置中选中的 coding-plan 是两条
       // 独立的 Provider。只把 preferred 标为 entitled 会把试用 Provider
       // 错误地过滤掉，随后模型请求就会落到没有资源包的 BigModel API。
-      const entitled = accountProviderHasCredentials(rule) ?? rule.providerId === preferred
+      const entitled = accountProviderHasCredentials(rule, homeDirectory) ?? rule.providerId === preferred
       const active = rule.providerId === preferred
       providers[rule.providerId] = {
         access: { type: 'zhipu-account', entitled },
@@ -759,27 +840,27 @@ function readZcodeAccountProviderSnapshot(runtime: CodingNsDesktopAppRuntime): R
       providers,
       states,
     }
-  } catch {
+  } catch (error) {
+    if (selectedProviderId !== undefined) throw error
     return null
   }
 }
 
 /** 读取 ZCode 登录态 JWT；Start Plan 使用它作为模型请求凭据。 */
-function readZcodeJwtToken(): string | null {
-  const path = join(homedir(), '.zcode', 'v2', 'credentials.json')
+async function readZcodeJwtToken(homeDirectory = homedir()): Promise<string | null> {
+  const path = join(homeDirectory, '.zcode', 'v2', 'credentials.json')
   try {
     const credentials = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
     const value = credentials.zcodejwttoken
     if (typeof value !== 'string') return null
-    const token = decryptZcodeCredential(value).trim()
-    return token === '' ? null : token
+    return await decryptZcodeCredential(value, { credentialPath: path })
   } catch {
     return null
   }
 }
 
 /** 处理 ZCode Protocol 的客户端反向请求；模型请求必须提供账号 API Key。 */
-function handleZcodeServerRequest(request: JsonRpcMessage): unknown {
+async function handleZcodeServerRequest(request: JsonRpcMessage, homeDirectory = homedir()): Promise<unknown> {
   if (request.method === 'session/requestRuntimePreferences') {
     // DSH 的问题组件等待用户回答，不允许 ZCode 五分钟后自行替用户回答。
     return { nativeSearchEnhancementsEnabled: false, memoryEnabled: false, askUserQuestionAutoResolutionEnabled: false }
@@ -790,9 +871,9 @@ function handleZcodeServerRequest(request: JsonRpcMessage): unknown {
     const params = isRecord(request.params) ? request.params : {}
     const providerId = typeof params.providerId === 'string' ? params.providerId.trim() : ''
     if (providerId.endsWith('-start-plan') || providerId.endsWith('-offpeak-idle-plan')) {
-      const token = readZcodeJwtToken()
+      const token = await readZcodeJwtToken(homeDirectory)
       if (token !== null) {
-        const runtime = resolveZcodeRuntimeHeaders()
+        const runtime = resolveZcodeRuntimeHeaders(homeDirectory)
         return {
           headersApplied: true,
           requestAuth: {
@@ -803,7 +884,7 @@ function handleZcodeServerRequest(request: JsonRpcMessage): unknown {
       }
       return { headersApplied: false, errorMessage: 'ZCode Start Plan 登录凭据不可用，请重新登录 ZCode' }
     }
-    const apiKey = providerId === '' ? null : readZcodeProviderApiKey(providerId)
+    const apiKey = providerId === '' ? null : await readZcodeProviderApiKey(providerId, homeDirectory)
     if (apiKey !== null) return { headersApplied: true, requestAuth: { apiKey } }
     return { headersApplied: false, errorMessage: 'ZCode Provider 账号凭据不可用，请重新登录 ZCode' }
   }
@@ -812,10 +893,10 @@ function handleZcodeServerRequest(request: JsonRpcMessage): unknown {
 }
 
 /** Start Plan 接口要求的客户端标识，值只用于请求头，不进入日志和持久化。 */
-function resolveZcodeRuntimeHeaders(): Record<string, string> {
+function resolveZcodeRuntimeHeaders(homeDirectory = homedir()): Record<string, string> {
   const headers: Record<string, string> = {}
   try {
-    const telemetryPath = join(homedir(), '.zcode', 'v2', 'telemetry-state.json')
+    const telemetryPath = join(homeDirectory, '.zcode', 'v2', 'telemetry-state.json')
     const telemetry = JSON.parse(readFileSync(telemetryPath, 'utf8')) as Record<string, unknown>
     if (typeof telemetry.deviceMid === 'string' && telemetry.deviceMid.trim() !== '') {
       headers['X-Device-Mid'] = telemetry.deviceMid.trim()
@@ -829,56 +910,39 @@ function resolveZcodeRuntimeHeaders(): Record<string, string> {
 }
 
 /** 从 ZCode 共享凭据文件读取指定账号 Provider 的 API Key；原文只留在 Host。 */
-function readZcodeProviderApiKey(providerId: string): string | null {
-  const path = join(homedir(), '.zcode', 'v2', 'credentials.json')
+async function readZcodeProviderApiKey(providerId: string, homeDirectory = homedir()): Promise<string | null> {
+  const path = join(homeDirectory, '.zcode', 'v2', 'credentials.json')
   try {
     const credentials = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
     const prefix = `account-provider:coding-plan:${providerId}:account:`
     const key = Object.keys(credentials).find((candidate) => candidate.startsWith(prefix) && candidate.endsWith(':api-key'))
     if (key === undefined || typeof credentials[key] !== 'string') return null
-    const value = decryptZcodeCredential(credentials[key])
-    return value.trim() === '' ? null : value.trim()
+    return await decryptZcodeCredential(credentials[key], { credentialPath: path })
   } catch {
     return null
   }
 }
 
 /** 根据 ZCode 内置 Provider 的套餐类型判断本机是否有对应凭据。 */
-function accountProviderHasCredentials(rule: Record<string, any>): boolean | null {
+function accountProviderHasCredentials(rule: Record<string, any>, homeDirectory = homedir()): boolean | null {
   const providerId = typeof rule.providerId === 'string' ? rule.providerId : ''
   const config = isRecord(rule.config) ? rule.config : {}
   const access = isRecord(config.access) ? config.access : {}
   const mode = typeof access.mode === 'string' ? access.mode : ''
-  if (mode === 'start-plan' || mode === 'off-peak') return readZcodeJwtToken() !== null
+  const credentials = readJsonFile(join(homeDirectory, '.zcode', 'v2', 'credentials.json')) ?? {}
+  if (mode === 'start-plan' || mode === 'off-peak') return typeof credentials.zcodejwttoken === 'string' && credentials.zcodejwttoken.trim() !== ''
   if (mode === 'individual-coding-plan' || mode === 'team-coding-plan') {
-    return readZcodeProviderApiKey(providerId) !== null
+    const prefix = `account-provider:coding-plan:${providerId}:account:`
+    return Object.entries(credentials).some(([key, value]) => key.startsWith(prefix) && key.endsWith(':api-key') && typeof value === 'string' && value.trim() !== '')
   }
   return null
 }
 
-function decryptZcodeCredential(value: string): string {
-  if (!value.startsWith('enc:v1:')) return value
-  const [ivRaw, authTagRaw, cipherRaw] = value.slice('enc:v1:'.length).split('.')
-  if (!ivRaw || !authTagRaw || !cipherRaw) return ''
-  try {
-    const iv = Buffer.from(ivRaw, 'base64url')
-    const authTag = Buffer.from(authTagRaw, 'base64url')
-    const cipherText = Buffer.from(cipherRaw, 'base64url')
-    if (iv.length !== 12 || authTag.length !== 16) return ''
-    let username = 'unknown'
-    try { username = userInfo().username } catch { /* 沙箱环境可能无法读取用户名。 */ }
-    const secret = `zcode-credential-fallback:${process.platform}:${homedir()}:${username}`
-    const decipher = createDecipheriv('aes-256-gcm', createHash('sha256').update(secret).digest(), iv)
-    decipher.setAuthTag(authTag)
-    return Buffer.concat([decipher.update(cipherText), decipher.final()]).toString('utf8')
-  } catch {
-    return ''
-  }
-}
-
-function resolvePreferredAccountProvider(
+export function resolvePreferredAccountProvider(
   rules: readonly unknown[],
   settings: Record<string, any> | null,
+  hasCredentials: (rule: Record<string, any>) => boolean | null = accountProviderHasCredentials,
+  hasStartLogin: () => boolean = () => accountProviderHasCredentials({ config: { access: { mode: 'start-plan' } } }) === true,
 ): string | null {
   const ids = new Set(rules.flatMap((rule) => isRecord(rule) && typeof rule.providerId === 'string' && rule.providerId.startsWith('account:') ? [rule.providerId] : []))
   const selections = settings?.providerFamilyConnectionSelections
@@ -891,8 +955,15 @@ function resolvePreferredAccountProvider(
         // 设置中的套餐是用户的明确选择。只有选中的 Provider 没有对应凭据时，
         // 才回退到仍有登录态的 Start Plan，避免普通套餐被 JWT 静默遮蔽。
         const selectedRule = rules.find((rule): rule is Record<string, any> => isRecord(rule) && rule.providerId === candidate)
-        if (selectedRule !== undefined && accountProviderHasCredentials(selectedRule) === true) return candidate
-        if (kind === 'start-plan' || !ids.has(startPlan) || readZcodeJwtToken() === null) return candidate
+        if (selectedRule !== undefined && hasCredentials(selectedRule) === true) return candidate
+        // A stale personal/team selection must not hide the family's saved paid
+        // plan behind Start Plan. Resolve only within that same account family.
+        const savedPlan = rules.find((rule): rule is Record<string, any> => isRecord(rule)
+          && typeof rule.providerId === 'string' && rule.providerId.startsWith(`account:${family}-`)
+          && ['individual-coding-plan', 'team-coding-plan'].includes(rule.config?.access?.mode)
+          && hasCredentials(rule) === true)
+        if (savedPlan !== undefined) return savedPlan.providerId
+        if (kind === 'start-plan' || !ids.has(startPlan) || !hasStartLogin()) return candidate
         return startPlan
       }
     }

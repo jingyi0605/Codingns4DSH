@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { readZcodeProviderConfigs } from '../data/build/dist/host/cli-adapters/zcode-provider-config.js'
+import { readZcodeProviderConfigs, readZcodeProviderConfigsAsync, readPreferredZcodeProviderConfig } from '../data/build/dist/host/cli-adapters/zcode-provider-config.js'
 import { ProviderSubscriptionService } from '../data/build/dist/host/cli-adapters/provider-subscription.js'
 import { resolveNewApiSources } from '../data/build/dist/host/cli-adapters/new-api-subscription.js'
 import type { CliSubscriptionUsage } from '../data/build/dist/shared/contracts/subscription.js'
@@ -102,11 +102,11 @@ test('ZCode 自定义上游鉴别失败或凭据缺失不能回退到其它账�
 
 test('ZCode Start Plan 模型仍查询官方套餐，个人 Provider 不干扰它', async (t) => {
   const options = fixture(t, [customRule('custom', 'https://custom.example.test/v1'),
-    { providerId: 'account:start', config: { access: { mode: 'start-plan' } } }])
+    { providerId: 'account:bigmodel-start-plan', config: { access: { mode: 'start-plan' } } }])
   const service = new ProviderSubscriptionService({ zcode: options })
   service.zcode.read = async () => usage()
   service.newApi.readWithKind = async () => { assert.fail('Start Plan 不探测个人上游') }
-  assert.ok(await service.read('zcode', 'zcode', 'account:start/GLM-5.3'))
+  assert.ok(await service.read('zcode', 'zcode', 'account:bigmodel-start-plan/GLM-5.3-Flash'))
 })
 
 test('New-API 自动发现兼容 ZCode 旧规则格式，仍只返回指定 Provider', (t) => {
@@ -124,4 +124,54 @@ test('New-API 自动发现兼容 ZCode 旧规则格式，仍只返回指定 Prov
     else process.env.ZCODE_BUILTIN_PROVIDER_CONFIG_FILE = previous.builtin
   })
   assert.deepEqual(resolveNewApiSources('zcode', 'second'), [{ baseUrl: 'https://second.example.test/v1', apiKey: 'second-secret' }])
+})
+
+
+test('Start Plan 暂不可用时保留未知状态，不显示个人套餐的余额', async (t) => {
+  const options = fixture(t, [customRule('custom', 'https://custom.example.test/v1'),
+    { providerId: 'account:bigmodel-start-plan', config: { access: { mode: 'start-plan' } } }])
+  const service = new ProviderSubscriptionService({ zcode: options })
+  let starts = 0
+  service.zcode.read = async () => { starts++; return null }
+  service.official.read = async () => { assert.fail('不能借用个人套餐用量') }
+  service.newApi.readWithKind = async () => { assert.fail('不能回退到自定义 Provider') }
+  assert.equal(await service.read('zcode', 'zcode', 'account:bigmodel-start-plan/GLM-5.2'), null)
+  assert.equal(starts, 1)
+})
+
+test('ZCode 异步来源读取解密 v2 env 凭据，旧同步入口拒绝未知密文', async (t) => {
+  const providerId = 'account:bigmodel-team-coding-plan'
+  const options = fixture(t, [{ providerId, config: {
+    access: { mode: 'team-coding-plan' }, api: { baseUrl: 'https://upstream.example.test' },
+  } }])
+  const secret = 'fixture-secret-with-at-least-32-bytes'
+  const key = createHash('sha256').update(secret).digest()
+  const iv = randomBytes(12)
+  const cipher = createCipheriv('aes-256-gcm', key, iv)
+  const encrypted = Buffer.concat([cipher.update('decrypted-v2-key'), cipher.final()])
+  const fingerprint = createHash('sha256').update(key).digest('hex').slice(0, 24)
+  const value = `enc:v2:env:${fingerprint}:${[iv, cipher.getAuthTag(), encrypted].map(value => value.toString('base64url')).join('.')}`
+  writeFileSync(join(options.homeDirectory, '.zcode', 'v2', 'credentials.json'), JSON.stringify({
+    [`account-provider:coding-plan:${providerId}:account:user:api-key`]: value,
+  }))
+  assert.equal(readZcodeProviderConfigs(providerId, options)[0]?.source, null)
+  assert.equal((await readZcodeProviderConfigsAsync(providerId, { ...options, credentialSecret: secret }))[0]?.source?.apiKey, 'decrypted-v2-key')
+  assert.equal((await readZcodeProviderConfigsAsync(providerId, { ...options, credentialSecret: 'wrong' }))[0]?.source, null)
+})
+
+test('ZCode 默认用量来源与同账户族已保存套餐一致，显式来源不受默认值影响', async (t) => {
+  const individual = 'account:bigmodel-individual-coding-plan'
+  const team = 'account:bigmodel-team-coding-plan'
+  const start = 'account:bigmodel-start-plan'
+  const options = fixture(t, [
+    { providerId: individual, config: { access: { mode: 'individual-coding-plan' }, api: { baseUrl: 'https://individual.example.test' } } },
+    { providerId: team, config: { access: { mode: 'team-coding-plan', apiKey: 'team-fixture' }, api: { baseUrl: 'https://team.example.test' } } },
+    { providerId: start, config: { access: { mode: 'start-plan' } } },
+  ])
+  writeFileSync(join(options.homeDirectory, '.zcode', 'v2', 'setting.json'), JSON.stringify({
+    providerFamilyConnectionSelections: { bigmodel: { kind: 'individual-coding-plan' } },
+  }))
+  assert.equal((await readPreferredZcodeProviderConfig(options))?.providerId, team)
+  assert.equal((await readZcodeProviderConfigsAsync(start, options))[0]?.providerId, start)
+  assert.equal((await readZcodeProviderConfigsAsync(individual, options))[0]?.source, null)
 })
