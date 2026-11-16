@@ -1,3 +1,4 @@
+import { externalTurnMessage, type CodingNsBackgroundTurn } from './cli-adapters/background-turn.js'
 import { randomUUID } from 'node:crypto'
 import { createSessionActivator, type SessionActivationController } from '../dsh-capabilities/host/session-activation-adapter.js'
 import { readNativeSessionModelSelection } from '../dsh-capabilities/host/session-model-selection-adapter.js'
@@ -157,6 +158,8 @@ export interface CodingNsNativeWorkspaceController {
 }
 
 export interface CodingNsNativeSessionBridge {
+  /** Queue existing output through the native inbox. */
+  enqueueExternalTurn?(turn: CodingNsBackgroundTurn): boolean
   readonly available: boolean
   /** 当前 Host 是否提供可接收 Session 事件的事件总线。 */
   readonly supportsEvents: boolean
@@ -719,6 +722,14 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     },
     injectMessage(sessionId, message) {
       return injectNativeMessage(sessionId, message)
+    },
+    enqueueExternalTurn(turn) {
+      const agent = nativeAgent(ctx, turn.sessionId) as { followup?: (message: unknown) => void } | null
+      if (typeof agent?.followup !== 'function') return false
+      try {
+        agent.followup(externalTurnMessage(turn))
+        return true
+      } catch { return false }
     },
     appendExternalToolEvent(sessionId, externalTool) {
       try {

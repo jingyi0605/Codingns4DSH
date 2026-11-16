@@ -23,7 +23,7 @@ const permissionRequest = {
   },
 }
 
-function createReplay(request?: typeof questionRequest | typeof permissionRequest, duplicate: 'before' | 'after' | undefined = undefined, toolEvents = false) {
+function createReplay(request?: typeof questionRequest | typeof permissionRequest, duplicate: 'before' | 'after' | undefined = undefined, toolEvents = false, workflowPolicy = true) {
   const calls: any[] = []
   const responses: any[] = []
   let notify!: (message: any) => void
@@ -57,11 +57,14 @@ function createReplay(request?: typeof questionRequest | typeof permissionReques
           return
         }
         if (value.method === 'session/create' || value.method === 'session/resume') {
-          reply(value.id, { session: { sessionId: 'sess-probe' }, settings: { model: {
+          reply(value.id, { session: { sessionId: value.method === 'session/resume' ? value.params.sessionId : 'sess-probe' }, settings: { model: {
             available: [{ ref: { providerId: 'deepseek', modelId: 'deepseek-flash' },
               reasoning: { defaultLevel: 'high', levels: [{ value: 'disabled' }, { value: 'high' }] } }],
             current: { providerId: 'other', modelId: 'default' },
           } } })
+        } else if (value.method === 'workspace/updateDynamicWorkflowPolicy') {
+          if (workflowPolicy) reply(value.id, { enabled: true })
+          else notify({ id: value.id, error: { code: -32601, message: 'Method not found' } })
         } else if (value.method === 'session/send') {
           sendId = value.id
           stopped = false
@@ -233,5 +236,34 @@ test('ZCode 原生工具流、问题请求和结果只投影一张问题卡片',
     assert.equal(calls[0].callId, 'call-question')
     assert.equal(results.length, 1)
     assert.match(results[0].output, /42/u)
+  } finally { replay.driver.dispose() }
+})
+
+test('ZCode 新建和恢复会话开启真正的动态 workflow，不能退化成 TodoWrite 清单', async () => {
+  for (const providerSessionId of [undefined, 'sess-probe']) {
+    const replay = createReplay()
+    try {
+      for await (const _event of replay.driver.executeTurn({ sessionId: 'workflow-probe', cwd: 'D:/fixture', messages: [], prompt: '使用 workflow 测试串并行', ...(providerSessionId ? { providerSessionId } : {}) })) {}
+      const policy = replay.calls.find(call => call.method === 'workspace/updateDynamicWorkflowPolicy')
+      assert.equal(policy?.params.enabled, true, 'app-server defaults dynamicWorkflowEnabled=false')
+      assert.equal(policy?.params.mode, 'alwaysOn')
+      const created = replay.calls.find(call => call.method === (providerSessionId ? 'session/resume' : 'session/create'))
+      assert.equal(created.params.dynamicWorkflowEnabled, true)
+      assert.equal(created.params.dynamicWorkflowMode, 'alwaysOn')
+      assert.match(replay.calls.find(call => call.method === 'session/send').params.content, /CreateWorkflow/u)
+      assert.match(replay.calls.find(call => call.method === 'session/send').params.content, /TodoWrite/u)
+    } finally { replay.driver.dispose() }
+  }
+})
+
+test('旧版 ZCode 缺少工作流策略 API 时保留普通对话，不传未知字段或宣称已启用', async () => {
+  const replay = createReplay(undefined, undefined, false, false)
+  try {
+    const events = []
+    for await (const event of replay.driver.executeTurn({ sessionId: 'legacy', messages: [], prompt: '普通问题' })) events.push(event)
+    assert.equal(events.at(-1)?.type, 'finish')
+    const created = replay.calls.find(call => call.method === 'session/create')
+    assert.equal(created.params.dynamicWorkflowEnabled, undefined)
+    assert.doesNotMatch(replay.calls.find(call => call.method === 'session/send').params.content, /已启用 ZCode 原生动态工作流/u)
   } finally { replay.driver.dispose() }
 })

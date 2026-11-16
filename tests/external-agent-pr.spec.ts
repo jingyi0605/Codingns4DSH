@@ -22,7 +22,13 @@ function fakeRpcSpawn(onRequest: (request: Record<string, unknown>, stdout: Pass
     const stderr = new PassThrough()
     const stdin = {
       write(data: string): void {
-        onRequest(JSON.parse(data) as Record<string, unknown>, stdout)
+        const request = JSON.parse(data) as Record<string, unknown>
+        // Legacy fixture: explicitly reject the newer workflow capability probe.
+        if (request.method === 'workspace/updateDynamicWorkflowPolicy') {
+          stdout.write(`${JSON.stringify({ id: request.id, error: { code: -32601, message: 'Method not found' } })}\n`)
+          return
+        }
+        onRequest(request, stdout)
       },
     }
     return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }

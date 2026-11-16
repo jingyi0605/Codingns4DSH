@@ -1,4 +1,8 @@
 import { isNativeApprovalMode, resolveNativeApprovalPermission } from '../../shared/native-approval-modes.js'
+import { ZcodeSubagentService } from './zcode-subagent-service.js'
+import { readExternalTurn } from './background-turn.js'
+import { installBackgroundTurnDelivery } from './background-turn-delivery.js'
+import { zcodeContextProjection } from './zcode-context-projection.js'
 import type { FeatureModule, FeatureResourceScope } from '../../shared/contracts/feature.js'
 import type { CodingNsCliApprovalPolicy, CodingNsCliAttachment, CodingNsCliMessage, CodingNsCliModelCatalog, CodingNsCliPermissionState, CodingNsCliSandboxMode, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
 import { CommandCodeDriver } from './command-code-driver.js'
@@ -196,7 +200,7 @@ export function createCliAdaptersFeature(options: {
         const performance = createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext)
           .getProfile(context.services.dshContext).capabilities.get('session.external-performance')?.value as SessionPerformanceAdapter | undefined
         if (performance !== undefined) {
-          for (const projection of [codexPerformanceProjection, claudePerformanceProjection, grokPerformanceProjection, grokContextProjection, piPerformanceProjection, antigravityPerformanceProjection]) {
+          for (const projection of [codexPerformanceProjection, claudePerformanceProjection, grokPerformanceProjection, grokContextProjection, zcodeContextProjection, piPerformanceProjection, antigravityPerformanceProjection]) {
             context.resources.add(await performance.install(projection))
           }
         }
@@ -345,6 +349,7 @@ export function createCliAdaptersFeature(options: {
         registry,
         sessionStore,
       )
+      context.resources.add(installBackgroundTurnDelivery(registry, nativeSessions))
       if (context.services.dshContext !== undefined && context.services.dshVersion !== undefined) {
         const compaction = createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext)
           .getProfile(context.services.dshContext).capabilities.get('session.external-compaction')?.value as SessionCompactionAdapter | undefined
@@ -415,10 +420,14 @@ export function createCliAdaptersFeature(options: {
       registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, translationRecovery, promptTranslation, context.services.credentialBroker, nativeSessions, teamInputs)
       const interactionTranslation = createInteractionTranslation(translation, sessionId => registry.getSession(sessionId))
       context.resources.add(() => interactionTranslation.dispose())
+      const zcodeSubagents = new ZcodeSubagentService(sessionStore)
+      context.resources.add(() => zcodeSubagents.dispose())
       context.resources.add(context.services.rpc.register('cli', async (action, payload, rpcContext) => {
         const rpcSignal = asRecord(rpcContext)?.signal
         const signal = isAbortSignal(rpcSignal) ? rpcSignal : undefined
         switch (action) {
+          case 'subagent/state': return zcodeSubagents.read(payload)
+          case 'subagent/agent': return zcodeSubagents.readAgent(payload)
           case 'management/plan':
           case 'management/start':
           case 'management/status':
@@ -801,7 +810,17 @@ export function createCliAdaptersFeature(options: {
           if (config.teamId && !teamDispatcher.identity(sessionId) && !teamDispatcher.isTeamModeDisabled(sessionId)) {
             throw Object.assign(new Error('The native Team identity is unavailable. Restore its Team profile and adapter before continuing.'), { code: 'TEAM_SERVICE_UNAVAILABLE' })
           }
-          const turnInput = extractTurnInput(messages, context.services.dshContext, teamInputs.take(sessionId, messages))
+          const externalTurn = readExternalTurn(messages)
+          // Stale durable inbox controls must never become prompts for a newly
+          // selected provider, or re-submit the previous human message.
+          if (externalTurn && (config.adapterId !== 'zcode' || config.providerSessionId !== externalTurn.providerSessionId)) {
+            yield { type: 'finish', reason: { kind: 'stop' } }
+            return
+          }
+          const turnInput = externalTurn
+            ? { prompt: '', translationPrompt: '', untranslatedPrompt: '', translatePrompt: false, attachments: [], credentialCarriers: [], messages: [] }
+            : extractTurnInput(messages, context.services.dshContext, teamInputs.take(sessionId, messages))
+
           const credentialResolution = await resolveCredentialEnvironment(
             context.services.credentials,
             context.services.credentialBroker,
@@ -878,6 +897,7 @@ export function createCliAdaptersFeature(options: {
           // 在下一条 usage 到达前失去投影。
           const input = {
             sessionId,
+            ...(externalTurn ? { externalTurnId: externalTurn.turnId } : {}),
             messages: turnInput.messages,
             prompt,
             ...(turnInput.peerInput ? { peerInput: true } : {}),

@@ -1,3 +1,5 @@
+import type { CodingNsBackgroundTurn } from './background-turn.js'
+import type { ZcodeRecoveredReply } from './zcode-background-recovery.js'
 import type {
   CodingNsCliAdapterDescriptor,
   CodingNsAgentEvent,
@@ -56,6 +58,9 @@ export interface CodingNsCliCompactionResult {
  * 进程句柄永远留在 Host 侧，Client 只消费 descriptor 与标准流。
  */
 export interface CodingNsCliDriver {
+  subscribeBackgroundTurns?(listener: (turn: CodingNsBackgroundTurn) => void): () => void
+  recoverBackgroundTurns?(sessionId: string, providerSessionId: string, since: number): Promise<readonly ZcodeRecoveredReply[]>
+  stageRecoveredBackgroundTurn?(sessionId: string, reply: ZcodeRecoveredReply): void
   readonly descriptor: Omit<CodingNsCliAdapterDescriptor, 'installed' | 'enabled' | 'version' | 'command'>
   /** @deprecated 兼容旧驱动声明；模型统一按首次使用加载，启动不再预热。 */
   readonly warmModelCatalog?: boolean
