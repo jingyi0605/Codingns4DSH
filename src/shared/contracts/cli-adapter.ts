@@ -181,6 +181,9 @@ export interface CodingNsCliTeamDiagnostic {
   readonly supportsInterrupt?: boolean
 }
 
+/** 原生 CLI 审批选择；inherit 仅供保留旧会话权限，菜单不再展示。 */
+export type CodingNsNativeApprovalMode = 'inherit' | 'manual' | 'auto-review' | 'read-only' | 'accept-edits' | 'full-access'
+
 /** 每个 DSH 会话绑定的 CLI 选择；不包含凭据。 */
 export interface CodingNsCliSessionConfig {
   readonly adapterId: CodingNsCliAdapterId
@@ -194,6 +197,7 @@ export interface CodingNsCliSessionConfig {
    * 界面关闭 Fast 时必须写 `default`，否则线程会保留上一次的加速档。
    */
   readonly serviceTierId?: string
+  readonly nativeApprovalMode?: CodingNsNativeApprovalMode
   /** 是否对当前外部 Agent 会话启用输入与输出翻译。 */
   readonly translationEnabled?: boolean
   /** DSH 原生模型提供商，例如 deepseek-official、glor；不包含凭据。 */
@@ -277,10 +281,12 @@ export type CodingNsCliApprovalPolicy = 'ask' | 'never'
  * DSH 会话级权限状态，供驱动派生原生沙箱与审批参数。
  *
  * “请求的权限 ≠ 生效的权限”是硬性语义：字段缺省表示 Host **尚未读到**该事实，
- * 驱动必须保留自己的保守默认，不能把它当成“已确认无限制”。三个字段都只在
+ * 驱动必须保留自己的保守默认，不能把它当成“已确认无限制”。这些字段都只在
  * Host 内流转，不下发到 Client。
  */
 export interface CodingNsCliPermissionState {
+  /** 用户为本会话显式选择的原生审批模式。 */
+  readonly nativeApprovalMode?: CodingNsNativeApprovalMode
   /** DSH 已解析的生效模式，含部署默认；缺省表示未读到。 */
   readonly sandboxMode?: CodingNsCliSandboxMode
   /** DSH 已解析的生效审批策略，含部署默认；缺省表示未读到。 */

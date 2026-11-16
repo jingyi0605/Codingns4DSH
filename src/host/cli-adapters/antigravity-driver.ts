@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
@@ -11,6 +11,7 @@ import { commandEnvironment, runAsyncCommand, terminateChildProcess, withCommand
 import { usageChunk } from './rpc-driver-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 import { normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { AntigravityAutoUpdater, antigravityCommandEnvironment } from './antigravity-updater.js'
 
 const ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS = 30_000
 
@@ -45,7 +46,7 @@ async function runBufferedModels(
     let child: CodingNsChildProcess
     try {
       child = runSpawn(command, args, {
-        env: environment,
+        env: antigravityCommandEnvironment(environment),
         windowsHide: true,
         shell: process.platform === 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -89,6 +90,7 @@ async function runBufferedModels(
 }
 
 export interface AntigravityDriverOptions {
+  readonly autoUpdater?: Pick<AntigravityAutoUpdater, 'check' | 'dispose'>
   readonly binaries?: readonly string[]
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
@@ -110,10 +112,14 @@ export interface AntigravityDriverOptions {
 /**
  * Antigravity 的 stream-json print 模式：输入从 stdin 以 NDJSON 写入，输出仍是
  * 逐行 JSON。公开 CLI 没有 Host 回传 approval/question 的 wire 事件，因此不声明
- * permission/questions；权限只能使用 CLI 已公开的 plan、accept-edits 和全放行模式。
+ * permission/questions；使用 CLI 已公开的 plan、auto、accept-edits 和全放行模式。
  */
 export class AntigravityDriver extends StandardStreamDriver implements CodingNsCliDriver {
   private readonly observedText = new WeakMap<object, string>()
+  private readonly diagnostics = new WeakMap<object, string>()
+  protected observeStderr = (chunk: string, input: CodingNsCliTurnInput): void => {
+    this.diagnostics.set(input, `${this.diagnostics.get(input) ?? ''}${chunk}`.slice(-16_384))
+  }
   /** step_index is unique only within one CLI execution; resumed and concurrent turns need separate scopes. */
   private readonly toolCallScopes = new WeakMap<object, { readonly id: string; readonly settledSteps: Set<number> }>()
   /** 本轮各次模型调用的用量；result 到达时汇总成单轮用量。 */
@@ -124,6 +130,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   private readonly resolveModelId: (modelId: string | undefined) => string | null
   private readonly modelProbeAbort = new AbortController()
   private readonly magpieCommand: () => string | null
+  private readonly autoUpdater: Pick<AntigravityAutoUpdater, 'check' | 'dispose'>
 
   readonly warmModelCatalog = true
   /** AGY stream-json 会把工具和后续正文放在同一条可暂停事件流中。 */
@@ -150,11 +157,13 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     this.resolveContextWindow = options.resolveContextWindow ?? ((modelId) => knownAntigravityContextWindow(modelId))
     this.resolveModelId = options.resolveModelId ?? ((modelId) => resolveAntigravityModelId(modelId))
     this.magpieCommand = options.magpieCommand ?? (() => null)
+    this.autoUpdater = options.autoUpdater ?? new AntigravityAutoUpdater(this.runSpawn)
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {
     const detected = await this.detect()
     if (!detected.installed || detected.command === null) return emptyCatalog()
+    this.autoUpdater.check(detected.command, this.resolvedEnvironment ?? commandEnvironment(detected.command))
     try {
       const magpie = await this.readMagpieEnvironment(this.modelProbeAbort.signal)
       // `agy models` 需要向服务端拉取目录；在本机冷启动约 19 秒，
@@ -199,6 +208,9 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         yield* super.executeTurn(prepared)
       } finally {
         this.toolCallScopes.delete(prepared)
+        this.observedText.delete(prepared)
+        this.turnUsages.delete(prepared)
+        this.diagnostics.delete(prepared)
       }
     } finally {
       await proxy?.close()
@@ -245,7 +257,17 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
 
   protected get usesStdin(): boolean { return true }
 
+  protected override spawnProcess(command: string, args: readonly string[], options: SpawnOptions): CodingNsChildProcess {
+    // Windows 更新由 autoUpdater 自动调用官方 update 入口，业务进程避开 detached 路径。
+    this.autoUpdater.check(command, this.resolvedEnvironment ?? commandEnvironment(command))
+    return super.spawnProcess(command, args, {
+      ...options,
+      env: antigravityCommandEnvironment(options.env ?? {}),
+    })
+  }
+
   dispose(): void {
+    this.autoUpdater.dispose()
     this.modelProbeAbort.abort()
     this.cumulativeUsages.clear()
     super.dispose()
@@ -346,6 +368,44 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         else chunks.push(usageEvent)
       }
       this.observedText.delete(input)
+    }
+    // DONE 仅表示工具步骤结束，不意味着成功；AGY 的拒绝会藏在 tool_info.error，
+    // 最终 result 仍可能为 SUCCESS。不要把这类无头审批失败投影为已完成的任务。
+    let deniedReason: string | undefined
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index]!
+      if (chunk.type !== 'tool-event' || !chunk.error?.trim()) continue
+      chunks[index] = { ...chunk, status: 'failed' }
+      if (isAntigravityPermissionDenial(chunk.error)) deniedReason ??= chunk.error
+    }
+    const diagnostic = this.diagnostics.get(input) ?? ''
+    const autoUnavailable = input.permission?.nativeApprovalMode === 'auto-review'
+      && /auto(?: mode)?[^\r\n]*(?:unavailable|not available|not supported|unsupported|default mode)/iu.test(diagnostic)
+    if (deniedReason === undefined) {
+      deniedReason = diagnostic.split(/\r?\n/u).find(isAntigravityPermissionDenial)
+    }
+    if (deniedReason === undefined && typeof result?.error === 'string' && isAntigravityPermissionDenial(result.error)) {
+      deniedReason = result.error
+    }
+    if (!cancelled && (autoUnavailable || deniedReason !== undefined)) {
+      const failure = autoUnavailable ? {
+        code: 'AGY_AUTO_MODE_UNAVAILABLE',
+        message: 'Antigravity 自动审查不可用：agy auto 模式要求支持的 CLI 版本、个人账号及可用的终端沙箱。请检查 agy 环境，或选择其他执行模式；需要确认的命令可在 agy /permissions 中预先允许。',
+      } : {
+        code: 'AGY_PERMISSION_DENIED',
+        message: `Antigravity 工具审批未通过。agy 无头模式无法把审批请求回传 DSH；请在 agy /permissions 中预先允许所需操作，或在可信任务中手动选择“完全访问”后重新发送消息。原始原因：${deniedReason!.slice(0, 1200)}`,
+      }
+      chunks = chunks.filter(chunk => chunk.type !== 'finish' && (result === null || chunk.type !== 'text-delta'))
+      if (result === null) {
+        const turn = this.takeTurnUsage(input, null, input.providerSessionId ?? '')
+        const usage = this.buildUsageEvent(input, turn)
+        if (usage !== null) chunks.push(usage)
+      }
+      chunks.push({ type: 'finish', reason: 'error', failure })
+      this.observedText.delete(input)
+      this.diagnostics.delete(input)
+    } else if (result !== null) {
+      this.diagnostics.delete(input)
     }
     return chunks
   }
@@ -539,14 +599,21 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
 }
 
 /**
- * Antigravity 没有公开的 permission-request/response wire。未知或需要询问的
- * 状态必须进入 plan，避免在无 DSH 回传通道时默默执行工具；只有 DSH 已明确
- * 给出“永不询问”的权限事实时才可自动放行。
+ * Antigravity 没有公开的 permission-request/response wire。显式模式优先；
+ * 旧调用方保持原映射，未知状态进入 plan。全放行仍要求 danger-full-access
+ * 和 never 同时成立，auto 不可用时不得静默切换至全放行。
  */
 function antigravityPermissionArgs(permission: CodingNsCliTurnInput['permission']): readonly string[] {
+  if (permission?.nativeApprovalMode === 'read-only') return ['--mode', 'plan']
+  if (permission?.nativeApprovalMode === 'auto-review') return ['--mode', 'auto']
+  if (permission?.nativeApprovalMode === 'accept-edits') return ['--mode', 'accept-edits']
   if (permission?.sandboxMode === 'danger-full-access' && permission.approvalPolicy === 'never') return ['--dangerously-skip-permissions']
   if (permission?.sandboxMode === 'workspace-write' && permission.approvalPolicy === 'never') return ['--mode', 'accept-edits']
   return ['--mode', 'plan']
+}
+
+function isAntigravityPermissionDenial(text: string): boolean {
+  return /permission check failed|user denied permission|soft[- ]denied|soft-denying tool confirmation/iu.test(text)
 }
 
 /** 将 AGY 的最终正文快照与前面已发出的增量对齐，避免重复渲染。 */

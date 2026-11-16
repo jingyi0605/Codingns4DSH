@@ -1,3 +1,4 @@
+import * as nativeApprovalDictionary from './locales/nativeApproval.js'
 import { useMemo, useSyncExternalStore } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
@@ -1111,6 +1112,7 @@ const en: Record<string, string> = {
   ...panelsDictionary.en,
   ...subagentCollapsedDictionary.en,
   ...cliManagementDictionary.en,
+  ...nativeApprovalDictionary.en,
   ...magpieDictionary.en,
   ...pluginUpdateDictionary.en,
   ...credentialsDictionary.en,
@@ -1128,6 +1130,7 @@ const zh: Record<string, string> = {
   ...panelsDictionary.zh,
   ...subagentCollapsedDictionary.zh,
   ...cliManagementDictionary.zh,
+  ...nativeApprovalDictionary.zh,
   ...magpieDictionary.zh,
   ...pluginUpdateDictionary.zh,
   ...credentialsDictionary.zh,

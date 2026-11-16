@@ -144,7 +144,7 @@ test('Antigravity 和 Gemini 旧协议实际收到带后缀图片及可访问目
     }) as never
     const driver = kind === 'gemini'
       ? new GeminiCliDriver({ binaries: ['fake-gemini'], spawnSync: detection, spawn })
-      : new AntigravityDriver({ binaries: ['fake-agy'], spawnSync: detection, spawn, resolveContextWindow: () => undefined, resolveModelId: () => null })
+      : new AntigravityDriver({ autoUpdater: { check() {}, dispose() {} }, binaries: ['fake-agy'], spawnSync: detection, spawn, resolveContextWindow: () => undefined, resolveModelId: () => null })
     t.after(() => driver.dispose())
     const events = await collect(driver.executeTurn(input))
     assert.equal(events.at(-1)?.type, 'finish')
@@ -270,7 +270,7 @@ test('取消文本 Provider 时回收图片副本，原始对象不受影响', a
   const { input, path } = fixture(t)
   const controller = new AbortController()
   let imagePath = ''
-  const driver = new AntigravityDriver({ binaries: ['fake-agy'], spawnSync: detection, resolveContextWindow: () => undefined, resolveModelId: () => null, spawn: (() => {
+  const driver = new AntigravityDriver({ autoUpdater: { check() {}, dispose() {} }, binaries: ['fake-agy'], spawnSync: detection, resolveContextWindow: () => undefined, resolveModelId: () => null, spawn: (() => {
     const stdout = new PassThrough(); const stderr = new PassThrough(); const stdin = new PassThrough()
     stdin.on('data', (line) => {
       imagePath = readableImagePath(JSON.parse(String(line)).message.content)

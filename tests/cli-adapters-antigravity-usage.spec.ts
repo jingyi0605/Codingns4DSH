@@ -115,6 +115,28 @@ function stubUsageSpawn(output: string): typeof import('node:child_process').spa
   }) as never
 }
 
+test('Antigravity CLI 额度兜底和分组补全禁用自动更新', async () => {
+  for (const hasCredentials of [false, true]) {
+    const environments: NodeJS.ProcessEnv[] = []
+    const service = new AntigravitySubscriptionService({
+      homeDirectory: hasCredentials ? makeHome() : mkdtempSync(join(tmpdir(), 'codingns-antigravity-empty-')),
+      platform: 'win32',
+      fetch: stubFetch([], { quota: () => Response.json(PARTIAL_QUOTA_SUMMARY) }),
+      resolveCommand: () => 'fake-agy',
+      spawn: ((command, args, options) => {
+        environments.push(options?.env ?? {})
+        return stubUsageSpawn(USAGE_TEXT)(command, args, options)
+      }) as typeof import('node:child_process').spawn,
+    })
+    const original = process.env.AGY_CLI_DISABLE_AUTO_UPDATE
+    const usage = await service.read()
+    assert.equal(usage?.groups?.length, 3)
+    assert.equal(environments.length, 1)
+    assert.equal(environments[0]?.AGY_CLI_DISABLE_AUTO_UPDATE, 'true')
+    assert.equal(process.env.AGY_CLI_DISABLE_AUTO_UPDATE, original)
+  }
+})
+
 test('Antigravity 上下文窗口按模型 id 与 AGY 设置里的展示名解析', () => {
   assert.equal(knownAntigravityContextWindow('gemini-3.8-flash'), 1_048_576)
   assert.equal(knownAntigravityContextWindow('gemini-3.1-pro'), 1_048_576)

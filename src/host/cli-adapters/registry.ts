@@ -1,3 +1,4 @@
+import { isNativeApprovalMode } from '../../shared/native-approval-modes.js'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentQuestionResponse,
@@ -109,6 +110,8 @@ export class CodingNsCliAdapterRegistry {
     readonly adapterId: CodingNsCliAdapterId
     readonly iterator: AsyncIterator<CodingNsAgentEvent> | null
     readonly deferredPeerInput?: CodingNsCliTurnInput
+    /** Permission belongs to the logical provider turn, including its continuations. */
+    readonly permission: CodingNsCliTurnInput['permission']
     /** Runtime state required when a driver-owned segment is resumed later. */
     readonly runtimeEnv?: Readonly<Record<string, string>>
   }>()
@@ -184,7 +187,8 @@ export class CodingNsCliAdapterRegistry {
   private readonly sessionStore: CodingNsCliSessionStore | undefined
   private readonly nativeSessions: CodingNsNativeSessionBridge | undefined
   private readonly settings: DshHostSettingsScope<CodingNsSettings> | undefined
-  private readonly preferences = new Map<CodingNsCliAdapterId, { modelId?: string; effortId?: string; serviceTierId?: string; translationEnabled?: boolean }>()
+  private readonly preferences = new Map<CodingNsCliAdapterId, CodingNsCliAdapterPreference>()
+  private preferenceWritesPending = 0
   /** 设置服务更新必须按选择顺序落盘；并发 update 会让旧快照覆盖新模型/档位。 */
   private preferenceWriteTail: Promise<void> = Promise.resolve()
 
@@ -325,8 +329,11 @@ export class CodingNsCliAdapterRegistry {
     // 配置保存值，方便 Client 从外部 CLI 切回默认 Agent。
     if (config.adapterId !== 'dsh') this.requireEnabledDriver(config.adapterId)
     const storedTeam = this.sessionStore?.get(sessionId)
-    const previous = this.sessions.get(sessionId) ?? (storedTeam?.teamId && storedTeam.adapterId === config.adapterId ? this.getSession(sessionId) : undefined)
+    const previous = this.sessions.get(sessionId) ?? (storedTeam?.adapterId === config.adapterId ? this.getSession(sessionId) : undefined)
     const sameAdapter = previous?.adapterId === config.adapterId
+    if (config.nativeApprovalMode !== undefined && !isNativeApprovalMode(config.adapterId, config.nativeApprovalMode)) {
+      throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', 'Unsupported native approval mode')
+    }
     if (previous !== undefined && !sameAdapter) this.lastUsages.delete(sessionId)
     const remembered = this.preferences.get(config.adapterId) ?? this.findRememberedPreference(config.adapterId)
     // A resolved child route owns its complete model selection. An omitted
@@ -334,11 +341,15 @@ export class CodingNsCliAdapterRegistry {
     const previousSelection = options.inheritSelection === false ? undefined : sameAdapter ? previous : undefined
     const ownsNativeTeamSelection = config.adapterId === 'dsh' && Boolean(config.teamId ?? previous?.teamId)
     const rememberedSelection = options.inheritSelection === false || ownsNativeTeamSelection ? undefined : remembered
+    // Only a new binding may borrow a remembered mode. Old sessions keep their permissions.
+    const isolated = config.teamId || previous?.teamId || config.parentSessionId || previous?.parentSessionId || config.origin === 'subagent' || previous?.origin === 'subagent'
+    const nativeApprovalMode = config.nativeApprovalMode ?? (sameAdapter ? previousSelection?.nativeApprovalMode : isolated ? undefined : rememberedSelection?.nativeApprovalMode)
     const providerSessionId = config.providerSessionId?.trim()
     const providerIdentityChanged = providerSessionId !== undefined
       && providerSessionId !== previous?.providerSessionId
     const normalized = {
       adapterId: config.adapterId,
+      ...(nativeApprovalMode === undefined ? {} : { nativeApprovalMode }),
       ...(config.modelId?.trim()
         ? { modelId: config.modelId.trim() }
         : previousSelection?.modelId
@@ -404,13 +415,13 @@ export class CodingNsCliAdapterRegistry {
     }
     this.sessions.set(sessionId, normalized)
     this.sessionStore?.upsert(sessionId, normalized)
-    if (options.rememberPreference !== false && normalized.teamId === undefined) this.rememberPreference(config.adapterId, normalized)
+    if (options.rememberPreference !== false && normalized.teamId === undefined && normalized.parentSessionId === undefined && normalized.origin !== 'subagent') this.rememberPreference(config.adapterId, normalized)
     return normalized
   }
 
   /** 设置服务变更后重新载入适配器级默认选择。 */
   syncPreferences(value: Readonly<Record<string, CodingNsCliAdapterPreference>> | undefined): void {
-    if (value === undefined) return
+    if (value === undefined || this.preferenceWritesPending > 0) return
     // 0.1.7 ConfigForms 在 entry 重新描述的瞬间可能只返回默认空字典；
     // 不能让这次短暂快照抹掉当前进程已经恢复的选择。
     if (Object.keys(value).length === 0 && this.preferences.size > 0) return
@@ -420,25 +431,28 @@ export class CodingNsCliAdapterRegistry {
       const modelId = preference?.modelId?.trim()
       const effortId = preference?.effortId?.trim()
       const serviceTierId = preference?.serviceTierId?.trim()
-      if (modelId === undefined && effortId === undefined && serviceTierId === undefined && preference?.translationEnabled === undefined) continue
+      const nativeApprovalMode = isNativeApprovalMode(adapterId, preference?.nativeApprovalMode) ? preference.nativeApprovalMode : undefined
+      if (modelId === undefined && effortId === undefined && serviceTierId === undefined && preference?.translationEnabled === undefined && nativeApprovalMode === undefined) continue
       this.preferences.set(adapterId, {
         ...(modelId ? { modelId } : {}),
         ...(effortId ? { effortId } : {}),
         ...(serviceTierId ? { serviceTierId } : {}),
         ...(preference.translationEnabled === undefined ? {} : { translationEnabled: preference.translationEnabled }),
+        ...(nativeApprovalMode === undefined ? {} : { nativeApprovalMode }),
       })
     }
   }
 
-  private findRememberedPreference(adapterId: CodingNsCliAdapterId): { modelId?: string; effortId?: string; serviceTierId?: string; translationEnabled?: boolean } | undefined {
-    const records = this.sessionStore?.list({ includeArchived: true, adapterId }).filter(record => record.teamId === undefined) ?? []
+  private findRememberedPreference(adapterId: CodingNsCliAdapterId): CodingNsCliAdapterPreference | undefined {
+    const records = this.sessionStore?.list({ includeArchived: true, adapterId }).filter(record => record.teamId === undefined && record.parentSessionId === undefined && record.origin !== 'subagent') ?? []
     for (const record of records) {
-      if (record.modelId !== undefined || record.effortId !== undefined || record.serviceTierId !== undefined || record.translationEnabled !== undefined) {
+      if (record.modelId !== undefined || record.effortId !== undefined || record.serviceTierId !== undefined || record.translationEnabled !== undefined || record.nativeApprovalMode !== undefined) {
         const preference = {
           ...(record.modelId ? { modelId: record.modelId } : {}),
           ...(record.effortId ? { effortId: record.effortId } : {}),
           ...(record.serviceTierId ? { serviceTierId: record.serviceTierId } : {}),
           ...(record.translationEnabled === undefined ? {} : { translationEnabled: record.translationEnabled }),
+          ...(record.nativeApprovalMode === undefined ? {} : { nativeApprovalMode: record.nativeApprovalMode }),
         }
         this.preferences.set(adapterId, preference)
         return preference
@@ -453,13 +467,15 @@ export class CodingNsCliAdapterRegistry {
     const effortId = config.effortId?.trim() || previous?.effortId
     const serviceTierId = config.serviceTierId?.trim() || previous?.serviceTierId
     const translationEnabled = config.translationEnabled ?? previous?.translationEnabled
-    if (modelId === undefined && effortId === undefined && serviceTierId === undefined && translationEnabled === undefined) return
-    if (previous?.modelId === modelId && previous?.effortId === effortId && previous?.serviceTierId === serviceTierId && previous?.translationEnabled === translationEnabled) return
+    const nativeApprovalMode = config.nativeApprovalMode ?? previous?.nativeApprovalMode
+    if (previous?.modelId === modelId && previous?.effortId === effortId && previous?.serviceTierId === serviceTierId && previous?.translationEnabled === translationEnabled && previous?.nativeApprovalMode === nativeApprovalMode) return
     const preference = {
+      ...previous,
       ...(modelId ? { modelId } : {}),
       ...(effortId ? { effortId } : {}),
       ...(serviceTierId ? { serviceTierId } : {}),
       ...(translationEnabled === undefined ? {} : { translationEnabled }),
+      ...(nativeApprovalMode === undefined ? {} : { nativeApprovalMode }),
     }
     this.preferences.set(adapterId, preference)
     this.persistPreferences()
@@ -468,10 +484,12 @@ export class CodingNsCliAdapterRegistry {
   private persistPreferences(): void {
     if (this.settings === undefined) return
     const snapshot = preferenceSnapshot(this.preferences)
+    this.preferenceWritesPending += 1
     this.preferenceWriteTail = this.preferenceWriteTail
       .catch(() => undefined)
       .then(() => this.settings!.update({ agentAdapterPreferences: snapshot }))
       .catch(() => undefined)
+      .finally(() => { this.preferenceWritesPending -= 1 })
   }
 
   /**
@@ -511,6 +529,7 @@ export class CodingNsCliAdapterRegistry {
     if (stored !== undefined && (stored.adapterId === 'dsh' ? stored.teamId !== undefined : this.isEnabled(stored.adapterId))) {
       const config: CodingNsCliSessionConfig = {
         adapterId: stored.adapterId,
+        ...(stored.nativeApprovalMode === undefined ? {} : { nativeApprovalMode: stored.nativeApprovalMode }),
         ...(stored.modelId === undefined ? {} : { modelId: stored.modelId }),
         ...(stored.effortId === undefined ? {} : { effortId: stored.effortId }),
         ...(stored.serviceTierId === undefined ? {} : { serviceTierId: stored.serviceTierId }),
@@ -603,7 +622,7 @@ export class CodingNsCliAdapterRegistry {
       throw new CodingNsRpcError('CODINGNS_CLI_MANAGEMENT_BUSY', 'This Agent is being installed or updated. Wait for it to finish.')
     }
     const driver = this.requireEnabledDriver(input.adapterId)
-    const driverInput = withCodexContextWindow(input, input.adapterId)
+    let driverInput = withTurnPermission(withCodexContextWindow(input, input.adapterId), input.permission)
     if (this.archivingSessions.has(input.sessionId)) {
       throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', '外部会话正在归档，不能开始新一轮执行')
     }
@@ -611,7 +630,7 @@ export class CodingNsCliAdapterRegistry {
       throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', '外部会话已有一轮执行正在进行')
     }
     this.executingSessions.set(input.sessionId, input.adapterId)
-    const previous = this.sessions.get(input.sessionId)
+    const previous = this.sessions.get(input.sessionId) ?? this.sessionStore?.get(input.sessionId)
     if (previous !== undefined && previous.adapterId !== input.adapterId) this.lastUsages.delete(input.sessionId)
     let current = {
       ...(previous ?? { adapterId: input.adapterId }),
@@ -645,6 +664,7 @@ export class CodingNsCliAdapterRegistry {
       }
       const suspended = this.segmentedTurns.get(input.sessionId)
       const resumingSegmentedTurn = suspended?.adapterId === input.adapterId
+      if (resumingSegmentedTurn) driverInput = withTurnPermission(driverInput, suspended.permission)
       let deferredPeerInput = resumingSegmentedTurn ? suspended?.deferredPeerInput : undefined
       if (resumingSegmentedTurn && input.peerInput) {
         if (suspended?.iterator !== null && driver.steer !== undefined) {
@@ -669,6 +689,8 @@ export class CodingNsCliAdapterRegistry {
           }
         : driverInput
       if (resumingDriverTurn) this.segmentedTurns.delete(input.sessionId)
+      const refreshed = this.sessions.get(input.sessionId)
+      if (refreshed !== previous && refreshed?.adapterId === current.adapterId) current = { ...current, ...refreshed }
       this.sessions.set(input.sessionId, current)
       this.sessionStore?.upsert(input.sessionId, {
         ...current,
@@ -730,7 +752,7 @@ export class CodingNsCliAdapterRegistry {
             await closeAgentIterator(iterator)
             const pending = deferredPeerInput
             deferredPeerInput = undefined
-            iterator = driver.executeTurn(withCodexContextWindow({ ...pending, ...(current.providerSessionId ? { providerSessionId: current.providerSessionId } : {}), resumeSegmentedTurn: false }, input.adapterId))[Symbol.asyncIterator]()
+            iterator = driver.executeTurn(withTurnPermission(withCodexContextWindow({ ...pending, ...(current.providerSessionId ? { providerSessionId: current.providerSessionId } : {}), resumeSegmentedTurn: false }, input.adapterId), driverInput.permission))[Symbol.asyncIterator]()
             continue
           }
           if (next.done) { iterator = undefined; break }
@@ -742,6 +764,8 @@ export class CodingNsCliAdapterRegistry {
         }
         if (event.type === 'usage') this.lastUsages.set(input.sessionId, usageSnapshot(event))
         if (event.type === 'session-binding') {
+          const latest = this.sessions.get(input.sessionId)
+          if (latest?.adapterId === current.adapterId) current = { ...current, ...latest }
           const providerIdentityChanged = event.providerSessionId !== current.providerSessionId
           const { rawStoreRef: previousRawStoreRef, ...currentWithoutRawStoreRef } = current
           const nextConfig = {
@@ -770,11 +794,12 @@ export class CodingNsCliAdapterRegistry {
         }
         // Explicit boundaries preserve the driver's grouping of messages and tool batches.
         if (event.type === 'step-boundary') {
-          const segmentedRuntimeEnv = driverInput.runtimeEnv
+          const segmentedRuntimeEnv = resumedDriverInput.runtimeEnv
           if (driver.supportsStreamStepSplitting === true) {
             this.segmentedTurns.set(input.sessionId, {
               adapterId: input.adapterId,
               iterator,
+              permission: resumedDriverInput.permission,
               ...(deferredPeerInput ? { deferredPeerInput } : {}),
               ...(segmentedRuntimeEnv === undefined ? {} : { runtimeEnv: segmentedRuntimeEnv }),
             })
@@ -784,6 +809,7 @@ export class CodingNsCliAdapterRegistry {
             this.segmentedTurns.set(input.sessionId, {
               adapterId: input.adapterId,
               iterator: null,
+              permission: resumedDriverInput.permission,
               ...(deferredPeerInput ? { deferredPeerInput } : {}),
               ...(segmentedRuntimeEnv === undefined ? {} : { runtimeEnv: segmentedRuntimeEnv }),
             })
@@ -805,8 +831,9 @@ export class CodingNsCliAdapterRegistry {
           this.segmentedTurns.set(input.sessionId, {
             adapterId: input.adapterId,
             iterator,
+            permission: resumedDriverInput.permission,
             ...(deferredPeerInput ? { deferredPeerInput } : {}),
-            ...(driverInput.runtimeEnv === undefined ? {} : { runtimeEnv: driverInput.runtimeEnv }),
+            ...(resumedDriverInput.runtimeEnv === undefined ? {} : { runtimeEnv: resumedDriverInput.runtimeEnv }),
           })
           // 所有权交给续段表，当前调用结束不得关闭需要继续消费的 Provider 流。
           iterator = undefined
@@ -1331,12 +1358,13 @@ function normalizePreference(value: CodingNsCliAdapterPreference | undefined): C
   const modelId = value.modelId?.trim()
   const effortId = value.effortId?.trim()
   const serviceTierId = value.serviceTierId?.trim()
-  if (modelId === undefined && effortId === undefined && serviceTierId === undefined && value.translationEnabled === undefined) return undefined
+  if (modelId === undefined && effortId === undefined && serviceTierId === undefined && value.translationEnabled === undefined && value.nativeApprovalMode === undefined) return undefined
   return {
     ...(modelId ? { modelId } : {}),
     ...(effortId ? { effortId } : {}),
     ...(serviceTierId ? { serviceTierId } : {}),
     ...(value.translationEnabled === undefined ? {} : { translationEnabled: value.translationEnabled }),
+    ...(value.nativeApprovalMode === undefined ? {} : { nativeApprovalMode: value.nativeApprovalMode }),
   }
 }
 
@@ -1410,6 +1438,11 @@ function mergeStoredSessionFields(
     ...(config.serviceTierId === undefined && stored.serviceTierId !== undefined ? { serviceTierId: stored.serviceTierId } : {}),
     ...(config.translationEnabled === undefined && stored.translationEnabled !== undefined ? { translationEnabled: stored.translationEnabled } : {}),
   }
+}
+
+function withTurnPermission(input: CodingNsCliTurnInput, permission: CodingNsCliTurnInput['permission']): CodingNsCliTurnInput {
+  const { permission: _refreshed, ...rest } = input
+  return permission === undefined ? rest : { ...rest, permission: { ...permission } }
 }
 
 function withCodexContextWindow(input: CodingNsCliTurnInput, adapterId: CodingNsCliAdapterId): CodingNsCliTurnInput {
