@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
@@ -45,7 +45,8 @@ async function runBufferedModels(
     let child: CodingNsChildProcess
     try {
       child = runSpawn(command, args, {
-        env: environment,
+        // agy 的后台更新子进程不会继承 windowsHide，冷启动可能弹出终端窗口。
+        env: { ...environment, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
         windowsHide: true,
         shell: process.platform === 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -244,6 +245,14 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   }
 
   protected get usesStdin(): boolean { return true }
+
+  protected override spawnProcess(command: string, args: readonly string[], options: SpawnOptions): CodingNsChildProcess {
+    // 仅关闭插件调用中的自动更新；用户仍可在终端手动执行 agy update。
+    return super.spawnProcess(command, args, {
+      ...options,
+      env: { ...options.env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
+    })
+  }
 
   dispose(): void {
     this.modelProbeAbort.abort()

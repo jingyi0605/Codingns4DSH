@@ -179,7 +179,8 @@ export class AntigravitySubscriptionService {
       let child: ReturnType<SpawnLike>
       try {
         child = this.runSpawn(command, ['--print', '/usage'], {
-          env: commandEnvironment(command),
+          // 额度查询也会触发 agy 自更新，避免其后台子进程在 Windows 弹窗。
+          env: { ...commandEnvironment(command), AGY_CLI_DISABLE_AUTO_UPDATE: 'true' },
           windowsHide: true,
           shell: this.platform === 'win32',
           stdio: ['ignore', 'pipe', 'pipe'],

@@ -104,6 +104,32 @@ const magpieEnv = [
   'PATH=must-not-replace-host-path',
 ].join('\n')
 
+test('Antigravity 模型发现、首轮和续接仅在子进程中禁用自动更新', async () => {
+  const original = process.env.AGY_CLI_DISABLE_AUTO_UPDATE
+  process.env.AGY_CLI_DISABLE_AUTO_UPDATE = 'false'
+  const { driver, calls } = magpieDriver(() => ({ status: 0, stdout: magpieEnv }))
+  try {
+    const catalog = await driver.listModels()
+    assert.equal(catalog.groups[0]?.models.some(model => model.id === 'magpie/hl/gpt-6-astra'), true)
+    await collect(driver, {})
+    await collect(driver, {
+      providerSessionId: 'agy-provider-session',
+      runtimeEnv: { AGY_CLI_DISABLE_AUTO_UPDATE: 'false', CODINGNS_CREDENTIAL_BROKER_ENDPOINT: 'test-broker' },
+    })
+    assert.equal(calls.length, 3)
+    for (const call of calls) {
+      assert.equal(call.env.AGY_CLI_DISABLE_AUTO_UPDATE, 'true')
+      assert.equal(call.env.GEMINI_API_KEY, 'test-magpie-key')
+    }
+    assert.equal(calls[2]?.env.CODINGNS_CREDENTIAL_BROKER_ENDPOINT, 'test-broker')
+    assert.equal(process.env.AGY_CLI_DISABLE_AUTO_UPDATE, 'false')
+  } finally {
+    driver.dispose()
+    if (original === undefined) delete process.env.AGY_CLI_DISABLE_AUTO_UPDATE
+    else process.env.AGY_CLI_DISABLE_AUTO_UPDATE = original
+  }
+})
+
 test('Antigravity 模型探测从选定的 Magpie 入口读取环境，仅传递允许的变量', async () => {
   const originalKey = process.env.GEMINI_API_KEY
   const { driver, calls, envCalls } = magpieDriver(() => ({ status: 0, stdout: magpieEnv }))
@@ -190,6 +216,7 @@ test('Antigravity 未选择 Magpie 或环境读取失败、不完整时保留原
       assert.equal(calls[0]?.args.includes('--model'), false)
       assert.equal(calls[0]?.args.includes('--settings'), false)
       assert.equal(calls[0]?.env.GEMINI_API_KEY, 'native-key')
+      assert.equal(calls[0]?.env.AGY_CLI_DISABLE_AUTO_UPDATE, 'true')
     } finally { driver.dispose() }
   }
   const { driver, envCalls } = magpieDriver(() => { throw new Error('must not run') }, { command: () => null })
