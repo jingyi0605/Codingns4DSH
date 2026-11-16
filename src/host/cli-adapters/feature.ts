@@ -1,4 +1,5 @@
 import { isNativeApprovalMode, resolveNativeApprovalPermission } from '../../shared/native-approval-modes.js'
+import { ZcodeSubagentService } from './zcode-subagent-service.js'
 import { readExternalTurn } from './background-turn.js'
 import { installBackgroundTurnDelivery } from './background-turn-delivery.js'
 import { zcodeContextProjection } from './zcode-context-projection.js'
@@ -419,10 +420,14 @@ export function createCliAdaptersFeature(options: {
       registerDelegationAgentHooks(context.services.dshContext, registry, context.resources, publishExternalStatus, translation, translationRecovery, promptTranslation, context.services.credentialBroker, nativeSessions, teamInputs)
       const interactionTranslation = createInteractionTranslation(translation, sessionId => registry.getSession(sessionId))
       context.resources.add(() => interactionTranslation.dispose())
+      const zcodeSubagents = new ZcodeSubagentService(sessionStore)
+      context.resources.add(() => zcodeSubagents.dispose())
       context.resources.add(context.services.rpc.register('cli', async (action, payload, rpcContext) => {
         const rpcSignal = asRecord(rpcContext)?.signal
         const signal = isAbortSignal(rpcSignal) ? rpcSignal : undefined
         switch (action) {
+          case 'subagent/state': return zcodeSubagents.read(payload)
+          case 'subagent/agent': return zcodeSubagents.readAgent(payload)
           case 'management/plan':
           case 'management/start':
           case 'management/status':
