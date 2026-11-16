@@ -1082,6 +1082,218 @@ test('confirmed Codex Magpie usage matches native session tags and preserves leg
   }
 })
 
+test('confirmed Antigravity Magpie usage matches native session tags and preserves AGY bindings', async () => {
+  for (const [ledgerId, providerSessionId] of [
+    ['native-agy', 'agy-conversation'],
+    ['native-agy', undefined],
+    ['agy-conversation', 'agy-conversation'],
+  ] as const) {
+    const service = new MagpieUsageService({
+      webApi: { async requestJson(path) {
+        if (path === '/api/usage/quotas') return []
+        if (path.startsWith('/api/usage/requests')) {
+          assert.equal(new URL(path, 'http://127.0.0.1').searchParams.get('q'), ledgerId)
+          return { rows: [] }
+        }
+        return usageReply([
+          { agent: 'agy', id: ledgerId, calls: 1, input: 18_000, output: 200 },
+          { agent: 'dsh', id: ledgerId, calls: 999, input: 999_999 },
+        ])
+      } },
+    })
+    const result = await service.read({
+      adapterId: 'antigravity', modelId: 'magpie/provider/model-one', providerSessionId,
+    }, undefined, true, 'native-agy', { allowPendingSession: true })
+    assert.equal(result?.session?.id, ledgerId)
+    assert.equal(result?.session?.calls, 1)
+    assert.equal(result?.session?.inputTokens, 18_000)
+    assert.equal(result?.requestSessionId, ledgerId)
+    assert.equal(result?.sessionId, providerSessionId ?? ledgerId)
+  }
+})
+
+test('Antigravity Magpie usage falls back to exact request rows when the session summary is missing', async () => {
+  const paths: string[] = []
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      paths.push(path)
+      if (path === '/api/usage/quotas') return []
+      if (path === '/api/usage?period=today' || path === '/api/usage?period=all') {
+        return { calls: 1, input: 11_270, output: 228, cost: 0.02, sessions: [] }
+      }
+      const query = new URL(path, 'http://127.0.0.1').searchParams.get('q')
+      if (query === 'native-agy') return { rows: [] }
+      if (query === 'agy-conversation') return {
+        rows: [{
+          route_id: 1, agent: 'agy', session: 'agy-conversation',
+          provider: 'antigravity-bridge', req: 'antigravity-bridge/gemini-4-hydrogen',
+          in: 11_270, out: 228, cost: 0.02, status: 200,
+        }],
+      }
+      throw new Error(`unexpected Magpie request query: ${query}`)
+    } },
+  })
+
+  const result = await service.read({
+    adapterId: 'antigravity',
+    modelId: 'magpie/antigravity-bridge/gemini-4-hydrogen',
+    providerSessionId: 'agy-conversation',
+  }, undefined, false, 'native-agy')
+
+  assert.equal(result?.session?.id, 'agy-conversation')
+  assert.equal(result?.session?.calls, 1)
+  assert.equal(result?.session?.inputTokens, 11_270)
+  assert.equal(result?.session?.outputTokens, 228)
+  assert.deepEqual(paths.filter((path) => path.includes('/api/usage/requests')).map((path) => new URL(path, 'http://127.0.0.1').searchParams.get('q')), [
+    'native-agy', 'agy-conversation',
+  ])
+})
+
+test('Antigravity Magpie route refresh reuses the exact ledger row for quota matching', async () => {
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      if (path === '/api/usage/quotas') return [{
+        provider: 'antigravity-bridge', name: 'Antigravity Bridge', user: null,
+        windows: [{ name: 'Session', remaining: 80 }],
+      }]
+      if (path === '/api/usage?period=today' || path === '/api/usage?period=all') {
+        return { calls: 1, input: 11_270, output: 228, cost: 0.02, sessions: [] }
+      }
+      const query = new URL(path, 'http://127.0.0.1').searchParams.get('q')
+      if (query === 'native-agy') return { rows: [] }
+      if (query === 'agy-conversation') return {
+        data: { rows: [{
+          route_id: 1, t: '2026-11-15T15:40:00Z', agent: 'agy', session: 'agy-conversation',
+          provider: 'antigravity-bridge', req: 'antigravity-bridge/gemini-4-hydrogen',
+          model: 'gemini-4-hydrogen', served: 'gemini-4-hydrogen',
+          in: 11_270, out: 228, cost: 0.02, status: 200,
+        }] },
+      }
+      throw new Error(`unexpected Magpie request query: ${query}`)
+    } },
+  })
+
+  const result = await service.read({
+    adapterId: 'antigravity',
+    modelId: 'magpie/antigravity-bridge/gemini-4-hydrogen',
+    providerSessionId: 'agy-conversation',
+  }, undefined, true, 'native-agy')
+
+  assert.equal(result?.routeStatus, 'available')
+  assert.equal(result?.route?.model, 'antigravity-bridge/gemini-4-hydrogen')
+  assert.equal(result?.upstreamProvider, 'antigravity-bridge')
+  assert.deepEqual(result?.upstreamProviders, ['antigravity-bridge'])
+  assert.deepEqual(result?.quotas.map((quota) => quota.provider), ['antigravity-bridge'])
+})
+
+test('Antigravity route lookup checks the provider identity when the summary uses the native DSH identity', async () => {
+  const queried: string[] = []
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      if (path === '/api/usage/quotas') return [{
+        provider: 'antigravity-bridge', name: 'Antigravity Bridge', user: null,
+        windows: [{ name: 'Session', remaining: 80 }],
+      }]
+      if (path === '/api/usage?period=today' || path === '/api/usage?period=all') {
+        return {
+          calls: 1, input: 11_270, output: 228, cost: 0.02,
+          sessions: [{ agent: 'agy', id: 'native-agy', calls: 1, input: 11_270, output: 228 }],
+        }
+      }
+      const query = new URL(path, 'http://127.0.0.1').searchParams.get('q')!
+      queried.push(query)
+      if (query === 'native-agy') return { rows: [] }
+      if (query === 'agy-conversation') return {
+        rows: [{
+          route_id: 1, t: '2026-11-15T15:40:00Z', agent: 'agy', session: 'agy-conversation',
+          provider: 'antigravity-bridge', req: 'antigravity-bridge/gemini-4-hydrogen',
+          model: 'gemini-4-hydrogen', served: 'gemini-4-hydrogen',
+          in: 11_270, out: 228, cost: 0.02, status: 200,
+        }],
+      }
+      throw new Error(`unexpected Magpie request query: ${query}`)
+    } },
+  })
+
+  const result = await service.read({
+    adapterId: 'antigravity',
+    modelId: 'magpie/antigravity-bridge/gemini-4-hydrogen',
+    providerSessionId: 'agy-conversation',
+  }, undefined, true, 'native-agy')
+
+  assert.equal(result?.session?.id, 'native-agy')
+  assert.equal(result?.routeStatus, 'available')
+  assert.equal(result?.upstreamProvider, 'antigravity-bridge')
+  assert.deepEqual(queried, ['native-agy', 'agy-conversation'])
+})
+
+test('Antigravity route lookup ignores session-log rows so they cannot replace the upstream provider or hide its quota', async () => {
+  const logRow = {
+    route_id: 0, t: '2026-11-15T14:18:17Z', agent: 'agy', session: 'agy-conversation',
+    provider: 'session-unknown', model: '', source: 'log', status: 0, in: 838,
+  }
+  const gatewayRow = {
+    route_id: 1, t: '2026-11-15T15:40:00Z', agent: 'agy', session: 'agy-conversation',
+    provider: 'antigravity-bridge', req: 'antigravity-bridge/gemini-4-hydrogen',
+    model: 'gemini-4-hydrogen', served: 'gemini-4-hydrogen', in: 11_270, out: 228, cost: 0.02, status: 200,
+  }
+  for (const rows of [[logRow], [logRow, gatewayRow]]) {
+    const service = new MagpieUsageService({
+      webApi: { async requestJson(path) {
+        if (path === '/api/usage/quotas') return [{
+          provider: 'antigravity-bridge', name: 'Antigravity Bridge', user: null,
+          windows: [{ name: 'Session', remaining: 78 }],
+        }]
+        if (path === '/api/usage?period=today' || path === '/api/usage?period=all') {
+          return {
+            calls: 1, input: 11_270, output: 228, cost: 0.02,
+            sessions: [{ agent: 'agy', id: 'native-agy', calls: 1, input: 11_270, output: 228 }],
+          }
+        }
+        const query = new URL(path, 'http://127.0.0.1').searchParams.get('q')
+        return { rows: query === 'agy-conversation' ? rows : [] }
+      } },
+    })
+
+    const result = await service.read({
+      adapterId: 'antigravity',
+      modelId: 'magpie/antigravity-bridge/gemini-4-hydrogen',
+      providerSessionId: 'agy-conversation',
+    }, undefined, true, 'native-agy')
+
+    assert.equal(result?.upstreamProvider, 'antigravity-bridge')
+    assert.deepEqual(result?.upstreamProviders, ['antigravity-bridge'])
+    assert.deepEqual(result?.quotas.map((quota) => quota.provider), ['antigravity-bridge'])
+    assert.equal(result?.routeStatus, rows.length === 1 ? 'no-route' : 'available')
+    assert.equal(result?.route?.model ?? null, rows.length === 1 ? null : 'antigravity-bridge/gemini-4-hydrogen')
+  }
+})
+
+test('Antigravity session usage recovered from request rows never counts session-log rows', async () => {
+  const service = new MagpieUsageService({
+    webApi: { async requestJson(path) {
+      if (path === '/api/usage/quotas') return []
+      if (path === '/api/usage?period=today' || path === '/api/usage?period=all') {
+        return { calls: 1, input: 11_270, output: 228, cost: 0.02, sessions: [] }
+      }
+      const query = new URL(path, 'http://127.0.0.1').searchParams.get('q')
+      return { rows: query === 'agy-conversation' ? [
+        { agent: 'agy', session: 'agy-conversation', provider: 'session-unknown', model: '', source: 'log', status: 0, in: 838 },
+        { agent: 'agy', session: 'agy-conversation', provider: 'antigravity-bridge', in: 11_270, out: 228, cost: 0.02, status: 200 },
+      ] : [] }
+    } },
+  })
+
+  const result = await service.read({
+    adapterId: 'antigravity',
+    modelId: 'magpie/antigravity-bridge/gemini-4-hydrogen',
+    providerSessionId: 'agy-conversation',
+  }, undefined, false, 'native-agy')
+
+  assert.equal(result?.session?.calls, 1)
+  assert.equal(result?.session?.inputTokens, 11_270)
+})
+
 test('confirmed Magpie sessions expose an exact daily match when the all-time summary omits it', async () => {
   const sessionId = 'fresh-native-session'
   const service = new MagpieUsageService({
