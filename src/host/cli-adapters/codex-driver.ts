@@ -2145,6 +2145,7 @@ function codexThreadParams(input: CodingNsCliTurnInput): Record<string, unknown>
     cwd: input.cwd ?? process.cwd(),
     sandbox: codexSandboxMode(input),
     approvalPolicy: codexApprovalPolicy(input),
+    approvalsReviewer: input.permission?.nativeApprovalMode === 'auto-review' ? 'auto_review' : 'user',
     ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}),
     ...(serviceTier === undefined ? {} : { serviceTier }),
     developerInstructions,
@@ -2182,6 +2183,7 @@ function codexTurnStartParams(input: CodingNsCliTurnInput, threadId: string, ski
     responsesapiClientMetadata: { workspace_kind: 'project' },
     sandboxPolicy: codexSandboxPolicy(input, cwd),
     approvalPolicy: codexApprovalPolicy(input),
+    approvalsReviewer: input.permission?.nativeApprovalMode === 'auto-review' ? 'auto_review' : 'user',
     ...(!isProviderDefaultModel(input.modelId) ? { model: input.modelId } : {}),
     ...(input.effortId ? { effort: input.effortId } : {}),
   }

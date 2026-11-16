@@ -17,7 +17,7 @@ const requestedPermissions = { fileSystem: { write: ['/workspace/approval-probe.
  * 外部运行时仅在权限工具已启用时发送请求，避免直接注入请求掩盖启动参数缺失。
  * 文件操作用状态记录，测试不会启动真实进程或修改工作区外文件。
  */
-async function createPermissionHarness(segmented: boolean, approvalAvailable = true) {
+async function createPermissionHarness(segmented: boolean, approvalAvailable = true, nativeApprovalMode?: string) {
   const sessionId = `codex-permission-${segmented}-${approvalAvailable}`
   const session = { id: sessionId, header: { cwd: '/workspace/repo' } }
   const agent = { id: sessionId, session }
@@ -113,15 +113,16 @@ async function createPermissionHarness(segmented: boolean, approvalAvailable = t
   const features = new FeatureRegistry({ rpc, events, nativeSessions, dshContext: dshContext as never })
   features.register(createCliAdaptersFeature({ registry }))
   await features.start('cliAdapters')
-  await rpc.resolve('cli/session/set')?.handler('session/set', { sessionId, adapterId: 'codex' })
+  await rpc.resolve('cli/session/set')?.handler('session/set', { sessionId, adapterId: 'codex', ...(nativeApprovalMode ? { nativeApprovalMode } : {}) })
   const chunks: Record<string, unknown>[] = []
-  const running = (async () => {
+  const run = async () => {
     // 用户只表达测试意图，不提供提权参数或测试文件路径。
     for await (const chunk of listener({ sessionId, messages: [{ role: 'user', content: '请触发权限申请并验证我的选择' }] }, async function* () {})) chunks.push(chunk)
     state.finished = true
-  })()
+  }
+  const running = run()
   return {
-    state, agent, chunks, running, approvalReached, decide,
+    state, agent, chunks, running, approvalReached, decide, run, rpc, sessionId,
     async dispose() {
       decide('cancelled')
       try { await running } finally { await features.disable('cliAdapters') }
@@ -181,3 +182,37 @@ for (const segmented of [false, true]) {
     }
   })
 }
+
+
+for (const [mode, reviewer] of [['auto-review', 'auto_review'], ['manual', 'user'], ['inherit', 'user']] as const) {
+  test(`Codex UI 设置 ${mode} 通过真实 Host 链传给 thread 和 turn reviewer`, { timeout: 5000 }, async () => {
+    const harness = await createPermissionHarness(false, true, mode)
+    try {
+      await harness.approvalReached
+      for (const method of ['thread/start', 'turn/start']) {
+        const params = harness.state.rpcCalls.find(call => call.method === method)?.params
+        assert.equal(params?.approvalsReviewer, reviewer)
+        assert.equal(params?.approvalPolicy, 'on-request')
+        assert.equal(method === 'thread/start' ? params?.sandbox : params?.sandboxPolicy.type, method === 'thread/start' ? 'workspace-write' : 'workspaceWrite')
+      }
+    } finally { await harness.dispose() }
+  })
+}
+
+
+test('Codex 同一 native thread 从自动审批切回人工再跟随，逐轮清除 reviewer 残留', { timeout: 5000 }, async () => {
+  const harness = await createPermissionHarness(false, true, 'auto-review')
+  try {
+    await harness.approvalReached
+    harness.decide('rejected'); await harness.running
+    for (const mode of ['manual', 'auto-review', 'inherit']) {
+      const saved: any = await harness.rpc.resolve('cli/session/set')?.handler('session/set', { sessionId: harness.sessionId, adapterId: 'codex', nativeApprovalMode: mode })
+      assert.equal(saved.providerSessionId, 'permission-thread')
+      await harness.run()
+    }
+    const turns = harness.state.rpcCalls.filter(call => call.method === 'turn/start')
+    assert.deepEqual(turns.map(call => call.params?.approvalsReviewer), ['auto_review', 'user', 'auto_review', 'user'])
+    assert.deepEqual([...new Set(turns.map(call => call.params?.threadId))], ['permission-thread'])
+    assert.equal(harness.state.rpcCalls.filter(call => call.method === 'thread/start').length, 1)
+  } finally { await harness.dispose() }
+})

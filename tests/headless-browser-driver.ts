@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { TestContext } from 'node:test'
 import WebSocket from 'ws'
 
-export async function headlessBrowser(t: TestContext, args: string[] = []) {
+export async function headlessBrowser(t: TestContext, args: string[] = [], options: { keepProfile?: boolean } = {}) {
   let executable = process.env.QUICK_APPS_BROWSER_BIN
   const cache = join(homedir(), 'Library/Caches/ms-playwright')
   if (!executable) for (const entry of (await readdir(cache).catch(() => [])).sort().reverse()) {
@@ -18,7 +18,7 @@ export async function headlessBrowser(t: TestContext, args: string[] = []) {
   const browser = spawn(executable, ['--headless', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--disable-background-networking', '--no-proxy-server', '--remote-debugging-address=127.0.0.1', '--remote-debugging-port=0', `--user-data-dir=${profile}`, ...args, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] })
   t.after(async () => {
     if (browser.exitCode === null) { const exit = new Promise<void>(resolve => browser.once('exit', () => resolve())); browser.kill('SIGTERM'); await exit }
-    await rm(profile, { recursive: true, force: true })
+    if (!options.keepProfile) await rm(profile, { recursive: true, force: true })
   })
   const endpoint = await new Promise<string>((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Browser startup timed out')), 10_000)

@@ -112,10 +112,14 @@ export interface AntigravityDriverOptions {
 /**
  * Antigravity 的 stream-json print 模式：输入从 stdin 以 NDJSON 写入，输出仍是
  * 逐行 JSON。公开 CLI 没有 Host 回传 approval/question 的 wire 事件，因此不声明
- * permission/questions；权限只能使用 CLI 已公开的 plan、accept-edits 和全放行模式。
+ * permission/questions；使用 CLI 已公开的 plan、auto、accept-edits 和全放行模式。
  */
 export class AntigravityDriver extends StandardStreamDriver implements CodingNsCliDriver {
   private readonly observedText = new WeakMap<object, string>()
+  private readonly diagnostics = new WeakMap<object, string>()
+  protected observeStderr = (chunk: string, input: CodingNsCliTurnInput): void => {
+    this.diagnostics.set(input, `${this.diagnostics.get(input) ?? ''}${chunk}`.slice(-16_384))
+  }
   /** step_index is unique only within one CLI execution; resumed and concurrent turns need separate scopes. */
   private readonly toolCallScopes = new WeakMap<object, { readonly id: string; readonly settledSteps: Set<number> }>()
   /** 本轮各次模型调用的用量；result 到达时汇总成单轮用量。 */
@@ -204,6 +208,9 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         yield* super.executeTurn(prepared)
       } finally {
         this.toolCallScopes.delete(prepared)
+        this.observedText.delete(prepared)
+        this.turnUsages.delete(prepared)
+        this.diagnostics.delete(prepared)
       }
     } finally {
       await proxy?.close()
@@ -361,6 +368,44 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         else chunks.push(usageEvent)
       }
       this.observedText.delete(input)
+    }
+    // DONE 仅表示工具步骤结束，不意味着成功；AGY 的拒绝会藏在 tool_info.error，
+    // 最终 result 仍可能为 SUCCESS。不要把这类无头审批失败投影为已完成的任务。
+    let deniedReason: string | undefined
+    for (let index = 0; index < chunks.length; index += 1) {
+      const chunk = chunks[index]!
+      if (chunk.type !== 'tool-event' || !chunk.error?.trim()) continue
+      chunks[index] = { ...chunk, status: 'failed' }
+      if (isAntigravityPermissionDenial(chunk.error)) deniedReason ??= chunk.error
+    }
+    const diagnostic = this.diagnostics.get(input) ?? ''
+    const autoUnavailable = input.permission?.nativeApprovalMode === 'auto-review'
+      && /auto(?: mode)?[^\r\n]*(?:unavailable|not available|not supported|unsupported|default mode)/iu.test(diagnostic)
+    if (deniedReason === undefined) {
+      deniedReason = diagnostic.split(/\r?\n/u).find(isAntigravityPermissionDenial)
+    }
+    if (deniedReason === undefined && typeof result?.error === 'string' && isAntigravityPermissionDenial(result.error)) {
+      deniedReason = result.error
+    }
+    if (!cancelled && (autoUnavailable || deniedReason !== undefined)) {
+      const failure = autoUnavailable ? {
+        code: 'AGY_AUTO_MODE_UNAVAILABLE',
+        message: 'Antigravity 自动审查不可用：agy auto 模式要求支持的 CLI 版本、个人账号及可用的终端沙箱。请检查 agy 环境，或选择其他执行模式；需要确认的命令可在 agy /permissions 中预先允许。',
+      } : {
+        code: 'AGY_PERMISSION_DENIED',
+        message: `Antigravity 工具审批未通过。agy 无头模式无法把审批请求回传 DSH；请在 agy /permissions 中预先允许所需操作，或在可信任务中手动选择“完全访问”后重新发送消息。原始原因：${deniedReason!.slice(0, 1200)}`,
+      }
+      chunks = chunks.filter(chunk => chunk.type !== 'finish' && (result === null || chunk.type !== 'text-delta'))
+      if (result === null) {
+        const turn = this.takeTurnUsage(input, null, input.providerSessionId ?? '')
+        const usage = this.buildUsageEvent(input, turn)
+        if (usage !== null) chunks.push(usage)
+      }
+      chunks.push({ type: 'finish', reason: 'error', failure })
+      this.observedText.delete(input)
+      this.diagnostics.delete(input)
+    } else if (result !== null) {
+      this.diagnostics.delete(input)
     }
     return chunks
   }
@@ -554,14 +599,21 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
 }
 
 /**
- * Antigravity 没有公开的 permission-request/response wire。未知或需要询问的
- * 状态必须进入 plan，避免在无 DSH 回传通道时默默执行工具；只有 DSH 已明确
- * 给出“永不询问”的权限事实时才可自动放行。
+ * Antigravity 没有公开的 permission-request/response wire。显式模式优先；
+ * 旧调用方保持原映射，未知状态进入 plan。全放行仍要求 danger-full-access
+ * 和 never 同时成立，auto 不可用时不得静默切换至全放行。
  */
 function antigravityPermissionArgs(permission: CodingNsCliTurnInput['permission']): readonly string[] {
+  if (permission?.nativeApprovalMode === 'read-only') return ['--mode', 'plan']
+  if (permission?.nativeApprovalMode === 'auto-review') return ['--mode', 'auto']
+  if (permission?.nativeApprovalMode === 'accept-edits') return ['--mode', 'accept-edits']
   if (permission?.sandboxMode === 'danger-full-access' && permission.approvalPolicy === 'never') return ['--dangerously-skip-permissions']
   if (permission?.sandboxMode === 'workspace-write' && permission.approvalPolicy === 'never') return ['--mode', 'accept-edits']
   return ['--mode', 'plan']
+}
+
+function isAntigravityPermissionDenial(text: string): boolean {
+  return /permission check failed|user denied permission|soft[- ]denied|soft-denying tool confirmation/iu.test(text)
 }
 
 /** 将 AGY 的最终正文快照与前面已发出的增量对齐，避免重复渲染。 */

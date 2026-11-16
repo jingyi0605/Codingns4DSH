@@ -18,8 +18,15 @@ export interface ZcodeInteraction {
 }
 
 /** 缺省权限必须覆盖恢复会话残留的 yolo 模式，不能沿用 Provider 的宽松设置。 */
-export function zcodePermissionMode(input: CodingNsCliTurnInput): 'plan' | 'build' | 'edit' | 'yolo' {
+export function zcodePermissionMode(input: CodingNsCliTurnInput): 'plan' | 'build' | 'edit' | 'yolo' | 'guarded' {
   if (input.plan === true || input.permission?.sandboxMode === 'read-only') return 'plan'
+  switch (input.permission?.nativeApprovalMode) {
+    case 'auto-review': return 'guarded'
+    case 'manual': return 'build'
+    case 'read-only': return 'plan'
+    case 'accept-edits': return 'edit'
+    case 'full-access': return 'yolo'
+  }
   if (input.permission?.approvalPolicy !== 'never') return 'build'
   if (input.permission.sandboxMode === 'danger-full-access') return 'yolo'
   return input.permission.sandboxMode === 'workspace-write' ? 'edit' : 'build'
