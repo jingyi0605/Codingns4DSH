@@ -6,6 +6,7 @@ import type { CodingNsCliDriver } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, genericEventChunks } from './standard-stream-driver.js'
 import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, isProviderDefaultModel, knownAntigravityContextWindow, parseAntigravityModels, resolveAntigravityModelId } from './model-catalog.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
+import { startMagpieSessionProxy } from './magpie-session-proxy.js'
 import { commandEnvironment, runAsyncCommand, terminateChildProcess, withCommandSignal, type CodingNsChildProcess } from './process-utils.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
@@ -177,20 +178,30 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     const signal = input.signal === undefined ? this.modelProbeAbort.signal
       : AbortSignal.any([this.modelProbeAbort.signal, input.signal])
     const magpie = await this.readMagpieEnvironment(signal)
-    // 与 Magpie 的 Shell 包装器一致：显式 --model 优先，否则跟随其当前模型。
-    // 凭据只留在本轮子进程环境，不修改宿主环境、会话配置或 Client 返回值。
-    const prepared: AntigravityTurnInput = magpie === null ? { ...input, signal } : {
-      ...input,
-      signal,
-      modelId: isProviderDefaultModel(input.modelId) ? magpie.model : input.modelId!,
-      runtimeEnv: { ...magpie.env, ...input.runtimeEnv },
-      ...(magpie.settings === undefined ? {} : { magpieSettings: magpie.settings }),
-    }
-    this.toolCallScopes.set(prepared, { id: randomUUID(), settledSteps: new Set() })
+    // AGY cannot add request headers itself, so a per-turn loopback proxy tags
+    // its Magpie requests with the DSH session ID. Without it Magpie records
+    // them with no session and the usage panel can never match them.
+    // Falls back to the direct gateway URL when the proxy cannot start.
+    const proxy = magpie === null ? null : await startMagpieSessionProxy(magpie.env.GOOGLE_GEMINI_BASE_URL!, input.sessionId)
+      .catch(() => null)
     try {
-      yield* super.executeTurn(prepared)
+      // 与 Magpie 的 Shell 包装器一致：显式 --model 优先，否则跟随其当前模型。
+      // 凭据只留在本轮子进程环境，不修改宿主环境、会话配置或 Client 返回值。
+      const prepared: AntigravityTurnInput = magpie === null ? { ...input, signal } : {
+        ...input,
+        signal,
+        modelId: isProviderDefaultModel(input.modelId) ? magpie.model : input.modelId!,
+        runtimeEnv: { ...magpie.env, ...(proxy === null ? {} : { GOOGLE_GEMINI_BASE_URL: proxy.baseUrl }), ...input.runtimeEnv },
+        ...(magpie.settings === undefined ? {} : { magpieSettings: magpie.settings }),
+      }
+      this.toolCallScopes.set(prepared, { id: randomUUID(), settledSteps: new Set() })
+      try {
+        yield* super.executeTurn(prepared)
+      } finally {
+        this.toolCallScopes.delete(prepared)
+      }
     } finally {
-      this.toolCallScopes.delete(prepared)
+      await proxy?.close()
     }
   }
 

@@ -148,6 +148,28 @@ test('Antigravity 首轮和续接重新读取 Magpie 默认模型，同时保留
   } finally { driver.dispose() }
 })
 
+test('Antigravity 每轮经本地会话代理访问 Magpie 网关，轮次结束后代理关闭', async () => {
+  const { driver, calls } = magpieDriver(() => ({ status: 0, stdout: magpieEnv }))
+  try {
+    await collect(driver, { modelId: 'provider-default' })
+    const proxied = new URL(calls[0]?.env.GOOGLE_GEMINI_BASE_URL ?? '')
+    assert.equal(proxied.hostname, '127.0.0.1')
+    assert.notEqual(proxied.port, '3425')
+    assert.equal(proxied.pathname, '/v1')
+    assert.equal(calls[0]?.env.GEMINI_API_KEY, 'test-magpie-key')
+    await assert.rejects(fetch(`${proxied.origin}/v1/models`))
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 的 Magpie 网关不是本机回环地址时直连，不启动会话代理', async () => {
+  const remote = magpieEnv.replace('http://127.0.0.1:3425/v1', 'https://magpie.example.com/v1')
+  const { driver, calls } = magpieDriver(() => ({ status: 0, stdout: remote }))
+  try {
+    await collect(driver, { modelId: 'provider-default' })
+    assert.equal(calls[0]?.env.GOOGLE_GEMINI_BASE_URL, 'https://magpie.example.com/v1')
+  } finally { driver.dispose() }
+})
+
 test('Antigravity 兼容不返回 settings 的旧版 Magpie 环境', async () => {
   const { driver, calls } = magpieDriver(() => ({ status: 0, stdout: magpieEnv.replace('settings=/tmp/magpie-agy-settings.json', '') }))
   try {
