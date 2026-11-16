@@ -19,6 +19,7 @@ function scriptedDriver(
   const inputs: string[] = []
   let index = 0
   const driver = new AntigravityDriver({
+    autoUpdater: { check() {}, dispose() {} },
     binaries: ['fake-agy'],
     spawnSync: (() => ({ status: 0, stdout: 'agy 1.2.17', stderr: '' })) as never,
     resolveContextWindow: options.contextWindow === undefined ? () => undefined : () => options.contextWindow,
@@ -63,6 +64,7 @@ function magpieDriver(readEnv: () => { status: number; stdout: string }, options
   const calls: Array<{ args: readonly string[]; env: NodeJS.ProcessEnv }> = []
   const envCalls: string[][] = []
   const driver = new AntigravityDriver({
+    autoUpdater: { check() {}, dispose() {} },
     binaries: ['fake-agy'],
     magpieCommand: options.command ?? (() => 'custom-magpie'),
     resolveContextWindow: () => undefined,
@@ -104,7 +106,7 @@ const magpieEnv = [
   'PATH=must-not-replace-host-path',
 ].join('\n')
 
-test('Antigravity 模型发现、首轮和续接仅在子进程中禁用自动更新', async () => {
+test('Antigravity Windows 模型发现、首轮和续接仅在业务子进程中禁用原生后台更新', async () => {
   const original = process.env.AGY_CLI_DISABLE_AUTO_UPDATE
   process.env.AGY_CLI_DISABLE_AUTO_UPDATE = 'false'
   const { driver, calls } = magpieDriver(() => ({ status: 0, stdout: magpieEnv }))
@@ -118,7 +120,7 @@ test('Antigravity 模型发现、首轮和续接仅在子进程中禁用自动�
     })
     assert.equal(calls.length, 3)
     for (const call of calls) {
-      assert.equal(call.env.AGY_CLI_DISABLE_AUTO_UPDATE, 'true')
+      assert.equal(call.env.AGY_CLI_DISABLE_AUTO_UPDATE, process.platform === 'win32' ? 'true' : 'false')
       assert.equal(call.env.GEMINI_API_KEY, 'test-magpie-key')
     }
     assert.equal(calls[2]?.env.CODINGNS_CREDENTIAL_BROKER_ENDPOINT, 'test-broker')
@@ -216,7 +218,7 @@ test('Antigravity 未选择 Magpie 或环境读取失败、不完整时保留原
       assert.equal(calls[0]?.args.includes('--model'), false)
       assert.equal(calls[0]?.args.includes('--settings'), false)
       assert.equal(calls[0]?.env.GEMINI_API_KEY, 'native-key')
-      assert.equal(calls[0]?.env.AGY_CLI_DISABLE_AUTO_UPDATE, 'true')
+      assert.equal(calls[0]?.env.AGY_CLI_DISABLE_AUTO_UPDATE, process.platform === 'win32' ? 'true' : process.env.AGY_CLI_DISABLE_AUTO_UPDATE)
     } finally { driver.dispose() }
   }
   const { driver, envCalls } = magpieDriver(() => { throw new Error('must not run') }, { command: () => null })
@@ -650,6 +652,7 @@ test('Antigravity 从 agy models 动态加载模型并合并思考档位', async
   const modelProbeCalls: string[][] = []
   const modelProbeOptions: Array<{ shell?: unknown; stdio?: unknown; env?: { PATH?: unknown } }> = []
   const driver = new AntigravityDriver({
+    autoUpdater: { check() {}, dispose() {} },
     binaries: ['fake-agy'],
     spawnSync: ((command: string, args: string[]) => ({ status: 0, stdout: 'agy 1.2.14', stderr: '' })) as never,
     spawn: ((command: string, args: string[], options: { shell?: unknown; stdio?: unknown; env?: { PATH?: unknown } }) => {
@@ -697,6 +700,7 @@ test('Antigravity 从 agy models 动态加载模型并合并思考档位', async
 test('Antigravity 释放驱动时取消后台模型探测并返回可重试回退目录', async () => {
   let killed = false
   const driver = new AntigravityDriver({
+    autoUpdater: { check() {}, dispose() {} },
     binaries: ['fake-agy'],
     spawnSync: (() => ({ status: 0, stdout: 'agy 1.2.14', stderr: '' })) as never,
     spawn: (() => {
@@ -838,6 +842,7 @@ test('Antigravity 失败终态仍保留本轮已发生的真实用量', async ()
 
 test('Antigravity 子进程提前退出或 stdin 断开时不会触发宿主未捕获异常', async () => {
   const driver = new AntigravityDriver({
+    autoUpdater: { check() {}, dispose() {} },
     binaries: ['fake-agy'],
     spawnSync: (() => ({ status: 0, stdout: 'agy 1.2.14', stderr: '' })) as never,
     spawn: (() => {

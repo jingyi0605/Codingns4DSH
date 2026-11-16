@@ -92,6 +92,8 @@ The table highlights selected capabilities; availability depends on the Agent an
 
 Each Agent handles its own installation and login. See the [Agent adapter documentation](specs/spec007.1-外部Agent适配器扩展/README.md) (Chinese) for integration details.
 
+On Windows, the plugin automatically runs the official `agy update` command in the background when querying Antigravity models or running a conversation, checking the same installation at most once every 15 minutes during a Host run to avoid the native background updater's flashing terminal window. agy still handles downloading, verification and installation. Setting `AGY_CLI_DISABLE_AUTO_UPDATE=true` explicitly disables automatic updates. macOS/Linux retain agy's native automatic updates.
+
 ZCode keeps personal/team Coding Plan and Start Plan models grouped by source, including duplicate model names. Session creation, resume and per-turn model switching use the selected plan; login or configuration changes refresh the catalog, and usage follows the current source. New encrypted credentials support environment-backed keys. OS-backed keys currently require Windows x64 and the keyring module shipped with an installed ZCode app. Unreadable credentials remain unavailable; ciphertext is never used as an API key.
 
 ---
