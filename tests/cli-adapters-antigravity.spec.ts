@@ -3,6 +3,8 @@ import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { AntigravityDriver } from '../data/build/dist/host/cli-adapters/antigravity-driver.js'
+import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
+import type { CodingNsNativeSessionBridge } from '../data/build/dist/host/native-session-bridge.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 import type { CodingNsAgentEvent } from '../src/shared/contracts/cli-adapter.js'
 
@@ -450,7 +452,9 @@ test('Antigravity 文件工具按 step_index 配对生命周期，并换成公�
   assert.equal(tools[0].callId, tools[1].callId)
   assert.match(tools[2].callId, /^antigravity-[0-9a-f-]+-step-4$/u)
   assert.equal(tools[2].callId, tools[3].callId)
-  assert.deepEqual(JSON.parse(tools[0].input), { file_path: '/w/a.txt' })
+  // 只有路径的写入开始通知先等待详情，终态仍须保存真实路径。
+  assert.equal(tools[0].input, undefined)
+  assert.deepEqual(JSON.parse(tools[1].input), { file_path: '/w/a.txt' })
   assert.deepEqual(JSON.parse(tools[2].input), { file_path: '/w/b.txt', old_string: 'old', new_string: 'new' })
   driver.dispose()
 })
@@ -873,4 +877,112 @@ test('Antigravity 子进程提前退出或 stdin 断开时不会触发宿主未�
     for await (const _chunk of driver.executeTurn({ sessionId: 'agy-failed', messages: [], prompt: '你好' })) {}
   }, /Antigravity 执行失败：agy failed/)
   driver.dispose()
+})
+
+// 新版工具历史回归：覆盖驱动、Registry 分步与原生历史投影的完整链路。
+function historySink() {
+  const calls: Parameters<NonNullable<CodingNsNativeSessionBridge['appendToolCall']>>[1][] = []
+  const results: Array<{
+    callId: string
+    result: Parameters<NonNullable<CodingNsNativeSessionBridge['appendToolResult']>>[1]
+  }> = []
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'antigravity', sessionId: 'agy-session',
+    nativeSessions: {
+      appendToolCall(sessionId, call) {
+        calls.push(call)
+        return { sessionId, turn: 1, step: 1, callId: call.callId, callSeq: calls.length }
+      },
+      appendToolResult(handle, result) {
+        results.push({ callId: handle.callId, result })
+        return true
+      },
+    },
+  })
+  return { calls, results, projector }
+}
+
+test('Antigravity 同一 step 的 ACTIVE、更新和 DONE 只写入一条原生工具历史', async () => {
+  const { driver } = scriptedDriver([[
+    stepUpdate({ step_index: 0, step_type: 'tool', state: 'ACTIVE', tool_name: 'run_command', tool_info: { name: 'run_command', parameters: { CommandLine: 'pwd' } } }),
+    stepUpdate({ step_index: 0, step_type: 'tool', state: 'ACTIVE', tool_name: 'run_command', tool_info: { name: 'run_command', output: '/work' } }),
+    stepUpdate({ step_index: 0, step_type: 'tool', state: 'DONE', tool_name: 'run_command', tool_info: { name: 'run_command', output: '/workspace' } }),
+    resultEvent(undefined),
+  ]])
+  const sink = historySink()
+  try {
+    for await (const event of driver.executeTurn({ sessionId: 'agy-session', messages: [], prompt: '执行' })) {
+      await sink.projector.push(event)
+      if (event.type === 'tool-event' && event.status === 'running') assert.equal(sink.results.length, 0)
+    }
+    assert.equal(sink.calls.length, 1)
+    assert.equal(sink.calls[0]?.name, 'bash')
+    assert.deepEqual(JSON.parse(sink.calls[0]!.arguments), { command: 'pwd' })
+    assert.deepEqual(sink.results, [{ callId: sink.calls[0]!.callId, result: { output: '/workspace', isError: false } }])
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 经 Registry 分步后并发工具整批结算，完成快照重放不再声明历史', async () => {
+  const tool = (index: number, state: string, info: Record<string, unknown>) => stepUpdate({
+    step_index: index, step_type: 'tool', state, tool_info: { name: 'run_command', ...info },
+  })
+  const { driver, calls: processes } = scriptedDriver([[
+    tool(1, 'ACTIVE', { parameters: { CommandLine: 'pwd' } }),
+    tool(2, 'ACTIVE', { parameters: { CommandLine: 'pwd' } }),
+    tool(2, 'ACTIVE', { output: 'partial' }),
+    tool(2, 'DONE', { output: 'second' }),
+    tool(1, 'DONE', { output: 'first' }),
+    tool(1, 'DONE', { output: 'first' }),
+    tool(3, 'ACTIVE', { parameters: { CommandLine: 'pwd' } }),
+    tool(3, 'DONE', { output: 'third' }),
+    resultEvent(undefined),
+  ]])
+  const registry = new CodingNsCliAdapterRegistry([driver])
+  const steps: ReturnType<typeof historySink>[] = []
+  try {
+    for (let index = 0; index < 5; index++) {
+      const sink = historySink()
+      steps.push(sink)
+      let boundary = false
+      for await (const event of registry.execute({ adapterId: 'antigravity', sessionId: 'agy-session', messages: [], prompt: '执行', splitToolSteps: true })) {
+        await sink.projector.push(event)
+        if (event.type === 'step-boundary') boundary = true
+      }
+      await sink.projector.complete()
+      if (!boundary) break
+    }
+    assert.equal(steps.length, 3)
+    assert.deepEqual(steps.map((sink) => sink.calls.length), [2, 1, 0])
+    assert.deepEqual(steps.map((sink) => sink.results.map(({ result }) => result.output)), [['second', 'first'], ['third'], []])
+    assert.equal(new Set(steps.flatMap((sink) => sink.calls.map((call) => call.callId))).size, 3)
+    assert.ok(steps.flatMap((sink) => sink.calls).every((call) => call.name === 'bash' && JSON.parse(call.arguments).command === 'pwd'))
+    assert.equal(processes.length, 1)
+  } finally { await registry.dispose() }
+})
+
+test('Antigravity 恢复回合和并发回合复用 step_index 时仍使用独立身份', async () => {
+  const { driver } = scriptedDriver([[
+    stepUpdate({ step_index: 2, step_type: 'tool', state: 'ACTIVE', tool_info: { name: 'read_file', parameters: { Path: '/workspace/a.txt' } } }),
+    stepUpdate({ step_index: 2, step_type: 'tool', state: 'DONE', tool_info: { name: 'read_file' } }),
+    resultEvent(undefined),
+  ]])
+  const sink = historySink()
+  const input = { sessionId: 'agy-session', providerSessionId: 'agy-provider-session', messages: [], prompt: '继续' }
+  try {
+    const first = await collect(driver, input)
+    const resumed = await collect(driver, input)
+    const concurrent = await Promise.all([collect(driver, input), collect(driver, input)])
+    const turns = [first, resumed, ...concurrent]
+    const ids = turns.map((events) => events.find((event) => event.type === 'tool-event').callId)
+    assert.equal(new Set(ids).size, 4)
+    for (const events of turns) {
+      // 同一个历史 sink 也不能将不同回合的索引复用误合并。
+      for (const event of events.filter((event) => event.type === 'tool-event')) await sink.projector.push(event)
+    }
+    await sink.projector.complete()
+    assert.equal(sink.calls.length, 4)
+    assert.equal(sink.results.length, 4)
+    assert.deepEqual(sink.results.map(({ callId }) => callId), sink.calls.map((call) => call.callId))
+    assert.ok(sink.calls.every((call) => JSON.parse(call.arguments).file_path === '/workspace/a.txt'))
+  } finally { driver.dispose() }
 })

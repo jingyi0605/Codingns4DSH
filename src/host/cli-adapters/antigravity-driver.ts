@@ -1,7 +1,7 @@
 import { spawn, spawnSync, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsAgentToolEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
 import { StandardStreamDriver, emptyCatalog, genericEventChunks } from './standard-stream-driver.js'
 import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, isProviderDefaultModel, knownAntigravityContextWindow, parseAntigravityModels, resolveAntigravityModelId } from './model-catalog.js'
@@ -12,6 +12,7 @@ import { usageChunk } from './rpc-driver-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 import { normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { AntigravityAutoUpdater, antigravityCommandEnvironment } from './antigravity-updater.js'
+import { readAntigravityToolDetail, type AntigravityToolDetailRequest, type AntigravityToolDetail } from './antigravity-tool-detail.js'
 
 const ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS = 30_000
 
@@ -90,6 +91,8 @@ async function runBufferedModels(
 }
 
 export interface AntigravityDriverOptions {
+  /** 原生调用详情只读来源；测试可注入独立数据库，不能使用工具参数中的文件补历史。 */
+  readonly readToolDetail?: (request: AntigravityToolDetailRequest) => AntigravityToolDetail | null
   readonly autoUpdater?: Pick<AntigravityAutoUpdater, 'check' | 'dispose'>
   readonly binaries?: readonly string[]
   readonly spawnSync?: typeof spawnSync
@@ -121,7 +124,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     this.diagnostics.set(input, `${this.diagnostics.get(input) ?? ''}${chunk}`.slice(-16_384))
   }
   /** step_index is unique only within one CLI execution; resumed and concurrent turns need separate scopes. */
-  private readonly toolCallScopes = new WeakMap<object, { readonly id: string; readonly settledSteps: Set<number> }>()
+  private readonly toolCallScopes = new WeakMap<object, { readonly id: string; readonly settledSteps: Set<number>; readonly pendingInputs: Map<number, CodingNsAgentToolEvent> }>()
   /** 本轮各次模型调用的用量；result 到达时汇总成单轮用量。 */
   private readonly turnUsages = new WeakMap<object, AntigravityTurnState>()
   /** 会话级累计用量基线；AGY 的 result.usage 是整个会话的累计值。 */
@@ -131,6 +134,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   private readonly modelProbeAbort = new AbortController()
   private readonly magpieCommand: () => string | null
   private readonly autoUpdater: Pick<AntigravityAutoUpdater, 'check' | 'dispose'>
+  private readonly readToolDetail: (request: AntigravityToolDetailRequest) => AntigravityToolDetail | null
 
   readonly warmModelCatalog = true
   /** AGY stream-json 会把工具和后续正文放在同一条可暂停事件流中。 */
@@ -158,6 +162,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     this.resolveModelId = options.resolveModelId ?? ((modelId) => resolveAntigravityModelId(modelId))
     this.magpieCommand = options.magpieCommand ?? (() => null)
     this.autoUpdater = options.autoUpdater ?? new AntigravityAutoUpdater(this.runSpawn)
+    this.readToolDetail = options.readToolDetail ?? readAntigravityToolDetail
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {
@@ -203,9 +208,19 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         runtimeEnv: { ...magpie.env, ...(proxy === null ? {} : { GOOGLE_GEMINI_BASE_URL: proxy.baseUrl }), ...input.runtimeEnv },
         ...(magpie.settings === undefined ? {} : { magpieSettings: magpie.settings }),
       }
-      this.toolCallScopes.set(prepared, { id: randomUUID(), settledSteps: new Set() })
+      const scope = { id: randomUUID(), settledSteps: new Set<number>(), pendingInputs: new Map<number, CodingNsAgentToolEvent>() }
+      this.toolCallScopes.set(prepared, scope)
       try {
-        yield* super.executeTurn(prepared)
+        for await (const event of super.executeTurn(prepared)) {
+          if (event.type === 'finish') {
+            for (const pending of scope.pendingInputs.values()) yield pending
+            scope.pendingInputs.clear()
+          }
+          yield event
+        }
+      } catch (error) {
+        for (const pending of scope.pendingInputs.values()) yield pending
+        throw error
       } finally {
         this.toolCallScopes.delete(prepared)
         this.observedText.delete(prepared)
@@ -427,7 +442,12 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     const callId = scope === undefined || stepIndex === undefined
       ? undefined
       : `antigravity-${scope.id}-step-${stepIndex}`
-    const parameters = readRecord(info.parameters)
+    const wireParameters = readRecord(info.parameters)
+    const native = stepIndex === undefined ? null : this.readToolDetail({
+      providerSessionId: readConversationId(step, input), stepIndex, toolName,
+      ...(wireParameters === null ? {} : { parameters: wireParameters }),
+    })
+    const parameters = native?.parameters ?? wireParameters
     const args = parameters === null ? null : { ...parameters }
     if (args !== null) {
       const aliases = toolName === 'run_command' ? { CommandLine: 'command' }
@@ -441,21 +461,43 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       }
     }
     const serializedInput = serializeToolValue(args ?? info.parameters)
+      ?? (stepIndex === undefined ? undefined : scope?.pendingInputs.get(stepIndex)?.input)
     const output = serializeToolValue(info.output)
+    const wireStatus = normalizeToolStatus(step.state, 'running')
     const error = serializeToolValue(info.error)
-    const status = error !== undefined ? 'failed' : normalizeToolStatus(step.state, 'running')
+      ?? (wireStatus === 'completed' || wireStatus === 'failed' ? native?.error : undefined)
+    const status = error !== undefined ? 'failed' : wireStatus
+    const terminal = status === 'completed' || status === 'failed'
+    // 原生详情可能已完成，而当前消费到的仍是 ACTIVE；只在 wire 终态发布结果。
+    const fullOutput = terminal ? native?.output ?? output : output
+    const pendingBody = !terminal && (args === null
+      ? stepIndex !== undefined && scope?.pendingInputs.has(stepIndex) === true
+      : toolName === 'write_file' && args.content === undefined
+        || toolName === 'edit_file' && (args.old_string === undefined || args.new_string === undefined))
     if (stepIndex !== undefined && (status === 'completed' || status === 'failed')) {
       scope?.settledSteps.add(stepIndex)
     }
-    return [{
+    const event: CodingNsAgentToolEvent = {
       type: 'tool-event',
       toolName: toolName === 'run_command' ? 'bash' : toolName,
       status,
       ...(callId === undefined ? {} : { callId }),
       ...(serializedInput === undefined ? {} : { input: serializedInput }),
-      ...(output === undefined ? {} : { output, outputMode: 'snapshot' }),
+      ...(fullOutput === undefined ? {} : { output: fullOutput, outputMode: 'snapshot' }),
+      ...(!terminal || native?.images === undefined ? {} : { outputImages: native.images }),
       ...(error === undefined ? {} : { error }),
-    }]
+    }
+    if (stepIndex !== undefined) {
+      if (pendingBody) scope?.pendingInputs.set(stepIndex, event)
+      else scope?.pendingInputs.delete(stepIndex)
+    }
+    // 只有路径的开始通知不能把不完整参数固化到原生工具声明；等待终态详情。
+    // 提前退出时 executeTurn 会先释放这些真实摘要，再交给现有终态闭合路径。
+    if (pendingBody) {
+      const { input: _pendingInput, ...pending } = event
+      return [pending]
+    }
+    return [event]
   }
 
   /** 收下一次模型调用的用量；同一 step_index 重复上报时以后者为准。 */
