@@ -1,4 +1,5 @@
 import { isNativeApprovalMode } from '../../shared/native-approval-modes.js'
+import type { CodingNsBackgroundTurn } from './background-turn.js'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentQuestionResponse,
@@ -73,6 +74,28 @@ interface CachedFailure {
 
 
 export class CodingNsCliAdapterRegistry {
+  stageRecoveredBackgroundTurn(reply: import('./zcode-background-recovery.js').ZcodeRecoveredReply & CodingNsBackgroundTurn): void {
+    const binding = this.getSession(reply.sessionId)
+    if (binding.adapterId === 'zcode' && binding.providerSessionId === reply.providerSessionId) this.drivers.get('zcode')?.stageRecoveredBackgroundTurn?.(reply.sessionId, reply)
+  }
+  async recoverBackgroundTurns(sessionId: string) {
+    const binding = this.sessionStore?.get(sessionId)
+    if (!binding || binding.status === 'archived' || binding.adapterId !== 'zcode' || !binding.providerSessionId) return []
+    const driver = this.drivers.get(binding.adapterId)
+    const replies = await driver?.recoverBackgroundTurns?.(sessionId, binding.providerSessionId, Date.parse(binding.createdAt) || 0) ?? []
+    return replies.map(reply => ({ ...reply, sessionId, providerSessionId: binding.providerSessionId! }))
+  }
+  subscribeBackgroundTurns(listener: (turn: CodingNsBackgroundTurn) => void): () => void {
+    const disposers = [...this.drivers.values()].flatMap(driver => {
+      const dispose = driver.subscribeBackgroundTurns?.(turn => {
+        const binding = this.sessions.get(turn.sessionId) ?? this.sessionStore?.get(turn.sessionId)
+        if (binding?.adapterId === driver.descriptor.id && binding.providerSessionId === turn.providerSessionId) listener(turn)
+      })
+      return dispose ? [dispose] : []
+    })
+    return () => { for (const dispose of disposers) dispose() }
+  }
+
   private readonly drivers = new Map<CodingNsCliAdapterId, CodingNsCliDriver>()
   private readonly sessions = new Map<string, CodingNsCliSessionConfig>()
   private readonly lastUsages = new Map<string, CodingNsCliSessionUsage>()
@@ -645,7 +668,7 @@ export class CodingNsCliAdapterRegistry {
     }
     // 除了 Client 的 session/set，Host 内部和未来的调用方也可能直接执行一轮。
     // 最近使用应由真实执行参数更新，不能依赖某个 UI 一定先发 RPC。
-    if (current.teamId === undefined) this.rememberPreference(input.adapterId, input)
+    if (current.teamId === undefined && input.externalTurnId === undefined) this.rememberPreference(input.adapterId, input)
     // 手动 next() 不会自动转发外层的 return()；本轮持有的迭代器必须在 finally 关闭。
     // 只有显式交给 segmentedTurns 的流才能跨 DSH step 保留。
     let iterator: AsyncIterator<CodingNsAgentEvent> | undefined
@@ -656,7 +679,7 @@ export class CodingNsCliAdapterRegistry {
       if (stored?.status === 'archived') {
         throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', '外部会话已归档，不能继续执行')
       }
-      if (stored !== undefined && (stored.providerSessionId !== undefined || stored.rawStoreRef !== undefined)) {
+      if (input.externalTurnId === undefined && stored !== undefined && (stored.providerSessionId !== undefined || stored.rawStoreRef !== undefined)) {
         await this.refreshProviderState(stored, true)
         if (this.sessionStore?.get(input.sessionId)?.providerState === 'missing') {
           throw new CodingNsRpcError('CODINGNS_CLI_SESSION_MISSING', '外部 Agent 原始会话已删除，无法继续恢复')
@@ -697,7 +720,7 @@ export class CodingNsCliAdapterRegistry {
         adapterId: input.adapterId,
         ...(input.cwd ? { cwd: input.cwd } : {}),
         status: 'active',
-        ...(resumingSegmentedTurn ? {} : { title: input.prompt }),
+        ...(resumingSegmentedTurn || input.externalTurnId !== undefined ? {} : { title: input.prompt }),
       })
       // Agent Loop 通常已经创建了同名 DSH 原生会话；直接调用 Registry 时才按需补建。
       // 原生服务失败不能阻断外部 Agent，消息仍由现有 llm/stream 链路处理。

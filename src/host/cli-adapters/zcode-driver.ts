@@ -1,9 +1,9 @@
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { decryptZcodeCredential } from './zcode-credentials.js'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { decryptZcodeCredential } from './zcode-credentials.js'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentPermissionResponse,
@@ -19,6 +19,12 @@ import { desktopCliRuntimeCommand, resolveZCodeDesktopRuntime, type CodingNsDesk
 import { promptWithAttachmentPaths, withAttachmentPaths } from './attachment-utils.js'
 import { readZcodeInteraction, zcodePermissionMode, type ZcodeInteraction } from './zcode-interactions.js'
 import { ZcodeTurnTelemetry } from './zcode-telemetry.js'
+import { ZcodeBackgroundTurns } from './zcode-background-turns.js'
+import type { CodingNsBackgroundTurn } from './background-turn.js'
+import { recoverZcodeBackgroundReplies, type ZcodeRecoveredReply } from './zcode-background-recovery.js'
+
+const record = (value: unknown): Record<string, any> => isRecord(value) ? value : {}
+const text = (value: unknown): string => typeof value === 'string' ? value : ''
 
 export interface ZcodeCliDriverOptions {
   readonly homeDirectory?: string
@@ -29,8 +35,12 @@ export interface ZcodeCliDriverOptions {
 }
 
 interface ZcodeSession {
+  readonly background: ZcodeBackgroundTurns
+  readonly backgroundPermissions: Map<string, CodingNsCliTurnInput['permission']>
+  foregroundNotification: ((message: JsonRpcMessage) => void) | undefined
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
+  workflowEnabled: boolean
   /** '' 表示尚未创建 ZCode 会话；创建后为 CLI 原生 sess_* 标识。 */
   acpSessionId: string
   providerSessionId: string
@@ -43,6 +53,17 @@ interface ZcodeSession {
   subscribed: boolean
   /** 当前回合是否已经收到正文，用于避免用 turn.completed 快照重复输出。 */
   sawText: boolean
+  /**
+   * 当前正在流式输出的 assistant 消息标识。
+   *
+   * ZCode 每一轮里“思考 → 工具 → 再思考”会开出多条 assistant 消息，但正文增量
+   * 只带 assistantMessageId，不带消息边界。没有边界时整轮会渲染成一条不断变长的
+   * 助手消息，进行中的工作过程看起来就是一块空白。这里记录当前消息身份，切换时
+   * 由 zcodeMessageToChunk 补发 message-boundary。
+   */
+  streamingMessageId: string | undefined
+  /** 当前消息是否已经送出过可见正文；只有先有内容才值得补发边界。 */
+  streamingMessageStarted: boolean
   /** 当前回合的 DSH 权限，用于审批应答时阻止只读模式被提升。 */
   permission: CodingNsCliTurnInput['permission']
   acceptingInteractions: boolean
@@ -71,16 +92,32 @@ interface ZcodeTurnEventQueue {
  * 为准。
  */
 export class ZcodeAppServerDriver implements CodingNsCliDriver {
+  private readonly recoveredReplies = new Map<string, ZcodeRecoveredReply>()
+  async recoverBackgroundTurns(sessionId: string, providerSessionId: string, since: number): Promise<readonly ZcodeRecoveredReply[]> {
+    return recoverZcodeBackgroundReplies(join(this.homeDirectory, '.zcode', 'cli', 'db', 'db.sqlite'), providerSessionId, since)
+  }
+  stageRecoveredBackgroundTurn(sessionId: string, reply: ZcodeRecoveredReply): void {
+    this.recoveredReplies.set(JSON.stringify([sessionId, reply.turnId]), reply)
+  }
+  private readonly backgroundListeners = new Set<(turn: CodingNsBackgroundTurn) => void>()
+  subscribeBackgroundTurns(listener: (turn: CodingNsBackgroundTurn) => void): () => void {
+    this.backgroundListeners.add(listener)
+    return () => { this.backgroundListeners.delete(listener) }
+  }
   readonly descriptor = {
     id: 'zcode',
     name: 'ZCode',
     protocol: 'json-rpc',
-    capabilities: ['models', 'stream', 'resume', 'interrupt', 'reasoning', 'usage', 'permission', 'questions'],
+    capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'],
   } as const
+  /**
+   * ZCode 常驻会话跨 DSH step 继续消费同一条事件流：step 边界只挂起迭代器，
+   * 下一次 DSH step 从同一个 app-server 进程接着读，不需要重新发送提示词。
+   */
+  readonly supportsStreamStepSplitting = true
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
-  private readonly hasExplicitDesktopRuntime: boolean
   private cachedRuntime: CodingNsDesktopAppRuntime | null | undefined
   private cachedBinary: string | null = null
   private readonly sessions = new Map<string, ZcodeSession>()
@@ -88,6 +125,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   private cachedCatalog: CodingNsCliModelCatalog | null = null
   private cachedCatalogFingerprint: string | undefined
   private readonly homeDirectory: string
+  private readonly hasExplicitDesktopRuntime: boolean
   /** 模型目录声明的默认思考档位；切换 DeepSeek 时服务端要求显式传入。 */
   private readonly defaultEfforts = new Map<string, string>()
 
@@ -201,34 +239,50 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   }
 
   private async *executePreparedTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
+    if (input.signal?.aborted) { yield { type: 'finish', reason: 'cancel' }; return }
+    if (input.externalTurnId !== undefined) {
+      yield* this.consumeBackgroundTurn(input, input.externalTurnId)
+      return
+    }
     if (!(await this.detect()).installed) throw new Error('ZCode 未安装')
     this.invalidateChangedCatalog()
     const session = await this.getSession(input)
+    // A user may submit while the native automatic turn is already running.
+    // Drain that output (including its approvals) before sending the user's input.
+    for (const id of session.background.pendingIds) {
+      for await (const e of this.consumeBackgroundTurn(input, id)) if (e.type !== 'finish') yield e
+      yield { type: 'message-boundary', channel: 'text', messageId: `after-${id}` }
+    }
+    if (input.signal?.aborted) { yield { type: 'finish', reason: 'cancel' }; return }
     const requestedProvider = input.modelId?.startsWith('account:') ? input.modelId.split('/')[0] : undefined
-    // 每轮激活所选连接，避免恢复后的会话仍使用上轮套餐。
+    // 每轮激活目标连接，防止原生把 Start Plan 模型映射回默认付费套餐。
     await this.syncAccountProviderConfig(session.rpc, input.signal, requestedProvider)
     session.permission = input.permission
     session.emittedInteractions.clear()
     // 每轮都清掉上一轮的终态痕迹；常驻 session 可能连续发送多轮。
     session.sawRunning = false
     session.sawText = false
+    session.streamingMessageId = undefined
+    session.streamingMessageStarted = false
     session.failureCode = undefined
     session.failureMessage = undefined
     if (session.acpSessionId === '') {
+      // App-server defaults this gate to false, unlike the desktop workflow UI.
+      // Set its process-local policy before create/resume so the model actually
+      // receives CreateWorkflow and the native /workflow command.
+      session.workflowEnabled = await enableZcodeWorkflows(session.rpc, input.cwd, input.signal)
+      const workflow = session.workflowEnabled ? { dynamicWorkflowEnabled: true, dynamicWorkflowMode: 'alwaysOn' } : {}
       let created: unknown
       if (input.providerSessionId !== undefined) {
-        try {
-          created = await session.rpc.request('session/resume', { sessionId: input.providerSessionId, workspace: zcodeWorkspace(input.cwd) }, { signal: input.signal, killOnAbort: false })
-        } catch {
-          // Provider 会话被清理后，新建 DSH 会话仍应可继续工作；绑定会在
-          // create 响应中更新，不能把旧 ID 当成当前会话。
-          created = undefined
-        }
+        // A failed resume must never silently replace a user's existing conversation.
+        created = await session.rpc.request('session/resume', { sessionId: input.providerSessionId, workspace: zcodeWorkspace(input.cwd), ...workflow }, { signal: input.signal, killOnAbort: false })
+        if (readSessionId(created) !== input.providerSessionId) throw new Error('ZCode 返回了不同的原生会话 ID，已停止续接')
       }
       if (created === undefined) {
         created = await session.rpc.request('session/create', {
           workspace: zcodeWorkspace(input.cwd),
           persistence: 'deferred',
+          ...workflow,
         }, { signal: input.signal, killOnAbort: false })
       }
       session.acpSessionId = readSessionId(created) ?? input.sessionId
@@ -266,18 +320,30 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       if (interaction !== null) pendingZcodeInteraction(session, interaction)
       eventQueue.push(message)
     }
-    const removeNotificationListener = session.rpc.addNotificationListener(onNotification)
+    session.foregroundNotification = onNotification
+    session.background.beginForeground()
     session.acceptingInteractions = true
+    const turnContent = promptWithAttachmentPaths(
+      zcodePrompt(input.prompt, session.workflowEnabled),
+      input.attachments ?? [],
+      input.translationLanguage,
+    )
+    // exactOptionalPropertyTypes：未提供 signal 时不能传 undefined，只能不写这个键。
+    const sendOptions: { signal?: AbortSignal; killOnAbort: boolean } = {
+      killOnAbort: false,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    }
     const sendPromise = session.rpc.request('session/send', {
       sessionId: session.acpSessionId,
-      content: promptWithAttachmentPaths(zcodePrompt(input.prompt), input.attachments ?? [], input.translationLanguage),
-    }, { signal: input.signal, killOnAbort: false })
+      content: turnContent,
+    }, sendOptions)
       .then(() => undefined, (error: unknown) => {
         sendError = error
         eventQueue.push({ method: 'codingns/send-failed' })
       })
     const onAbort = (): void => {
       session.acceptingInteractions = false
+      session.background.cancel()
       cancelZcodeInteractions(session)
       eventQueue.close()
       void session.rpc.request('session/stop', { sessionId: session.acpSessionId }).catch(() => undefined)
@@ -294,9 +360,19 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
         if (sendError !== null && !input.signal?.aborted) throw sendError
         const tool = telemetry.observe(next.value)
         if (tool !== null) yield tool
+        const context = telemetry.takeContextObservation()
+        if (context !== null) yield context
         const chunk = zcodeMessageToChunk(next.value, session, input)
-        if (chunk !== null) yield chunk
+        if (chunk !== null) yield* asZcodeChunks(chunk)
         terminalReason = readZcodeTerminalReason(next.value, session, input) ?? terminalReason
+        // ZCode 一个回合由多个 step 组成（每个 step 是一次模型请求加它发起的工具）。
+        // step-finish(reason=tool-calls) 表示本 step 还会续跑；在这里收口成 DSH
+        // step，思考与工具结果才各自成为可折叠的一块，而不是全挤进同一条消息。
+        const steps = readZcodeStepFinish(next.value, input)
+        if (terminalReason === null && steps === 'step') {
+          yield { type: 'step-boundary' }
+          continue
+        }
         if (terminalReason !== null) {
           if (terminalReason === 'error') {
             // turn.terminal 详情（errorCode/errorMessage）略晚于 turn-failed
@@ -309,7 +385,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
         }
       }
       if (rpcExited && !input.signal?.aborted) throw new Error('Agent 进程已退出')
-      if (!input.signal?.aborted) await sendPromise
+      await sendPromise
       if (sendError !== null && !input.signal?.aborted) throw sendError
       if (terminalReason === 'stop' || terminalReason === null) {
         if (input.signal?.aborted) {
@@ -343,10 +419,78 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     } finally {
       input.signal?.removeEventListener('abort', onAbort)
       session.acceptingInteractions = false
-      removeNotificationListener()
+      session.foregroundNotification = undefined
+      session.background.endForeground()
       removeExitListener()
       eventQueue.close()
+      cancelZcodeInteractions(session, session.emittedInteractions)
+    }
+  }
+
+  private async *consumeBackgroundTurn(input: CodingNsCliTurnInput, id: string): AsyncIterable<CodingNsAgentEvent> {
+    const session = this.sessions.get(input.sessionId)
+    const turn = session?.background.claim(id)
+    const recovered = this.recoveredReplies.get(JSON.stringify([input.sessionId, id]))
+    if (!turn && recovered) {
+      // Recovery never starts/resumes a Provider or re-executes historical tools.
+      try {
+        yield { type: 'text-snapshot', text: recovered.text }
+        yield { type: 'finish', reason: 'stop' }
+      } finally { this.recoveredReplies.delete(JSON.stringify([input.sessionId, id])) }
+      return
+    }
+    // A durable DSH carrier may be replayed after another stream consumed it.
+    if (!session || !turn) { yield { type: 'finish', reason: 'stop' }; return }
+    // Automatic completion belongs to the task that launched it. A permission
+    // choice saved for the next human turn must not change that task midway.
+    const permission = session.backgroundPermissions.get(id)
+    const { permission: _nextHumanPermission, ...withoutPermission } = input
+    const effectiveInput = { ...withoutPermission, ...(permission ? { permission } : {}) }
+    session.permission = permission
+    const state: ZcodeSession = { ...session, sawRunning: false, sawText: false,
+      streamingMessageId: undefined, streamingMessageStarted: false,
+      failureCode: undefined, failureMessage: undefined, emittedInteractions: new Set() }
+    const telemetry = new ZcodeTurnTelemetry(session.acpSessionId)
+    let reason: 'stop' | 'cancel' | 'error' = 'stop'
+    const abort = () => {
+      turn.cancelled = true
+      session.background.cancel()
       cancelZcodeInteractions(session)
+      void session.rpc.request('session/stop', { sessionId: session.acpSessionId }).catch(() => undefined)
+    }
+    input.signal?.addEventListener('abort', abort, { once: true })
+    if (input.signal?.aborted) abort()
+    try {
+      // Restore the task's permission snapshot, but never send, resume or change
+      // the model of an already-running native turn.
+      await session.rpc.request('session/setMode', { sessionId: session.acpSessionId, mode: zcodePermissionMode(effectiveInput) }, { signal: input.signal, killOnAbort: false })
+      for await (const m of turn.queue) {
+        if (input.signal?.aborted || turn.cancelled) { reason = 'cancel'; break }
+        if (m.method === 'codingns/background-error') throw new Error(text(record(m.params).message))
+        captureZcodeFailureDetail(m, state)
+        const tool = telemetry.observe(m)
+        if (tool) yield tool
+        const context = telemetry.takeContextObservation()
+        if (context) yield context
+        const chunk = zcodeMessageToChunk(m, state, input)
+        if (chunk) yield* asZcodeChunks(chunk)
+        const end = readZcodeTerminalReason(m, state, input)
+        if (end && (m.method === 'session/event' || m.method === 'state.updated' || !session.subscribed)) { reason = end; break }
+      }
+      if (turn.cancelled || input.signal?.aborted) reason = 'cancel'
+      if (session.rpc.isClosed && reason !== 'cancel') throw new Error('ZCode 后台回合连接已关闭，结果可从原生历史恢复')
+      if (reason === 'stop' && telemetry.needsContextSnapshot && session.supportsContextSnapshot) {
+        telemetry.readContextSnapshot(await readZcodeSessionData(session.rpc, 'session/read', session.acpSessionId))
+      }
+      const usage = telemetry.finish(null, undefined)
+      if (usage) yield usage
+      if (reason === 'error') yield failureChunk(state)
+      yield { type: 'finish', reason, ...(reason === 'error' ? { failure: zcodeFailure(state) } : {}) }
+    } finally {
+      input.signal?.removeEventListener('abort', abort)
+      cancelZcodeInteractions(session, state.emittedInteractions)
+      session.background.release(id)
+      session.backgroundPermissions.delete(id)
     }
   }
 
@@ -354,6 +498,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     const session = this.sessions.get(sessionId)
     if (session === undefined) return
     session.acceptingInteractions = false
+    session.background.cancel()
     cancelZcodeInteractions(session)
     await session.rpc.request('session/stop', { sessionId: session.acpSessionId }).catch(() => undefined)
   }
@@ -381,6 +526,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
 
   dispose(): void {
     for (const session of this.sessions.values()) {
+      session.background.cancel()
       cancelZcodeInteractions(session)
       session.rpc.dispose()
     }
@@ -392,6 +538,8 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     this.cachedCatalog = null
     this.cachedCatalogFingerprint = undefined
     this.defaultEfforts.clear()
+    this.backgroundListeners.clear()
+    this.recoveredReplies.clear()
   }
 
   private resolveRuntime(): CodingNsDesktopAppRuntime | null {
@@ -401,6 +549,8 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
 
   private startAppServer(runtimeEnv?: Readonly<Record<string, string>>): JsonRpcProcess {
     if (this.cachedBinary !== null) {
+      // PATH launchers can wrap the same Desktop CLI. They still need its provider
+      // catalog/environment; otherwise only custom providers appear in DSH.
       return new JsonRpcProcess({ command: this.cachedBinary, args: ['app-server'], env: { ...this.resolveRuntime()?.env, ...(runtimeEnv ?? {}) }, wireFormat: 'zcode', spawn: this.runSpawn })
     }
     const runtime = this.resolveRuntime()
@@ -428,13 +578,24 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     previous?.rpc.dispose()
     const rpc = this.startAppServer(input.runtimeEnv)
     const session: ZcodeSession = {
+      background: new ZcodeBackgroundTurns(turnId => {
+        session.backgroundPermissions.set(turnId, session.permission ? { ...session.permission } : undefined)
+        for (const listener of this.backgroundListeners) {
+          try { listener({ sessionId: input.sessionId, providerSessionId: session.acpSessionId, turnId }) } catch { /* A missing consumer cannot discard queued output. */ }
+        }
+      }),
+      backgroundPermissions: new Map(),
+      foregroundNotification: undefined,
       rpc,
       cwd: input.cwd,
+      workflowEnabled: false,
       acpSessionId: '',
       providerSessionId: input.providerSessionId ?? input.sessionId,
       sawRunning: false,
       subscribed: false,
       sawText: false,
+      streamingMessageId: undefined,
+      streamingMessageStarted: false,
       failureCode: undefined,
       failureMessage: undefined,
       permission: input.permission,
@@ -446,7 +607,17 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, session)
+    // Exactly one transport listener survives foreground iterator cleanup.
+    rpc.addNotificationListener(message => {
+      const p = record(message.params)
+      if (typeof p.sessionId === 'string' && session.acpSessionId && p.sessionId !== session.acpSessionId) return
+      if (session.background.observe(message, session.acpSessionId)) {
+        const interaction = readZcodeInteraction(message)
+        if (interaction !== null && session.background.hasActive) pendingZcodeInteraction(session, interaction)
+      } else session.foregroundNotification?.(message)
+    })
     rpc.addExitListener(() => {
+      session.background.cancel()
       cancelZcodeInteractions(session)
       this.processes.delete(rpc)
       if (this.sessions.get(input.sessionId)?.rpc === rpc) this.sessions.delete(input.sessionId)
@@ -456,7 +627,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     rpc.setServerRequestHandler((request) => {
       const interaction = readZcodeInteraction(request)
       // 创建、恢复和回合结束后的历史交互不能挂起；没有活动消费者时安全拒绝。
-      return interaction === null || !session.acceptingInteractions
+      return interaction === null || !(session.acceptingInteractions || session.background.hasActive)
         ? handleZcodeServerRequest(request, this.homeDirectory) : pendingZcodeInteraction(session, interaction).promise
     })
     return session
@@ -536,6 +707,12 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
 
 /** turn.terminal 失败详情（errorCode/errorMessage）在通知到达时即捕获。 */
 function captureZcodeFailureDetail(message: JsonRpcMessage, session: ZcodeSession): void {
+  if (message.method === 'session/event' && record(message.params).type === 'turn.failed') {
+    const error = record(record(message.params).payload)
+    session.failureCode = text(error.errorCode) || text(record(error.error).code) || 'turn_failed'
+    session.failureMessage = text(error.errorMessage) || text(record(error.error).message) || text(error.message) || undefined
+    return
+  }
   if (message.method !== 'v4/telemetry/event') return
   const params = isRecord(message.params) ? message.params : {}
   if (params.kind !== 'turn.terminal' || params.status !== 'failed') return
@@ -543,8 +720,20 @@ function captureZcodeFailureDetail(message: JsonRpcMessage, session: ZcodeSessio
   if (typeof params.errorMessage === 'string' && params.errorMessage.trim() !== '') session.failureMessage = params.errorMessage
 }
 
+/** 回合通知拆出的统一事件；一条通知可以同时产出消息边界与增量。 */
+type ZcodeChunk = CodingNsAgentEvent | AsyncIterable<CodingNsAgentEvent>
+
+/** 统一消费单个事件与「边界 + 增量」序列，避免调用方为两种形状分支。 */
+function asZcodeChunks(chunk: ZcodeChunk): AsyncIterable<CodingNsAgentEvent> {
+  if (typeof (chunk as AsyncIterable<CodingNsAgentEvent>)[Symbol.asyncIterator] === 'function') {
+    return chunk as AsyncIterable<CodingNsAgentEvent>
+  }
+  const single = chunk as CodingNsAgentEvent
+  return (async function* () { yield single })()
+}
+
 /** ZCode 回合通知 → 单个统一事件；终态由 readZcodeTerminalReason 单独表达。 */
-function zcodeMessageToChunk(message: JsonRpcMessage, session: ZcodeSession, input: CodingNsCliTurnInput): CodingNsAgentEvent | null {
+function zcodeMessageToChunk(message: JsonRpcMessage, session: ZcodeSession, input: CodingNsCliTurnInput): ZcodeChunk | null {
   const interaction = readZcodeInteraction(message)
   if (interaction !== null) {
     const id = interaction.event.requestId
@@ -574,15 +763,25 @@ function zcodeMessageToChunk(message: JsonRpcMessage, session: ZcodeSession, inp
     const payload = isRecord(params.payload) ? params.payload : {}
     const kind = typeof payload.kind === 'string' ? payload.kind : ''
     const messageId = typeof payload.assistantMessageId === 'string' ? payload.assistantMessageId : undefined
+    // ZCode 在同一轮里为每段“思考 / 正文”开一条新的 assistant 消息，但正文增量
+    // 只带 assistantMessageId。这里补发消息边界，让 DSH 把后续正文渲染成新的
+    // 文本块，而不是把整轮（含工具前后的两段回答）粘成一条消息。
+    // 边界必须与本条增量一起产出：只发边界会把切换后的第一段正文一起丢掉。
+    const boundary = takeZcodeMessageBoundary(session, messageId)
     if (kind === 'reasoning_delta') {
       const text = firstText(payload.delta, payload.text)
-      return text === null ? null : { type: 'reasoning-delta', text, ...(messageId === undefined ? {} : { messageId }) }
+      if (text === null) return boundary
+      session.streamingMessageStarted = true
+      const delta: CodingNsAgentEvent = { type: 'reasoning-delta', text, ...(messageId === undefined ? {} : { messageId }) }
+      return boundary === null ? delta : (async function* () { yield boundary; yield delta })()
     }
     if (kind === 'text_delta') {
       const text = firstText(payload.delta, payload.text)
-      if (text === null) return null
+      if (text === null) return boundary
       session.sawText = true
-      return { type: 'text-delta', text, ...(messageId === undefined ? {} : { messageId }) }
+      session.streamingMessageStarted = true
+      const delta: CodingNsAgentEvent = { type: 'text-delta', text, ...(messageId === undefined ? {} : { messageId }) }
+      return boundary === null ? delta : (async function* () { yield boundary; yield delta })()
     }
     // 某些版本只保留 turn.completed 快照，不发送 text_delta；只有当前回合
     // 尚未输出正文时才使用该快照，避免把增量正文再追加一遍。
@@ -611,6 +810,34 @@ function zcodeMessageToChunk(message: JsonRpcMessage, session: ZcodeSession, inp
   return null
 }
 
+/**
+ * 判定一条通知是否结束了一个「还会续跑」的 ZCode step。
+ *
+ * 只有同时满足才收口：ZCode 自己的 `step-finish` 且 reason 为工具调用。回合最后
+ * 一个 step 的 reason 是 stop/其他终态，由 readZcodeTerminalReason 结算，绝不能
+ * 再发 step 边界，否则会凭空多开一个 step。
+ */
+function readZcodeStepFinish(message: JsonRpcMessage, input: CodingNsCliTurnInput): 'step' | null {
+  if (input.splitToolSteps !== true) return null
+  if (message.method !== 'session/event') return null
+  const params = isRecord(message.params) ? message.params : {}
+  if (params.type !== 'part.upserted') return null
+  const part = isRecord(record(params.payload).part) ? record(params.payload).part as Record<string, unknown> : null
+  if (part === null || part.type !== 'step-finish') return null
+  return part.reason === 'tool-calls' ? 'step' : null
+}
+
+/** 读取并推进当前 assistant 消息身份；切换消息时给出一次消息边界。 */
+function takeZcodeMessageBoundary(session: ZcodeSession, messageId: string | undefined): CodingNsAgentEvent | null {
+  if (messageId === undefined || messageId === session.streamingMessageId) return null
+  const boundary: CodingNsAgentEvent | null = session.streamingMessageStarted
+    ? { type: 'message-boundary', channel: 'text', messageId }
+    : null
+  session.streamingMessageId = messageId
+  session.streamingMessageStarted = false
+  return boundary
+}
+
 /** 从通知流推定回合是否已终态；返回 null 表示回合仍在进行。 */
 function readZcodeTerminalReason(
   message: JsonRpcMessage,
@@ -637,6 +864,7 @@ function readZcodeTerminalReason(
   if (method === 'session/event' && params.type === 'turn.completed') {
     return 'stop'
   }
+  if (method === 'session/event' && params.type === 'turn.failed') return 'error'
   if (method === 'v4/telemetry/event') {
     if (params.kind === 'turn.terminal') {
       if (params.status === 'failed') return 'error'
@@ -681,8 +909,20 @@ async function readZcodeSessionData(rpc: JsonRpcProcess, method: 'session/usage'
 }
 
 /** 原生参数在交互 RPC 发出前就会校验，必须在模型调用工具前说明约束。 */
-function zcodePrompt(prompt: string): string {
-  return `${prompt}\n\n<codingns_host_capabilities>\nDSH 支持 ZCode 原生权限审批和 AskUserQuestion。调用 AskUserQuestion 时，questions 为 1–4 个；每题必须填写 question、header、multiSelect；options 为 2–4 个，每项必须填写 label、description，问题和选项标签不得重复。不要自行添加“其他”选项，界面已有自由文本入口。答案按选项文本校验；取消不能视为已回答。\n</codingns_host_capabilities>`
+async function enableZcodeWorkflows(rpc: JsonRpcProcess, cwd: string | undefined, signal?: AbortSignal): Promise<boolean> {
+  try {
+    const response = await rpc.request('workspace/updateDynamicWorkflowPolicy', { workspace: zcodeWorkspace(cwd), enabled: true, mode: 'alwaysOn' }, { signal, killOnAbort: false })
+    return record(response).enabled === true
+  } catch (error) {
+    // Older CLI versions have no workflow policy API. Keep ordinary turns usable.
+    if (error instanceof JsonRpcRequestError && error.code === -32601) return false
+    throw error
+  }
+}
+
+function zcodePrompt(prompt: string, workflowEnabled = false): string {
+  const workflow = workflowEnabled ? '\n已启用 ZCode 原生动态工作流。用户明确要求 workflow/工作流时，先读取 dynamic-workflows Skill 并调用 CreateWorkflow；TodoWrite 只能更新任务清单，不能代替创建原生工作流。原生 run 状态和阶段图可在 DSH 会话标题旁的工作流面板查看。' : ''
+  return `${prompt}\n\n<codingns_host_capabilities>\nDSH 支持 ZCode 原生权限审批和 AskUserQuestion。调用 AskUserQuestion 时，questions 为 1–4 个；每题必须填写 question、header、multiSelect；options 为 2–4 个，每项必须填写 label、description，问题和选项标签不得重复。不要自行添加“其他”选项，界面已有自由文本入口。答案按选项文本校验；取消不能视为已回答。${workflow}\n</codingns_host_capabilities>`
 }
 
 function zcodeWorkspace(cwd: string | undefined): { workspacePath: string; workspaceKey: string } {
@@ -1025,9 +1265,10 @@ function pendingZcodeInteraction(session: ZcodeSession, interaction: ZcodeIntera
   return pending
 }
 
-function cancelZcodeInteractions(session: ZcodeSession): void {
-  for (const pending of session.interactions.values()) {
+function cancelZcodeInteractions(session: ZcodeSession, ids?: ReadonlySet<string>): void {
+  for (const [id, pending] of session.interactions) {
+    if (ids && !ids.has(id)) continue
     if (!pending.settled) pending.resolve(pending.interaction.cancelled)
+    session.interactions.delete(id)
   }
-  session.interactions.clear()
 }
