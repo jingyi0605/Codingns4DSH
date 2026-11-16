@@ -24,6 +24,7 @@ import {
   quotaWindowRemaining,
   resolveQuotaBalanceLabel,
   resolveQuotaCreditBalance,
+  routeAccountLabel,
 } from './features/subscription-quota-groups.js'
 import { subscribeSessionAdapters } from './session-adapter-cache.js'
 import { loadCliSessionConfig } from './cli-session-config-cache.js'
@@ -906,7 +907,7 @@ function MagpieRoutePanel({ rpc, usage, quotas, t, expandedGroups, onToggleGroup
   const routeRows = route === null ? [] : [
     [t('usage.magpieRouteGroup'), route.group],
     [t('usage.magpieRouteRule'), route.rule],
-    [t('usage.magpieRouteAccount'), route.providerAccount ?? null],
+    [t('usage.magpieRouteAccount'), routeAccountLabel(route.providerAccount ?? null, usage.upstreamProviders ?? [], [...quotas, ...(usage.providerAccounts ?? [])])],
     [t('usage.magpieEffort'), route.effort],
     [t('usage.magpieRequestStatus'), route.status === null ? null : `${route.done === true ? t('usage.magpieRouteDone') : route.done === false ? t('usage.magpieRouteRunning') : ''}${route.status}`],
   ] as const

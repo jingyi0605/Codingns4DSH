@@ -16,11 +16,13 @@ import {
   localDayKey,
   parseQuotaBalance,
   quotaAccountLabel,
+  quotaGroupTitle,
   quotaWindowAmount,
   quotaWindowRemaining,
   readWindowCreditBalance,
   resolveQuotaBalanceLabel,
   resolveQuotaCreditBalance,
+  routeAccountLabel,
 } from '../src/client/features/subscription-quota-groups.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import type { MagpieQuota } from '../src/shared/contracts/subscription.js'
@@ -143,6 +145,33 @@ test('同一厂商的多个账号归为一组，并保持上游顺序', () => {
   assert.deepEqual(groups[0]?.accounts.map((account) => account.user), ['jackson', '燕子', '白云5'])
   assert.equal(groups[1]?.provider, 'codex')
   assert.equal(groups[1]?.accounts.length, 1)
+})
+
+test('单账号厂商的组头显示账号备注，多账号或没有备注时保持厂商名', () => {
+  const single = groupQuotasByProvider([quota({ provider: 'antigravity-bridge', name: 'antigravity-bridge', user: 'API key', alias: 'zj59122.us' })])
+  assert.equal(quotaGroupTitle(single[0]!), 'zj59122.us')
+  const noAlias = groupQuotasByProvider([quota({ provider: 'antigravity-bridge', name: 'antigravity-bridge', user: 'API key', alias: '  ' })])
+  assert.equal(quotaGroupTitle(noAlias[0]!), 'antigravity-bridge')
+  const multiple = groupQuotasByProvider([
+    quota({ provider: 'workbuddy', name: 'WorkBuddy', user: 'a', alias: '主号' }),
+    quota({ provider: 'workbuddy', name: 'WorkBuddy', user: 'b', alias: '备用号' }),
+  ])
+  assert.equal(quotaGroupTitle(multiple[0]!), 'WorkBuddy')
+  assert.equal(quotaGroupTitle({ provider: 'x', name: '', accounts: [], hasActive: false }), 'x')
+})
+
+test('路由卡片的上游账号：同厂商同账号有备注就显示备注，对不上时保持原值', () => {
+  const quotas = [
+    quota({ provider: 'antigravity-bridge', user: 'API key', alias: 'zj59122.us' }),
+    quota({ provider: 'other', user: 'API key', alias: '别家备注' }),
+  ]
+  assert.equal(routeAccountLabel('API key', ['antigravity-bridge'], quotas), 'zj59122.us')
+  assert.equal(routeAccountLabel('API key', ['unknown'], quotas), 'API key')
+  assert.equal(routeAccountLabel('someone', ['antigravity-bridge'], quotas), 'someone')
+  assert.equal(routeAccountLabel(null, ['antigravity-bridge'], quotas), null)
+  // 同厂商同账号名出现两个不同备注时无法确定，保持原值。
+  assert.equal(routeAccountLabel('API key', ['antigravity-bridge', 'other'], quotas), 'API key')
+  assert.equal(routeAccountLabel('API key', ['antigravity-bridge'], [quota({ provider: 'antigravity-bridge', user: 'API key', alias: null })]), 'API key')
 })
 
 test('组内有活动账号时提到首位，但不改动其它账号的相对顺序', () => {

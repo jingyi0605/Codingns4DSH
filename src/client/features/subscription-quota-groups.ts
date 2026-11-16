@@ -56,6 +56,32 @@ export function quotaAccountLabel(quota: MagpieQuota, fallback: string): string 
   return quota.alias?.trim() || quota.user?.trim() || quota.name.trim() || fallback
 }
 
+/**
+ * 组头标题。单账号厂商的账号块不再重复名称，所以备注要由组头承担：有备注就显示备注，
+ * 否则沿用厂商名。多账号时每个账号块自己显示名称，组头保持厂商名。
+ */
+export function quotaGroupTitle(group: SubscriptionQuotaGroup): string {
+  const alias = group.accounts.length === 1 ? group.accounts[0]?.alias?.trim() : undefined
+  return alias || group.name || group.provider
+}
+
+/**
+ * 请求行里的上游账号是 Magpie 记录的原始账号名（如 `API key`）。同厂商同账号在配额里有备注时
+ * 显示备注；账号对不上或没有备注时保持原值，不去猜。
+ */
+export function routeAccountLabel(
+  account: string | null,
+  providers: readonly string[],
+  quotas: readonly MagpieQuota[],
+): string | null {
+  if (account === null) return null
+  const aliases = new Set(quotas
+    .filter((quota) => quota.user === account && providers.includes(quota.provider))
+    .map((quota) => quota.alias?.trim() ?? '')
+    .filter((alias) => alias !== ''))
+  return aliases.size === 1 ? [...aliases][0]! : account
+}
+
 /** 单个窗口的剩余百分比；上游只给 `used` 时反推，两者都没有时返回 null。 */
 export function quotaWindowRemaining(window: MagpieQuotaWindow): number | null {
   if (window.remainingPercent !== null) return window.remainingPercent
@@ -506,7 +532,7 @@ export function createQuotaGroupHeader(input: {
       className: 'codingns4dsh-quota-group-logo',
       fallback: 'none',
     }),
-    createElement('strong', { style: { fontSize: uiFontSize(13), minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' } }, group.name || group.provider),
+    createElement('strong', { style: { fontSize: uiFontSize(13), minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }, title: group.name || group.provider }, quotaGroupTitle(group)),
     group.accounts.length > 1 && createElement('span', { style: groupCountStyle }, t('usage.quotaGroupAccounts', { count: group.accounts.length })),
     summaryLabel !== '' && createElement('span', { style: groupSummaryStyle, title: summaryBalance?.raw }, summaryLabel),
     onToggle !== null && createElement('button', {
