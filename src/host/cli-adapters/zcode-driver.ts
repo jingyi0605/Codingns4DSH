@@ -80,6 +80,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   private readonly binaries: readonly string[]
   private readonly runSpawnSync: typeof spawnSync
   private readonly runSpawn: typeof spawn
+  private readonly hasExplicitDesktopRuntime: boolean
   private cachedRuntime: CodingNsDesktopAppRuntime | null | undefined
   private cachedBinary: string | null = null
   private readonly sessions = new Map<string, ZcodeSession>()
@@ -92,6 +93,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
 
   constructor(options: ZcodeCliDriverOptions = {}) {
     this.homeDirectory = options.homeDirectory ?? homedir()
+    this.hasExplicitDesktopRuntime = options.desktopRuntime !== undefined
     this.cachedRuntime = options.desktopRuntime
     this.binaries = options.binaries ?? ['zcode', 'zcode.cmd']
     this.runSpawnSync = options.spawnSync ?? spawnSync
@@ -465,6 +467,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   }
 
   private async syncAccountProviderConfig(rpc: JsonRpcProcess, signal?: AbortSignal, providerId?: string): Promise<Record<string, unknown> | null> {
+    if (this.cachedBinary !== null && !this.hasExplicitDesktopRuntime) return null
     const runtime = this.resolveRuntime()
     const snapshot = runtime === null ? null : readZcodeAccountProviderSnapshot(runtime, this.homeDirectory, providerId)
     if (snapshot === null) {
