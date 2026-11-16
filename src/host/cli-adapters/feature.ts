@@ -1,3 +1,4 @@
+import { isNativeApprovalMode, resolveNativeApprovalPermission } from '../../shared/native-approval-modes.js'
 import type { FeatureModule, FeatureResourceScope } from '../../shared/contracts/feature.js'
 import type { CodingNsCliApprovalPolicy, CodingNsCliAttachment, CodingNsCliMessage, CodingNsCliModelCatalog, CodingNsCliPermissionState, CodingNsCliSandboxMode, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
 import { CommandCodeDriver } from './command-code-driver.js'
@@ -862,7 +863,7 @@ export function createCliAdaptersFeature(options: {
             .join('\n\n')
           // 权限状态必须与 DSH 会话当前生效值同源。驱动不能自行假设“完全权限”，
           // 也不能把缺省当成“已确认无限制”：解析失败时留空，由驱动沿用保守默认。
-          const permission = resolveSessionPermission(context.services.dshContext, sessionId)
+          const permission = resolveNativeApprovalPermission(config, resolveSessionPermission(context.services.dshContext, sessionId))
           let magpieCodexContextWindow: number | undefined
           if (config.adapterId === 'codex' && config.modelId !== undefined && typeof magpieUsage.readModelMetadata === 'function') {
             try {
@@ -1493,8 +1494,12 @@ function readDelegateRequest(value: unknown): { sessionId: string; adapterId: st
 function readSessionConfig(value: unknown): CodingNsCliSessionConfig {
   const record = asRecord(value)
   const adapterId = readAdapterId(record)
+  if (record?.nativeApprovalMode !== undefined && !isNativeApprovalMode(adapterId, record.nativeApprovalMode)) {
+    throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', 'Unsupported native approval mode')
+  }
   return {
     adapterId,
+    ...(isNativeApprovalMode(adapterId, record?.nativeApprovalMode) ? { nativeApprovalMode: record.nativeApprovalMode } : {}),
     ...(typeof record?.modelId === 'string' && record.modelId.trim() ? { modelId: record.modelId.trim() } : {}),
     ...(typeof record?.effortId === 'string' && record.effortId.trim() ? { effortId: record.effortId.trim() } : {}),
     // `default` 是显式的“标准速度”选择，不能当作空值丢弃，否则关掉 Fast 会被

@@ -43,6 +43,8 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
   protected readonly runSpawn: typeof spawn
   /** Optional source measurements receive line-arrival time, even after a consumer pause. */
   protected observeEvent?: (value: Record<string, unknown>, input: CodingNsCliTurnInput, receivedAt: number) => readonly CodingNsAgentEvent[]
+  /** Provider 可观察自己的权限告警；不改变其他驱动的 stderr/生命周期行为。 */
+  protected observeStderr?: (chunk: string, input: CodingNsCliTurnInput) => void
   private readonly versionArgs: readonly string[]
   private readonly modelArgs: readonly string[]
   private cachedBinary: string | null = null
@@ -126,6 +128,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     child.stderr.on('data', (chunk) => {
       // 只保留有限长度的 Provider 原始诊断，避免异常输出撑爆 DSH 会话。
       stderr = `${stderr}${String(chunk)}`.slice(-16_384)
+      this.observeStderr?.(String(chunk), input)
     })
     try {
       if (this.usesStdin && !input.signal?.aborted) this.writeStdin(child, input)

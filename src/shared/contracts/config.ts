@@ -1,5 +1,5 @@
 import type { FeatureDescriptor } from './feature.js'
-import type { CodingNsCliSessionRecord } from './cli-adapter.js'
+import type { CodingNsCliSessionRecord, CodingNsNativeApprovalMode } from './cli-adapter.js'
 import { isDshVersionAtLeast } from './version.js'
 import { DEFAULT_SESSION_TRANSLATION_SETTINGS, type SessionTranslationSettings } from './session-translation.js'
 import { DEFAULT_GIT_MANAGEMENT_SETTINGS, type GitManagementSettings } from './git.js'
@@ -11,6 +11,7 @@ export interface CodingNsCliAdapterPreference {
   /** Provider 服务档位（例如 Codex 官方订阅的 Fast）；`default` 表示标准速度。 */
   readonly serviceTierId?: string | undefined
   /** 新建会话模型选择器中的“翻译对话”开关，按 Agent 隔离记忆。 */
+  readonly nativeApprovalMode?: CodingNsNativeApprovalMode | undefined
   readonly translationEnabled?: boolean | undefined
 }
 

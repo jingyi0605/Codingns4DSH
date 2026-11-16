@@ -1,3 +1,5 @@
+import { canChangeNativeApproval, nativeApprovalCatalog, nativeApprovalHintKey, nativeApprovalModeForValue, nativeApprovalCurrentValue } from './native-approval-selector.js'
+import { registerAgentPermissionPresentation } from '../dsh-capabilities/client/agent-permission-presentation-adapter.js'
 import { watchAdapterCatalog, subscribeAdapterCatalogChanged } from './adapter-catalog-watch.js'
 import { createElement, Fragment, useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
@@ -122,6 +124,7 @@ function installComposerStyles(): void {
     // 移动端工具栏空间有限，收掉控件组自身的间距；控件组按 CSS Modules 本地名匹配，
     // 不绑定构建哈希（npm 分发的 Web 构建是 uV2eYG_*，Desktop 内嵌构建是 yhfFVG_*）。
     `@media (max-width: 768px){[data-composer-card] > div:has(${rightSlot}) > div:has(> ${rightSlot}),[data-composer-card] ${rightSlot},[data-composer-card] [class*="_standardControls"],[data-composer-card] [class*="_trailing"]{gap:0!important;column-gap:0!important}}`,
+    '@media(max-width:768px){[data-codingns-approval] button{min-width:44px;min-height:44px;touch-action:manipulation}}',
     // ContextMeter 在 pressure 尚未合并时会暂时返回 null；dock 保留同样的行高，数值回来时只更新内容。
     '[data-composer-card] + div{box-sizing:border-box;min-height:26px;align-items:center}',
     '[data-composer-card] + div svg[viewBox="0 0 14 14"] circle:last-child{transition:stroke-dasharray .18s ease,stroke .18s ease}',
@@ -278,6 +281,7 @@ function publishSelection(sessionId: string, next: SelectionState): void {
     ...(next.modelId ? { modelId: next.modelId } : {}),
     ...(next.effortId ? { effortId: next.effortId } : {}),
     ...(next.serviceTierId ? { serviceTierId: next.serviceTierId } : {}),
+    ...(next.nativeApprovalMode === undefined ? {} : { nativeApprovalMode: next.nativeApprovalMode }),
     ...(next.translationEnabled === undefined ? {} : { translationEnabled: next.translationEnabled }),
     ...(next.credentialRefs === undefined ? {} : { credentialRefs: next.credentialRefs }),
   }
@@ -322,10 +326,60 @@ export function registerCliConversationSlots(
       ...(readNativeTranslationEnabled === undefined ? {} : { readNativeTranslationEnabled }),
     }),
   }, ModelSlot))
+  const disposePermission = registerAgentPermissionPresentation(slots, NativeApprovalSlot,
+    sessionId => ({ rpc, sessionId, codingnsLocale: locale }))
   return () => {
+    disposePermission()
     disposeModel()
     disposeAgent()
   }
+}
+
+function NativeApprovalSlot(props: CliSlotProps & {
+  readonly codingnsLocale: CodingNsLocale
+  readonly NativePermission: React.ComponentType<any>
+  readonly t: (key: string, values?: Record<string, unknown>) => string
+  readonly locked?: boolean
+  readonly select: (value: string) => Promise<boolean>
+}): ReactElement | null {
+  const t = useCodingNsTranslator(props.codingnsLocale)
+  const session = props.useSession?.((value) => value)
+  const sessionId = props.sessionId ?? session?.sessionId
+  const [selection, update] = useSelection(sessionId, props.rpc)
+  const [pending, setPending] = useState(false)
+  const [failed, setFailed] = useState(false)
+  const inherited = props.useProjection?.('permissions') as { readonly currentValue?: string } | undefined
+  const currentValue = nativeApprovalCurrentValue(selection.adapterId, selection.nativeApprovalMode, inherited?.currentValue)
+  const nextTurn = session?.running === true || (session?.queue?.length ?? 0) > 0
+  const disabledReason = pending ? 'saving'
+    : sessionId === undefined || session === undefined ? 'unavailable' : undefined
+  useEffect(() => { setFailed(false) }, [sessionId, selection.adapterId])
+  const catalog = nativeApprovalCatalog(selection.adapterId, t)
+  if (catalog.options.length === 0) return createElement(props.NativePermission, { ...props, key: selection.adapterId })
+  return createElement('div', { 'data-codingns-approval': 'override', 'data-codingns-approval-disabled': disabledReason,
+    'data-codingns-approval-applies': nextTurn ? 'next-turn' : 'next-message',
+    style: { position: 'relative', display: 'inline-flex', alignItems: 'center', flexShrink: 0, whiteSpace: 'nowrap' } },
+    createElement(props.NativePermission, {
+      ...props, key: selection.adapterId,
+      locked: pending || sessionId === undefined || !canChangeNativeApproval(session),
+      usePermissionCatalog: (select: (state: unknown) => unknown) => select({ value: catalog }),
+      useProjection: (key: string) => key === 'permissions' ? { ...inherited, currentValue } : props.useProjection?.(key),
+      t: (key: string, values?: Record<string, unknown>) => {
+        if (key === 'confirm.description') return t(nativeApprovalHintKey(selection.adapterId, 'full-access'))
+        if (key === 'auto.label') return t(selection.adapterId === 'zcode' ? 'nativeApproval.zcodeAuto' : 'nativeApproval.auto-review')
+        if (key === 'auto.description' || key === 'auto.confirm.description') return t(nativeApprovalHintKey(selection.adapterId, 'auto-review'))
+        return props.t(key, values)
+      },
+      select: (value: string): Promise<boolean> => {
+        const next = nativeApprovalModeForValue(selection.adapterId, value)
+        if (next === undefined || pending || !canChangeNativeApproval(session)) return Promise.resolve(false)
+        setPending(true)
+        setFailed(false)
+        return update({ ...selection, nativeApprovalMode: next }).then(saved => { setFailed(!saved); return saved }).finally(() => setPending(false))
+      },
+    }),
+    failed && createElement('span', { role: 'alert', title: t('nativeApproval.failed'), style: { color: dshThemeColor.labelPrimary, fontSize: uiFontSize(12) } }, t('nativeApproval.failed')),
+  )
 }
 
 function AgentSlot(props: CliSlotProps): ReactElement {

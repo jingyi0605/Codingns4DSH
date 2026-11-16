@@ -37,6 +37,7 @@ export const CodingNsSettingsSchema = z.object({
     effortId: z.union([z.string(), z.const(undefined)]),
     serviceTierId: z.union([z.string(), z.const(undefined)]),
     translationEnabled: z.union([z.boolean(), z.const(undefined)]),
+    nativeApprovalMode: z.union(['inherit', 'manual', 'auto-review', 'read-only', 'accept-edits', 'full-access', undefined].map(value => z.const(value))),
   })).default({}),
   subagentBridge: z.object({
     enabled: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.subagentBridge?.enabled ?? false),

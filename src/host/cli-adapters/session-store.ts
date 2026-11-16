@@ -1,3 +1,4 @@
+import { isNativeApprovalMode } from '../../shared/native-approval-modes.js'
 import type { DshHostSettingsScope } from '../../dsh-capabilities/host/config-forms-adapter.js'
 import type {
   CodingNsCliAdapterId,
@@ -28,6 +29,7 @@ export interface CodingNsCliSessionStoreOptions {
 }
 
 export interface CodingNsCliSessionPatch {
+  readonly nativeApprovalMode?: CodingNsCliSessionConfig['nativeApprovalMode']
   readonly adapterId?: CodingNsCliAdapterId
   readonly modelId?: string
   readonly effortId?: string
@@ -207,6 +209,8 @@ export class CodingNsCliSessionStore {
     const record: CodingNsCliSessionRecord = {
       dshSessionId: sessionId,
       adapterId,
+      ...(isNativeApprovalMode(adapterId, patch.nativeApprovalMode) ? { nativeApprovalMode: patch.nativeApprovalMode }
+        : isNativeApprovalMode(adapterId, base?.nativeApprovalMode) ? { nativeApprovalMode: base.nativeApprovalMode } : {}),
       ...(patch.modelId?.trim() ? { modelId: patch.modelId.trim() } : base?.modelId ? { modelId: base.modelId } : {}),
       ...(patch.effortId?.trim() ? { effortId: patch.effortId.trim() } : base?.effortId ? { effortId: base.effortId } : {}),
       ...(patch.serviceTierId?.trim() ? { serviceTierId: patch.serviceTierId.trim() } : base?.serviceTierId ? { serviceTierId: base.serviceTierId } : {}),
@@ -298,6 +302,7 @@ export class CodingNsCliSessionStore {
     this.records.set(value.dshSessionId, {
       dshSessionId: value.dshSessionId,
       adapterId: normalizeAdapterId(value.adapterId),
+      ...(isNativeApprovalMode(value.adapterId, value.nativeApprovalMode) ? { nativeApprovalMode: value.nativeApprovalMode } : {}),
       ...(stringValue(value.modelId) ? { modelId: stringValue(value.modelId)! } : {}),
       ...(stringValue(value.effortId) ? { effortId: stringValue(value.effortId)! } : {}),
       ...(stringValue(value.serviceTierId) ? { serviceTierId: stringValue(value.serviceTierId)! } : {}),
