@@ -330,9 +330,14 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
         const next = includeRoute
           ? normalizeSubscriptionSnapshot(await callCliRpc<unknown>(props.rpc, 'subscription', payload, requestSignal))
           : await loadUsage(props.rpc, cacheKey, payload)
-        if (next !== null) subscriptionUsageCache.set(cacheKey, { usage: next, capturedAt: Date.now() })
-        upstreamUnresolved = shouldResolveMagpieQuota(next?.magpie)
-        if (active) setSnapshot(next)
+        // A route-only refresh is supplementary. A transient Host/Web failure
+        // may return an empty or official-only subscription payload even though
+        // the previous Magpie snapshot is still valid. Do not let that second
+        // read erase the visible Magpie subscription entry.
+        const retained = includeRoute ? retainMagpieAfterRouteRefresh(snapshotRef.current, next) : next
+        if (retained !== null) subscriptionUsageCache.set(cacheKey, { usage: retained, capturedAt: Date.now() })
+        upstreamUnresolved = shouldResolveMagpieQuota(retained?.magpie)
+        if (active) setSnapshot(retained)
       } catch {
         if (signal.aborted || routeSignal?.aborted === true) return false
         if (active) {
@@ -1276,6 +1281,38 @@ function normalizeSubscriptionSnapshot(value: unknown): CliSubscriptionSnapshot 
   }
   // Compatibility with Hosts that returned the provider usage directly.
   return { providerUsage: value as unknown as CliSubscriptionUsage, magpie: null }
+}
+
+/**
+ * Merge a route-only refresh into the snapshot already on screen. When the
+ * refresh lost the Magpie data (failure, official-only payload, session not
+ * matched), keep the previous quotas and usage but report the refresh's own
+ * route status. Keeping the old `not-requested` status would make the popover
+ * claim the route is unreadable when the real answer is "no route recorded".
+ */
+export function retainMagpieAfterRouteRefresh(
+  previous: CliSubscriptionSnapshot | null,
+  next: CliSubscriptionSnapshot | null,
+): CliSubscriptionSnapshot | null {
+  const previousMagpie = previous?.magpie
+  if (previous === null || previousMagpie === null || previousMagpie === undefined) return next
+  if (next !== null && next.magpie !== null && !shouldRetainMagpieSnapshot(previousMagpie, next.magpie)) return next
+  return {
+    ...previous,
+    magpie: { ...previousMagpie, routeStatus: next?.magpie?.routeStatus ?? 'unavailable', route: null },
+  }
+}
+
+function shouldRetainMagpieSnapshot(previous: MagpieUsageSnapshot, next: MagpieUsageSnapshot): boolean {
+  const previousHasData = previous.session !== null
+    || previous.route !== null
+    || previous.upstreamProvider !== null
+    || previous.quotas.length > 0
+  if (!previousHasData) return false
+  if (next.routeStatus === 'session-unavailable' || next.routeStatus === 'unavailable') return true
+  if (previous.session !== null && next.session === null) return true
+  if (previous.quotaStatus === 'available' && next.quotaStatus !== 'available') return true
+  return previous.quotas.length > 0 && next.quotas.length === 0 && next.upstreamProvider === null
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

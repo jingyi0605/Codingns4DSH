@@ -4,7 +4,7 @@ import { setImmediate } from 'node:timers/promises'
 import test from 'node:test'
 import { MagpieUsageService, magpieAgentForAdapter, parseMagpieCliVersion, parseMagpieModelMetadata, parseMagpieModelOutput, parseMagpieQuotaCards, parseMagpieQuotas } from '../src/host/cli-adapters/magpie-usage.js'
 import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js'
-import { MagpieRouteRequests, SUBSCRIPTION_RESPONSIVE_CSS, calculateMagpiePopoverPlacement, registerSubscriptionSlot } from '../src/client/subscription-slot.js'
+import { MagpieRouteRequests, SUBSCRIPTION_RESPONSIVE_CSS, calculateMagpiePopoverPlacement, registerSubscriptionSlot, retainMagpieAfterRouteRefresh } from '../src/client/subscription-slot.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import type { MagpieUsageSnapshot } from '../src/shared/contracts/subscription.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
@@ -2015,6 +2015,107 @@ test('Magpie 自动模型在页面加载后主动解析上游配额并显示圆�
   assert.match(JSON.stringify(trigger.children), /conic-gradient/u)
   assert.match(JSON.stringify(trigger.children), /73/u)
   assert.doesNotMatch(JSON.stringify(trigger.children), /Magpie/u)
+})
+
+test('route-only subscription refresh failure keeps the existing Magpie snapshot visible', async (t) => {
+  let component: ((props: unknown) => unknown) | undefined
+  const slots = {
+    inject: (_name: string, register: () => unknown) => register(),
+    register: (_options: unknown, render: (props: unknown) => unknown) => { component = render; return () => undefined },
+  }
+  const reads: boolean[] = []
+  const rpc = {
+    call: async (_channel: string, method: string, payload: unknown) => {
+      if (method.endsWith('/session/get')) return {
+        ok: true,
+        value: { adapterId: 'antigravity', modelId: 'magpie/antigravity-bridge/gemini-4-hydrogen', providerSessionId: 'agy-session' },
+      }
+      assert.ok(method.endsWith('/subscription'))
+      const includeRoute = (payload as { includeRoute?: boolean }).includeRoute === true
+      reads.push(includeRoute)
+      if (includeRoute) return {
+        ok: true,
+        value: {
+          providerUsage: null,
+          magpie: {
+            routeStatus: 'session-unavailable',
+            route: null,
+            session: null,
+            upstreamProvider: null,
+            upstreamProviders: [],
+            quotaStatus: 'provider-unavailable',
+            quotas: [],
+          },
+        },
+      }
+      return {
+        ok: true,
+        value: {
+          providerUsage: null,
+          magpie: {
+            agent: 'agy', modelId: 'magpie/antigravity-bridge/gemini-4-hydrogen', capturedAt: new Date().toISOString(),
+            usageStatus: 'available',
+            aggregate: { calls: 1, errors: 0, inputTokens: 11_270, outputTokens: 228, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.02 },
+            sessionId: 'agy-session',
+            session: { id: 'agy-session', agent: 'agy', calls: 1, errors: 0, inputTokens: 11_270, outputTokens: 228, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0.02 },
+            routeStatus: 'not-requested', route: null,
+            upstreamProvider: null, upstreamProviders: [], quotaStatus: 'provider-unavailable', quotas: [],
+          },
+        },
+      }
+    },
+  }
+  registerSubscriptionSlot(slots as never, rpc as never)
+  assert.ok(component)
+  const view = createHookRenderer(component!, { rpc, sessionId: 'dsh-session', getRefreshIntervalMins: () => 5 })
+  t.after(() => view.dispose())
+
+  const findTrigger = (node: unknown): { readonly children: unknown } | null => {
+    if (Array.isArray(node)) return node.map(findTrigger).find((item) => item !== null) ?? null
+    if (node === null || typeof node !== 'object') return null
+    const element = node as { readonly type?: unknown; readonly props?: { readonly className?: unknown; readonly children?: unknown } }
+    if (element.type === 'button' && element.props?.className === 'codingns4dsh-subscription-trigger') return { children: element.props.children }
+    return findTrigger(element.props?.children)
+  }
+
+  let trigger: ReturnType<typeof findTrigger> = null
+  for (let attempt = 0; attempt < 12; attempt++) {
+    await setImmediate()
+    trigger = findTrigger(view.render())
+    if (reads.includes(true)) break
+  }
+  assert.deepEqual(reads, [false, true])
+  assert.ok(trigger, 'the route refresh must not erase the Magpie trigger')
+  assert.match(JSON.stringify(trigger.children), /Magpie/u)
+})
+
+test('a route refresh that loses the Magpie data keeps the quotas but reports the refresh route status', () => {
+  const previous = {
+    providerUsage: null,
+    magpie: {
+      agent: 'agy', modelId: 'magpie/antigravity-bridge/gemini-4-hydrogen', capturedAt: '2026-11-16T00:00:00Z',
+      usageStatus: 'available', aggregate: null, sessionId: 'agy-session',
+      session: { id: 'agy-session', agent: 'agy', calls: 1, errors: 0, inputTokens: 1, outputTokens: 1, cacheReadTokens: 0, cacheWriteTokens: 0, costUsd: 0 },
+      routeStatus: 'not-requested', route: null,
+      upstreamProvider: 'antigravity-bridge', upstreamProviders: ['antigravity-bridge'],
+      quotaStatus: 'available',
+      quotas: [{ provider: 'antigravity-bridge', name: 'Antigravity Bridge', user: null, windows: [{ name: 'Session', remaining: 78 }] }],
+    },
+  } as never as Parameters<typeof retainMagpieAfterRouteRefresh>[0]
+  const lost = (routeStatus: string) => ({ providerUsage: null, magpie: {
+    routeStatus, route: null, session: null, upstreamProvider: null, upstreamProviders: [], quotaStatus: 'provider-unavailable', quotas: [],
+  } }) as never as Parameters<typeof retainMagpieAfterRouteRefresh>[1]
+
+  for (const [next, expected] of [[lost('session-unavailable'), 'session-unavailable'], [lost('unavailable'), 'unavailable'], [null, 'unavailable']] as const) {
+    const merged = retainMagpieAfterRouteRefresh(previous, next)
+    assert.equal(merged?.magpie?.routeStatus, expected)
+    assert.equal(merged?.magpie?.route, null)
+    assert.equal(merged?.magpie?.quotas.length, 1)
+    assert.equal(merged?.magpie?.upstreamProvider, 'antigravity-bridge')
+  }
+  const good = { providerUsage: null, magpie: { ...previous!.magpie!, routeStatus: 'no-route' } } as never as Parameters<typeof retainMagpieAfterRouteRefresh>[1]
+  assert.equal(retainMagpieAfterRouteRefresh(previous, good), good)
+  assert.equal(retainMagpieAfterRouteRefresh(null, good), good)
 })
 
 test('新会话先收到 Magpie 占位快照时，官方余额不会再抢占入口', async (t) => {
