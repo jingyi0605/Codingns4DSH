@@ -94,6 +94,8 @@ Agent、终端和项目文件在运行 DSH 的电脑（Host）上处理；浏览
 
 Agent 的安装与登录由各自工具完成。适配细节见[外部 Agent 文档](specs/spec007.1-外部Agent适配器扩展/README.md)。
 
+Windows 上，插件会在查询 Antigravity 模型或执行对话时自动在后台运行官方 `agy update`，Host 运行期间同一安装最多每 15 分钟检查一次，避开原生后台更新器的终端闪窗问题。下载、校验和安装仍由 agy 完成；显式设置 `AGY_CLI_DISABLE_AUTO_UPDATE=true` 时不自动更新。macOS/Linux 保留 agy 原生自动更新。
+
 ZCode 模型菜单区分个人／团队 Coding Plan 与 Start Plan，同名模型保留各自来源；创建、恢复和逐轮切换会话时使用所选套餐。登录态或配置变化后目录会刷新，用量按当前来源查询。新版加密凭据支持环境密钥格式；系统密钥格式目前支持 Windows x64，依赖已安装 ZCode 自带的 keyring 模块。无法读取凭据时返回不可用，不会把密文当作 API Key。
 
 ---

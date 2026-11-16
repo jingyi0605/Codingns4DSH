@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn, spawnSync, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
@@ -11,6 +11,7 @@ import { commandEnvironment, runAsyncCommand, terminateChildProcess, withCommand
 import { usageChunk } from './rpc-driver-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 import { normalizeToolStatus, serializeToolValue } from './tool-observation.js'
+import { AntigravityAutoUpdater, antigravityCommandEnvironment } from './antigravity-updater.js'
 
 const ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS = 30_000
 
@@ -45,7 +46,7 @@ async function runBufferedModels(
     let child: CodingNsChildProcess
     try {
       child = runSpawn(command, args, {
-        env: environment,
+        env: antigravityCommandEnvironment(environment),
         windowsHide: true,
         shell: process.platform === 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
@@ -89,6 +90,7 @@ async function runBufferedModels(
 }
 
 export interface AntigravityDriverOptions {
+  readonly autoUpdater?: Pick<AntigravityAutoUpdater, 'check' | 'dispose'>
   readonly binaries?: readonly string[]
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
@@ -124,6 +126,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   private readonly resolveModelId: (modelId: string | undefined) => string | null
   private readonly modelProbeAbort = new AbortController()
   private readonly magpieCommand: () => string | null
+  private readonly autoUpdater: Pick<AntigravityAutoUpdater, 'check' | 'dispose'>
 
   readonly warmModelCatalog = true
   /** AGY stream-json 会把工具和后续正文放在同一条可暂停事件流中。 */
@@ -150,11 +153,13 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     this.resolveContextWindow = options.resolveContextWindow ?? ((modelId) => knownAntigravityContextWindow(modelId))
     this.resolveModelId = options.resolveModelId ?? ((modelId) => resolveAntigravityModelId(modelId))
     this.magpieCommand = options.magpieCommand ?? (() => null)
+    this.autoUpdater = options.autoUpdater ?? new AntigravityAutoUpdater(this.runSpawn)
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {
     const detected = await this.detect()
     if (!detected.installed || detected.command === null) return emptyCatalog()
+    this.autoUpdater.check(detected.command, this.resolvedEnvironment ?? commandEnvironment(detected.command))
     try {
       const magpie = await this.readMagpieEnvironment(this.modelProbeAbort.signal)
       // `agy models` 需要向服务端拉取目录；在本机冷启动约 19 秒，
@@ -245,7 +250,17 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
 
   protected get usesStdin(): boolean { return true }
 
+  protected override spawnProcess(command: string, args: readonly string[], options: SpawnOptions): CodingNsChildProcess {
+    // Windows 更新由 autoUpdater 自动调用官方 update 入口，业务进程避开 detached 路径。
+    this.autoUpdater.check(command, this.resolvedEnvironment ?? commandEnvironment(command))
+    return super.spawnProcess(command, args, {
+      ...options,
+      env: antigravityCommandEnvironment(options.env ?? {}),
+    })
+  }
+
   dispose(): void {
+    this.autoUpdater.dispose()
     this.modelProbeAbort.abort()
     this.cumulativeUsages.clear()
     super.dispose()

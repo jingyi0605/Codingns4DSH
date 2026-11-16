@@ -10,6 +10,7 @@ import type {
   CliSubscriptionWindow,
 } from '../../shared/contracts/subscription.js'
 import { commandEnvironment, resolveCommandPath, runAsyncCommand } from './process-utils.js'
+import { antigravityCommandEnvironment } from './antigravity-updater.js'
 
 type FetchLike = typeof fetch
 type SpawnLike = typeof spawn
@@ -179,7 +180,8 @@ export class AntigravitySubscriptionService {
       let child: ReturnType<SpawnLike>
       try {
         child = this.runSpawn(command, ['--print', '/usage'], {
-          env: commandEnvironment(command),
+          // 额度查询也会触发 agy 自更新，避免其后台子进程在 Windows 弹窗。
+          env: antigravityCommandEnvironment(commandEnvironment(command), this.platform),
           windowsHide: true,
           shell: this.platform === 'win32',
           stdio: ['ignore', 'pipe', 'pipe'],
