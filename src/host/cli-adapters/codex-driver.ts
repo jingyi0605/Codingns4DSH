@@ -60,6 +60,8 @@ interface CodexSession {
   readonly teamToken: string | undefined
   readonly resumeThreadId: string | undefined
   readonly runtimeEnvFingerprint: string
+  readonly permission: { sandboxMode: CodingNsCliSandboxMode; approvalPolicy: 'never' | 'on-request' }
+  readonly launchFingerprint: string
   readonly performance: CodexPerformanceTracker
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
@@ -186,6 +188,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   private readonly computerUseConfig: CodexComputerUseServerConfig | undefined
   private readonly steerTerminalGraceMs: number
   private cachedBinary: string | null = null
+  private binaryFingerprint = ''
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, CodexSession>()
 
@@ -230,7 +233,10 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
     const result = await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync })
-    if (result.installed) this.cachedBinary = result.command
+    if (result.installed) {
+      this.cachedBinary = result.command
+      this.binaryFingerprint = JSON.stringify([result.command, result.version])
+    }
     return result
   }
 
@@ -299,7 +305,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     }
-    const session = await this.getSession(sessionInput, command)
+    const session = await this.getSession(sessionInput, command, true)
     await this.refreshSkillCatalog(session, input.cwd, input.forceReload === true, input.signal)
     return [...session.skills.values()].map(({ path: _path, ...descriptor }) => descriptor)
   }
@@ -313,13 +319,12 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) throw new Error('Codex 未安装')
     if (previous && previous.threadId !== '' && previous.threadId !== input.providerSessionId) {
-      previous.rpc.dispose()
+      await this.retireSession(previous)
       this.sessions.delete(input.sessionId)
     }
     let session: CodexSession | undefined
     try {
-      session = previous && !previous.rpc.isClosed && previous.cwd === input.cwd
-        && previous.threadId === input.providerSessionId ? previous : await this.getSession(turnInput, command)
+      session = await this.getSession(turnInput, command)
       if (session.threadId === '') {
         const response = await session.rpc.request('thread/resume', {
           threadId: input.providerSessionId, ...codexThreadParams(turnInput),
@@ -335,7 +340,11 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     } catch (error) {
       // Initialization and resume can fail or be cancelled before compaction starts.
       // Discard that process as well; the next operation resumes the persisted thread.
-      this.sessions.get(input.sessionId)?.rpc.dispose()
+      const failed = this.sessions.get(input.sessionId)
+      if (failed !== undefined) {
+        await this.retireSession(failed)
+        this.sessions.delete(input.sessionId)
+      }
       throw error
     } finally {
       // Manual commands have their own command/run + command/done log. Do not replay
@@ -1119,17 +1128,35 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     ]
   }
 
-  private async getSession(input: CodingNsCliTurnInput, command: string) {
+  private async retireSession(session: CodexSession): Promise<void> {
+    if (session.segmentedTurn !== undefined) this.closeSegmentedTurn(session, session.segmentedTurn)
+    this.releasePendingRequests(session)
+    await session.rpc.disposeAndWait()
+    this.processes.delete(session.rpc)
+  }
+
+  private async getSession(input: CodingNsCliTurnInput, command: string, preservePermission = false) {
     const previous = this.sessions.get(input.sessionId)
     const teamToken = teamBridgeToken(input.sessionId)
     const runtimeEnvFingerprint = fingerprintRuntimeEnvironment(input.runtimeEnv)
+    // Only skill discovery omits permission intentionally. An unresolved real turn
+    // must still use conservative defaults rather than retaining previous access.
+    const permission = preservePermission && input.permission === undefined && previous !== undefined
+      ? previous.permission
+      : { sandboxMode: codexSandboxMode(input), approvalPolicy: codexApprovalPolicy(input) }
+    const launchFingerprint = JSON.stringify([command, this.binaryFingerprint, permission])
     if (previous !== undefined
       && previous.cwd === input.cwd
       && previous.teamToken === teamToken
       && previous.runtimeEnvFingerprint === runtimeEnvFingerprint
+      && previous.launchFingerprint === launchFingerprint
       && !previous.rpc.isClosed) return previous
-    if (previous?.segmentedTurn !== undefined) this.closeSegmentedTurn(previous, previous.segmentedTurn)
-    previous?.rpc.dispose()
+    if (previous !== undefined) {
+      const interruptedSegment = input.resumeSegmentedTurn === true && previous.segmentedTurn !== undefined
+      await this.retireSession(previous)
+      // Do not automatically replay a partially executed prompt after replacement.
+      if (interruptedSegment) throw new Error('Codex 启动配置或权限已更改，旧回合已停止；请重新发送后续请求。')
+    }
     // 子代理托管开启时用 `-c` 覆盖注入 MCP 替身工具；工具由桥接转投成 DSH 原生子会话。
     const bridgeArgs = codexBridgeArgs(input.sessionId, this.descriptor.id)
     const magpieProvider = readCodexMagpieProvider(this.codexHome, input.runtimeEnv)
@@ -1140,7 +1167,11 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     // 统一置于子命令前，避免不同版本对全局/子命令参数的解析差异。
     const rpc = new JsonRpcProcess({
       command,
-      args: [...bridgeArgs, ...magpieArgs, ...this.appServerArgs()],
+      // Keep initial configuration aligned with the thread/turn policies.
+      args: [...bridgeArgs, ...magpieArgs,
+        '-c', `sandbox_mode=${JSON.stringify(permission.sandboxMode)}`,
+        '-c', `approval_policy=${JSON.stringify(permission.approvalPolicy)}`,
+        ...this.appServerArgs()],
       cwd: input.cwd,
       env: {
         ...(input.runtimeEnv ?? {}),
@@ -1152,6 +1183,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     const session = {
       teamToken,
       runtimeEnvFingerprint,
+      permission,
+      launchFingerprint,
       resumeThreadId: input.providerSessionId ?? (previous?.cwd === input.cwd ? previous?.threadId || previous?.resumeThreadId : undefined),
       performance: new CodexPerformanceTracker(this.now),
       rpc,
@@ -2287,7 +2320,7 @@ function codexSandboxPolicy(input: CodingNsCliTurnInput, cwd: string): Record<st
  * 声明 `on-request`：那会让 Codex 发起注定被自动拒绝的审批，模型还会误以为
  * 用户拒绝了它。`ask` 才映射为 Codex 的 `on-request`。
  */
-function codexApprovalPolicy(input: CodingNsCliTurnInput): string {
+function codexApprovalPolicy(input: CodingNsCliTurnInput): 'never' | 'on-request' {
   return input.permission?.approvalPolicy === 'never' ? 'never' : 'on-request'
 }
 
