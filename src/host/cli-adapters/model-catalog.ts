@@ -486,18 +486,39 @@ export function antigravityModelIdFromLabel(label: string): string | null {
   return normalized.replace(ANTIGRAVITY_EFFORT_SUFFIX, '$<base>')
 }
 
-function readAntigravitySelectedModel(options: AntigravityContextWindowOptions): string | null {
+/** 把 AGY 设置里模型展示名尾部的档位（如 "(High)"）还原成档位 id；没有标注时返回 null。 */
+export function antigravityEffortFromLabel(label: string): string | null {
+  return label.trim().toLowerCase().match(/\((low|medium|high)\)\s*$/u)?.[1] ?? null
+}
+
+/**
+ * 解析 `provider-default` 实际使用的思考档位。
+ *
+ * 档位只存在于 AGY 设置里的模型展示名（例如 "Gemini 4 Hydrogen (High)"）；
+ * 读不到或展示名没有档位标注时返回 null，调用方保持 AGY 自己的默认档位。
+ */
+export function resolveAntigravityEffort(options: AntigravityContextWindowOptions = {}): string | null {
+  const label = readAntigravitySelectedLabel(options)
+  return label === null ? null : antigravityEffortFromLabel(label)
+}
+
+function readAntigravitySelectedLabel(options: AntigravityContextWindowOptions): string | null {
   const read = options.readFile ?? ((path: string) => readFileSync(path, 'utf8'))
   const home = options.homeDirectory ?? homedir()
   try {
     const parsed: unknown = JSON.parse(read(join(home, '.gemini', 'antigravity-cli', 'settings.json')))
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
     const label = (parsed as Record<string, unknown>).model
-    return typeof label === 'string' ? antigravityModelIdFromLabel(label) : null
+    return typeof label === 'string' ? label : null
   } catch {
     // 设置文件缺失或损坏时退回 AGY 的默认 Agent 模型窗口。
     return null
   }
+}
+
+function readAntigravitySelectedModel(options: AntigravityContextWindowOptions): string | null {
+  const label = readAntigravitySelectedLabel(options)
+  return label === null ? null : antigravityModelIdFromLabel(label)
 }
 
 /** 把 CLI 帮助解析到的模型补上已知档位，未知模型保持空数组。 */

@@ -3,8 +3,10 @@ import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
+import { AcpCliDriver } from './acp-cli-driver.js'
+import { JsonRpcRequestError, type JsonRpcProcess } from './json-rpc-process.js'
 import { StandardStreamDriver, emptyCatalog, genericEventChunks } from './standard-stream-driver.js'
-import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, isProviderDefaultModel, knownAntigravityContextWindow, parseAntigravityModels, resolveAntigravityModelId } from './model-catalog.js'
+import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, isProviderDefaultModel, knownAntigravityContextWindow, parseAntigravityModels, resolveAntigravityEffort, resolveAntigravityModelId } from './model-catalog.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
 import { startMagpieSessionProxy } from './magpie-session-proxy.js'
 import { commandEnvironment, runAsyncCommand, terminateChildProcess, withCommandSignal, type CodingNsChildProcess } from './process-utils.js'
@@ -21,6 +23,8 @@ const ANTIGRAVITY_CUMULATIVE_LIMIT = 256
 /** 仅在本轮 Host 调用内传递，不进入共享协议或持久化会话。 */
 interface AntigravityTurnInput extends CodingNsCliTurnInput {
   readonly magpieSettings?: string
+  /** 图片回合走 ACP 时，普通文件附件所在目录；图片已内联，不需要目录授权。 */
+  readonly acpAddDirectories?: readonly string[]
 }
 
 /**
@@ -107,6 +111,11 @@ export interface AntigravityDriverOptions {
    * `provider-default` 实际使用的模型。
    */
   readonly resolveModelId?: (modelId: string | undefined) => string | null
+  /**
+   * `provider-default` 实际使用的思考档位。默认读 AGY 设置文件里模型展示名尾部的
+   * "(High)" 标注；图片回合走 ACP 时需要显式下发，否则会落到 ACP 自己的默认档位。
+   */
+  readonly resolveEffort?: () => string | null
 }
 
 /**
@@ -131,6 +140,9 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   private readonly modelProbeAbort = new AbortController()
   private readonly magpieCommand: () => string | null
   private readonly autoUpdater: Pick<AntigravityAutoUpdater, 'check' | 'dispose'>
+  private readonly resolveEffort: () => string | null
+  /** 只在带图片附件的回合使用；stream-json 输入只接受 text 内容块，无法传图。 */
+  private readonly acp: AcpCliDriver
 
   readonly warmModelCatalog = true
   /** AGY stream-json 会把工具和后续正文放在同一条可暂停事件流中。 */
@@ -158,6 +170,29 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     this.resolveModelId = options.resolveModelId ?? ((modelId) => resolveAntigravityModelId(modelId))
     this.magpieCommand = options.magpieCommand ?? (() => null)
     this.autoUpdater = options.autoUpdater ?? new AntigravityAutoUpdater(this.runSpawn)
+    this.resolveEffort = options.resolveEffort ?? (() => resolveAntigravityEffort())
+    this.acp = new AcpCliDriver({
+      id: 'antigravity',
+      name: 'Antigravity',
+      binaries: options.binaries ?? ['agy'],
+      ...(options.spawn === undefined ? {} : { spawn: options.spawn }),
+      ...(options.spawnSync === undefined ? {} : { spawnSync: options.spawnSync }),
+      environment: antigravityCommandEnvironment({}),
+      args: ['acp'],
+      buildArgs: (input) => this.buildAcpArgs(input as AntigravityTurnInput),
+      // 模型和思考档位走 ACP 的 config option，不用 session/set_model。
+      runtimeModelSelection: false,
+      configureSession: (rpc, sessionId, input) => this.configureAcpSession(rpc, sessionId, input),
+      capabilities: ['stream', 'resume', 'interrupt', 'tool-events'],
+      // 与 stream-json 无头模式一致：Agy 没有声明权限和提问能力，不能把请求挂给 DSH 等待。
+      readQuestionRequest: () => null,
+      decidePermission: () => 'reject',
+      enrichUsage: (usage, input) => {
+        if (usage.contextWindow !== undefined) return usage
+        const contextWindow = this.resolveContextWindow(input.modelId)
+        return contextWindow === undefined ? usage : { ...usage, contextWindow }
+      },
+    })
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {
@@ -203,6 +238,10 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         runtimeEnv: { ...magpie.env, ...(proxy === null ? {} : { GOOGLE_GEMINI_BASE_URL: proxy.baseUrl }), ...input.runtimeEnv },
         ...(magpie.settings === undefined ? {} : { magpieSettings: magpie.settings }),
       }
+      if (prepared.attachments?.some((attachment) => attachment.kind === 'image')) {
+        yield* this.executeImageTurn(prepared)
+        return
+      }
       this.toolCallScopes.set(prepared, { id: randomUUID(), settledSteps: new Set() })
       try {
         yield* super.executeTurn(prepared)
@@ -215,6 +254,64 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     } finally {
       await proxy?.close()
     }
+  }
+
+  /**
+   * 带图片的回合改走 `agy acp`：stream-json 输入只接受 text 内容块，图片只能以
+   * `@路径` 交给模型自己的 read_file，而 read_file 对图片只会把字节存档、不会送进
+   * 模型上下文，模型实际看不到图片。ACP 的 prompt 支持内联 image 块。
+   *
+   * 两种通道共用同一个 Agy 会话库：stream-json 的 conversation_id 可被 ACP
+   * session/load 恢复，ACP 的会话 ID 也可被 `--conversation` 继续。
+   */
+  private async *executeImageTurn(input: AntigravityTurnInput): AsyncGenerator<CodingNsAgentEvent> {
+    const attachments = input.attachments ?? []
+    // 图片内联；普通文件保持与 stream-json 相同的 @路径 引用，避免改变文件读取行为。
+    const prompt = promptWithAttachmentPaths(input.prompt, attachments.filter((attachment) => attachment.kind !== 'image'), input.translationLanguage)
+    const acpInput: AntigravityTurnInput = {
+      ...input,
+      prompt,
+      attachments: attachments.filter((attachment) => attachment.kind === 'image'),
+      acpAddDirectories: [...new Set(attachments.filter((attachment) => attachment.kind !== 'image').map((attachment) => dirname(attachment.path)))],
+    }
+    try {
+      yield* this.acp.executeTurn(acpInput)
+    } finally {
+      // Agy ACP 进程带完整 Language Server，只为这一回合借用，不留常驻进程。
+      this.acp.closeSession(input.sessionId)
+    }
+  }
+
+  private buildAcpArgs(input: AntigravityTurnInput): readonly string[] {
+    const args: string[] = []
+    if (input.magpieSettings !== undefined) args.push('--settings', input.magpieSettings)
+    args.push('acp')
+    if (antigravityPermissionMode(input.permission) === null) args.push('--dangerously-skip-permissions')
+    // 图片已内联；这里只让 Agy 能读到同一回合里的普通文件附件。
+    for (const directory of input.acpAddDirectories ?? []) args.push('--add-dir', directory)
+    return args
+  }
+
+  /** 把 DSH 选择的模型、思考档位和权限模式写进 ACP 会话；失败必须让本轮报错，不能悄悄换模型。 */
+  private async configureAcpSession(rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput): Promise<void> {
+    const explicit = !isProviderDefaultModel(input.modelId)
+    const model = explicit ? input.modelId!.trim() : this.resolveModelId(undefined)
+    if (model !== null) {
+      try {
+        await rpc.request('session/set_config_option', { sessionId, configId: 'model', value: model }, { signal: input.signal, killOnAbort: false })
+      } catch (error) {
+        // Magpie 自定义模型（含 "/"）不在 ACP 的内置模型列表里；沿用会话默认配置继续，其余未知模型照常报错。
+        if (!(error instanceof JsonRpcRequestError && error.code === -32602 && model.includes('/'))) throw error
+      }
+    }
+    const requested = explicit ? input.effortId?.trim() : this.resolveEffort() ?? undefined
+    const effort = requested !== undefined && requested !== '' && requested !== 'default' ? requested : undefined
+    // 与 buildArgs 一致：Claude 系列不支持思考档位，旧会话残留的档位不能下发。
+    if (effort !== undefined && antigravitySupportsEffort(model)) {
+      await rpc.request('session/set_config_option', { sessionId, configId: 'thought_level', value: effort }, { signal: input.signal, killOnAbort: false })
+    }
+    const mode = antigravityPermissionMode(input.permission)
+    if (mode !== null) await rpc.request('session/set_mode', { sessionId, modeId: mode }, { signal: input.signal, killOnAbort: false })
   }
 
   private async readMagpieEnvironment(signal: AbortSignal): Promise<{
@@ -270,6 +367,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     this.autoUpdater.dispose()
     this.modelProbeAbort.abort()
     this.cumulativeUsages.clear()
+    this.acp.dispose()
     super.dispose()
   }
 
@@ -604,12 +702,18 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
  * 和 never 同时成立，auto 不可用时不得静默切换至全放行。
  */
 function antigravityPermissionArgs(permission: CodingNsCliTurnInput['permission']): readonly string[] {
-  if (permission?.nativeApprovalMode === 'read-only') return ['--mode', 'plan']
-  if (permission?.nativeApprovalMode === 'auto-review') return ['--mode', 'auto']
-  if (permission?.nativeApprovalMode === 'accept-edits') return ['--mode', 'accept-edits']
-  if (permission?.sandboxMode === 'danger-full-access' && permission.approvalPolicy === 'never') return ['--dangerously-skip-permissions']
-  if (permission?.sandboxMode === 'workspace-write' && permission.approvalPolicy === 'never') return ['--mode', 'accept-edits']
-  return ['--mode', 'plan']
+  const mode = antigravityPermissionMode(permission)
+  return mode === null ? ['--dangerously-skip-permissions'] : ['--mode', mode]
+}
+
+/** 权限模式；返回 null 表示全放行（stream-json 与 ACP 都用 --dangerously-skip-permissions，而不是模式）。 */
+function antigravityPermissionMode(permission: CodingNsCliTurnInput['permission']): 'plan' | 'auto' | 'accept-edits' | null {
+  if (permission?.nativeApprovalMode === 'read-only') return 'plan'
+  if (permission?.nativeApprovalMode === 'auto-review') return 'auto'
+  if (permission?.nativeApprovalMode === 'accept-edits') return 'accept-edits'
+  if (permission?.sandboxMode === 'danger-full-access' && permission.approvalPolicy === 'never') return null
+  if (permission?.sandboxMode === 'workspace-write' && permission.approvalPolicy === 'never') return 'accept-edits'
+  return 'plan'
 }
 
 function isAntigravityPermissionDenial(text: string): boolean {
