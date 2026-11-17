@@ -109,7 +109,7 @@ test('ZCode 驱动两轮用量不串账，原生上下文进入 DSH，会话不�
     const billed = samples.filter(sample => sample.contextObservation === undefined)
     const observations = samples.filter(sample => sample.contextObservation !== undefined)
     assert.deepEqual(billed.map((sample) => sample.inputTokens), [501, 502])
-    assert.deepEqual(billed.map((sample) => sample.contextTokens), [5011, 5012])
+    assert.deepEqual(billed.map((sample) => sample.contextTokens), [9501, 9502])
     assert.deepEqual(observations.map(sample => sample.contextTokens), [5011, 5012])
     assert.ok(observations.every(sample => sample.inputTokens === 0 && sample.outputTokens === 0), 'live occupancy does not add billable tokens')
     assert.ok(contexts.every((context) => context.contextWindow === 1_000_000 && context.confirmed))

@@ -105,6 +105,8 @@ export interface CodingNsCliDriver {
   probeSession?(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult>
   executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent>
   compact?(input: CodingNsCliCompactionInput): Promise<CodingNsCliCompactionResult>
+  /** Provider-owned context threshold; absent on older runtimes. */
+  readAutoCompactThreshold?(sessionId: string, signal?: AbortSignal): Promise<number | undefined>
   respondPermission?(sessionId: string, response: CodingNsAgentPermissionResponse): Promise<void> | void
   respondQuestion?(sessionId: string, response: CodingNsAgentQuestionResponse): Promise<void> | void
   steer?(sessionId: string, prompt: string): Promise<void> | void

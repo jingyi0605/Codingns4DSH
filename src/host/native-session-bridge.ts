@@ -195,6 +195,8 @@ export interface CodingNsNativeSessionBridge {
   appendUsageSample?(sessionId: string, usage: CodingNsNativeUsageSample): boolean
   /** 将 Provider 压缩生命周期写入 DSH 原生 compaction 事件；不可用时安静降级。 */
   appendCompactionEvent?(sessionId: string, event: CodingNsNativeCompactionEvent): boolean
+  /** Queue user turns while native maintenance holds the Agent idle. */
+  runMaintenance?<T>(sessionId: string, job: (signal: AbortSignal) => Promise<T>): Promise<T>
   /** 判断指定会话是否真的具备下一步注入能力。 */
   canInjectNextStep?(sessionId: string): boolean
   /** 在当前 Agent turn 的下一个合法 step 注入插件上下文，不唤醒空闲 Agent。 */
@@ -722,6 +724,11 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     },
     appendCompactionEvent(sessionId, event) {
       return appendNativeCompactionEvent(sessionId, event)
+    },
+    runMaintenance<T>(sessionId: string, job: (signal: AbortSignal) => Promise<T>): Promise<T> {
+      const agent = nativeAgent(ctx, sessionId)
+      if (!isRecord(agent) || typeof agent.runMaintenance !== 'function') throw new Error('CODINGNS_NATIVE_MAINTENANCE_UNAVAILABLE')
+      return agent.runMaintenance(job)
     },
     canInjectNextStep(sessionId) {
       return canInjectNativeNextStep(sessionId)

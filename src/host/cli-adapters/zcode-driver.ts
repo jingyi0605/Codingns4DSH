@@ -73,6 +73,8 @@ interface ZcodeSession {
   readonly interactions: Map<string, { interaction: ZcodeInteraction; promise: Promise<unknown>; resolve: (value: unknown) => void; settled: boolean }>
   readonly emittedInteractions: Set<string>
   lastUsage: unknown
+  autoCompactThresholdTokens: number | undefined
+  lastRequestContext: number | undefined
   supportsContextSnapshot: boolean
   compacting: boolean
 }
@@ -311,6 +313,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       )
       // 压缩改变了原生会话规模：丢弃旧基线，下一轮按新会话重新取增量。
       session.lastUsage = undefined
+      session.lastRequestContext = undefined
       const events: Extract<CodingNsAgentEvent, { type: 'context-compaction' }>[] = [
         {
           type: 'context-compaction', phase: 'summary', compactionId,
@@ -503,19 +506,22 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
           // usage 查询属于正常终态的一部分，不能因为 idle 事件先到就跳过。
           const rawUsage = await readZcodeSessionData(session.rpc, 'session/usage', session.acpSessionId)
           session.lastUsage = rawUsage
-          if (telemetry.needsContextSnapshot && session.supportsContextSnapshot) {
-            telemetry.readContextSnapshot(await readZcodeSessionData(session.rpc, 'session/read', session.acpSessionId))
+          if (session.supportsContextSnapshot) {
+            const snapshot = await readZcodeSessionData(session.rpc, 'session/read', session.acpSessionId)
+            if (telemetry.needsContextSnapshot) telemetry.readContextSnapshot(snapshot)
+            const threshold = telemetry.readAutoCompactThreshold(snapshot)
+            if (threshold !== null) session.autoCompactThresholdTokens = threshold
           }
           const usage = telemetry.finish(rawUsage, baseline)
-          if (usage !== null) yield usage
+          if (usage !== null) yield withZcodeContextPressure(usage, session)
           terminalReason = 'stop'
         }
       }
       if (terminalReason === 'error') {
         const usage = telemetry.finish(null, baseline)
-        if (usage !== null) yield usage
+        if (usage !== null) yield withZcodeContextPressure(usage, session)
         // 失败详情已经在通知监听器中捕获；这里统一发唯一终态。
-        yield { type: 'finish', reason: 'error', failure: zcodeFailure(session) }
+        yield { type: 'finish', reason: 'error', failure: { ...zcodeFailure(session), ...(isZcodeContextOverflow(session) ? { contextOverflow: true } : {}) } }
       } else if (terminalReason !== null) {
         yield { type: 'finish', reason: input.signal?.aborted ? 'cancel' : terminalReason }
       } else {
@@ -713,6 +719,8 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       interactions: new Map(),
       emittedInteractions: new Set(),
       lastUsage: undefined,
+      autoCompactThresholdTokens: undefined,
+      lastRequestContext: undefined,
       supportsContextSnapshot: false,
       compacting: false,
     }
@@ -814,6 +822,16 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       if (!isMethodUnavailable(error)) throw error
     }
   }
+  async readAutoCompactThreshold(sessionId: string, signal?: AbortSignal): Promise<number | undefined> {
+    const session = this.sessions.get(sessionId)
+    if (session === undefined || session.acpSessionId === '') return undefined
+    const snapshot = await readZcodeSessionData(session.rpc, 'session/read', session.acpSessionId)
+    const telemetry = new ZcodeTurnTelemetry(session.acpSessionId)
+    const threshold = telemetry.readAutoCompactThreshold(snapshot)
+    if (threshold !== null) session.autoCompactThresholdTokens = threshold
+    signal?.throwIfAborted()
+    return session.autoCompactThresholdTokens
+  }
 }
 
 /** turn.terminal 失败详情（errorCode/errorMessage）在通知到达时即捕获。 */
@@ -856,6 +874,20 @@ function zcodeMessageToChunk(message: JsonRpcMessage, session: ZcodeSession, inp
   if (method === '' || method.startsWith('startup/') || method.startsWith('process/')) return null
   const params = isRecord(message.params) ? message.params : {}
 
+  // 每次模型请求都只上报“这一次调用”的上下文占用。
+  //
+  // 从前整轮的多次模型请求会被累加成一条 usage（同一份历史被重复计费），
+  // DSH 的 contextPressure 会因此把上下文按几倍放大，于是每个 turn/start 都
+  // 触发一次核心自动压缩，而核心压缩对虚拟 Provider 只能失败。
+  // 这里按请求粒度回填真实占用，计费累计交给 DSH 自己完成。
+  if (method === 'session/event' && params.type === 'session.updated') {
+    const payload = isRecord(params.payload) ? params.payload : {}
+    if (typeof payload.stopReason === 'string' && (payload.querySource === undefined || payload.querySource === 'main_turn')) {
+      const used = zcodeUsagePressure(compactionRecord(payload.usage), payload.inputBaselineBySource)
+      if (used !== null) session.lastRequestContext = used
+      return null
+    }
+  }
   if (method === 'v4/telemetry/event') {
     if (params.kind === 'turn.terminal' && params.status === 'failed') {
       session.failureCode = typeof params.errorCode === 'string' ? params.errorCode : undefined
@@ -997,6 +1029,13 @@ function failureChunk(session: ZcodeSession): CodingNsAgentEvent {
     type: 'text-snapshot',
     text: `ZCode 回合失败${code ? ` [${code}]` : ''}${detail ? `：${detail}` : ''}${hint}`,
   }
+}
+
+function isZcodeContextOverflow(session: ZcodeSession): boolean {
+  const code = (session.failureCode ?? '').toLowerCase()
+  const detail = (session.failureMessage ?? '').toLowerCase()
+  const pattern = /prompt is too long|context[_ ]?length|context[_ ]?window|exceed.*(token|context)|too many tokens|context_overflow/u
+  return pattern.test(detail) || code === 'context_overflow' || code === 'context_length_exceeded' || code === '1261'
 }
 
 function zcodeFailure(session: ZcodeSession): { message: string; code?: string } {
@@ -1450,4 +1489,46 @@ function cancelZcodeInteractions(session: ZcodeSession, ids?: ReadonlySet<string
     if (!pending.settled) pending.resolve(pending.interaction.cancelled)
     session.interactions.delete(id)
   }
+}
+
+function withZcodeContextPressure(usage: CodingNsAgentEvent, session: ZcodeSession): CodingNsAgentEvent {
+  if (usage.type !== 'usage' || session.lastRequestContext === undefined) return usage
+  const contextTokens = session.lastRequestContext
+  const window = usage.contextWindow
+  return {
+    ...usage,
+    contextTokens,
+    ...(window === undefined || window <= 0
+      ? {}
+      : { contextUsageRatio: Number(Math.min(1, contextTokens / window).toFixed(6)) }),
+    // 原生阈值随用量一起交给上层：自动压缩优先用它，读不到时按比例兜底。
+    ...(session.autoCompactThresholdTokens === undefined ? {} : { autoCompactThresholdTokens: session.autoCompactThresholdTokens }),
+  }
+}
+
+/**
+ * 一次模型请求的真实上下文占用。
+ *
+ * `session/usage` 查询返回的是去重后的累计值，缓存命中时会把真实占用低估到
+ * 十分之一；模型完成事件里的 `usage` 才是这次请求实际发出的 prompt 规模。
+ * 旧版事件没有 usage 时退回该来源的去重输入口径。
+ */
+function zcodeUsagePressure(usage: Record<string, any>, baseline: unknown): number | null {
+  const inputTokens = numberOrNull(usage.inputTokens ?? usage.input_tokens)
+  const cacheReadTokens = numberOrNull(usage.cacheReadTokens ?? usage.cachedInputTokens ?? usage.cache_read_tokens) ?? 0
+  const cacheWriteTokens = numberOrNull(usage.cacheWriteTokens ?? usage.cache_write_tokens) ?? 0
+  if (inputTokens !== null) {
+    const explicitUncached = numberOrNull(usage.uncachedInputTokens ?? usage.uncached_input_tokens)
+    const fromBaseline = isRecord(baseline) ? numberOrNull(baseline.main_turn ?? baseline.mainTurn) : null
+    // 新版 CLI 的 inputTokens 已是未缓存输入（另有 baseline 去重口径）；
+    // 旧版是含缓存的完整输入。两种口径下都要还原成“这次请求的 prompt 规模”。
+    const uncached = explicitUncached ?? (fromBaseline === null ? inputTokens : Math.max(0, inputTokens - fromBaseline))
+    const used = uncached + cacheReadTokens + cacheWriteTokens
+    if (used > 0) return used
+  }
+  return null
+}
+
+function numberOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
 }

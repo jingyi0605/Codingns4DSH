@@ -89,6 +89,12 @@ export class ZcodeTurnTelemetry {
     if (this.context.contextTokens === undefined && tokens !== undefined) this.context = { ...this.context, contextTokens: tokens }
   }
 
+  readAutoCompactThreshold(value: unknown): number | null {
+    const root = isRecord(value) && isRecord(value.snapshot) ? value.snapshot : value
+    const projection = isRecord(root) && isRecord(root.projection) ? root.projection : {}
+    return positive(projection.autoCompactThresholdTokens) ?? null
+  }
+
   finish(legacyUsage: unknown, baseline: unknown): CodingNsAgentEvent | null {
     let usage: UsageEvent | null = null
     if (this.samples.length > 0) {
