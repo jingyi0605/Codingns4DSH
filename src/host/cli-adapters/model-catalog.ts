@@ -386,6 +386,8 @@ const ANTIGRAVITY_CONTEXT_WINDOWS = new Map<string, number>([
   ['gemini-3-flash', 1_048_576],
   ['gemini-2.5-pro', 1_048_576],
   ['gemini-2.5-flash', 1_048_576],
+  // `agy 1.5.9` exposes Gemini 4 Hydrogen as an explicit model id.
+  ['gemini-4-hydrogen', 1_048_576],
   ['claude-sonnet-4-6', 250_000],
   ['claude-opus-4-6-thinking', 250_000],
   ['gpt-oss-120b', 131_072],
