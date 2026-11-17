@@ -278,6 +278,11 @@ test('原生子代理启动入口按 DSH 世代切换路由', () => {
   assert.equal(resolve('0.2.1-alpha.2', activationContext)?.routeId, 'subagent-activation-021')
   assert.equal(resolve('0.2.1-alpha.2', activationContext)?.status, 'ready')
   assert.equal(resolve('0.2.1-alpha.2', legacyContext)?.status, 'unavailable')
+  const treeContext = { subagents: { ...activationContext.subagents, namesOf() {}, rootOf() {} } }
+  for (const version of ['0.2.2-rc.2', '0.2.2-rc.3', '0.3.0-alpha.1']) {
+    assert.equal(resolve(version, treeContext)?.routeId, 'subagent-activation-tree-022', version)
+    assert.equal(resolve(version, activationContext)?.routeId, 'subagent-activation-021', version)
+  }
   for (const dshVersion of ['0.2.0-rc.2', '0.2.1-alpha.1']) {
     assert.equal(resolve(dshVersion, activationContext)?.status, 'unavailable', dshVersion)
     assert.equal(resolve(dshVersion, legacyContext)?.status, 'unavailable', dshVersion)

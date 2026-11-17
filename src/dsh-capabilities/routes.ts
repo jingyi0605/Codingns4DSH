@@ -14,6 +14,7 @@ import { createSessionPromptAdapter, supportsSessionPromptAssembly } from './hos
 import { createSessionPerformanceAdapter, supportsSessionPerformance } from './host/session-performance-adapter.js'
 import { createSessionPerformancePresentation, supportsSessionPerformancePresentation } from './client/session-performance-adapter.js'
 import { createAgentTeamAdapter, supportsExternalAgentTeam, supportsNativeAgentTeam } from './host/agent-team-adapter.js'
+import { supportsFlatSubagentActivation } from './host/subagent-activation-adapter.js'
 import { createGlobalPanelAdapter, supportsGlobalPanel } from './client/global-panel-adapter.js'
 import { readContextMenus, supportsContextMenus } from './client/context-menu-adapter.js'
 import { createPluginUpdateManager, supportsPluginUpdateManager } from './host/plugin-update-adapter.js'
@@ -196,6 +197,12 @@ function addDsh020HostRoutes(add: CapabilityRouteAdder, supportedDsh: string): v
     // 的 Store 形状，具体 generation 仍由 native-session-bridge 按会话读取。
     detect: (ctx) => hasMethods(read(ctx, 'sessions'), ['get', 'list']),
     create: (ctx) => read(ctx, 'sessions'),
+  })
+  add({
+    id: 'subagent-activation-tree-022', capability: 'subagent.continuable', supportedDsh: '>=0.2.2-rc.2', runtime: 'host', priority: 40,
+    status: 'supported', introducedIn: '0.2.2-rc.2',
+    detect: ctx => supportsFlatSubagentActivation(read(ctx, 'subagents')) && hasMethods(read(ctx, 'subagents'), ['sendMessage']),
+    create: ctx => read(ctx, 'subagents'),
   })
   add({
     id: 'subagent-activation-021', capability: 'subagent.continuable', supportedDsh: '>=0.2.1-alpha.2', runtime: 'host', priority: 30,

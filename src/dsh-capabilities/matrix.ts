@@ -73,9 +73,9 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('typert.context', 'typert-context-registry-020', 'host', DSH_COMPATIBILITY, 'supported', ['typert.host.ts', 'host/terminal/terminal-controller.ts']),
   route('typert.stream', 'typert-remote-stream-020', 'host', DSH_COMPATIBILITY, 'supported', ['typert.host.ts', 'typert.remote-client.ts']),
   route('session.format-v4', 'session-format-v4', 'host', DSH_COMPATIBILITY, 'supported', ['host/native-session-bridge.ts', 'host/session-migration-repair.ts']),
-  // alpha.2 用托管 Activation 取代可续启动：同一能力下按版本范围切换路由，
-  // 业务侧经 `startNativeSubagent()` 归一化调用，不写运行期版本判断。
-  route('subagent.continuable', 'subagent-activation-021', 'host', '>=0.2.1-alpha.2', 'supported', ['host/cli-adapters/native-team-subagent.ts', 'host/cli-adapters/native-subagent-dispatch.ts']),
+  // 启动参数的嵌套/顶层差异由能力边界归一化，业务侧保留稳定调用入口。
+  route('subagent.continuable', 'subagent-activation-021', 'host', '>=0.2.1-alpha.2', 'supported', ['dsh-capabilities/host/subagent-activation-adapter.ts', 'host/cli-adapters/native-team-subagent.ts', 'host/cli-adapters/native-subagent-dispatch.ts']),
+  route('subagent.continuable', 'subagent-activation-tree-022', 'host', '>=0.2.2-rc.2', 'supported', ['dsh-capabilities/host/subagent-activation-adapter.ts', 'host/cli-adapters/native-team-subagent.ts', 'host/cli-adapters/native-subagent-dispatch.ts']),
   route('agent-team.native', 'agent-team-native-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/cli-adapters/feature.ts', 'host/cli-adapters/native-team-proxy.ts']),
   route('agent-team.external-member', 'agent-team-external-member-021', 'host', '>=0.2.1-alpha.2', 'supported', ['host/cli-adapters/feature.ts', 'host/cli-bridge/team-dispatch.ts']),
   route('agent-team.external-lead', 'agent-team-external-lead-021', 'host', '>=0.2.1-alpha.2', 'supported', ['host/cli-adapters/feature.ts', 'host/cli-bridge/team-dispatch.ts']),
