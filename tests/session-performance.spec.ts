@@ -8,7 +8,7 @@ import { createSessionPerformanceAdapter } from '../src/dsh-capabilities/host/se
 import { createSessionPerformancePresentation } from '../src/dsh-capabilities/client/session-performance-adapter.js'
 import { MagpieContextMeter } from '../src/client/magpie-context-meter.js'
 import { CODEX_PERFORMANCE_PROJECTION } from '../src/shared/codex-performance.js'
-import { CLAUDE_PERFORMANCE_PROJECTION, GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION, PI_PERFORMANCE_PROJECTION } from '../src/shared/request-performance.js'
+import { ANTIGRAVITY_CONTEXT_PROJECTION, CLAUDE_PERFORMANCE_PROJECTION, GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION, PI_PERFORMANCE_PROJECTION } from '../src/shared/request-performance.js'
 import { createPresentationSlots } from './fixtures/presentation-slots.ts'
 import { createHookRenderer } from './fixtures/react-hook-renderer.ts'
 import { existsSync } from 'node:fs'
@@ -18,6 +18,7 @@ import { pathToFileURL } from 'node:url'
 import { codexPerformanceProjection } from '../src/host/cli-adapters/codex-performance-projection.js'
 import { claudePerformanceProjection } from '../src/host/cli-adapters/claude-performance-projection.js'
 import { grokContextProjection, grokPerformanceProjection } from '../src/host/cli-adapters/grok-performance-projection.js'
+import { antigravityContextProjection } from '../src/host/cli-adapters/provider-context-projection.js'
 import { countSessionTurnSteps } from '../src/host/cli-adapters/session-performance-projection.js'
 import { createCodingNsNativeSessionBridge } from '../src/host/native-session-bridge.js'
 
@@ -185,6 +186,51 @@ test('Grok context uses provider occupancy while preserving the native composer 
   assert.equal(slots.entries('codingns.grok-context.conversation.input.left').length, 0)
   action(); native(); root()
   await Promise.resolve()
+})
+
+test('Antigravity composer displays the last model call when total billed input exceeds the window', () => {
+  const projection = antigravityContextProjection
+  const route = (provider: string, model: string) => ({ type: 'request/context', data: { provider, model, contextWindow: 1_048_576 } })
+  const sample = (usage: object) => ({ type: 'assistant/attempt', data: { stream: [{ type: 'chunk', chunk: { type: 'usage', usage } }] } })
+  const nativePressure = { pressureTokens: 1_080_000, contextWindow: 1_048_576 }
+  const billed = { inputTokens: 180_000, cacheReadTokens: 900_000, outputTokens: 500 }
+  const slots = createPresentationSlots()
+  slots.register({ name: 'root', children: { 'conversation.composer.bar': { kind: 'single', scope: 'session-maybe' } } }, (() => null) as never)
+  const Native = (props: any) => {
+    const pressure = props.useProjection('contextPressure')
+    const breakdown = props.useProjection('contextBreakdown')
+    const percent = pressure?.pressureTokens === undefined ? undefined : Math.min(100, Math.round(pressure.pressureTokens / pressure.contextWindow * 100))
+    return createElement('span', undefined, JSON.stringify({ percent, breakdown }))
+  }
+  slots.register({ name: 'conversation.composer.bar', children: { 'conversation.composer.dock': { kind: 'list', scope: 'session' } } }, Native as never)
+  let adapter = 'antigravity'
+  let state = projection.apply(projection.init(), route('codingns-cli-antigravity', 'gemini-4-argon'))
+  const dispose = createSessionPerformancePresentation({ slots }).install(() => adapter, createElement, { useMemo, useSyncExternalStore })
+  try {
+    const Composer = slots.entries('conversation.composer.bar')[0]!.component as any
+    const render = () => renderToStaticMarkup(createElement(Composer, {
+      sessionId: 'antigravity-session',
+      useProjection: (key: string) => key === ANTIGRAVITY_CONTEXT_PROJECTION ? projection.wire.view(state)
+        : key === 'contextPressure' ? nativePressure : { systemTokens: 500 },
+    }))
+    state = projection.apply(state, sample(billed))
+    assert.doesNotMatch(render(), /percent/)
+    state = projection.apply(state, sample({ ...billed, contextWindow: 1_048_576, contextTokens: 130_000 }))
+    state = projection.apply(state, sample(billed))
+    assert.deepEqual(projection.wire.view(state), { pressureTokens: 130_000, contextWindow: 1_048_576 })
+    assert.match(render(), /percent&quot;:12/)
+    assert.doesNotMatch(render(), /systemTokens/)
+    state = projection.apply(state, route('codingns-cli-antigravity', 'gemini-4-hydrogen'))
+    assert.doesNotMatch(render(), /percent/)
+    state = projection.apply(state, route('codingns-cli-zcode', 'glm'))
+    state = projection.apply(state, sample({ ...billed, contextWindow: 1_000_000, contextTokens: 20_000 }))
+    assert.deepEqual(projection.wire.view(state), {})
+    adapter = 'dsh'
+    assert.match(render(), /percent&quot;:100/)
+    assert.match(render(), /systemTokens/)
+  } finally {
+    dispose()
+  }
 })
 
 test('Magpie context keeps the native meter and projects Magpie pressure without a duplicate trigger', () => {
