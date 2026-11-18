@@ -19,5 +19,6 @@ export const GROK_PERFORMANCE_PROJECTION = 'codingnsGrokStats'
 export const GROK_CONTEXT_PROJECTION = 'codingnsGrokContext'
 export const PI_PERFORMANCE_PROJECTION = 'codingnsPiStats'
 export const ANTIGRAVITY_PERFORMANCE_PROJECTION = 'codingnsAntigravityStats'
+export const ANTIGRAVITY_CONTEXT_PROJECTION = 'codingnsAntigravityContext'
 
 export const ZCODE_CONTEXT_PROJECTION = 'codingnsZcodeContext'

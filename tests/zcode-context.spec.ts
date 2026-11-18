@@ -4,7 +4,7 @@ import { createElement, useMemo, useSyncExternalStore } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createSessionPerformancePresentation } from '../src/dsh-capabilities/client/session-performance-adapter.js'
 import { createPresentationSlots } from './fixtures/presentation-slots.ts'
-import { zcodeContextProjection } from '../src/host/cli-adapters/zcode-context-projection.js'
+import { zcodeContextProjection } from '../src/host/cli-adapters/provider-context-projection.js'
 import { ZcodeTurnTelemetry } from '../src/host/cli-adapters/zcode-telemetry.js'
 
 test('ZCode composer uses the current provider context rather than all prompts billed in the tool loop', () => {

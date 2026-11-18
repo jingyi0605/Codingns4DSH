@@ -394,6 +394,25 @@ test('Antigravity Hydrogen 模型使用默认解析器提供的上下文窗口',
   }
 })
 
+test('Antigravity Argon 用最后一次模型调用计算上下文占用', async () => {
+  const { driver } = scriptedDriver([[
+    agentResponseUsage(1, { input_tokens: 12_000, output_tokens: 40, cache_read_tokens: 0, total_tokens: 12_040 }),
+    agentResponseUsage(3, { input_tokens: 2_000, output_tokens: 20, cache_read_tokens: 11_000, total_tokens: 2_020 }),
+    resultEvent({ input_tokens: 14_000, output_tokens: 60, cache_read_tokens: 11_000, total_tokens: 14_060 }),
+  ]], { modelId: 'gemini-4-argon', resolveDefaultContextWindow: true })
+
+  try {
+    const usage = (await collect(driver, { modelId: 'gemini-4-argon', effortId: 'low' })).find(chunk => chunk.type === 'usage')
+    assert.equal(usage.contextWindow, 1_048_576)
+    assert.equal(usage.contextTokens, 13_000)
+    assert.equal(usage.contextUsageRatio, 0.012398)
+    assert.equal(usage.inputTokens, 14_000)
+    assert.equal(usage.cacheReadTokens, 11_000)
+  } finally {
+    driver.dispose()
+  }
+})
+
 test('Antigravity 缓存读取不计入未缓存输入，Claude 与 Gemini 口径一致', async () => {
   // 实测 claude-sonnet-4-6 首轮：input_tokens=3968、cache_read_tokens=9619，
   // input_tokens 只含未缓存输入；把它当成完整提示会算出 0 未缓存输入。
