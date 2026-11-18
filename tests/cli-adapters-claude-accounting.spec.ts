@@ -15,8 +15,10 @@ type RecordValue = Record<string, any>
 const firstUsage = { input_tokens: 100, output_tokens: 114, cache_read_input_tokens: 40, cache_creation_input_tokens: 5 }
 const lastUsage = { input_tokens: 200, output_tokens: 57, cache_read_input_tokens: 60, cache_creation_input_tokens: 10 }
 const totalUsage = { input_tokens: 300, output_tokens: 171, cache_read_input_tokens: 100, cache_creation_input_tokens: 15 }
-const assistant = (id: string, usage: object | undefined, tools: readonly string[] = []): RecordValue => ({
-  type: 'assistant', message: { id, model: 'claude-sonnet-4-6', ...(usage === undefined ? {} : { usage }),
+const mainModel = 'claude-sonnet-4-6'
+const childModel = 'claude-haiku-4-5'
+const assistant = (id: string, usage: object | undefined, tools: readonly string[] = [], model = mainModel): RecordValue => ({
+  type: 'assistant', message: { id, model, ...(usage === undefined ? {} : { usage }),
     content: tools.map(tool => ({ type: 'tool_use', id: tool, name: 'Read', input: { file_path: 'fixture.txt' } })),
   },
 })
@@ -63,12 +65,14 @@ function replayDriver(transcripts: readonly (readonly RecordValue[])[]) {
 async function settle(registry: CodingNsCliAdapterRegistry, splitToolSteps = true) {
   const chunks: RecordValue[] = []
   const settlements: { step: number; usage: RecordValue }[] = []
+  const samples: RecordValue[] = []
+  const nativeSessions = { appendUsageSample(_sessionId: string, sample: RecordValue) { samples.push(sample); return true } }
   let continued: boolean
   let steps = 0
   do {
     continued = false
     assert.ok(++steps < 10, 'A continuation must make progress')
-    const projector = new CodingNsDshMessageProjector({ adapterId: 'claude-code', sessionId: 'accounting' })
+    const projector = new CodingNsDshMessageProjector({ adapterId: 'claude-code', sessionId: 'accounting', nativeSessions: nativeSessions as never })
     const stepChunks: RecordValue[] = []
     for await (const event of registry.execute({ adapterId: 'claude-code', sessionId: 'accounting', messages: [], prompt: 'Read the fixture', splitToolSteps })) {
       if (event.type === 'step-boundary') continued = true
@@ -78,8 +82,63 @@ async function settle(registry: CodingNsCliAdapterRegistry, splitToolSteps = tru
     chunks.push(...stepChunks)
     settlements.push(...stepChunks.filter(chunk => chunk.type === 'usage').map(chunk => ({ step: steps, usage: chunk.usage })))
   } while (continued)
-  return { steps, settlements, usages: settlements.map(value => value.usage), finish: chunks.at(-1) }
+  return { steps, settlements, usages: settlements.map(value => value.usage), lastSample: samples.at(-1), finish: chunks.at(-1) }
 }
+
+const mainModelUsage = { inputTokens: 250, outputTokens: 154, cacheReadInputTokens: 60, cacheCreationInputTokens: 10, contextWindow: 200_000 }
+const childModelUsage = { inputTokens: 50, outputTokens: 17, cacheReadInputTokens: 40, cacheCreationInputTokens: 5, contextWindow: 100_000 }
+const multiModelUsage = { [mainModel]: mainModelUsage, [childModel]: childModelUsage }
+const lastMainUsage = { input_tokens: 150, output_tokens: 40, cache_read_input_tokens: 20, cache_creation_input_tokens: 5 }
+const latestMainRequest = assistant('message-2', lastMainUsage)
+const childRequest = {
+  ...assistant('child-message', { input_tokens: 50, output_tokens: 17, cache_read_input_tokens: 40, cache_creation_input_tokens: 5 }, [], childModel),
+  parent_tool_use_id: 'agent-1',
+}
+const projectedTurnUsage = { inputTokens: 300, outputTokens: 171, cacheReadTokens: 100, cacheWriteTokens: 15, totalTokens: 586 }
+
+for (const [name, aggregate, modelUsage] of [
+  ['trusted result totals', { usage: totalUsage }, multiModelUsage],
+  ['trusted result totals with partial model details', { usage: totalUsage }, { [mainModel]: mainModelUsage, [childModel]: { contextWindow: 100_000 } }],
+  ['missing result cache fields', { usage: { input_tokens: 300, output_tokens: 171 } }, multiModelUsage],
+  ['zero result cache placeholders', { usage: { ...totalUsage, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, total_tokens: 471, context_tokens: 471 } }, multiModelUsage],
+  ['model details only', {}, multiModelUsage],
+  ['legacy single-model result', { usage: totalUsage }, undefined],
+] as const) test(`Claude projects full-turn usage from ${name} and keeps the latest main context`, async () => {
+  const replay = replayDriver([[
+    assistant('message-1', firstUsage), latestMainRequest, childRequest,
+    { type: 'result', ...aggregate, ...(modelUsage === undefined ? {} : { modelUsage }) },
+  ]])
+  const registry = new CodingNsCliAdapterRegistry([replay.driver])
+  try {
+    const result = await settle(registry, false)
+    assert.deepEqual({ usages: result.usages, cacheHitRate: result.lastSample?.cacheHitRate, contextTokens: result.lastSample?.contextTokens }, {
+      usages: [projectedTurnUsage], cacheHitRate: 24.0964, contextTokens: 175,
+    })
+    if (modelUsage !== undefined) assert.equal(result.lastSample?.contextWindow, 200_000)
+  } finally { await registry.dispose() }
+})
+
+function multiModelToolTranscript(): RecordValue[] {
+  return [
+    assistant('message-1', firstUsage, ['read-1']), toolResult('read-1'), latestMainRequest, childRequest,
+    { type: 'result', usage: totalUsage, modelUsage: multiModelUsage },
+  ]
+}
+
+test('Claude deducts settled tool-step buckets from the entire multi-model result', async () => {
+  const replay = replayDriver([multiModelToolTranscript()])
+  const registry = new CodingNsCliAdapterRegistry([replay.driver])
+  try {
+    const result = await settle(registry)
+    assert.deepEqual(result.usages, [
+      { inputTokens: 100, outputTokens: 114, cacheReadTokens: 40, cacheWriteTokens: 5, totalTokens: 259 },
+      { inputTokens: 200, outputTokens: 57, cacheReadTokens: 60, cacheWriteTokens: 10, totalTokens: 327 },
+    ])
+    assert.equal(result.lastSample?.cacheHitRate, 22.2222)
+    assert.equal(result.lastSample?.contextTokens, 175)
+    assert.equal(replay.spawns(), 1)
+  } finally { await registry.dispose() }
+})
 
 test('Claude tool-step accounting does not add an earlier request to the cumulative result twice', async () => {
   const replay = replayDriver([transcript()])
@@ -183,13 +242,13 @@ test('Claude does not subtract one user turn\'s accounting from the next turn or
 // Load pinned DSH libraries into memory; no server, profile, or provider is started.
 const runtime = process.env.CODINGNS_STAGE0_RUNTIME_DIR
   ?? join(homedir(), '.local/share/codingns/deepseek-harness/0.2.1-alpha.3/node_modules/@deepseek-ai')
-test('real DSH billing projection records the Claude turn aggregate exactly once', { skip: !existsSync(join(runtime, 'dsh-token-meter/lib/index.js')) }, async () => {
+test('real DSH billing projection records the Claude multi-model turn aggregate exactly once', { skip: !existsSync(join(runtime, 'dsh-token-meter/lib/index.js')) }, async () => {
   const [{ Context }, { SessionProjectionRegistry }, { Session }, { TokenMeter }] = await Promise.all([
     'cordis/lib/index.js', 'dsh-session-projection/lib/index.js', 'dsh-session/lib/index.js', 'dsh-token-meter/lib/index.js',
   ].map(path => import(pathToFileURL(join(runtime, path)).href)))
   const ctx = new Context(), projections = new SessionProjectionRegistry(ctx)
   new TokenMeter(ctx)
-  const replay = replayDriver([transcript()])
+  const replay = replayDriver([multiModelToolTranscript()])
   const registry = new CodingNsCliAdapterRegistry([replay.driver])
   try {
     const result = await settle(registry)
