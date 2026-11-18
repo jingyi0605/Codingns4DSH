@@ -673,7 +673,7 @@ test('Antigravity 分步续读忽略已结算工具的重复终态，后续工�
   } finally { await registry.dispose() }
 })
 
-test('Antigravity 从 agy models 动态加载模型并合并思考档位', async () => {
+test('Antigravity 从 stdout 加载目录并合并档位，只有诊断时返回可重试回退目录', async () => {
   const modelProbeCalls: string[][] = []
   const modelProbeOptions: Array<{ shell?: unknown; stdio?: unknown; env?: { PATH?: unknown } }> = []
   const driver = new AntigravityDriver({
@@ -692,16 +692,17 @@ test('Antigravity 从 agy models 动态加载模型并合并思考档位', async
       child.stderr = new PassThrough()
       child.kill = () => true
       queueMicrotask(() => {
-        child.stdout.end([
-          'Fetching available models...',
+        child.stdout.end(modelProbeCalls.length === 1 ? [
+          'Warning: loading cached catalog',
+          'magpie/hl/gpt-6-astra\tGPT-6 Astra',
           'gemini-3.8-flash-high\tGemini 3.8 Flash (High)',
           'gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)',
           'gemini-3.8-flash-low\tGemini 3.8 Flash (Low)',
           'gemini-3.1-pro-high\tGemini 3.1 Pro (High)',
           'gemini-3.1-pro-low\tGemini 3.1 Pro (Low)',
           'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)',
-        ].join('\n'))
-        child.stderr.end()
+        ].join('\n') : 'Warning: loading cached catalog\n')
+        child.stderr.end('Fetching available models...\nWarning:\tloading cached catalog\n')
         child.emit('close', 0)
       })
       return child
@@ -711,6 +712,7 @@ test('Antigravity 从 agy models 动态加载模型并合并思考档位', async
   const catalog = await driver.listModels()
   assert.deepEqual(catalog.groups[0]?.models, [
     { id: 'provider-default', name: '跟随 Antigravity 默认模型', efforts: [] },
+    { id: 'magpie/hl/gpt-6-astra', name: 'GPT-6 Astra', efforts: [] },
     { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', efforts: ['low', 'medium', 'high'] },
     { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro', efforts: ['low', 'high'] },
     { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (Thinking)', efforts: [] },
@@ -719,6 +721,9 @@ test('Antigravity 从 agy models 动态加载模型并合并思考档位', async
   assert.deepEqual(modelProbeOptions[0]?.stdio, ['ignore', 'pipe', 'pipe'])
   assert.equal(modelProbeOptions[0]?.shell, process.platform === 'win32')
   assert.equal(typeof modelProbeOptions[0]?.env?.PATH, 'string')
+  const fallback = await driver.listModels()
+  assert.equal(fallback.fallback, true)
+  assert.deepEqual(fallback.groups[0]?.models.map(model => model.id), ['provider-default'])
   driver.dispose()
 })
 
