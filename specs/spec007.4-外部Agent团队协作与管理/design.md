@@ -53,6 +53,8 @@ Observe optional `agentTeams` service installation/disposal using its Context li
 
 Native TeamService performs `startActivation()` on supported hosts. Retain `startNativeSubagent()` for ordinary delegation; do not create a Team member through the ordinary dispatch path and later attach it to a roster.
 
+Ordinary activation parameter conversion lives in `src/dsh-capabilities/host/subagent-activation-adapter.ts`. Hosts exposing the named-tree `namesOf`/`rootOf` contract accept top-level `parent`, `prompt`, `cwd`, and `agentOptions`; older Activation hosts accept these fields inside `request`. Detect that published service structure before making the call, preserve the exact parent Agent and caller signal, and never retry a failed creation with another shape. Both contracts keep `delivery: 'parent'`; ordinary delegation does not require Team mode. The capability routes/matrix record the named-tree contract separately from the legacy Activation route.
+
 Alpha.3's `agentPreset` declaration and its peer/session activation rules remain confined to existing version adapters. Full Team support does not require alpha.3-only prompt translation or performance capabilities.
 
 ## 4. Tool and bridge contract
