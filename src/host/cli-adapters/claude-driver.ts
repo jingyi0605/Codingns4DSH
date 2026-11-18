@@ -8,7 +8,7 @@ import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } 
 import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel } from './model-catalog.js'
 import { discoverClaudeModelCatalog } from './claude-model-options.js'
 import { spawnClaudeProcess } from './claude-process.js'
-import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
+import { findJsonlRecord, probeStoredSession } from './session-probe.js'
 import { firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
 import { buildClaudeUserContent } from './attachment-utils.js'
 import { WINDOWS, commandEnvironment, runAsyncCommand, type CodingNsChildProcess } from './process-utils.js'
@@ -17,6 +17,8 @@ import { readAgentQuestions } from './interaction-events.js'
 import { scanCompatibleSkills } from './skill-filesystem.js'
 import { usageChunk } from './rpc-driver-utils.js'
 import { ClaudePerformanceTracker } from './claude-performance.js'
+
+const CLAUDE_SESSION_PROBE_MAX_BYTES = 1024 * 1024
 
 export interface ClaudeCodeDriverOptions extends StandardStreamDriverOptions {
   readonly now?: () => number
@@ -275,7 +277,15 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     return probeStoredSession(input, {
       roots: this.sessionRoots,
       matches: (path, entry, id) => entry.isFile() && basename(path) === `${id}.jsonl`,
-      validate: async (path, id) => (await readFirstJsonRecord(path))?.sessionId === id,
+      validate: async (path, id) => {
+        const record = await findJsonlRecord(
+          path,
+          (record) => typeof record.sessionId === 'string' && record.sessionId.trim() !== '',
+          CLAUDE_SESSION_PROBE_MAX_BYTES,
+          input.signal,
+        )
+        return record === undefined ? 'inconclusive' : record.sessionId === id
+      },
     })
   }
 

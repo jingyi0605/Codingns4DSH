@@ -6,7 +6,7 @@ import type { CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from
 export interface StoredSessionProbeOptions {
   readonly roots: readonly string[]
   readonly matches: (path: string, entry: Dirent, providerSessionId: string) => boolean
-  readonly validate: (path: string, providerSessionId: string) => Promise<boolean>
+  readonly validate: (path: string, providerSessionId: string) => Promise<boolean | 'inconclusive'>
   readonly maxDepth?: number
 }
 
@@ -24,12 +24,17 @@ export async function probeStoredSession(
 
   const rawStoreRef = input.rawStoreRef?.trim()
   let exactHintFailure: CodingNsCliSessionProbeResult | undefined
+  let inconclusiveHint = false
+  // rawStoreRef 只是 hint。Provider 可能移动文件，也可能复用旧路径；ENOENT、
+  // 内容不匹配或损坏都必须继续扫描权威 roots，找到后再更新引用。
   if (rawStoreRef) {
     const exactResult = await validateCandidate(rawStoreRef, providerSessionId, options.validate, true, input.signal)
-    if (exactResult.state === 'available' || exactResult.state === 'unreachable' || exactResult.state === 'unknown') return exactResult
-    // rawStoreRef 只是 hint。Provider 可能移动文件，也可能复用旧路径；ENOENT、
-    // 内容不匹配或损坏都必须继续扫描权威 roots，找到后再更新引用。
-    exactHintFailure = exactResult
+    if (exactResult === 'inconclusive') {
+      inconclusiveHint = true
+    } else {
+      if (exactResult.state === 'available' || exactResult.state === 'unreachable' || exactResult.state === 'unknown') return exactResult
+      exactHintFailure = exactResult
+    }
   }
 
   let accessibleRoots = 0
@@ -41,25 +46,32 @@ export async function probeStoredSession(
       accessibleRoots += 1
       for (const entry of entries) if (options.matches(entry.path, entry.entry, providerSessionId)) candidates.push(entry.path)
     } catch (error) {
+      throwIfAborted(input.signal)
       if (errorCode(error) === 'ENOENT') continue
       if (isAccessError(error)) return { state: 'unreachable', reason: '无法读取 Provider 会话存储' }
       return { state: 'unknown', reason: 'Provider 会话存储探测失败' }
     }
   }
 
+  let sawInconclusive = inconclusiveHint
+  let sawCorrupt = false
+  for (const candidate of candidates) {
+    if (inconclusiveHint && candidate === rawStoreRef) continue
+    const result = await validateCandidate(candidate, providerSessionId, options.validate, false, input.signal)
+    if (result === 'inconclusive') {
+      sawInconclusive = true
+      continue
+    }
+    if (result.state === 'available') return result
+    if (result.state === 'unreachable' || result.state === 'unknown') return result
+    if (result.state === 'corrupt') sawCorrupt = true
+  }
+  if (sawInconclusive) return { state: 'unknown', reason: '未在探测范围内找到 Provider 会话标识' }
   if (candidates.length === 0) {
     if (exactHintFailure?.state === 'corrupt') return exactHintFailure
     return accessibleRoots > 0
       ? { state: 'missing', reason: 'Provider 会话存储中不存在该会话' }
       : exactHintFailure ?? { state: 'unknown', reason: 'Provider 会话存储不存在或尚未初始化' }
-  }
-
-  let sawCorrupt = false
-  for (const candidate of candidates) {
-    const result = await validateCandidate(candidate, providerSessionId, options.validate, false, input.signal)
-    if (result.state === 'available') return result
-    if (result.state === 'unreachable' || result.state === 'unknown') return result
-    if (result.state === 'corrupt') sawCorrupt = true
   }
   return sawCorrupt
     ? { state: 'corrupt', reason: 'Provider 会话记录无法验证' }
@@ -81,6 +93,51 @@ export async function readFirstJsonRecord(path: string): Promise<Record<string, 
   }
 }
 
+export async function findJsonlRecord(
+  path: string,
+  matches: (record: Record<string, unknown>) => boolean,
+  maxBytes: number,
+  signal?: AbortSignal,
+): Promise<Record<string, unknown> | undefined> {
+  throwIfAborted(signal)
+  const handle = await open(path, 'r')
+  try {
+    const buffer = Buffer.allocUnsafe(maxBytes)
+    let offset = 0
+    let lineStart = 0
+    while (offset < maxBytes) {
+      throwIfAborted(signal)
+      const { bytesRead } = await handle.read(buffer, offset, Math.min(64 * 1024, maxBytes - offset), offset)
+      throwIfAborted(signal)
+      if (bytesRead === 0) break
+      const end = offset + bytesRead
+      const readBytes = buffer.subarray(0, end)
+      for (let newline = readBytes.indexOf(0x0a, offset); newline !== -1; newline = readBytes.indexOf(0x0a, lineStart)) {
+        const record = matchingJsonRecord(readBytes.toString('utf8', lineStart, newline), matches)
+        if (record !== undefined) return record
+        lineStart = newline + 1
+      }
+      offset = end
+    }
+    if (lineStart === offset) return undefined
+    if (offset === maxBytes && (await handle.stat()).size > offset) return undefined
+    throwIfAborted(signal)
+    return matchingJsonRecord(buffer.toString('utf8', lineStart, offset), matches)
+  } finally {
+    await handle.close()
+  }
+}
+
+function matchingJsonRecord(
+  line: string,
+  matches: (record: Record<string, unknown>) => boolean,
+): Record<string, unknown> | undefined {
+  const trimmed = line.trim()
+  if (trimmed === '') return undefined
+  const value: unknown = JSON.parse(trimmed)
+  return isRecord(value) && matches(value) ? value : undefined
+}
+
 /** 将文件或目录引用规整到会话目录，供目录型 Provider 复用。 */
 export async function resolveSessionDirectory(path: string): Promise<string> {
   return (await stat(path)).isDirectory() ? path : dirname(path)
@@ -97,15 +154,17 @@ async function validateCandidate(
   validate: StoredSessionProbeOptions['validate'],
   exact: boolean,
   signal?: AbortSignal,
-): Promise<CodingNsCliSessionProbeResult> {
+): Promise<CodingNsCliSessionProbeResult | 'inconclusive'> {
   try {
     throwIfAborted(signal)
     const valid = await validate(path, providerSessionId)
     throwIfAborted(signal)
+    if (valid === 'inconclusive') return valid
     return valid
       ? { state: 'available', reason: 'Provider 原始会话可用', rawStoreRef: path }
       : { state: 'corrupt', reason: 'Provider 会话记录与绑定标识不一致', rawStoreRef: path }
   } catch (error) {
+    throwIfAborted(signal)
     if (errorCode(error) === 'ENOENT' || errorCode(error) === 'ENOTDIR') {
       return { state: 'missing', reason: exact ? '绑定的 Provider 会话记录已被删除' : 'Provider 会话记录已被删除' }
     }
