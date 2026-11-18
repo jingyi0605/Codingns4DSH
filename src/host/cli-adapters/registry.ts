@@ -762,9 +762,11 @@ export class CodingNsCliAdapterRegistry {
       if (resumingSegmentedTurn) driverInput = withTurnPermission(driverInput, suspended.permission)
       let deferredPeerInput = resumingSegmentedTurn ? suspended?.deferredPeerInput : undefined
       if (resumingSegmentedTurn && input.peerInput) {
-        if (suspended?.iterator !== null && driver.steer !== undefined) {
-          await driver.steer(input.sessionId, input.prompt)
-        } else if (driver.steer === undefined) {
+        // ZCode's explicit user steer may stop the current turn. Peer input still waits for it.
+        const steerPeer = input.adapterId === 'zcode' ? undefined : driver.steer
+        if (suspended?.iterator !== null && steerPeer !== undefined) {
+          await steerPeer.call(driver, input.sessionId, input.prompt)
+        } else if (steerPeer === undefined) {
           deferredPeerInput = deferredPeerInput ? {
             ...input, prompt: `${deferredPeerInput.prompt}\n\n${input.prompt}`,
             attachments: [...(deferredPeerInput.attachments ?? []), ...(input.attachments ?? [])],

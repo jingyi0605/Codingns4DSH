@@ -3,7 +3,9 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { setTimeout as delay } from 'node:timers/promises'
 import { decryptZcodeCredential } from './zcode-credentials.js'
+import { accountProviderApiKeyEntry, accountProviderApiKeyExists, zcodeAccountFamily } from './zcode-account-keys.js'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentPermissionResponse,
@@ -41,6 +43,7 @@ interface ZcodeSession {
   readonly background: ZcodeBackgroundTurns
   readonly backgroundPermissions: Map<string, CodingNsCliTurnInput['permission']>
   foregroundNotification: ((message: JsonRpcMessage) => void) | undefined
+  queueSteer?: (prompt: string) => void
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
   workflowEnabled: boolean
@@ -80,6 +83,9 @@ interface ZcodeSession {
 }
 
 const ZCODE_COMPACTION_TIMEOUT_MS = 300_000
+const ZCODE_STEER_TOOL_WAIT_MS = 10_000
+const ZCODE_STEER_STOP_TIMEOUT_MS = 5_000
+const ZCODE_STEER_SEND_ATTEMPTS = 8
 
 export class ZcodeCompactionTimeoutError extends Error {
   readonly code = NATIVE_COMPACTION_TIMEOUT_CODE
@@ -125,7 +131,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     id: 'zcode',
     name: 'ZCode',
     protocol: 'json-rpc',
-    capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'],
+    capabilities: ['models', 'stream', 'resume', 'interrupt', 'steer', 'tool-events', 'reasoning', 'usage', 'permission', 'questions'],
   } as const
   /**
    * ZCode 常驻会话跨 DSH step 继续消费同一条事件流：step 边界只挂起迭代器，
@@ -210,7 +216,16 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       rpc = this.startAppServer()
       this.installServerRequestHandler(rpc)
       const snapshot = await this.syncAccountProviderConfig(rpc)
+      // 同一把 key 只探测一次：个人版套餐复用 team 槽位的 key 时，两条槽位指向
+      // 同一份额度，若逐个探测会在菜单里出现两条一模一样的套餐。这里只跳过
+      // 「current 借用 key 的那个来源槽位」；start-plan 等自有凭据路径不受影响。
+      const credentials = readJsonFile(join(this.homeDirectory, '.zcode', 'v2', 'credentials.json')) ?? {}
+      const currentProvider = Object.entries(isRecord(snapshot?.states) ? snapshot.states : {})
+        .find(([, state]) => isRecord(state) && state.current === true)?.[0]
+      const currentEntry = currentProvider === undefined ? null : accountProviderApiKeyEntry(currentProvider, credentials)
+      const borrowedSource = currentEntry !== null && currentEntry.borrowed === true ? currentEntry.sourceProviderId : undefined
       const candidates = zcodeAccountCatalogCandidates(snapshot)
+        .filter(id => borrowedSource === undefined || id !== borrowedSource)
       // 原生只公开 current account-plan。逐连接读取原生目录，合并后关闭
       // deferred 探测会话；不改用户套餐设置，也不启动模型回合。
       for (const providerId of [undefined, ...candidates]) {
@@ -350,6 +365,15 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     yield* withAttachmentPaths(input, (prepared) => this.executePreparedTurn(prepared))
   }
 
+  steer(sessionId: string, prompt: string): void {
+    const session = this.sessions.get(sessionId)
+    if (!session?.acceptingInteractions || session.queueSteer === undefined) {
+      throw new Error('ZCode 没有可插话的前台回合')
+    }
+    const instruction = prompt.trim()
+    if (instruction) session.queueSteer(instruction)
+  }
+
   private async *executePreparedTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
     if (input.signal?.aborted) { yield { type: 'finish', reason: 'cancel' }; return }
     if (input.externalTurnId !== undefined) {
@@ -421,7 +445,10 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       rpcExited = true
       eventQueue.close()
     })
-    let sendError: unknown = null
+    let pendingSteer: string | undefined
+    let steerTimer: ReturnType<typeof setTimeout> | undefined
+    let waitingForStop = false
+    const activeTools = new Set<string>()
     // resume/subscribe 已完成；send 响应前的交互也必须立即消费，避免双向等待。
     const onNotification = (message: JsonRpcMessage): void => {
       if (!session.acceptingInteractions) return
@@ -435,6 +462,16 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     session.foregroundNotification = onNotification
     session.background.beginForeground()
     session.acceptingInteractions = true
+    session.queueSteer = (prompt) => {
+      if (pendingSteer === undefined) {
+        pendingSteer = prompt
+        steerTimer = setTimeout(() => eventQueue.push({ method: 'codingns/steer-tool-timeout' }), ZCODE_STEER_TOOL_WAIT_MS)
+        steerTimer.unref()
+        eventQueue.push({ method: 'codingns/steer-requested' })
+      } else {
+        pendingSteer += `\n\n${prompt}`
+      }
+    }
     const turnContent = promptWithAttachmentPaths(
       zcodePrompt(input.prompt, session.workflowEnabled),
       input.attachments ?? [],
@@ -445,14 +482,28 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       killOnAbort: false,
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     }
-    const sendPromise = session.rpc.request('session/send', {
-      sessionId: session.acpSessionId,
-      content: turnContent,
-    }, sendOptions)
-      .then(() => undefined, (error: unknown) => {
-        sendError = error
-        eventQueue.push({ method: 'codingns/send-failed' })
-      })
+    const requestSend = (content: string) => session.rpc.request('session/send', { sessionId: session.acpSessionId, content }, sendOptions)
+    const sendAfterSteer = async (content: string): Promise<unknown> => {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          return await requestSend(content)
+        } catch (error) {
+          // Native idle can precede release of the turn's execution lock.
+          if (!(error instanceof JsonRpcRequestError) || error.code !== -32010 || attempt >= ZCODE_STEER_SEND_ATTEMPTS) throw error
+          await delay(150, undefined, { signal: input.signal })
+        }
+      }
+    }
+    const send = (content: string, afterSteer = false) => {
+      const attempt: { error: unknown; promise: Promise<void> } = { error: null, promise: Promise.resolve() }
+      attempt.promise = (afterSteer ? sendAfterSteer(content) : requestSend(content))
+        .then(() => undefined, (error: unknown) => {
+          attempt.error = error
+          eventQueue.push({ method: 'codingns/send-failed' })
+        })
+      return attempt
+    }
+    let sendAttempt = send(turnContent)
     const onAbort = (): void => {
       session.acceptingInteractions = false
       session.background.cancel()
@@ -469,14 +520,54 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
         const next = await eventQueue.next()
         if (next.done) break
         if (input.signal?.aborted) break
-        if (sendError !== null && !input.signal?.aborted) throw sendError
+        if (sendAttempt.error !== null && !waitingForStop) throw sendAttempt.error
+        if (next.value.method === 'codingns/steer-stop-timeout' && waitingForStop) {
+          throw new Error('ZCode 未确认停止当前回合，插话未发送')
+        }
         const tool = telemetry.observe(next.value)
-        if (tool !== null) yield tool
+        if (tool !== null) {
+          if (tool.callId !== undefined && tool.status !== undefined) {
+            if (tool.status === 'completed' || tool.status === 'failed') activeTools.delete(tool.callId)
+            else activeTools.add(tool.callId)
+          }
+          yield tool
+        }
         const context = telemetry.takeContextObservation()
         if (context !== null) yield context
         const chunk = zcodeMessageToChunk(next.value, session, input)
         if (chunk !== null) yield* asZcodeChunks(chunk)
         terminalReason = readZcodeTerminalReason(next.value, session, input) ?? terminalReason
+        if (pendingSteer !== undefined) {
+          if (terminalReason === 'stop' || (waitingForStop && terminalReason !== null)) {
+            const prompt = pendingSteer
+            pendingSteer = undefined
+            clearTimeout(steerTimer)
+            waitingForStop = false
+            terminalReason = null
+            activeTools.clear()
+            session.sawRunning = false
+            session.sawText = false
+            session.streamingMessageId = undefined
+            session.streamingMessageStarted = false
+            session.failureCode = undefined
+            session.failureMessage = undefined
+            yield { type: 'message-boundary', channel: 'text', messageId: randomUUID() }
+            if (input.signal?.aborted) break
+            session.background.beginForeground()
+            sendAttempt = send(zcodePrompt(prompt, session.workflowEnabled), true)
+            continue
+          }
+          if (terminalReason === null && !waitingForStop && (activeTools.size === 0 || next.value.method === 'codingns/steer-tool-timeout')) {
+            waitingForStop = true
+            clearTimeout(steerTimer)
+            cancelZcodeInteractions(session, session.emittedInteractions)
+            const timeout = AbortSignal.timeout(ZCODE_STEER_STOP_TIMEOUT_MS)
+            const signal = input.signal === undefined ? timeout : AbortSignal.any([input.signal, timeout])
+            await session.rpc.request('session/stop', { sessionId: session.acpSessionId }, { signal, killOnAbort: false })
+            steerTimer = setTimeout(() => eventQueue.push({ method: 'codingns/steer-stop-timeout' }), ZCODE_STEER_STOP_TIMEOUT_MS)
+            steerTimer.unref()
+          }
+        }
         // ZCode 一个回合由多个 step 组成（每个 step 是一次模型请求加它发起的工具）。
         // step-finish(reason=tool-calls) 表示本 step 还会续跑；在这里收口成 DSH
         // step，思考与工具结果才各自成为可折叠的一块，而不是全挤进同一条消息。
@@ -497,8 +588,8 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
         }
       }
       if (rpcExited && !input.signal?.aborted) throw new Error('Agent 进程已退出')
-      await sendPromise
-      if (sendError !== null && !input.signal?.aborted) throw sendError
+      await sendAttempt.promise
+      if (sendAttempt.error !== null && !input.signal?.aborted) throw sendAttempt.error
       if (terminalReason === 'stop' || terminalReason === null) {
         if (input.signal?.aborted) {
           terminalReason = 'cancel'
@@ -532,6 +623,8 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       if (!input.signal?.aborted) throw error
       yield { type: 'finish', reason: 'cancel' }
     } finally {
+      clearTimeout(steerTimer)
+      delete session.queueSteer
       input.signal?.removeEventListener('abort', onAbort)
       session.acceptingInteractions = false
       session.foregroundNotification = undefined
@@ -1265,12 +1358,14 @@ function readZcodeAccountProviderSnapshot(runtime: CodingNsDesktopAppRuntime, ho
     const rules = document.config?.providerConfigRules?.providerRules
     if (!Array.isArray(rules)) return null
     const settings = readJsonFile(join(homeDirectory, '.zcode', 'v2', 'setting.json'))
+    // current 既要出现在目录里，也要真的能跑：OAuth 连接的套餐放在 candidates 里
+    // 逐个探测列出，但默认仍落在 DSH 能交出凭据的套餐上（见 accountProviderUsable）。
     const preferred = selectedProviderId ?? resolvePreferredAccountProvider(rules, settings,
-      rule => accountProviderHasCredentials(rule, homeDirectory),
-      () => accountProviderHasCredentials({ config: { access: { mode: 'start-plan' } } }, homeDirectory) === true)
+      rule => accountProviderUsable(rule, homeDirectory),
+      () => accountProviderUsable({ config: { access: { mode: 'start-plan' } } }, homeDirectory) === true)
     if (selectedProviderId !== undefined) {
       const selected = rules.find(rule => isRecord(rule) && rule.providerId === selectedProviderId)
-      if (!selected || accountProviderHasCredentials(selected, homeDirectory) !== true) throw new Error(`ZCode 套餐连接凭据不可用: ${selectedProviderId}`)
+      if (!selected || accountProviderConnected(selected, homeDirectory) !== true) throw new Error(`ZCode 套餐连接凭据不可用: ${selectedProviderId}`)
     }
     const providers: Record<string, unknown> = {}
     const states: Record<string, unknown> = {}
@@ -1280,7 +1375,7 @@ function readZcodeAccountProviderSnapshot(runtime: CodingNsDesktopAppRuntime, ho
       // ZCode 的试用额度属于 start-plan，和设置中选中的 coding-plan 是两条
       // 独立的 Provider。只把 preferred 标为 entitled 会把试用 Provider
       // 错误地过滤掉，随后模型请求就会落到没有资源包的 BigModel API。
-      const entitled = accountProviderHasCredentials(rule, homeDirectory) ?? rule.providerId === preferred
+      const entitled = accountProviderConnected(rule, homeDirectory) ?? rule.providerId === preferred
       const active = rule.providerId === preferred
       providers[rule.providerId] = {
         access: { type: 'zhipu-account', entitled },
@@ -1345,8 +1440,19 @@ async function handleZcodeServerRequest(request: JsonRpcMessage, homeDirectory =
       }
       return { headersApplied: false, errorMessage: 'ZCode Start Plan 登录凭据不可用，请重新登录 ZCode' }
     }
-    const apiKey = providerId === '' ? null : await readZcodeProviderApiKey(providerId, homeDirectory)
-    if (apiKey !== null) return { headersApplied: true, requestAuth: { apiKey } }
+    if (providerId !== '') {
+      const apiKey = await readZcodeProviderApiKey(providerId, homeDirectory)
+      if (apiKey !== null) return { headersApplied: true, requestAuth: { apiKey } }
+      // 个人/团队套餐改用 OAuth 连接后，ZCode 不再写 coding-plan 的 api-key。这类
+      // 套餐的项目 Token 由 ZCode 用登录态做签名请求签发，DSH 无法复现；实测把
+      // OAuth 登录令牌当 api-key 会被 ZCode 自己的 v4 签名器拒绝
+      // （ClientRequestSigningV4Error，请求根本不会出网，也不会带指纹重问）。
+      // 因此直接给出可操作原因，不做注定失败的尝试。
+      const family = zcodeAccountFamily(providerId)
+      if (family !== null && zcodeOauthAccessTokenValue(family, homeDirectory) !== null) {
+        return { headersApplied: false, errorMessage: ZCODE_OAUTH_PLAN_NEEDS_API_KEY }
+      }
+    }
     return { headersApplied: false, errorMessage: 'ZCode Provider 账号凭据不可用，请重新登录 ZCode' }
   }
   // 旧版 app-server 可能发送尚未定义的可选请求；保持兼容，不阻断会话创建。
@@ -1374,18 +1480,62 @@ function resolveZcodeRuntimeHeaders(homeDirectory = homedir()): Record<string, s
 async function readZcodeProviderApiKey(providerId: string, homeDirectory = homedir()): Promise<string | null> {
   const path = join(homeDirectory, '.zcode', 'v2', 'credentials.json')
   try {
-    const credentials = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
-    const prefix = `account-provider:coding-plan:${providerId}:account:`
-    const key = Object.keys(credentials).find((candidate) => candidate.startsWith(prefix) && candidate.endsWith(':api-key'))
-    if (key === undefined || typeof credentials[key] !== 'string') return null
-    return await decryptZcodeCredential(credentials[key], { credentialPath: path })
+    const credentials = JSON.parse(readFileSync(path, 'utf8')) as Record<string, any>
+    const entry = accountProviderApiKeyEntry(providerId, credentials)
+    if (entry === null) return null
+    const value = credentials[entry.key]
+    if (typeof value !== 'string') return null
+    return await decryptZcodeCredential(value, { credentialPath: path })
   } catch {
     return null
   }
 }
 
-/** 根据 ZCode 内置 Provider 的套餐类型判断本机是否有对应凭据。 */
-function accountProviderHasCredentials(rule: Record<string, any>, homeDirectory = homedir()): boolean | null {
+/**
+ * ZCode 账号族的登录令牌键。
+ *
+ * OAuth 连接的套餐不使用 coding-plan 的 api-key，登录令牌是唯一凭据；
+ * `setting.json` 的 `modelProviderFamilyModes` 声明该族处于 oauth 模式。
+ */
+const ZCODE_OAUTH_ACCESS_TOKEN_KEYS: Readonly<Record<string, readonly string[]>> = {
+  zai: ['oauth:zai:access_token', 'oauth:zai_cn:access_token'],
+  bigmodel: ['oauth:bigmodel:access_token'],
+}
+
+const ZCODE_OAUTH_PLAN_NEEDS_API_KEY = '该套餐在 ZCode 桌面端以 OAuth 方式连接，项目 Token 由 ZCode 自己签发，DSH 无法复现；请在 ZCode 的模型设置里改用 API Key 连接这个套餐后重试'
+
+/** 该族的 OAuth 登录令牌原文键；未处于 oauth 模式或没有令牌时返回 null。 */
+function zcodeOauthAccessTokenKey(family: string, homeDirectory = homedir()): string | null {
+  const settings = readJsonFile(join(homeDirectory, '.zcode', 'v2', 'setting.json'))
+  const modes = settings?.modelProviderFamilyModes
+  const mode = isRecord(modes) && typeof modes[family] === 'string' ? modes[family] : ''
+  if (mode !== 'oauth') return null
+  const credentials = readJsonFile(join(homeDirectory, '.zcode', 'v2', 'credentials.json')) ?? {}
+  for (const key of ZCODE_OAUTH_ACCESS_TOKEN_KEYS[family] ?? [`oauth:${family}:access_token`]) {
+    const value = credentials[key]
+    if (typeof value === 'string' && value.trim() !== '') return key
+  }
+  return null
+}
+
+/** 该族的 OAuth 登录令牌原文；未处于 oauth 模式或没有令牌时返回 null。 */
+function zcodeOauthAccessTokenValue(family: string, homeDirectory = homedir()): string | null {
+  const key = zcodeOauthAccessTokenKey(family, homeDirectory)
+  if (key === null) return null
+  const credentials = readJsonFile(join(homeDirectory, '.zcode', 'v2', 'credentials.json')) ?? {}
+  const value = credentials[key]
+  return typeof value === 'string' && value.trim() !== '' ? value : null
+}
+
+/**
+ * 账号套餐是否已连接：api-key、登录 JWT 或 OAuth 登录都算。
+ *
+ * 连接状态决定套餐能否出现在模型目录里。OAuth 连接的套餐（ZCode 桌面端
+ * `modelProviderFamilyModes[family] = "oauth"`）不再写 coding-plan 的 api-key，
+ * 只有 `oauth:<family>:access_token`；少了这一步，用户在设置里选中的套餐会
+ * 被判成未连接，直接从目录里消失。
+ */
+function accountProviderConnected(rule: Record<string, any>, homeDirectory = homedir()): boolean | null {
   const providerId = typeof rule.providerId === 'string' ? rule.providerId : ''
   const config = isRecord(rule.config) ? rule.config : {}
   const access = isRecord(config.access) ? config.access : {}
@@ -1393,17 +1543,39 @@ function accountProviderHasCredentials(rule: Record<string, any>, homeDirectory 
   const credentials = readJsonFile(join(homeDirectory, '.zcode', 'v2', 'credentials.json')) ?? {}
   if (mode === 'start-plan' || mode === 'off-peak') return typeof credentials.zcodejwttoken === 'string' && credentials.zcodejwttoken.trim() !== ''
   if (mode === 'individual-coding-plan' || mode === 'team-coding-plan') {
-    const prefix = `account-provider:coding-plan:${providerId}:account:`
-    return Object.entries(credentials).some(([key, value]) => key.startsWith(prefix) && key.endsWith(':api-key') && typeof value === 'string' && value.trim() !== '')
+    if (accountProviderApiKeyExists(providerId, credentials)) return true
+    const family = zcodeAccountFamily(providerId)
+    return family !== null && zcodeOauthAccessTokenValue(family, homeDirectory) !== null
   }
   return null
 }
 
+/**
+ * 账号套餐能否真正用于模型请求：DSH 只能交出 coding-plan 的 api-key 与登录 JWT。
+ *
+ * OAuth 连接的套餐需要 ZCode 用自己的登录态签发项目 Token，DSH 无法复现该
+ * 签名流程，实测把 OAuth 令牌当 api-key 会被 ZCode 的客户端签名器拒绝
+ * （`ClientRequestSigningV4Error`，请求不会出网）。因此 current 只在这里为真
+ * 的套餐里选，避免默认落到一个注定失败的连接上；coding-plan 允许在同家族内
+ * 复用可用 api-key（见 `accountProviderApiKeyEntry`）。
+ */
+function accountProviderUsable(rule: Record<string, any>, homeDirectory = homedir()): boolean | null {
+  const providerId = typeof rule.providerId === 'string' ? rule.providerId : ''
+  const config = isRecord(rule.config) ? rule.config : {}
+  const access = isRecord(config.access) ? config.access : {}
+  const mode = typeof access.mode === 'string' ? access.mode : ''
+  const credentials = readJsonFile(join(homeDirectory, '.zcode', 'v2', 'credentials.json')) ?? {}
+  if (mode === 'start-plan' || mode === 'off-peak') return typeof credentials.zcodejwttoken === 'string' && credentials.zcodejwttoken.trim() !== ''
+  if (mode === 'individual-coding-plan' || mode === 'team-coding-plan') return accountProviderApiKeyExists(providerId, credentials)
+  return null
+}
+
+/** 同族 key 复用与凭据键解析见 zcode-account-keys.ts；模型目录与用量读取共用。 */
 export function resolvePreferredAccountProvider(
   rules: readonly unknown[],
   settings: Record<string, any> | null,
-  hasCredentials: (rule: Record<string, any>) => boolean | null = accountProviderHasCredentials,
-  hasStartLogin: () => boolean = () => accountProviderHasCredentials({ config: { access: { mode: 'start-plan' } } }) === true,
+  hasCredentials: (rule: Record<string, any>) => boolean | null = accountProviderUsable,
+  hasStartLogin: () => boolean = () => accountProviderUsable({ config: { access: { mode: 'start-plan' } } }) === true,
 ): string | null {
   const ids = new Set(rules.flatMap((rule) => isRecord(rule) && typeof rule.providerId === 'string' && rule.providerId.startsWith('account:') ? [rule.providerId] : []))
   const selections = settings?.providerFamilyConnectionSelections
