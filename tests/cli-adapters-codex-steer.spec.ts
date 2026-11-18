@@ -3,7 +3,7 @@ import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
 import { JsonRpcRequestError } from '../data/build/dist/host/cli-adapters/json-rpc-process.js'
-import type { CodingNsAgentEvent } from '../src/shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsCliTurnInput } from '../src/shared/contracts/cli-adapter.js'
 
 interface RpcRequest {
   readonly id?: number
@@ -18,13 +18,18 @@ async function waitFor(predicate: () => boolean): Promise<void> {
 }
 
 /** 用内存中的 app-server 校验真实驱动请求，不启动进程或调用模型。 */
-async function createSteerHarness(segmented: boolean, steerTerminalGraceMs = 20) {
+async function createSteerHarness(
+  segmented: boolean,
+  steerTerminalGraceMs = 20,
+  launch: Pick<CodingNsCliTurnInput, 'cwd' | 'runtimeEnv'> = {},
+) {
   const sessionId = `codex-steer-${segmented}`
   const threadId = 'steer-thread'
   const turnId = 'steer-turn'
   const calls: RpcRequest[] = []
   const state = { serverTurnId: turnId as string | null, steerTurnId: null as string | null, deferSteer: false, completeOnSteer: false, rejectSteer: false }
   let turnStarts = 0
+  let kills = 0
   const controller = new AbortController()
   let completeTurn!: (completedTurnId?: string) => void
   let emit!: (message: unknown) => void
@@ -74,7 +79,8 @@ async function createSteerHarness(segmented: boolean, steerTerminalGraceMs = 20)
           return
         }
         if (request.method === 'turn/start') state.serverTurnId = ++turnStarts === 1 ? turnId : `${turnId}-${turnStarts}`
-        const result = request.method === 'thread/start' ? { thread: { id: threadId } }
+        const result = request.method === 'skills/list' ? { data: [{ cwd: launch.cwd, skills: [{ name: 'review', description: 'Review changes', enabled: true }] }] }
+          : request.method === 'thread/start' ? { thread: { id: threadId } }
           : request.method === 'turn/start' ? { turn: { id: state.serverTurnId, status: 'inProgress' } } : {}
         send({ jsonrpc: '2.0', id: request.id, result })
         if (request.method === 'turn/start') {
@@ -83,11 +89,11 @@ async function createSteerHarness(segmented: boolean, steerTerminalGraceMs = 20)
           } })
         }
       }
-      return { stdout, stderr, stdin: { write }, kill() { stdout.end(); stderr.end(); return true } }
+      return { stdout, stderr, stdin: { write }, kill() { kills += 1; stdout.end(); stderr.end(); return true } }
     }) as never,
   })
   const iterator = driver.executeTurn({
-    sessionId, messages: [], prompt: '执行任务', splitToolSteps: segmented, signal: controller.signal,
+    ...launch, sessionId, messages: [], prompt: '执行任务', splitToolSteps: segmented, signal: controller.signal,
   })[Symbol.asyncIterator]()
   // 等到正文真正产出，确保 turn/start 已解析，而不只停在 session-binding。
   while (true) {
@@ -102,6 +108,7 @@ async function createSteerHarness(segmented: boolean, steerTerminalGraceMs = 20)
   }
   return {
     driver, sessionId, threadId, turnId, calls, state,
+    get kills() { return kills },
     resolveSteer: () => resolveSteer(),
     sendTurnText(turnId: string, text: string, itemId = 'steer-message') {
       emit({ jsonrpc: '2.0', method: 'item/agentMessage/delta', params: {
@@ -304,6 +311,29 @@ async function collect(iterator: AsyncIterator<CodingNsAgentEvent>, events: Codi
   for (let next = await iterator.next(); !next.done; next = await iterator.next()) events.push(next.value)
   return events
 }
+
+test('Codex skills discovery preserves a suspended turn with a custom runtime environment', { timeout: 5_000 }, async () => {
+  const cwd = process.cwd()
+  const runtimeEnv = { CODINGNS_TEST_CREDENTIAL: 'fake-token' }
+  const harness = await createSteerHarness(true, undefined, { cwd, runtimeEnv })
+  const { driver, sessionId, calls } = harness
+  try {
+    await suspendAfterTool(harness, 'buffered text from the original turn')
+    assert.equal((await harness.next()).done, true)
+    const skills = await driver.listSkills({ sessionId, cwd })
+    assert.deepEqual(skills.map(({ name, description }) => ({ name, description })), [{ name: 'review', description: 'Review changes' }])
+    assert.equal(harness.kills, 0)
+    harness.completeTurn()
+    const resumed = driver.executeTurn({
+      sessionId, cwd, runtimeEnv, messages: [], prompt: '', splitToolSteps: true, resumeSegmentedTurn: true,
+    })[Symbol.asyncIterator]()
+    const events = await collect(resumed)
+    assert.ok(events.some(event => event.type === 'text-delta' && event.text === 'buffered text from the original turn'))
+    assert.deepEqual(events.at(-1), { type: 'finish', reason: 'stop' })
+    assert.equal(calls.filter(call => call.method === 'initialize').length, 1)
+    assert.equal(calls.filter(call => call.method === 'turn/start').length, 1)
+  } finally { await harness.dispose() }
+})
 
 const COMPLETION_TIMING = { 'before-resume': '续段前', 'during-steer': '插话请求期间' } as const
 for (const completion of ['before-resume', 'during-steer'] as const) {
