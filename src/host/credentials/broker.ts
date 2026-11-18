@@ -3,6 +3,7 @@ import { delimiter, dirname, join } from 'node:path'
 import { createServer, type AddressInfo, type Server, type Socket } from 'node:net'
 import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
+import { tmpdir } from 'node:os'
 import { spawn, type ChildProcess } from 'node:child_process'
 import type {
   CredentialBrokerBinding,
@@ -14,6 +15,7 @@ import type {
 } from '../../shared/contracts/credentials.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import { CredentialService } from './service.js'
+import { windowsShellInvocation } from '../cli-adapters/process-utils.js'
 
 const REQUEST_TTL_MS = 8 * 60 * 60 * 1000
 const CLEANUP_INTERVAL_MS = 60 * 1000
@@ -102,7 +104,7 @@ export class CredentialBroker {
     if (this.active) return
     this.active = true
     try {
-      this.socketDirectory = await mkdtemp(join(process.env.TMPDIR ?? '/tmp', 'codingns-credential-broker-'))
+      this.socketDirectory = await mkdtemp(join(tmpdir(), 'codingns-credential-broker-'))
       this.server = createServer({ allowHalfOpen: true }, (socket) => this.handleSocket(socket))
       if (process.platform === 'win32') {
         await listenServer(this.server, 0, '127.0.0.1')
@@ -253,12 +255,17 @@ export class CredentialBroker {
       if (environment.DISPLAY === undefined || environment.DISPLAY === '') environment.DISPLAY = 'codingns:0'
     }
     const [command, ...args] = input.argv
-    const child = this.runSpawn(command!, args, {
+    // Native executables receive literal argv. Bare commands and batch launchers
+    // retain cmd lookup (including input.cwd), without a separate discovery pass.
+    const batch = process.platform === 'win32' && !/\.(?:exe|com)$/iu.test(command!)
+    const invocation = batch ? windowsShellInvocation(command!, args) : { command: command!, args }
+    const child = this.runSpawn(invocation.command, [...invocation.args], {
       cwd: input.cwd,
       env: environment,
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
-      shell: process.platform === 'win32',
+      shell: false,
+      ...(batch ? { windowsVerbatimArguments: true } : {}),
     })
     this.children.set(child, grant.expiresAt)
     const stdout = collectOutput(child.stdout, MAX_OUTPUT_BYTES)
@@ -401,7 +408,7 @@ export class CredentialBroker {
   }
 
   private async createCliDirectory(): Promise<string> {
-    const directory = await mkdtemp(join(process.env.TMPDIR ?? '/tmp', 'codingns-credential-bin-'))
+    const directory = await mkdtemp(join(tmpdir(), 'codingns-credential-bin-'))
     const source = await readFile(this.cliModulePath)
     if (process.platform === 'win32') {
       const moduleTarget = join(directory, 'codingns-credential.mjs')

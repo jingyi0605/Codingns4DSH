@@ -2,7 +2,7 @@ import { isNativeApprovalMode, resolveNativeApprovalPermission } from '../../sha
 import { ZcodeSubagentService } from './zcode-subagent-service.js'
 import { readExternalTurn } from './background-turn.js'
 import { installBackgroundTurnDelivery } from './background-turn-delivery.js'
-import { zcodeContextProjection } from './zcode-context-projection.js'
+import { antigravityContextProjection, zcodeContextProjection } from './provider-context-projection.js'
 import type { FeatureModule, FeatureResourceScope } from '../../shared/contracts/feature.js'
 import type { CodingNsCliApprovalPolicy, CodingNsCliAttachment, CodingNsCliMessage, CodingNsCliModelCatalog, CodingNsCliPermissionState, CodingNsCliSandboxMode, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
 import { CommandCodeDriver } from './command-code-driver.js'
@@ -200,7 +200,7 @@ export function createCliAdaptersFeature(options: {
         const performance = createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext)
           .getProfile(context.services.dshContext).capabilities.get('session.external-performance')?.value as SessionPerformanceAdapter | undefined
         if (performance !== undefined) {
-          for (const projection of [codexPerformanceProjection, claudePerformanceProjection, grokPerformanceProjection, grokContextProjection, zcodeContextProjection, piPerformanceProjection, antigravityPerformanceProjection]) {
+          for (const projection of [codexPerformanceProjection, claudePerformanceProjection, grokPerformanceProjection, grokContextProjection, zcodeContextProjection, piPerformanceProjection, antigravityPerformanceProjection, antigravityContextProjection]) {
             context.resources.add(await performance.install(projection))
           }
         }
@@ -362,14 +362,15 @@ export function createCliAdaptersFeature(options: {
             return registry.supportsCompaction(sessionId)
           },
           error: kind => ({ kind: 'error', text: hostBrowserText(resolveHostPushLocale(context.services.settingsProvider), `compact.${kind}`) }),
-          async compact(sessionId, cwd, signal) {
+          async compact(sessionId, cwd, signal, sourceCommandId) {
             publishExternalStatus(sessionId, true)
             try {
               const config = registry.getSession(sessionId)
               const locale = resolveHostPushLocale(context.services.settingsProvider)
               if (!config.providerSessionId) return { kind: 'success', text: hostBrowserText(locale, 'compact.empty', { agent: config.adapterId }) }
-              const result = await registry.compact(sessionId, cwd, signal)
-              return { kind: 'success', text: result.message?.trim() || hostBrowserText(locale, result.compacted ? 'compact.completed' : 'compact.unchanged', { agent: config.adapterId }) }
+              const result = await registry.compact(sessionId, cwd, signal, sourceCommandId)
+              return { kind: 'success', text: result.message?.trim() || hostBrowserText(locale, result.compacted ? 'compact.completed' : 'compact.unchanged', { agent: config.adapterId }),
+                ...(result.sourceEventSeq === undefined ? {} : { sourceEventSeq: result.sourceEventSeq }) }
             } finally {
               publishExternalStatus(sessionId, false)
             }

@@ -1,5 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { dirname } from 'node:path'
+import { dirname, join } from 'node:path'
 import type {
   PersistentTerminalRecord,
   TerminalOwnerScope,
@@ -148,7 +148,7 @@ export class InMemoryTerminalStorePersistence implements TerminalStorePersistenc
 }
 
 export function terminalStorePath(settingsDocumentPath: string): string {
-  return `${dirname(settingsDocumentPath)}/codingns4dsh/terminals.json`
+  return join(dirname(settingsDocumentPath), 'codingns4dsh', 'terminals.json')
 }
 
 function parseDocument(value: unknown): TerminalStoreDocument {

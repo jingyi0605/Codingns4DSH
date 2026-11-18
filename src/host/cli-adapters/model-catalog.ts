@@ -337,8 +337,7 @@ export function parseAntigravityModels(output: string): CodingNsCliModelCatalog 
   const grouped = new Map<string, { name: string; efforts: string[] }>()
   for (const rawLine of output.split(/\r?\n/u)) {
     const line = rawLine.trim()
-    if (line === '' || /^fetching available models\.\.\.$/iu.test(line)) continue
-    const match = line.match(/^([^\s]+)[\t ]+(.+)$/u)
+    const match = line.match(/^(\S+)\t+(.+)$/u)
     if (!match) continue
     const id = match[1]!.trim()
     const label = match[2]!.trim()
@@ -386,6 +385,7 @@ const ANTIGRAVITY_CONTEXT_WINDOWS = new Map<string, number>([
   ['gemini-3-flash', 1_048_576],
   ['gemini-2.5-pro', 1_048_576],
   ['gemini-2.5-flash', 1_048_576],
+  ['gemini-4-argon', 1_048_576],
   // `agy 1.5.9` exposes Gemini 4 Hydrogen as an explicit model id.
   ['gemini-4-hydrogen', 1_048_576],
   ['claude-sonnet-4-6', 250_000],
@@ -422,7 +422,7 @@ export function knownAntigravityContextWindow(
 ): number | undefined {
   const resolved = resolveAntigravityModelId(modelId, options)
   if (resolved !== null) {
-    const window = ANTIGRAVITY_CONTEXT_WINDOWS.get(resolved)
+    const window = ANTIGRAVITY_CONTEXT_WINDOWS.get(resolved.replace(ANTIGRAVITY_EFFORT_SUFFIX, '$<base>'))
     if (window !== undefined) return window
     // 显式指定的未知模型没有可信窗口；只有 provider-default 才退回默认模型。
     if (!isProviderDefaultModel(modelId)) return undefined

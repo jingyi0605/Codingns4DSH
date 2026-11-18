@@ -15,7 +15,7 @@ import type { CodingNsAgentEvent } from '../src/shared/contracts/cli-adapter.js'
  */
 function scriptedDriver(
   turns: readonly (readonly Record<string, unknown>[])[],
-  options: { readonly contextWindow?: number; readonly modelId?: string | null; readonly resolveDefaultContextWindow?: boolean } = {},
+  options: { readonly contextWindow?: number; readonly modelId?: string | null; readonly resolveDefaultContextWindow?: boolean; readonly onRequest?: () => void } = {},
 ) {
   const calls: string[][] = []
   const inputs: string[] = []
@@ -42,6 +42,7 @@ function scriptedDriver(
           if (emitted) return
           emitted = true
           queueMicrotask(() => {
+            options.onRequest?.()
             for (const line of lines) stdout.write(`${JSON.stringify(line)}\n`)
             stdout.end()
             stderr.end()
@@ -394,6 +395,25 @@ test('Antigravity Hydrogen 模型使用默认解析器提供的上下文窗口',
   }
 })
 
+test('Antigravity Argon 用最后一次模型调用计算上下文占用', async () => {
+  const { driver } = scriptedDriver([[
+    agentResponseUsage(1, { input_tokens: 12_000, output_tokens: 40, cache_read_tokens: 0, total_tokens: 12_040 }),
+    agentResponseUsage(3, { input_tokens: 2_000, output_tokens: 20, cache_read_tokens: 11_000, total_tokens: 2_020 }),
+    resultEvent({ input_tokens: 14_000, output_tokens: 60, cache_read_tokens: 11_000, total_tokens: 14_060 }),
+  ]], { modelId: 'gemini-4-argon', resolveDefaultContextWindow: true })
+
+  try {
+    const usage = (await collect(driver, { modelId: 'gemini-4-argon', effortId: 'low' })).find(chunk => chunk.type === 'usage')
+    assert.equal(usage.contextWindow, 1_048_576)
+    assert.equal(usage.contextTokens, 13_000)
+    assert.equal(usage.contextUsageRatio, 0.012398)
+    assert.equal(usage.inputTokens, 14_000)
+    assert.equal(usage.cacheReadTokens, 11_000)
+  } finally {
+    driver.dispose()
+  }
+})
+
 test('Antigravity 缓存读取不计入未缓存输入，Claude 与 Gemini 口径一致', async () => {
   // 实测 claude-sonnet-4-6 首轮：input_tokens=3968、cache_read_tokens=9619，
   // input_tokens 只含未缓存输入；把它当成完整提示会算出 0 未缓存输入。
@@ -673,7 +693,7 @@ test('Antigravity 分步续读忽略已结算工具的重复终态，后续工�
   } finally { await registry.dispose() }
 })
 
-test('Antigravity 从 agy models 动态加载模型并合并思考档位', async () => {
+test('Antigravity 从 stdout 加载目录并合并档位，只有诊断时返回可重试回退目录', async () => {
   const modelProbeCalls: string[][] = []
   const modelProbeOptions: Array<{ shell?: unknown; stdio?: unknown; env?: { PATH?: unknown } }> = []
   const driver = new AntigravityDriver({
@@ -692,16 +712,17 @@ test('Antigravity 从 agy models 动态加载模型并合并思考档位', async
       child.stderr = new PassThrough()
       child.kill = () => true
       queueMicrotask(() => {
-        child.stdout.end([
-          'Fetching available models...',
+        child.stdout.end(modelProbeCalls.length === 1 ? [
+          'Warning: loading cached catalog',
+          'magpie/hl/gpt-6-astra\tGPT-6 Astra',
           'gemini-3.8-flash-high\tGemini 3.8 Flash (High)',
           'gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)',
           'gemini-3.8-flash-low\tGemini 3.8 Flash (Low)',
           'gemini-3.1-pro-high\tGemini 3.1 Pro (High)',
           'gemini-3.1-pro-low\tGemini 3.1 Pro (Low)',
           'claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)',
-        ].join('\n'))
-        child.stderr.end()
+        ].join('\n') : 'Warning: loading cached catalog\n')
+        child.stderr.end('Fetching available models...\nWarning:\tloading cached catalog\n')
         child.emit('close', 0)
       })
       return child
@@ -711,6 +732,7 @@ test('Antigravity 从 agy models 动态加载模型并合并思考档位', async
   const catalog = await driver.listModels()
   assert.deepEqual(catalog.groups[0]?.models, [
     { id: 'provider-default', name: '跟随 Antigravity 默认模型', efforts: [] },
+    { id: 'magpie/hl/gpt-6-astra', name: 'GPT-6 Astra', efforts: [] },
     { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', efforts: ['low', 'medium', 'high'] },
     { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro', efforts: ['low', 'high'] },
     { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6 (Thinking)', efforts: [] },
@@ -719,6 +741,9 @@ test('Antigravity 从 agy models 动态加载模型并合并思考档位', async
   assert.deepEqual(modelProbeOptions[0]?.stdio, ['ignore', 'pipe', 'pipe'])
   assert.equal(modelProbeOptions[0]?.shell, false)
   assert.equal(typeof modelProbeOptions[0]?.env?.PATH, 'string')
+  const fallback = await driver.listModels()
+  assert.equal(fallback.fallback, true)
+  assert.deepEqual(fallback.groups[0]?.models.map(model => model.id), ['provider-default'])
   driver.dispose()
 })
 
@@ -862,7 +887,22 @@ test('Antigravity 失败终态仍保留本轮已发生的真实用量', async ()
   assert.deepEqual(chunks.map((chunk) => chunk.type), ['session-binding', 'usage', 'finish'])
   assert.equal(chunks[1].inputTokens, 11758)
   assert.equal(chunks[2].reason, 'error')
+  assert.deepEqual(chunks[2].failure, { message: '模型失败' })
   driver.dispose()
+})
+
+test('Antigravity 请求发出后取消，仍解析随后 ERROR 的用量并以 cancel 结算', async () => {
+  const controller = new AbortController()
+  const { driver, inputs } = scriptedDriver([[
+    resultEvent({ input_tokens: 17, output_tokens: 3 }, { status: 'ERROR', error: 'user denied permission', response: '' }),
+  ]], { onRequest: () => controller.abort() })
+  try {
+    const chunks = await collect(driver, { signal: controller.signal })
+    assert.deepEqual(inputs.map(input => JSON.parse(input)), [{ event: 'user', message: { content: '你好' } }])
+    assert.deepEqual(chunks.map(chunk => chunk.type), ['session-binding', 'usage', 'finish'])
+    assert.equal(chunks[1].inputTokens, 17)
+    assert.deepEqual(chunks[2], { type: 'finish', reason: 'cancel' })
+  } finally { driver.dispose() }
 })
 
 test('Antigravity 子进程提前退出或 stdin 断开时不会触发宿主未捕获异常', async () => {

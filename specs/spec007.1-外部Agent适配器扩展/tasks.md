@@ -305,7 +305,10 @@
 - [x] 4.4 Antigravity
   - 状态：DONE
   - 结果：复用 stream-json 事件归一化并增加 stdin NDJSON 输入；调用 `agy models` 动态加载模型并合并思考档位；不声明危险 headless 模式之外的权限能力。
-  - Windows 路径回归（2026-11-18）：`node --import ./tests/register-source-loader.mjs --test tests/cli-adapters-antigravity-argv.spec.ts` 使用本地子进程记录实际 argv。文本回合、模型探测及图片 ACP 回合分别通过原生 `.exe`、`.cmd`、`.bat` 启动，九组实测均保留了带空格路径的参数边界。
+  - 2026-11-18 上下文显示修复：原生 Gemini 4 Argon 的窗口为 1,048,576 token。上下文仪表使用最后一次模型调用的输入与缓存读取量，整轮用量继续累计各次调用。
+  - 修复验证：通过源码加载器运行 AGY、原生会话桥接、会话计量和 ZCode 上下文测试，149 项通过、3 项跳过。回放中整轮用量超出窗口，仪表按最后一次调用显示 12%。类型、版本和能力检查通过。扩大到适配器测试时发现的 22 个失败均在基线 `a6ca6a1e` 复现。
+  - Stage0 实机验证：Windows 上使用 DSH `0.2.2-rc.4` 和 AGY `1.5.11`。在验收工作区选择原生 `gemini-4-argon` 的低思考档位，发起一次要求读取两个测试文件的对话。两次读取均落盘，回合正常结束。Host 查得最新上下文占用为 9,905 / 1,048,576 token。Chrome 打开验收会话后显示上下文已用 1%，整轮用量标签显示 29.4K token。
+  - Windows 路径回归（2026-11-18，PR #81 作者报告）：用 `tests/cli-adapters-antigravity-argv.spec.ts` 记录子进程收到的参数。文本回合、模型探测和图片 ACP 回合分别通过原生 `.exe`、`.cmd`、`.bat` 启动，九组均保留了带空格路径的参数边界。本次合并仅 macOS 验证、Windows 路径未验证。
 - [x] 4.5 登记、图标、回归测试与文档
   - 状态：DONE
   - 结果：七个 adapter ID 已登记，新增 SVG 图标、驱动测试、README 能力表和开发记录。

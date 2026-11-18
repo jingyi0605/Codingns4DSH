@@ -203,6 +203,12 @@ export class CodingNsDshMessageProjector {
         if (event.text === '' || this.options.adapterId === 'opencode' && isStandaloneWhitespace(event.text) && this.textText === '') return []
         return this.appendDelta('text', event.text)
       case 'message-boundary':
+        if (event.discardPrevious && event.channel === 'text' && this.textIndex !== undefined && this.textText !== '') {
+          const index = this.textIndex
+          this.textIndex = undefined
+          this.textText = ''
+          return this.translatedBlocks.delete(index) ? [] : [{ type: 'block-end', index, block: { type: 'text', text: '' } }]
+        }
         return this.closeMessageBlock(event.channel)
       case 'step-boundary':
         // step 边界由 DSH 原生 turn/step 事件表达，不再伪造 Markdown 文本。

@@ -1,5 +1,5 @@
 /** DSH verification target; macOS Stage0/CLI scope is recorded in the README. */
-export const DSH_VERSION = '0.2.2-rc.4' as const
+export const DSH_VERSION = '0.2.2-rc.5' as const
 
 /** DSH 测试版本别名，供新代码表达语义，保留 DSH_VERSION 兼容旧调用方。 */
 export const DSH_TESTED_VERSION = DSH_VERSION

@@ -10,7 +10,7 @@ import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, isProviderDefaultModel,
 import { promptWithAttachmentPaths } from './attachment-utils.js'
 import { startMagpieSessionProxy } from './magpie-session-proxy.js'
 import { commandEnvironment, runAsyncCommand, terminateChildProcess, withCommandSignal, type CodingNsChildProcess } from './process-utils.js'
-import { usageChunk } from './rpc-driver-utils.js'
+import { isRecord, usageChunk } from './rpc-driver-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 import { normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { AntigravityAutoUpdater, antigravityCommandEnvironment, spawnAntigravity } from './antigravity-updater.js'
@@ -42,7 +42,7 @@ async function runBufferedModels(
   environment: Record<string, string | undefined>,
   timeoutMs: number,
   signal: AbortSignal,
-): Promise<{ stdout: string; stderr: string }> {
+): Promise<string> {
   return await new Promise((resolve, reject) => {
     if (signal.aborted) {
       reject(new Error('Antigravity 模型目录探测已取消'))
@@ -86,11 +86,23 @@ async function runBufferedModels(
     child.stderr.on('data', (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-16_384) })
     child.once('error', (error) => finish(() => reject(error)))
     child.once('close', (code) => finish(() => {
-      if (code === 0) resolve({ stdout, stderr })
+      if (code === 0) resolve(stdout)
       else reject(new Error(stderr.trim() || `Antigravity CLI exited with code ${String(code)}`))
     }))
     signal.addEventListener('abort', onAbort, { once: true })
   })
+}
+
+function acpModelMatches(state: unknown, model: string): boolean | undefined {
+  if (!isRecord(state)) return undefined
+  const currentIds: string[] = []
+  if (isRecord(state.models) && typeof state.models.currentModelId === 'string') currentIds.push(state.models.currentModelId)
+  if (Array.isArray(state.configOptions)) {
+    for (const option of state.configOptions) {
+      if (isRecord(option) && option.id === 'model' && typeof option.currentValue === 'string') currentIds.push(option.currentValue)
+    }
+  }
+  return currentIds.length === 0 ? undefined : currentIds.every(id => id === model)
 }
 
 export interface AntigravityDriverOptions {
@@ -187,7 +199,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       buildArgs: (input) => this.buildAcpArgs(input as AntigravityTurnInput),
       // 模型和思考档位走 ACP 的 config option，不用 session/set_model。
       runtimeModelSelection: false,
-      configureSession: (rpc, sessionId, input) => this.configureAcpSession(rpc, sessionId, input),
+      configureSession: (rpc, sessionId, input, openedSession) => this.configureAcpSession(rpc, sessionId, input, openedSession),
       capabilities: ['stream', 'resume', 'interrupt', 'tool-events'],
       // 与 stream-json 无头模式一致：Agy 没有声明权限和提问能力，不能把请求挂给 DSH 等待。
       readQuestionRequest: () => null,
@@ -210,7 +222,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       // `agy models` 需要向服务端拉取目录；在本机冷启动约 19 秒，
       // 这里沿用 codexhost 的异步缓冲方式，避免同步阻塞 Host 事件循环。
       // --settings 是全局参数，必须放在 models 子命令之前。
-      const result = await runBufferedModels(
+      const stdout = await runBufferedModels(
         this.runSpawn,
         detected.command,
         [...(magpie?.settings === undefined ? [] : ['--settings', magpie.settings]), 'models'],
@@ -218,7 +230,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS,
         this.modelProbeAbort.signal,
       )
-      return parseAntigravityModels(`${result.stdout}\n${result.stderr}`)
+      return parseAntigravityModels(stdout)
     } catch {
       return ANTIGRAVITY_CATALOG
     }
@@ -309,15 +321,18 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   }
 
   /** 把 DSH 选择的模型、思考档位和权限模式写进 ACP 会话；失败必须让本轮报错，不能悄悄换模型。 */
-  private async configureAcpSession(rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput): Promise<void> {
+  private async configureAcpSession(rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput, openedSession: unknown): Promise<void> {
     const explicit = !isProviderDefaultModel(input.modelId)
     const model = explicit ? input.modelId!.trim() : this.resolveModelId(undefined)
     if (model !== null) {
       try {
-        await rpc.request('session/set_config_option', { sessionId, configId: 'model', value: model }, { signal: input.signal, killOnAbort: false })
+        const configured = await rpc.request('session/set_config_option', { sessionId, configId: 'model', value: model }, { signal: input.signal, killOnAbort: false })
+        if (acpModelMatches(configured, model) === false) throw new Error(`Antigravity ACP did not select model ${model}`)
       } catch (error) {
-        // Magpie 自定义模型（含 "/"）不在 ACP 的内置模型列表里；沿用会话默认配置继续，其余未知模型照常报错。
-        if (!(error instanceof JsonRpcRequestError && error.code === -32602 && model.includes('/'))) throw error
+        if (!(error instanceof JsonRpcRequestError && error.code === -32602)) throw error
+        if (acpModelMatches(openedSession, model) !== true) {
+          throw new Error(`Antigravity ACP rejected model ${model} and could not confirm it as the current session model: ${error.message}`, { cause: error })
+        }
       }
     }
     const requested = explicit ? input.effortId?.trim() : this.resolveEffort() ?? undefined
@@ -406,6 +421,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     const cancelled = input.signal?.aborted ?? false
     const step = readRecord(value.step_update)
     const result = value.event === 'result' ? readRecord(value.result) : null
+    const resultSucceeded = isSuccessStatus(result?.status)
     let chunks: CodingNsAgentEvent[]
     if (value.event === 'step_update' && step !== null) {
       // AGY 的 step_update（agent_response / state=DONE）携带的是「这一次模型调用」
@@ -434,7 +450,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       // AGY 会把会话库里上一轮遗留的 error 字符串带进后续轮次的 result，即使本轮
       // status 已经是成功。通用解析会把任何 error 字段当成失败，导致已经生成完
       // 的结算文本被一个 finish:error 吞掉。成功态以 status 为准，丢弃陈旧 error。
-      if (isSuccessStatus(result.status)) delete sanitizedResult.error
+      if (resultSucceeded) delete sanitizedResult.error
       chunks = genericEventChunks({ ...value, usage: undefined, result: sanitizedResult }, cancelled)
     } else {
       chunks = genericEventChunks(value, cancelled)
@@ -449,7 +465,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     // step_update 一定包含 agent_response 增量。
     if (result !== null) {
       const status = typeof result.status === 'string' ? result.status.trim().toLowerCase() : ''
-      if (status !== '' && !isSuccessStatus(result.status)) {
+      if (!cancelled && status !== '' && !resultSucceeded) {
         const failureMessage = typeof result.error === 'string' && result.error.trim() !== ''
           ? result.error.trim()
           : `Antigravity result status: ${String(result.status)}`
@@ -467,7 +483,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       const reportedCumulative = readAntigravityUsage(result.usage)
       // Parameter/input failures may carry an all-zero usage envelope. It is not
       // evidence that the existing session baseline was reset.
-      const cumulative = status !== '' && !isSuccessStatus(result.status)
+      const cumulative = status !== '' && !resultSucceeded
         && reportedCumulative !== null
         && Object.values(reportedCumulative).every(count => count === 0)
         ? null
@@ -498,7 +514,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     if (deniedReason === undefined) {
       deniedReason = diagnostic.split(/\r?\n/u).find(isAntigravityPermissionDenial)
     }
-    if (deniedReason === undefined && typeof result?.error === 'string' && isAntigravityPermissionDenial(result.error)) {
+    if (deniedReason === undefined && !resultSucceeded && typeof result?.error === 'string' && isAntigravityPermissionDenial(result.error)) {
       deniedReason = result.error
     }
     if (!cancelled && (autoUnavailable || deniedReason !== undefined)) {

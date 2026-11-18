@@ -574,7 +574,7 @@ async function readQoderTranscriptUsage(
   sessionId: string,
 ): Promise<QoderUsageEvent | null> {
   if (!/^[A-Za-z0-9._-]+$/u.test(sessionId)) return null
-  const projectKey = resolve(cwd ?? process.cwd()).replace(/[\\/]/gu, '-')
+  const projectKey = resolve(cwd ?? process.cwd()).replace(process.platform === 'win32' ? /[\\/:]/gu : /[\\/]/gu, '-')
   const path = join(homeDirectory, profile.userConfigDirectory, 'projects', projectKey, `${sessionId}.jsonl`)
   const input = createReadStream(path, { encoding: 'utf8' })
   const lines = createInterface({ input, crlfDelay: Infinity })

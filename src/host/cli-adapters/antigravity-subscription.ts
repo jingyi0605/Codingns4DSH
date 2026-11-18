@@ -11,6 +11,7 @@ import type {
 } from '../../shared/contracts/subscription.js'
 import { commandEnvironment, resolveCommandPath, runAsyncCommand } from './process-utils.js'
 import { antigravityCommandEnvironment } from './antigravity-updater.js'
+import { resolveAntigravityModelId } from './model-catalog.js'
 
 type FetchLike = typeof fetch
 type SpawnLike = typeof spawn
@@ -113,7 +114,7 @@ export class AntigravitySubscriptionService {
   private readonly runSpawn: SpawnLike
   private readonly runSpawnSync: SpawnSyncLike
   private readonly resolveCommand: (() => string | null) | undefined
-  private readonly resolveModelId: ((modelId: string | undefined) => string | null) | undefined
+  private readonly resolveModelId: (modelId: string | undefined) => string | null
   private cachedCommand: string | null | undefined = undefined
 
   constructor(options: AntigravitySubscriptionOptions = {}) {
@@ -126,7 +127,7 @@ export class AntigravitySubscriptionService {
     this.runSpawn = options.spawn ?? spawn
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.resolveCommand = options.resolveCommand
-    this.resolveModelId = options.resolveModelId
+    this.resolveModelId = options.resolveModelId ?? ((modelId) => resolveAntigravityModelId(modelId, options))
   }
 
   async read(options: AntigravitySubscriptionReadOptions = {}): Promise<CliSubscriptionUsage | null> {
@@ -249,7 +250,7 @@ export class AntigravitySubscriptionService {
   private effectiveModelId(modelId: string | undefined): string | null {
     const explicit = modelId?.trim()
     if (explicit !== undefined && explicit !== '' && explicit !== 'provider-default') return explicit.toLowerCase()
-    return this.resolveModelId?.(modelId) ?? null
+    return this.resolveModelId(modelId)
   }
 
   /**

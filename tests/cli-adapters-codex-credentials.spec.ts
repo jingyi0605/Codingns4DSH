@@ -102,7 +102,8 @@ test('Codex app-server tags loopback Magpie requests with the DSH session identi
       messages: [],
       prompt: 'Use Magpie',
     })) {}
-    assert.ok(spawnArguments?.includes('model_providers.magpie.env_http_headers.x-magpie-session="CODINGNS_MAGPIE_SESSION"'))
+    const override = 'model_providers.magpie.env_http_headers.x-magpie-session="CODINGNS_MAGPIE_SESSION"'
+    assert.ok(process.platform === 'win32' ? spawnArguments?.at(-1)?.includes(override.replaceAll('"', '""')) : spawnArguments?.includes(override))
     assert.equal(spawnEnvironment?.CODINGNS_MAGPIE_SESSION, 'dsh-magpie-session')
   } finally {
     driver.dispose()

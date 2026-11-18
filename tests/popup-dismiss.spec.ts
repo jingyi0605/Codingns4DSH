@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { readFile } from 'node:fs/promises'
+import { fileURLToPath } from 'node:url'
 import { join } from 'node:path'
 import { CliSettingsDialog } from '../data/build/dist/client/cli-settings-dialog.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
@@ -10,7 +11,7 @@ import {
   isOutsideDismissRoots,
 } from '../data/build/dist/client/popup-dismiss.js'
 
-const projectRoot = new URL('..', import.meta.url).pathname
+const projectRoot = fileURLToPath(new URL('..', import.meta.url))
 
 /** 最小文档替身：只记录监听器，用于验证注册与注销成对发生。 */
 function createFakeDocument() {

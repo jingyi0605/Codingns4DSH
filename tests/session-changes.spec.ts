@@ -261,5 +261,5 @@ test('会话写入过的绝对路径按最近写入排序，不限于某个工�
       ...write('a', '/repo-a/one.md'), ...write('b', '/elsewhere/two.md'), ...write('c', 'relative.md'), ...write('d', '/repo-a/one.md'),
     ] }) },
   } as never, 'session-1')
-  assert.deepEqual(paths, ['/elsewhere/two.md', '/repo-a/one.md'])
+  assert.deepEqual(paths.map(path => path.replaceAll('\\', '/')), ['/elsewhere/two.md', '/repo-a/one.md'])
 })

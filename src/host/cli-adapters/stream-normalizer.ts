@@ -3,7 +3,7 @@ import type { CodingNsAgentEvent, CodingNsCliTurnInput } from '../../shared/cont
 type SnapshotChunk = Extract<CodingNsAgentEvent, { readonly type: 'reasoning-snapshot' | 'text-snapshot' }>
 type UsageChunk = Extract<CodingNsAgentEvent, { readonly type: 'usage' }>
 
-export type CodingNsNormalizedAgentEvent = Exclude<CodingNsAgentEvent, SnapshotChunk | { readonly type: 'usage-observation' }>
+export type CodingNsNormalizedAgentEvent = Exclude<CodingNsAgentEvent, SnapshotChunk | { readonly type: 'usage-observation' | 'text-retry' }>
 
 /** 适配器没有稳定 assistant item 标识时，为公共投影层维护的段状态。 */
 export interface CodingNsSegmentState {
@@ -52,10 +52,15 @@ export class CodingNsAgentEventNormalizer {
   private textBoundary = false
   private reasoningMessageId: string | undefined
   private textMessageId: string | undefined
+  private retryMessageId: string | undefined
   private usage: UsageChunk | null = null
 
   push(chunk: CodingNsAgentEvent): readonly CodingNsNormalizedAgentEvent[] {
     if (chunk.type === 'usage-observation') return []
+    if (chunk.type === 'text-retry') {
+      this.retryMessageId = chunk.messageId
+      return []
+    }
     if (chunk.type === 'reasoning-delta') {
       const boundary = this.messageBoundary('reasoning', chunk.messageId)
       this.reasoning = this.reasoningBoundary ? chunk.text : this.reasoning + chunk.text
@@ -63,6 +68,13 @@ export class CodingNsAgentEventNormalizer {
       return chunk.text === '' ? boundary : [...boundary, chunk]
     }
     if (chunk.type === 'text-delta') {
+      if (chunk.text !== '' && chunk.messageId !== undefined && this.retryMessageId !== undefined && this.retryMessageId === this.textMessageId) {
+        this.retryMessageId = undefined
+        this.textMessageId = chunk.messageId
+        this.text = chunk.text
+        this.textBoundary = false
+        return [{ type: 'message-boundary', channel: 'text', messageId: chunk.messageId, discardPrevious: true }, chunk]
+      }
       const boundary = this.messageBoundary('text', chunk.messageId)
       this.text = this.textBoundary ? chunk.text : this.text + chunk.text
       this.textBoundary = false
@@ -82,6 +94,7 @@ export class CodingNsAgentEventNormalizer {
       return usage === null ? [chunk] : [usage, chunk]
     }
     if (chunk.type === 'tool-event') {
+      this.retryMessageId = undefined
       this.reasoningBoundary = true
       this.textBoundary = true
       return [chunk]

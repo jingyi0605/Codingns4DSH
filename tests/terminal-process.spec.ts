@@ -102,7 +102,7 @@ test('Host 先创建 pty 命令进程，再返回可附着终端和 ProcessInsta
   const result = await processService.launch({ workspaceId: 'workspace-a', profileId: 'dev', dshSessionId: 'session-a', cols: 80, rows: 24 })
 
   assert.equal(result.instance.state, 'running')
-  assert.equal(result.instance.resolvedCommand.cwd, '/workspace/a/web')
+  assert.equal(result.instance.resolvedCommand.cwd.replaceAll('\\', '/'), '/workspace/a/web')
   assert.equal(result.instance.pid, 1001)
   assert.equal(result.terminal.id, result.instance.terminalId)
   const runtimeSession = [...adapter.sessions.values()][0].session

@@ -224,6 +224,7 @@ export interface CodingNsCliSessionConfig {
 
 /** 外部 Provider 最近一次用量快照；Qoder 等 Provider 可只提供上下文比例或额度。 */
 export interface CodingNsCliSessionUsage {
+  readonly autoCompactThresholdTokens?: number
   readonly inputTokens: number
   readonly outputTokens: number
   readonly totalTokens?: number
@@ -449,11 +450,13 @@ export type CodingNsAgentEvent =
   | { readonly type: 'reasoning-snapshot'; readonly text: string }
   | { readonly type: 'text-delta'; readonly text: string; readonly messageId?: string }
   | { readonly type: 'text-snapshot'; readonly text: string }
+  | { readonly type: 'text-retry'; readonly messageId: string }
   | {
       /** Provider 在同一回合中切换 assistant item 时的内容块边界。 */
       readonly type: 'message-boundary'
       readonly channel: 'reasoning' | 'text'
       readonly messageId: string
+      readonly discardPrevious?: true
     }
   | {
       /** Provider 的 assistant item 已切换，Host 应在当前流结束后注入下一个 DSH step。 */
@@ -494,6 +497,7 @@ export type CodingNsAgentEvent =
       readonly providerCredits?: number
       /** Provider 明确报告的上下文窗口及当前占用，用于会话上下文用量展示。 */
       readonly contextWindow?: number
+      readonly autoCompactThresholdTokens?: number
       readonly contextTokens?: number
       readonly contextUsageRatio?: number
       readonly contextModelId?: string
@@ -502,7 +506,7 @@ export type CodingNsAgentEvent =
       readonly type: 'finish'
       readonly reason: 'stop' | 'cancel' | 'error'
       /** Provider 终态携带的真实失败详情；没有详情时由 Host 生成兜底信息。 */
-      readonly failure?: { readonly message: string; readonly code?: string }
+      readonly failure?: { readonly message: string; readonly code?: string; readonly contextOverflow?: boolean }
     }
   | { readonly type: 'session-binding'; readonly providerSessionId: string; readonly rawStoreRef?: string }
   | {
@@ -532,3 +536,6 @@ export type CodingNsAgentEvent =
       readonly shadowedTokenCount?: number
       readonly error?: string
     }
+
+/** Shared by native drivers and the command adapter. */
+export const NATIVE_COMPACTION_TIMEOUT_CODE = 'CODINGNS_COMPACTION_TIMEOUT'
