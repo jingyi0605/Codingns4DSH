@@ -56,11 +56,22 @@ interface CodexTurnEventQueue {
   close(): void
 }
 
+/**
+ * Codex 进程启动时实际下发的权限覆盖项。
+ *
+ * 只包含 Host 已解析到生效值的字段；缺省字段不下发 `-c`，交由 Codex 自身
+ * config.toml 决定，避免把“未读到”静默当成保守策略。
+ */
+interface CodexLaunchPermission {
+  readonly sandboxMode?: CodingNsCliSandboxMode
+  readonly approvalPolicy?: 'never' | 'on-request'
+}
+
 interface CodexSession {
   readonly teamToken: string | undefined
   readonly resumeThreadId: string | undefined
   readonly runtimeEnvFingerprint: string
-  readonly permission: { sandboxMode: CodingNsCliSandboxMode; approvalPolicy: 'never' | 'on-request' }
+  readonly permission: CodexLaunchPermission | undefined
   readonly launchFingerprint: string
   readonly performance: CodexPerformanceTracker
   readonly rpc: JsonRpcProcess
@@ -1147,12 +1158,14 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     const previous = this.sessions.get(input.sessionId)
     const teamToken = teamBridgeToken(input.sessionId)
     const runtimeEnvFingerprint = fingerprintRuntimeEnvironment(input.runtimeEnv)
-    // Only skill discovery omits permission intentionally. An unresolved real turn
-    // must still use conservative defaults rather than retaining previous access.
+    // Only skill discovery omits permission intentionally. Otherwise the launch
+    // overrides come from the DSH-resolved effective permission: when Host has not
+    // read any effective value yet, we omit the `-c` pair and let Codex use its own
+    // config.toml instead of silently forcing workspace-write + on-request.
     const permission = preservePermission && input.permission === undefined && previous !== undefined
       ? previous.permission
-      : { sandboxMode: codexSandboxMode(input), approvalPolicy: codexApprovalPolicy(input) }
-    const launchFingerprint = JSON.stringify([command, this.binaryFingerprint, permission])
+      : codexLaunchPermission(input)
+    const launchFingerprint = JSON.stringify([command, this.binaryFingerprint, permission ?? null])
     if (previous !== undefined
       && previous.cwd === input.cwd
       && previous.teamToken === teamToken
@@ -1173,13 +1186,16 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       : ['-c', `model_providers.${magpieProvider}.env_http_headers.x-magpie-session=${JSON.stringify('CODINGNS_MAGPIE_SESSION')}`]
     // Codex 的 `-c` 覆盖项必须与 app-server 的其余启动参数放在同一侧；
     // 统一置于子命令前，避免不同版本对全局/子命令参数的解析差异。
+    // 只下发 Host 实际解析到的权限字段；缺省字段保留 Codex 自身配置默认值。
+    const permissionArgs = permission === undefined ? [] : [
+      ...(permission.sandboxMode === undefined ? [] : ['-c', `sandbox_mode=${JSON.stringify(permission.sandboxMode)}`]),
+      ...(permission.approvalPolicy === undefined ? [] : ['-c', `approval_policy=${JSON.stringify(permission.approvalPolicy)}`]),
+    ]
     const rpc = new JsonRpcProcess({
       command,
-      // Keep initial configuration aligned with the thread/turn policies.
-      args: [...bridgeArgs, ...magpieArgs,
-        '-c', `sandbox_mode=${JSON.stringify(permission.sandboxMode)}`,
-        '-c', `approval_policy=${JSON.stringify(permission.approvalPolicy)}`,
-        ...this.appServerArgs()],
+      // Keep initial configuration aligned with the thread/turn policies when the
+      // effective permission is known; otherwise leave it to Codex config.
+      args: [...bridgeArgs, ...magpieArgs, ...permissionArgs, ...this.appServerArgs()],
       cwd: input.cwd,
       env: {
         ...(input.runtimeEnv ?? {}),
@@ -2292,6 +2308,24 @@ function firstNonEmptyString(...values: readonly unknown[]): string | undefined 
     if (typeof value === 'string' && value.trim() !== '') return value.trim()
   }
   return undefined
+}
+
+/**
+ * 从 DSH 已解析的生效权限派生 Codex 进程启动时下发的覆盖项。
+ *
+ * 这里只负责**启动参数**：Host 读到生效值就下发对应字段并纳入复用 key，
+ * 读不到就完全不注入 `-c`，让 Codex 使用自身 config.toml，而不是把缺省
+ * 静默当成 workspace-write + on-request。
+ */
+function codexLaunchPermission(input: CodingNsCliTurnInput): CodexLaunchPermission | undefined {
+  const sandboxMode = input.permission?.sandboxMode
+  const rawApproval = input.permission?.approvalPolicy
+  const approvalPolicy = rawApproval === undefined ? undefined : rawApproval === 'never' ? 'never' : 'on-request'
+  if (sandboxMode === undefined && approvalPolicy === undefined) return undefined
+  return {
+    ...(sandboxMode === undefined ? {} : { sandboxMode }),
+    ...(approvalPolicy === undefined ? {} : { approvalPolicy }),
+  }
 }
 
 /**
