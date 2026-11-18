@@ -4,27 +4,30 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import test from 'node:test'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { PassThrough } from 'node:stream'
+import { PassThrough, Writable } from 'node:stream'
+import { setImmediate as nextTurn } from 'node:timers/promises'
 import { ClaudeCodeDriver } from '../data/build/dist/host/cli-adapters/claude-driver.js'
+import { discoverClaudeModelCatalog } from '../data/build/dist/host/cli-adapters/claude-model-options.js'
 import { MagpieUsageService } from '../src/host/cli-adapters/magpie-usage.js'
 
 function fakeClaudeProcess(output: string, code = 0): unknown {
   const child = new EventEmitter() as EventEmitter & {
     stdout: PassThrough
     stderr: PassThrough
-    stdin: { end(value: string): void }
+    stdin: Writable
     kill(): boolean
   }
   child.stdout = new PassThrough()
   child.stderr = new PassThrough()
-  child.stdin = { end() {
+  child.stdin = new Writable({ write(_chunk, _encoding, callback) {
+    callback()
     queueMicrotask(() => {
       if (output) child.stdout.write(output)
       child.stdout.end()
       child.stderr.end()
       child.emit('close', code)
     })
-  } }
+  } })
   child.kill = () => true
   return child
 }
@@ -138,6 +141,81 @@ test('Claude Code 通过 initialize、网关和 settings.json 合并真实模型
   }
 })
 
+for (const credential of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const) {
+  test(`Claude 网关按 origin 保留或隔离 ${credential}`, async () => {
+    const root = mkdtempSync(join(tmpdir(), 'codingns-claude-gateway-origin-'))
+    const configDir = join(root, 'user')
+    const workspaceDir = join(root, 'workspace')
+    const projectConfig = join(workspaceDir, '.claude')
+    try {
+      mkdirSync(configDir)
+      mkdirSync(projectConfig, { recursive: true })
+      writeFileSync(join(configDir, 'settings.json'), JSON.stringify({ env: {
+        ANTHROPIC_BASE_URL: 'https://user-gateway.example/v1', [credential]: 'fake-user-credential',
+      } }), 'utf8')
+      const calls: { url: string; key: string | null; authorization: string | null }[] = []
+      const options = {
+        command: 'fake-claude.exe', configDir, workspaceDir,
+        env: { ANTHROPIC_API_KEY: undefined, ANTHROPIC_AUTH_TOKEN: undefined },
+        spawn: (() => fakeClaudeProcess('', 1)) as never,
+        fetch: (async (url, init) => {
+          const headers = new Headers(init?.headers)
+          calls.push({ url: String(url), key: headers.get('x-api-key'), authorization: headers.get('authorization') })
+          return Response.json({ data: [{ id: 'gateway-model' }] })
+        }) as typeof fetch,
+      }
+      await discoverClaudeModelCatalog(options)
+      writeFileSync(join(projectConfig, 'settings.json'), JSON.stringify({ env: {
+        ANTHROPIC_BASE_URL: 'https://user-gateway.example/project/v1',
+      } }), 'utf8')
+      await discoverClaudeModelCatalog(options)
+      writeFileSync(join(projectConfig, 'settings.local.json'), JSON.stringify({ env: {
+        ANTHROPIC_BASE_URL: 'https://project-gateway.example/v1',
+      } }), 'utf8')
+      const catalog = await discoverClaudeModelCatalog(options)
+      const auth = { key: 'fake-user-credential', authorization: credential === 'ANTHROPIC_AUTH_TOKEN' ? 'Bearer fake-user-credential' : null }
+      assert.deepEqual(calls, [
+        { url: 'https://user-gateway.example/v1/models', ...auth },
+        { url: 'https://user-gateway.example/project/v1/models', ...auth },
+        { url: 'https://project-gateway.example/v1/models', key: null, authorization: null },
+      ])
+      assert.ok(catalog.groups[0]?.models.some((model) => model.id === 'gateway-model'))
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+}
+
+test('Claude initialize 的 stdin 异步 EPIPE 立即清理探测并保留网关与回退模型', async (context) => {
+  const root = mkdtempSync(join(tmpdir(), 'codingns-claude-init-epipe-'))
+  const kill = context.mock.fn(() => true)
+  const stdin = new Writable({ write(_chunk, _encoding, callback) {
+    queueMicrotask(() => callback(Object.assign(new Error('broken pipe'), { code: 'EPIPE' })))
+  } })
+  const child = Object.assign(new EventEmitter(), { stdin, stdout: new PassThrough(), stderr: new PassThrough(), kill })
+  context.mock.timers.enable({ apis: ['setTimeout'] })
+  try {
+    const discovery = discoverClaudeModelCatalog({
+      command: 'fake-claude.exe', configDir: root, workspaceDir: root, timeoutMs: 1_000,
+      env: {
+        ANTHROPIC_BASE_URL: 'https://gateway.example/v1', ANTHROPIC_MODEL: 'configured-model',
+        ANTHROPIC_API_KEY: undefined, ANTHROPIC_AUTH_TOKEN: undefined,
+      },
+      spawn: (() => child) as never,
+      fetch: async () => Response.json({ data: [{ id: 'gateway-model' }] }),
+    })
+    await nextTurn()
+    const killsBeforeTimeout = kill.mock.callCount()
+    context.mock.timers.tick(1_000)
+    const ids = (await discovery).groups[0]?.models.map((model) => model.id)
+    assert.deepEqual(ids, ['provider-default', 'sonnet', 'opus', 'haiku', 'gateway-model', 'configured-model'])
+    assert.equal(killsBeforeTimeout, 1)
+    assert.equal(kill.mock.callCount(), 1)
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
+})
+
 test('Claude Code 动态发现失败时回退静态别名并保留配置模型', async () => {
   const root = mkdtempSync(join(tmpdir(), 'codingns-claude-models-fallback-'))
   const configDir = join(root, '.claude')
@@ -166,6 +244,29 @@ test('Claude Code 未安装时不伪造模型目录', async () => {
     spawnSync: (() => { throw new Error('missing') }) as never,
   })
   assert.deepEqual(await driver.listModels(), { groups: [], currentModel: null, currentEffort: null })
+})
+
+test('Claude Code listModels 以 CLI 明确公布的 Sonnet 档位为准', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'codingns-claude-sonnet-effort-'))
+  const initialize = JSON.stringify({ type: 'control_response', response: {
+    subtype: 'success', request_id: 'codingns-model-discovery', response: { models: [
+      { value: 'sonnet', displayName: 'Sonnet', supportsEffort: true, supportedEffortLevels: ['high'] },
+    ] },
+  } }) + '\n'
+  try {
+    const driver = new ClaudeCodeDriver({
+      binaries: ['fake-claude'], claudeConfigDir: root,
+      spawnSync: ((_command: string, args: string[]) => args[0] === '--version'
+        ? { status: 0, stdout: 'claude 1.0.0', stderr: '' }
+        : { status: 0, stdout: 'Usage: claude [options]\n\nOptions:\n  --effort <level>  Effort level\n', stderr: '' }) as never,
+      spawn: (() => fakeClaudeProcess(initialize)) as never,
+      fetch: async () => { throw new Error('gateway unavailable') },
+    })
+    const models = (await driver.listModels()).groups[0]?.models ?? []
+    assert.deepEqual(models.find((model) => model.id === 'sonnet')?.efforts, ['high'])
+  } finally {
+    rmSync(root, { recursive: true, force: true })
+  }
 })
 
 test('Claude Code 把中转站自定义命名的模型也补上 CLI 确认过的思考档位', async () => {
@@ -209,6 +310,7 @@ test('Claude Code 的 initialize 未回报档位时退回该 CLI 已验证的档
   const initialize = JSON.stringify({ type: 'control_response', response: {
     subtype: 'success', request_id: 'codingns-model-discovery', response: { models: [
       { value: 'default', displayName: 'Default' },
+      { value: 'sonnet', displayName: 'Sonnet' },
     ] },
   } }) + '\n'
   try {
@@ -223,6 +325,7 @@ test('Claude Code 的 initialize 未回报档位时退回该 CLI 已验证的档
     })
     const models = (await driver.listModels()).groups[0]?.models ?? []
     assert.deepEqual(models.find((model) => model.id === 'provider-default')?.efforts, ['low', 'medium', 'high', 'xhigh', 'max'])
+    assert.deepEqual(models.find((model) => model.id === 'sonnet')?.efforts, ['low', 'medium', 'high', 'xhigh', 'max'])
   } finally {
     rmSync(root, { recursive: true, force: true })
   }

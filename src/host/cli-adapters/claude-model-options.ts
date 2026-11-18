@@ -39,7 +39,7 @@ interface ClaudeInitializeDiscovery {
 interface ClaudeDiscoveryChild {
   readonly stdout: { on(event: 'data', listener: (chunk: unknown) => void): void }
   readonly stderr: { on(event: 'data', listener: (chunk: unknown) => void): void }
-  readonly stdin: { end(data: string): void }
+  readonly stdin: { end(data: string): void; on(event: 'error', listener: (error: Error) => void): void }
   on(event: 'error', listener: (error: Error) => void): void
   on(event: 'close', listener: (code: number | null) => void): void
   kill(signal?: number | NodeJS.Signals): boolean
@@ -48,7 +48,20 @@ interface ClaudeDiscoveryChild {
 /** 从 Claude CLI、兼容网关和本地配置合并真实模型目录。凭据只用于请求。 */
 export async function discoverClaudeModelCatalog(options: ClaudeModelDiscoveryOptions): Promise<CodingNsCliModelCatalog> {
   const configDir = options.configDir ?? options.env?.CLAUDE_CONFIG_DIR ?? process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), '.claude')
-  const runtimeEnv = { ...process.env, ...(options.env ?? {}), ...readClaudeEnv(configDir, options.workspaceDir ?? process.cwd()) }
+  const workspaceConfigDir = join(options.workspaceDir ?? process.cwd(), '.claude')
+  const runtimeEnv = {
+    ...process.env, ...options.env,
+    ...readClaudeEnv(join(configDir, 'settings.json')), ...readClaudeEnv(join(configDir, 'settings.local.json')),
+  }
+  for (const filename of ['settings.json', 'settings.local.json']) {
+    const projectEnv = readClaudeEnv(join(workspaceConfigDir, filename))
+    const projectBaseUrl = projectEnv.ANTHROPIC_BASE_URL
+    if (projectBaseUrl && URL.parse(projectBaseUrl)?.origin !== URL.parse(runtimeEnv.ANTHROPIC_BASE_URL?.trim() ?? '')?.origin) {
+      delete runtimeEnv.ANTHROPIC_API_KEY
+      delete runtimeEnv.ANTHROPIC_AUTH_TOKEN
+    }
+    Object.assign(runtimeEnv, projectEnv)
+  }
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const gatewayUrl = resolveModelsUrl(runtimeEnv.ANTHROPIC_BASE_URL)
   const settled = await Promise.allSettled([
@@ -57,29 +70,31 @@ export async function discoverClaudeModelCatalog(options: ClaudeModelDiscoveryOp
   ])
   const initialize = settled[0].status === 'fulfilled' ? settled[0].value : undefined
   const gateway = gatewayUrl && settled[1]?.status === 'fulfilled' ? settled[1].value : undefined
-  const discovered = [...(initialize?.models ?? []), ...(gateway ?? [])]
-  const configured = configuredModels(runtimeEnv)
-  const merged = mergeModels([...CLAUDE_CATALOG.groups[0]!.models, ...discovered, ...configured])
-  const enriched = enrichEfforts({ groups: [{ id: 'claude', name: 'Claude', models: merged }], currentModel: null, currentEffort: null }, CLAUDE_CATALOG)
+  const staticGroup = CLAUDE_CATALOG.groups[0]!
+  const cliModels = initialize?.models ?? []
+  const merged = mergeModels([...staticGroup.models, ...cliModels, ...(gateway ?? []), ...configuredModels(runtimeEnv)])
+  const confirmedModels = cliModels.filter((model) => model.efforts.length > 0)
+  const enriched = enrichEfforts(
+    { ...CLAUDE_CATALOG, groups: [{ ...staticGroup, models: merged }] },
+    { ...CLAUDE_CATALOG, groups: [{ ...staticGroup, models: [...staticGroup.models, ...confirmedModels] }] },
+  )
   // 中转站自定义命名的模型在官方目录里匹配不到 ID，但 `--effort` 是 CLI 的
   // 会话级参数，档位不随模型变化。优先复用 CLI initialize 明确回报过的档位，
   // 没有回报时才退回该 CLI 已验证的静态档位表，避免这些模型的强度切换在 UI
   // 上静默消失。CLI 明确回报不支持档位的模型必须排除在外。
-  const confirmed = [...new Set((initialize?.models ?? []).flatMap((model) => model.efforts))]
+  const confirmed = [...new Set(confirmedModels.flatMap((model) => model.efforts))]
   return fillProviderEfforts(enriched, confirmed.length > 0 ? confirmed : CLAUDE_EFFORT_LEVELS, new Set(initialize?.noEffortIds ?? []))
 }
 
-function readClaudeEnv(configDir: string, workspaceDir: string): Record<string, string> {
-  const files = [join(configDir, 'settings.json'), join(configDir, 'settings.local.json'), join(workspaceDir, '.claude', 'settings.json'), join(workspaceDir, '.claude', 'settings.local.json')]
-  return files.reduce<Record<string, string>>((result, file) => {
-    if (!existsSync(file)) return result
-    try {
-      const env = (JSON.parse(readFileSync(file, 'utf8')) as ClaudeSettings).env
-      if (!env || typeof env !== 'object') return result
-      for (const [key, value] of Object.entries(env)) if (typeof value === 'string' && value.trim()) result[key] = value.trim()
-    } catch { /* 损坏的配置不应阻塞模型发现。 */ }
-    return result
-  }, {})
+function readClaudeEnv(file: string): Record<string, string> {
+  const result: Record<string, string> = {}
+  if (!existsSync(file)) return result
+  try {
+    const env = (JSON.parse(readFileSync(file, 'utf8')) as ClaudeSettings).env
+    if (!env || typeof env !== 'object') return result
+    for (const [key, value] of Object.entries(env)) if (typeof value === 'string' && value.trim()) result[key] = value.trim()
+  } catch { /* 损坏的配置不应阻塞模型发现。 */ }
+  return result
 }
 
 function configuredModels(env: Record<string, string | undefined>): CodingNsCliModel[] {
@@ -106,7 +121,8 @@ async function readInitializeModels(command: string, env: Record<string, string 
     let stderr = ''
     let settled = false
     const finish = (callback: () => void): void => { if (settled) return; settled = true; clearTimeout(timer); callback() }
-    const timer = setTimeout(() => { terminateChildProcess(child); finish(() => reject(new Error('CLAUDE_MODEL_DISCOVERY_TIMEOUT'))) }, timeoutMs)
+    const failProbe = (error: unknown): void => finish(() => { terminateChildProcess(child); reject(error) })
+    const timer = setTimeout(() => failProbe(new Error('CLAUDE_MODEL_DISCOVERY_TIMEOUT')), timeoutMs)
     child.stdout.on('data', (chunk) => { stdout += String(chunk).slice(0, 1024 * 1024 - stdout.length) })
     child.stderr.on('data', (chunk) => { stderr += String(chunk).slice(0, 16_384 - stderr.length) })
     child.on('error', (error) => finish(() => reject(error)))
@@ -114,7 +130,12 @@ async function readInitializeModels(command: string, env: Record<string, string 
       if (code !== 0) return reject(new Error(stderr.trim() || `CLAUDE_MODEL_DISCOVERY_FAILED:${code ?? 'unknown'}`))
       try { resolve(parseInitialize(stdout)) } catch (error) { reject(error) }
     }))
-    child.stdin.end(`${JSON.stringify({ type: 'control_request', request_id: INITIALIZE_REQUEST_ID, request: { subtype: 'initialize' } })}\n`)
+    child.stdin.on('error', failProbe)
+    try {
+      child.stdin.end(`${JSON.stringify({ type: 'control_request', request_id: INITIALIZE_REQUEST_ID, request: { subtype: 'initialize' } })}\n`)
+    } catch (error) {
+      failProbe(error)
+    }
   })
 }
 
@@ -133,9 +154,10 @@ function parseInitialize(output: string): ClaudeInitializeDiscovery {
         const id = value.trim() === 'default' ? DEFAULT_MODEL_ID : value.trim()
         const displayName = (item as { displayName?: unknown }).displayName
         const efforts = (item as { supportedEffortLevels?: unknown }).supportedEffortLevels
-        const levels = Array.isArray(efforts) ? efforts.filter((level): level is string => typeof level === 'string') : []
+        const supportsEffort = (item as { supportsEffort?: unknown }).supportsEffort !== false
+        const levels = supportsEffort && Array.isArray(efforts) ? efforts.filter((level): level is string => typeof level === 'string') : []
         // CLI 明确回报不支持思考档位时，该模型必须保持空档位，不能被 Provider 级兜底覆盖。
-        if (levels.length === 0 && (item as { supportsEffort?: unknown }).supportsEffort === false) noEffortIds.push(id)
+        if (!supportsEffort) noEffortIds.push(id)
         models.push({ id, name: typeof displayName === 'string' && displayName.trim() ? displayName.trim() : value.trim(), efforts: levels })
       }
     } catch { /* 忽略 CLI 输出中的非 JSON 行。 */ }
