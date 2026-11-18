@@ -3,7 +3,7 @@ import test from 'node:test'
 import { describeWebFailure, isRetryableWebFailure } from '../data/build/dist/host/cli-bridge/web-diagnostics.js'
 import { dispatchBridgeSearch } from '../data/build/dist/host/cli-bridge/search-dispatch.js'
 import { dispatchBridgeFetch } from '../data/build/dist/host/cli-bridge/fetch-dispatch.js'
-import { claudeAllowedBridgeTools, claudeBridgeArgs, bridgeSearchGuidance, bridgeFetchGuidance } from '../data/build/dist/host/cli-bridge/injections.js'
+import { claudeAllowedBridgeTools, claudeBridgeArgs, bridgeSearchGuidance, bridgeFetchGuidance, codexBridgeDeveloperInstructions } from '../data/build/dist/host/cli-bridge/injections.js'
 import { createSubagentBridgeRuntime, setSubagentBridge } from '../data/build/dist/host/cli-bridge/bridge-holder.js'
 
 /** undici 的真实失败形态：`TypeError: fetch failed`，原因在 cause 上。 */
@@ -204,6 +204,9 @@ test('Claude Code always receives explicit bridge tool grants, and web guidance 
     assert.ok(allowedIndex >= 0)
     assert.equal(ordinary[allowedIndex + 1], claudeAllowedBridgeTools(false))
     assert.deepEqual(ordinary.slice(-3), ['--disallowedTools', 'Task', 'Agent'])
+    const instructions = ordinary[ordinary.indexOf('--append-system-prompt') + 1]!
+    assert.match(instructions, /retry the same call once/u)
+    assert.doesNotMatch(instructions, /Codex built-in/u)
 
     // 仍然以真实运行时的角色判定为准：Team 会话换成 agent_team，联网工具保留。
     setSubagentBridge(teamRuntime(true))
@@ -228,4 +231,22 @@ test('Claude Code always receives explicit bridge tool grants, and web guidance 
   assert.match(guidance, /billing to the account route/u)
   // 提示词里不得出现“登录后就不再使用 API key”这类二选一表述。
   assert.doesNotMatch(guidance, /instead of the API key|will not fall back/iu)
+})
+
+test('Codex guidance prefers DSH and allows native search after a missing tool or operational failure', () => {
+  setSubagentBridge(createSubagentBridgeRuntime({ baseUrl: 'http://127.0.0.1:45999', token: 'test-bridge-token' }))
+  try {
+    const instructions = codexBridgeDeveloperInstructions('s1')!
+    assert.match(instructions, /`codingns\.web_search`.*`codingns\.web_fetch`.*Use DSH web tools first/u)
+    assert.match(instructions, /tool discovery is available.*before treating them as missing/u)
+    assert.match(instructions, /errorCode, causes, retryable, and attempts.*do not repeat a failed provider call/u)
+    assert.match(instructions, /MCP transport failed before reaching DSH, retry it at most once/u)
+    assert.match(instructions, /WEB_PROVIDER_CREDENTIAL_MISSING.*WEB_PROVIDER_MISCONFIGURED.*do not retry DSH.*host Models page/u)
+    assert.match(instructions, /missing or still fails for an operational or provider reason.*Codex built-in `web_search`.*available and permitted/u)
+    assert.match(instructions, /Do not fall back to bypass.*URL safety denial, and stop on user cancellation/u)
+    assert.match(instructions, /do not claim to have fetched the original page unless you retrieved its contents/u)
+    assert.doesNotMatch(instructions, /retry the same call once|continue without web evidence/u)
+  } finally {
+    setSubagentBridge(undefined)
+  }
 })
