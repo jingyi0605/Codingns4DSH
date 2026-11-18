@@ -42,6 +42,7 @@ interface CodexSegmentedTurn {
   readonly decode: ReturnType<typeof createCodexTurnDecoder>
   removeNotificationListener: () => void
   removeAbortListener: () => void
+  removeExitListener?: () => void
   terminalReason: 'stop' | 'cancel' | 'error' | null
   failure: { message: string; code?: string } | undefined
   done: boolean
@@ -709,6 +710,14 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       for (const message of notificationsBeforeTurnStart.splice(0)) acceptNotification(message, false)
       const responseTerminal = buildCodexCompletionNotification(response, session.threadId)
       if (responseTerminal !== null) onNotification(responseTerminal)
+      active.removeExitListener = session.rpc.addExitListener(error => {
+        if (active.terminalReason === null) {
+          active.terminalReason = 'error'
+          active.failure = { message: error.message, code: 'PROVIDER_ERROR' }
+        }
+        this.releasePendingRequests(session)
+        eventQueue.close()
+      })
       return active
     } catch (error) {
       this.closeSegmentedTurn(session, active)
@@ -727,13 +736,10 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         const next = await active.queue.next()
         if (next.done) {
           if (input.signal?.aborted) throw new Error('请求已取消')
-          active.done = true
           session.turnId = null
           // finish 是调用方看到的最后一个 chunk，之后不会再拉动本迭代器。
           // 悬挂段必须在产出终态前解除，否则它会被当成下一轮的可续段复用。
-          if (session.segmentedTurn === active) session.segmentedTurn = undefined
-          active.removeAbortListener()
-          active.removeNotificationListener()
+          this.closeSegmentedTurn(session, active)
           const danglingCompaction = closeDanglingAutoCompaction(session)
           if (danglingCompaction !== undefined) yield stabilizeCodexEvent(session, danglingCompaction)
           const reason = active.terminalReason ?? 'stop'
@@ -788,6 +794,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     active.done = true
     active.removeAbortListener()
     active.removeNotificationListener()
+    active.removeExitListener?.()
     active.queue.close()
     if (session.segmentedTurn === active) session.segmentedTurn = undefined
     this.releasePendingRequests(session)
@@ -807,10 +814,9 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       try { resolve({ answers: {} }) } catch { /* 请求可能已被其他路径清理 */ }
     }
     session.pendingQuestions.clear()
-    for (const pending of session.pendingPermissions.values()) {
-      try { pending.resolve({ approved: false }) } catch { /* 请求可能已被其他路径清理 */ }
+    for (const requestId of session.pendingPermissions.keys()) {
+      settleCodexPermission(session, { requestId, approved: false })
     }
-    session.pendingPermissions.clear()
   }
 
   /**
@@ -1089,24 +1095,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   /** 回传原生权限请求；审批值只在 Host 进程中流转。 */
   respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
     const session = this.sessions.get(sessionId)
-    const pending = session?.pendingPermissions.get(response.requestId)
-    if (pending === undefined || session === undefined) throw new Error('Codex 权限请求不存在')
-    session.pendingPermissions.delete(response.requestId)
-    if (pending.response === 'file-change') {
-      pending.resolve({ decision: response.approved ? 'accept' : 'decline' })
-    } else if (pending.response === 'command') {
-      pending.resolve({ decision: response.approved ? 'accept' : 'decline' })
-    } else if (pending.response === 'permissions') {
-      // `item/permissions/requestApproval` 的应答形状是 {permissions, scope}，
-      // 不是 {approved}。批准回显请求画像；拒绝给空画像，语义等价于“不授予额外权限”。
-      pending.resolve(response.approved
-        ? { permissions: grantedPermissionProfile(pending.requested), scope: 'turn' }
-        : { permissions: {}, scope: 'turn' })
-    } else {
-      pending.resolve({
-        approved: response.approved,
-        ...(response.reason?.trim() ? { reason: response.reason.trim().slice(0, 512) } : {}),
-      })
+    if (session === undefined || !settleCodexPermission(session, response)) {
+      throw new Error('Codex 权限请求不存在')
     }
   }
 
@@ -1122,10 +1112,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   dispose(): void {
     for (const session of this.sessions.values()) {
       if (session.segmentedTurn !== undefined) this.closeSegmentedTurn(session, session.segmentedTurn)
-      for (const pending of session.pendingPermissions.values()) pending.resolve({ approved: false })
-      session.pendingPermissions.clear()
-      for (const resolve of session.pendingQuestions.values()) resolve({ answers: {} })
-      session.pendingQuestions.clear()
+      else this.releasePendingRequests(session)
     }
     for (const rpc of this.processes) rpc.dispose()
     this.sessions.clear()
@@ -1151,7 +1138,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
 
   private async retireSession(session: CodexSession): Promise<void> {
     if (session.segmentedTurn !== undefined) this.closeSegmentedTurn(session, session.segmentedTurn)
-    this.releasePendingRequests(session)
+    else this.releasePendingRequests(session)
     await session.rpc.disposeAndWait()
     this.processes.delete(session.rpc)
   }
@@ -1165,8 +1152,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       starting = this.startingSessions.get(input.sessionId)
     }
     const previous = this.sessions.get(input.sessionId)
-    const reusable = previous !== undefined && previous.cwd === input.cwd && !previous.rpc.isClosed
-    if (skillDiscovery && reusable) return previous
+    const sameWorkspace = previous !== undefined && previous.cwd === input.cwd
+    if (skillDiscovery && sameWorkspace && !previous.rpc.isClosed) return previous
     // 真实回合（非技能发现）若 Host 未提供权限事实，必须显式告警，不能静默按缺省处理。
     if (!skillDiscovery && input.permission === undefined) {
       console.warn(`[codingns4dsh] Codex 真实回合未收到 Host 权限事实（permission 缺省），本次启动不注入沙箱/审批覆盖，交由 Codex 自身配置；sessionId=${input.sessionId}`)
@@ -1181,10 +1168,13 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       ? previous.permission
       : codexLaunchPermission(input)
     const launchFingerprint = JSON.stringify([command, this.binaryFingerprint, permission ?? null])
-    if (reusable
+    const canDrainClosedSegment = input.splitToolSteps === true && input.resumeSegmentedTurn === true
+      && previous?.segmentedTurn !== undefined && previous.segmentedTurn.terminalReason !== null
+    if (sameWorkspace
       && previous.teamToken === teamToken
       && previous.runtimeEnvFingerprint === runtimeEnvFingerprint
-      && previous.launchFingerprint === launchFingerprint) return previous
+      && previous.launchFingerprint === launchFingerprint
+      && (!previous.rpc.isClosed || canDrainClosedSegment)) return previous
 
     const start = this.startSession(input, command, previous, { teamToken, runtimeEnvFingerprint, permission, launchFingerprint })
     this.startingSessions.set(input.sessionId, start)
@@ -2429,6 +2419,21 @@ function permissionResponseKind(method: string, params: Record<string, any>): Pe
   // app-server 使用 approved 字段，按请求形状保持向后兼容。
   if (method.includes('commandExecution') && (params.threadId !== undefined || params.turnId !== undefined || params.itemId !== undefined)) return 'command'
   return 'legacy'
+}
+
+function settleCodexPermission(session: CodexSession, response: CodingNsAgentPermissionResponse): boolean {
+  const pending = session.pendingPermissions.get(response.requestId)
+  if (pending === undefined) return false
+  session.pendingPermissions.delete(response.requestId)
+  if (pending.response === 'command' || pending.response === 'file-change') {
+    pending.resolve({ decision: response.approved ? 'accept' : 'decline' })
+  } else if (pending.response === 'permissions') {
+    pending.resolve({ permissions: response.approved ? grantedPermissionProfile(pending.requested) : {}, scope: 'turn' })
+  } else {
+    const reason = response.reason?.trim().slice(0, 512)
+    pending.resolve({ approved: response.approved, ...(reason ? { reason } : {}) })
+  }
+  return true
 }
 
 /**
