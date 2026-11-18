@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import test from 'node:test'
 import { ClaudeCodeDriver } from '../data/build/dist/host/cli-adapters/claude-driver.js'
+import { CodeBuddyCliDriver } from '../data/build/dist/host/cli-adapters/codebuddy-driver.js'
 import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
 import { CommandCodeDriver } from '../data/build/dist/host/cli-adapters/command-code-driver.js'
 import { GeminiCliDriver } from '../data/build/dist/host/cli-adapters/gemini-driver.js'
@@ -18,7 +19,7 @@ function fixture(): { root: string; dispose(): void } {
 }
 
 function write(path: string, content: string): void {
-  mkdirSync(path.slice(0, path.lastIndexOf('/')), { recursive: true })
+  mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, content, 'utf8')
 }
 
@@ -35,6 +36,70 @@ test('Claude 探测区分可用、已删除和损坏的原始会话', async () =
     assert.equal((await driver.probeSession({ providerSessionId: 'deleted' })).state, 'missing')
     write(path, `${JSON.stringify({ type: 'user', sessionId: 'other' })}\n`)
     assert.equal((await driver.probeSession({ providerSessionId: id, rawStoreRef: path })).state, 'corrupt')
+    write(path, '{invalid}\n')
+    assert.equal((await driver.probeSession({ providerSessionId: id })).state, 'corrupt')
+  } finally { files.dispose() }
+})
+
+test('Claude 在无会话标识的快照之后验证 user 记录', async () => {
+  const files = fixture()
+  try {
+    const id = 'claude-snapshot-session'
+    const path = join(files.root, 'project', `${id}.jsonl`)
+    const snapshot = { type: 'file-history-snapshot', messageId: 'message-1', snapshot: { trackedFileBackups: {} } }
+    const driver = new ClaudeCodeDriver({ sessionRoots: [files.root] })
+
+    write(path, `${JSON.stringify(snapshot)}\r\n${JSON.stringify({ type: 'user', sessionId: id })}\n`)
+    assert.deepEqual(await driver.probeSession({ providerSessionId: id }), {
+      state: 'available', reason: 'Provider 原始会话可用', rawStoreRef: path,
+    })
+
+    write(path, [snapshot, { type: 'user', sessionId: 'another-session' }, { type: 'user', sessionId: id }]
+      .map((record) => JSON.stringify(record)).join('\n'))
+    assert.equal((await driver.probeSession({ providerSessionId: id })).state, 'corrupt')
+
+    write(path, `${JSON.stringify(snapshot)}\n`)
+    assert.equal((await driver.probeSession({ providerSessionId: id })).state, 'unknown')
+  } finally { files.dispose() }
+})
+
+test('Claude 验证超过 64 KiB 且末尾无换行的完整首条记录', async () => {
+  const files = fixture()
+  try {
+    const id = 'claude-long-record'
+    const path = join(files.root, 'project', `${id}.jsonl`)
+    const message = { role: 'user', content: '中文'.repeat(16 * 1024) }
+    write(path, JSON.stringify({ type: 'user', message, sessionId: id }))
+    const driver = new ClaudeCodeDriver({ sessionRoots: [files.root] })
+
+    assert.deepEqual(await driver.probeSession({ providerSessionId: id }), {
+      state: 'available', reason: 'Provider 原始会话可用', rawStoreRef: path,
+    })
+  } finally { files.dispose() }
+})
+
+test('Claude 在读取预算内只验证完整记录', async () => {
+  const files = fixture()
+  try {
+    const id = 'claude-over-budget'
+    const path = join(files.root, 'project', `${id}.jsonl`)
+    const driver = new ClaudeCodeDriver({ sessionRoots: [files.root] })
+    const budget = 1024 * 1024
+    const user = { type: 'user', sessionId: id, message: { content: '' } }
+    user.message.content = 'x'.repeat(budget - Buffer.byteLength(JSON.stringify(user)))
+    const record = JSON.stringify(user)
+
+    write(path, record)
+    assert.equal((await driver.probeSession({ providerSessionId: id })).state, 'available')
+
+    user.message.content += 'x'
+    write(path, `${JSON.stringify(user)}\n`)
+    assert.equal((await driver.probeSession({ providerSessionId: id })).state, 'unknown')
+
+    const snapshotLine = `${JSON.stringify({ type: 'file-history-snapshot', snapshot: { trackedFileBackups: {} } })}\n`
+    const preamble = snapshotLine.repeat(Math.ceil(budget / Buffer.byteLength(snapshotLine)))
+    write(path, `${preamble}${JSON.stringify({ type: 'user', sessionId: id })}\n`)
+    assert.equal((await driver.probeSession({ providerSessionId: id, rawStoreRef: path })).state, 'unknown')
   } finally { files.dispose() }
 })
 
@@ -74,6 +139,22 @@ test('旧 rawStoreRef 内容已损坏或被复用时仍扫描权威目录', asyn
   } finally { files.dispose() }
 })
 
+test('Claude 继续扫描经过探测仍无法确认的旧引用和候选文件', async () => {
+  const files = fixture()
+  try {
+    const id = 'claude-inconclusive-hint'
+    const oldPath = join(files.root, 'active', `${id}.jsonl`)
+    const movedPath = join(files.root, 'archived', `${id}.jsonl`)
+    write(oldPath, `${JSON.stringify({ type: 'file-history-snapshot', snapshot: { trackedFileBackups: {} } })}\n`)
+    write(movedPath, `${JSON.stringify({ type: 'user', sessionId: id })}\n`)
+    const driver = new ClaudeCodeDriver({ sessionRoots: [dirname(oldPath), dirname(movedPath)] })
+    const expected = { state: 'available', reason: 'Provider 原始会话可用', rawStoreRef: movedPath }
+
+    assert.deepEqual(await driver.probeSession({ providerSessionId: id, rawStoreRef: oldPath }), expected)
+    assert.deepEqual(await driver.probeSession({ providerSessionId: id }), expected)
+  } finally { files.dispose() }
+})
+
 test('磁盘会话探测响应取消信号，不在超时后继续扫描', async () => {
   const files = fixture()
   try {
@@ -84,6 +165,37 @@ test('磁盘会话探测响应取消信号，不在超时后继续扫描', async
       driver.probeSession({ providerSessionId: 'cancelled', signal: controller.signal }),
       (error: unknown) => error instanceof Error && error.name === 'AbortError',
     )
+  } finally { files.dispose() }
+})
+
+test('Claude 在开始读取原始会话后仍可取消探测', async () => {
+  const files = fixture()
+  try {
+    const id = 'claude-cancel-read'
+    const path = join(files.root, 'project', `${id}.jsonl`)
+    write(path, `${JSON.stringify({ type: 'user', sessionId: id })}\n`)
+    const driver = new ClaudeCodeDriver({ sessionRoots: [files.root] })
+    const controller = new AbortController()
+    const pending = driver.probeSession({ providerSessionId: id, rawStoreRef: path, signal: controller.signal })
+    controller.abort()
+
+    await assert.rejects(pending, { name: 'AbortError' })
+  } finally { files.dispose() }
+})
+
+test('CodeBuddy 仍按第一条非空记录验证会话', async () => {
+  const files = fixture()
+  try {
+    const id = 'codebuddy-session-1'
+    const path = join(files.root, 'project', `${id}.jsonl`)
+    const record = JSON.stringify({ session_id: id })
+    const driver = new CodeBuddyCliDriver({ sessionRoots: [files.root] })
+
+    write(path, `\n${record}\n`)
+    assert.equal((await driver.probeSession({ providerSessionId: id })).state, 'available')
+
+    write(path, `${JSON.stringify({ type: 'user' })}\n${record}\n`)
+    assert.equal((await driver.probeSession({ providerSessionId: id })).state, 'corrupt')
   } finally { files.dispose() }
 })
 
