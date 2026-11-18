@@ -121,6 +121,7 @@ test('MiniMax Code ACP 权限请求进入统一事件并回传 Provider 选项',
 test('ZCode 裸信封完成创建、发送、正文和用量事件', async () => {
   let spawnCount = 0
   const driver = new ZcodeAppServerDriver({
+    desktopRuntime: null,
     binaries: ['fake-zcode'],
     spawnSync: (() => ({ status: 0, stdout: 'zcode 1.0.0', stderr: '' })) as never,
     spawn: (() => {
@@ -164,6 +165,7 @@ test('ZCode 裸信封完成创建、发送、正文和用量事件', async () =>
 test('ZCode 订阅 desktop-continuous 事件并转换 session/event 正文', async () => {
   const calls: string[] = []
   const driver = new ZcodeAppServerDriver({
+    desktopRuntime: null,
     binaries: ['fake-zcode'],
     spawnSync: (() => ({ status: 0, stdout: 'zcode 1.0.0', stderr: '' })) as never,
     spawn: fakeRpcSpawn((request, stdout) => {
@@ -200,6 +202,7 @@ test('ZCode 订阅 desktop-continuous 事件并转换 session/event 正文', asy
 
 test('ZCode 在正文增量缺失时使用 turn.completed 快照收尾', async () => {
   const driver = new ZcodeAppServerDriver({
+    desktopRuntime: null,
     binaries: ['fake-zcode'],
     spawnSync: (() => ({ status: 0, stdout: 'zcode 1.0.0', stderr: '' })) as never,
     spawn: fakeRpcSpawn((request, stdout) => {

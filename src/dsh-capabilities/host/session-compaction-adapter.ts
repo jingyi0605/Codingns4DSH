@@ -2,6 +2,7 @@
 interface CommandResult {
   readonly kind: 'success' | 'error'
   readonly text?: string
+  readonly sourceEventSeq?: number
 }
 
 interface CommandAgent {
@@ -12,6 +13,7 @@ interface CommandAgent {
 }
 
 interface CommandInvocation {
+  readonly commandId?: string
   readonly agent: CommandAgent
   readonly rawInput: string
   readonly signal: AbortSignal
@@ -39,9 +41,25 @@ interface AgentRegistry { list(): readonly CommandAgent[] }
 export interface SessionCompactionAdapter {
   install(options: {
     supports(sessionId: string): boolean
-    compact(sessionId: string, cwd: string | undefined, signal: AbortSignal): Promise<CommandResult>
-    error(kind: 'usage' | 'busy' | 'cancelled' | 'failed'): CommandResult
+    compact(sessionId: string, cwd: string | undefined, signal: AbortSignal, sourceCommandId?: string): Promise<CommandResult>
+    error(kind: 'usage' | 'busy' | 'cancelled' | 'timeout' | 'failed'): CommandResult
   }): () => Promise<void>
+}
+
+import { NATIVE_COMPACTION_TIMEOUT_CODE } from '../../shared/contracts/cli-adapter.js'
+
+/** 与各驱动压缩超时错误的 code 一致。 */
+const COMPACTION_TIMEOUT_CODE = NATIVE_COMPACTION_TIMEOUT_CODE
+
+/**
+ * 把压缩失败的异常归成可诊断的类别。
+ *
+ * 超时与失败的处理建议完全不同（前者稍后重试，后者才需要查安装/登录/会话），
+ * 不能共用一条 compact.failed 文案。
+ */
+function compactionFailureKind(error: unknown): 'timeout' | 'failed' {
+  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined
+  return code === COMPACTION_TIMEOUT_CODE ? 'timeout' : 'failed'
 }
 
 export function supportsSessionCompaction(context: unknown): boolean {
@@ -84,9 +102,9 @@ export function createSessionCompactionAdapter(context: unknown): SessionCompact
                     const signal = AbortSignal.any([invocation.signal, maintenanceSignal, lifetime.signal])
                     try {
                       signal.throwIfAborted()
-                      return await options.compact(invocation.agent.id, invocation.agent.session.header.cwd, signal)
-                    } catch {
-                      return options.error(signal.aborted ? 'cancelled' : 'failed')
+                      return await options.compact(invocation.agent.id, invocation.agent.session.header.cwd, signal, invocation.commandId)
+                    } catch (error) {
+                      return options.error(signal.aborted ? 'cancelled' : compactionFailureKind(error))
                     }
                   })
                 } catch {

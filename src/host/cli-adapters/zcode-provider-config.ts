@@ -1,4 +1,5 @@
 import { decryptZcodeCredential } from './zcode-credentials.js'
+import { accountProviderApiKeyEntry } from './zcode-account-keys.js'
 import { createDecipheriv, createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { homedir, userInfo } from 'node:os'
@@ -93,10 +94,14 @@ function readProviderConfigs(providerId: string | undefined, options: ZcodeProvi
   const credentials = readJson(resolveCredentialsPath(options))
   return [...providers].filter(([id]) => providerId === undefined || id === providerId).map(([id, config]) => {
     const baseUrl = text(config.api?.baseUrl ?? config.api?.baseURL ?? config.baseUrl ?? config.baseURL ?? config.endpoint)
-    const prefix = `account-provider:coding-plan:${id}:account:`
-    const credentialKey = Object.keys(credentials ?? {}).find((key) => key.startsWith(prefix) && key.endsWith(':api-key'))
+    // 账号套餐的凭据查找与模型目录共用同一套规则：coding-plan 槽位自己没有
+    // api-key 时，复用同一账号族兄弟槽位的 key，这样「个人版套餐」这条也能读到
+    // 自己的余额。start-plan / off-peak 仍走登录 JWT，不参与复用。
+    const mode = text(config.access?.mode) ?? ''
+    const planSlot = mode === 'individual-coding-plan' || mode === 'team-coding-plan'
+    const entry = planSlot ? accountProviderApiKeyEntry(id, credentials ?? {}) : null
     const encoded = text(config.access?.apiKey ?? config.apiKey ?? config.api_key)
-      ?? (credentialKey === undefined ? null : text(credentials?.[credentialKey]))
+      ?? (entry === null ? null : text(credentials?.[entry.key]))
     const apiKey = encoded === null ? null : text(decode(encoded))
     return { providerId: id, ...(typeof config.access?.mode === 'string' ? { accessMode: config.access.mode } : {}),
       source: baseUrl === null || apiKey === null ? null : { baseUrl, apiKey } }
