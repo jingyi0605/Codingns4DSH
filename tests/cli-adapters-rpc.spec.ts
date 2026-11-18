@@ -170,8 +170,18 @@ test('Codex MCP mcpToolCall 转换为 DSH 工具生命周期并保留失败结�
 
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'cua-events', messages: [], prompt: '检查桌面状态' })) chunks.push(chunk)
-  assert.equal(calls[0]?.includes('mcp_servers.cua_repl.command="/opt/cua/node"'), true)
-  assert.equal(calls[0]?.includes('--disable'), false)
+  const launch = calls[0] ?? []
+  if (process.platform === 'win32') {
+    assert.deepEqual(launch.slice(1, 4), ['/d', '/s', '/c'])
+    const commandLine = launch[4] ?? ''
+    assert.ok(commandLine.includes(`-c "mcp_servers.cua_repl.command='/opt/cua/node'"`))
+    assert.match(commandLine, / --enable computer_use\b/u)
+    assert.doesNotMatch(commandLine, / --disable computer_use\b/u)
+  } else {
+    assert.ok(launch.includes('mcp_servers.cua_repl.command="/opt/cua/node"'))
+    assert.deepEqual(launch.slice(launch.indexOf('--enable'), launch.indexOf('--enable') + 2), ['--enable', 'computer_use'])
+    assert.equal(launch.includes('--disable'), false)
+  }
   assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-event'), [
     { type: 'tool-event', toolName: 'cua_repl.js', status: 'running', callId: 'cua-call', input: '{"code":"await cua.getState()"}' },
     { type: 'tool-event', toolName: 'cua_repl.js', status: 'failed', callId: 'cua-call', input: '{"code":"await cua.getState()"}', error: '{"message":"Screen Recording permission denied"}' },
