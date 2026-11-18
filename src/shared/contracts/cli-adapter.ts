@@ -532,3 +532,6 @@ export type CodingNsAgentEvent =
       readonly shadowedTokenCount?: number
       readonly error?: string
     }
+
+/** Shared by native drivers and the command adapter. */
+export const NATIVE_COMPACTION_TIMEOUT_CODE = 'CODINGNS_COMPACTION_TIMEOUT'

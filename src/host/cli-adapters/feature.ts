@@ -362,14 +362,15 @@ export function createCliAdaptersFeature(options: {
             return registry.supportsCompaction(sessionId)
           },
           error: kind => ({ kind: 'error', text: hostBrowserText(resolveHostPushLocale(context.services.settingsProvider), `compact.${kind}`) }),
-          async compact(sessionId, cwd, signal) {
+          async compact(sessionId, cwd, signal, sourceCommandId) {
             publishExternalStatus(sessionId, true)
             try {
               const config = registry.getSession(sessionId)
               const locale = resolveHostPushLocale(context.services.settingsProvider)
               if (!config.providerSessionId) return { kind: 'success', text: hostBrowserText(locale, 'compact.empty', { agent: config.adapterId }) }
-              const result = await registry.compact(sessionId, cwd, signal)
-              return { kind: 'success', text: result.message?.trim() || hostBrowserText(locale, result.compacted ? 'compact.completed' : 'compact.unchanged', { agent: config.adapterId }) }
+              const result = await registry.compact(sessionId, cwd, signal, sourceCommandId)
+              return { kind: 'success', text: result.message?.trim() || hostBrowserText(locale, result.compacted ? 'compact.completed' : 'compact.unchanged', { agent: config.adapterId }),
+                ...(result.sourceEventSeq === undefined ? {} : { sourceEventSeq: result.sourceEventSeq }) }
             } finally {
               publishExternalStatus(sessionId, false)
             }

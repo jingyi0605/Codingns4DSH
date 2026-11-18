@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
-import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
+import { CodexAppServerDriver, CodexCompactionTimeoutError, CODEX_COMPACTION_TIMEOUT_MS } from '../data/build/dist/host/cli-adapters/codex-driver.js'
 import { ClaudeCodeDriver } from '../data/build/dist/host/cli-adapters/claude-driver.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 import { createSessionCompactionAdapter, supportsSessionCompaction } from '../data/build/dist/dsh-capabilities/host/session-compaction-adapter.js'
@@ -54,8 +54,9 @@ function codexFixture() {
 test('Codex manual compaction resumes the exact thread, waits for completion and never starts a user turn', async () => {
   const f = codexFixture()
   let settled = false
+  const compactionEvents: any[] = []
   try {
-    const operation = f.driver.compact({ sessionId: 'dsh-session', providerSessionId: 'existing-thread', cwd: process.cwd() })
+    const operation = f.driver.compact({ sessionId: 'dsh-session', providerSessionId: 'existing-thread', cwd: process.cwd(), onCompactionEvent: event => { compactionEvents.push(event) } })
       .then(result => { settled = true; return result })
     await f.acknowledged.promise
     f.finish('completed', 'another-thread')
@@ -65,6 +66,7 @@ test('Codex manual compaction resumes the exact thread, waits for completion and
     assert.equal(f.requests.some(r => r.method === 'thread/start' || r.method === 'turn/start'), false)
     f.finish()
     assert.deepEqual(await operation, { compacted: true })
+    assert.deepEqual(compactionEvents.map(event => event.phase), ['start', 'summary', 'end'], 'Codex notifications without a summary body must still land a native checkpoint')
     // A second manual command reuses the same live provider thread.
     const again = f.driver.compact({ sessionId: 'dsh-session', providerSessionId: 'existing-thread', cwd: process.cwd() })
     await new Promise(resolve => setImmediate(resolve))
@@ -301,4 +303,84 @@ test('DSH command unload cancels maintenance and reports failure without invokin
   assert.equal(f.nativeCalls(), 0)
   assert.match(hostBrowserText('zh', 'compact.completed', { agent: 'Codex' }), /原生上下文已压缩/)
   assert.match(hostBrowserText('en', 'compact.completed', { agent: 'Codex' }), /native context compacted/)
+})
+
+test('Codex manual compaction waits long enough and reports a distinguishable timeout', async () => {
+  // 同一线程的 Codex 自动压缩实测 95～160 秒；旧上限 60 秒会在压缩仍在进行时
+  // 杀掉 app-server，用户只看到通用的“压缩未正常完成”。
+  assert.ok(
+    CODEX_COMPACTION_TIMEOUT_MS >= 180_000,
+    `CODEX_COMPACTION_TIMEOUT_MS=${CODEX_COMPACTION_TIMEOUT_MS} 小于一次正常压缩的耗时`,
+  )
+  const timeout = new CodexCompactionTimeoutError()
+  assert.equal(timeout.code, 'CODINGNS_COMPACTION_TIMEOUT')
+
+  const f = commandFixture()
+  const codex = f.create('codex')
+  const dispose = createSessionCompactionAdapter(f.context).install({
+    supports: () => true,
+    async compact() { throw timeout },
+    error: kind => ({ kind: 'error', text: kind }),
+  })
+  try {
+    assert.equal((await f.run(codex)).text, 'timeout')
+    assert.match(hostBrowserText('zh', 'compact.timeout'), /压缩超时/)
+    assert.match(hostBrowserText('en', 'compact.timeout'), /Timed out/)
+    assert.equal(hostBrowserText('zh', 'compact.timeout').includes('{agent}'), false)
+  } finally {
+    await dispose()
+  }
+})
+
+test('Codex 自动压缩把压缩前的 prompt 规模写进摘要，而不是 0', async () => {
+  const child = childProcess()
+  const requested: { id?: number; method: string; params?: Record<string, unknown> }[] = []
+  const turnStarted = Promise.withResolvers<void>()
+  const write = (value: unknown) => child.stdout.write(`${JSON.stringify(value)}\n`)
+  child.stdin.on('data', data => {
+    const request = JSON.parse(String(data))
+    requested.push(request)
+    if (request.id === undefined) return
+    if (request.method === 'turn/start') {
+      write({ jsonrpc: '2.0', id: request.id, result: { turn: { id: 'turn-1', status: 'inProgress' } } })
+      turnStarted.resolve()
+      return
+    }
+    write({
+      jsonrpc: '2.0',
+      id: request.id,
+      result: request.method === 'thread/resume' ? { thread: { id: request.params.threadId } } : {},
+    })
+  })
+  const driver = new CodexAppServerDriver({
+    binaries: ['fake-codex.exe'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => child) as never,
+  })
+  try {
+    const events: Array<Record<string, any>> = []
+    const consumed = (async () => {
+      for await (const event of driver.executeTurn({
+        sessionId: 'auto-compact', providerSessionId: 'existing-thread', cwd: process.cwd(), messages: [], prompt: 'Continue',
+      })) events.push(event as unknown as Record<string, any>)
+    })()
+    await turnStarted.promise
+    // turn/start 的响应先到，通知监听器要等驱动把这一轮登记完再接收通知。
+    await new Promise(resolve => setImmediate(resolve))
+    // Usage 通知不带 contextWindow：旧实现因此完全没有记录规模，摘要只能写 0。
+    write({ jsonrpc: '2.0', method: 'thread/tokenUsage/updated', params: { threadId: 'existing-thread', tokenUsage: { last: { inputTokens: 312_000, cachedInputTokens: 260_000 } } } })
+    write({ jsonrpc: '2.0', method: 'item/started', params: { threadId: 'existing-thread', turnId: 'turn-1', item: { id: 'compact-1', type: 'contextCompaction' } } })
+    // 压缩请求自己也会上报一条小规模 usage；它不能覆盖压缩前的基线。
+    write({ jsonrpc: '2.0', method: 'thread/tokenUsage/updated', params: { threadId: 'existing-thread', tokenUsage: { last: { inputTokens: 41_000 } } } })
+    write({ jsonrpc: '2.0', method: 'item/completed', params: { threadId: 'existing-thread', turnId: 'turn-1', item: { id: 'compact-1', type: 'contextCompaction' } } })
+    write({ jsonrpc: '2.0', method: 'turn/completed', params: { threadId: 'existing-thread', turn: { id: 'turn-1', status: 'completed' } } })
+    await consumed
+
+    const summary = events.find(event => event.type === 'context-compaction' && event.phase === 'summary')
+    assert.ok(summary !== undefined, '未产生压缩摘要事件')
+    assert.equal(summary.shadowedTokenCount, 312_000)
+    assert.equal(requested.some(request => request.method === 'turn/compact/start'), false)
+  } finally {
+    driver.dispose()
+  }
 })

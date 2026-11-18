@@ -143,7 +143,7 @@ export interface CodingNsNativeUsageSample {
 }
 
 /** 公共消息投影层传递的 Provider 上下文压缩活动。 */
-export type CodingNsNativeCompactionEvent = Extract<CodingNsAgentEvent, { type: 'context-compaction' }>
+export type CodingNsNativeCompactionEvent = Extract<CodingNsAgentEvent, { type: 'context-compaction' }> & { readonly sourceCommandId?: string }
 
 export interface CodingNsNativeSessionController extends SessionActivationController {
   create?(request: { readonly sessionId?: string; readonly cwd?: string }): Promise<{ readonly sessionId: string }>
@@ -496,39 +496,46 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
       if (event.phase === 'start') {
         const existing = compactionStates.get(sessionId)
         if (existing !== undefined) {
-          const position = activeStep(session)
+          const turn = activeTurn(session)
           // 同一 turn 内重复的 start 属于同一次压缩的迟到通知，保持幂等。
-          if (existing.turn === (position?.turn ?? null)) return true
+          if (existing.turn === turn) return event.compactionId === undefined || event.compactionId === existing.compactionId
           // 旧事务属于已经关闭的 turn：DSH 只允许在 owner turn 打开期间写
           // compaction/end，历史日志无法在这里补救。丢弃它的状态，让当前压缩
           // 建立新事务，避免后续 summary/end 继续挂到错误的 turn 上。
           compactionStates.delete(sessionId)
         }
         const compactionId = event.compactionId?.trim() || `codingns-compaction-${randomUUID()}`
-        const position = activeStep(session)
-        session.append('compaction/start', {
+        const turn = activeTurn(session)
+        const start = session.append('compaction/start', {
           compactionId,
-          turn: position?.turn ?? null,
+          turn,
+          ...(event.sourceCommandId === undefined ? {} : { sourceCommandId: event.sourceCommandId }),
         })
         compactionStates.set(sessionId, {
           compactionId,
-          turn: position?.turn ?? null,
+          turn,
+          startSeq: eventSeq(start),
+          sourceCommandId: event.sourceCommandId,
+          range: compactionSurfaceRange(session, turn),
           summaryAppended: false,
         })
         return true
       }
       const state = compactionStates.get(sessionId)
       if (state === undefined) return false
-      if ((event.phase === 'summary' || event.phase === 'end' && event.summary !== undefined) && !state.summaryAppended) {
-        const range = compactionSurfaceRange(session)
+      if (event.compactionId !== undefined && event.compactionId !== state.compactionId) return false
+      if ((event.phase === 'summary' || event.phase === 'end' && event.summary !== undefined && !event.error) && !state.summaryAppended) {
+        const range = state.range
         if (range !== null) {
-          const summary = boundCompactionSummary(event.summary)
-          session.append('compaction/summary', {
+          const shadowedTokenCount = safeCount(event.shadowedTokenCount)
+          const summary = boundCompactionSummary(event.summary, shadowedTokenCount)
+          const summaryEvent = session.append('compaction/summary', {
             compactionId: state.compactionId,
+            ...(state.sourceCommandId === undefined ? {} : { sourceCommandId: state.sourceCommandId }),
             summary: [{ type: 'text', text: summary }],
             shadowedRange: { start: range.start, end: range.end },
             shadowedSeqs: range.seqs,
-            shadowedTokenCount: safeCount(event.shadowedTokenCount),
+            shadowedTokenCount,
             provider: event.provider?.trim() || 'codingns-external',
             model: event.model?.trim() || 'external-agent',
           })
@@ -540,11 +547,12 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
             role: 'user',
             content: [{ type: 'text', text: summary }],
             source: usesProducerOwnedSource(session)
-              ? { kind: 'compact-checkpoint', compactionId: state.compactionId }
+              ? { kind: 'compact-checkpoint', compactionId: state.compactionId,
+                  ...(state.sourceCommandId === undefined ? {} : { sourceCommandId: state.sourceCommandId }) }
               : { kind: 'plugin', plugin: 'compact' },
           }, {
             surfaceOp: { op: 'replace', startSeq: range.start, endSeq: range.end },
-            sourceEventSeqs: range.seqs,
+            sourceEventSeqs: [state.startSeq, eventSeq(summaryEvent), ...range.seqs].filter((seq): seq is number => seq !== null),
           })
           state.summaryAppended = true
         }
@@ -557,6 +565,7 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
         session.append('compaction/end', {
           compactionId: state.compactionId,
           turn: state.turn,
+          ...(state.sourceCommandId === undefined ? {} : { sourceCommandId: state.sourceCommandId }),
           ...(event.error?.trim() ? { error: event.error.trim().slice(0, 512) } : !state.summaryAppended ? { error: 'Provider 未返回可投影的压缩摘要。' } : {}),
         })
         compactionStates.delete(sessionId)
@@ -873,6 +882,9 @@ interface AppendableSession {
 interface NativeCompactionState {
   readonly compactionId: string
   readonly turn: number | null
+  readonly startSeq: number | null
+  readonly sourceCommandId: string | undefined
+  readonly range: CompactionSurfaceRange | null
   summaryAppended: boolean
 }
 
@@ -1010,7 +1022,16 @@ interface CompactionSurfaceRange {
   readonly seqs: readonly number[]
 }
 
-function compactionSurfaceRange(session: AppendableSession): CompactionSurfaceRange | null {
+function activeTurn(session: AppendableSession): number | null {
+  for (const event of [...session.snapshotEvents()].reverse()) {
+    if (!isRecord(event)) continue
+    if (event.type === 'turn/end') return null
+    if (event.type === 'turn/start') return isRecord(event.data) ? finiteInteger(event.data.turn) : null
+  }
+  return null
+}
+
+function compactionSurfaceRange(session: AppendableSession, turn: number | null): CompactionSurfaceRange | null {
   let nodes: readonly number[] = []
   try {
     if (Array.isArray(session.surface?.nodes)) nodes = session.surface.nodes
@@ -1030,7 +1051,10 @@ function compactionSurfaceRange(session: AppendableSession): CompactionSurfaceRa
     // 输入一并替换；旧 assistant/tool 节点仍可作为压缩范围。
     const last = usable.at(-1)
     const lastEvent = last === undefined ? undefined : session.eventAt?.(last) ?? events[last]
-    if (last !== undefined && isRecord(lastEvent) && lastEvent.type === 'user/message') usable = usable.slice(0, -1)
+    const turnStart = turn === null ? undefined : [...events].reverse().find(candidate =>
+      isRecord(candidate) && candidate.type === 'turn/start' && isRecord(candidate.data) && candidate.data.turn === turn)
+    if (last !== undefined && isRecord(lastEvent) && lastEvent.type === 'user/message'
+      && isRecord(turnStart) && typeof turnStart.seq === 'number' && last > turnStart.seq) usable = usable.slice(0, -1)
     if (usable.length === 0) return null
     return { start: usable[0]!, end: usable.at(-1)!, seqs: usable }
   } catch {
@@ -1038,9 +1062,27 @@ function compactionSurfaceRange(session: AppendableSession): CompactionSurfaceRa
   }
 }
 
-function boundCompactionSummary(summary: string | undefined): string {
-  const value = summary?.trim() || 'Codex 已压缩较早的上下文。'
-  return value.slice(0, 120)
+/**
+ * 检查点正文。
+ *
+ * 外部 Agent 的压缩事件通常不带摘要正文（Codex 0.158 起只发 item 生命周期），
+ * 以前一律退回一句「已压缩较早的上下文。」，看不出压掉了多少。既然同一条事件
+ * 已经带着真实的被替换 token 数，就把规模写进检查点；没有可信规模时才用最简
+ * 说法，避免把 0 当成事实。
+ */
+function boundCompactionSummary(summary: string | undefined, shadowedTokenCount: number | undefined): string {
+  const text = summary?.trim()
+  if (text) return text
+  const tokens = safeCount(shadowedTokenCount)
+  return tokens > 0
+    ? `已压缩较早的上下文（约 ${formatCompactedTokens(tokens)} tokens）。`
+    : '已压缩较早的上下文。'
+}
+
+function formatCompactedTokens(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}K`
+  return String(tokens)
 }
 
 function safeCount(value: number | undefined): number {

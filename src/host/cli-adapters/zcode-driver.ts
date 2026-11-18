@@ -11,9 +11,11 @@ import type {
   CodingNsCliModelCatalog,
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
-import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
+import { NATIVE_COMPACTION_TIMEOUT_CODE } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsCliCompactionInput, CodingNsCliCompactionResult, CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog } from './rpc-driver-utils.js'
+import { randomUUID } from 'node:crypto'
 import { ZCODE_CATALOG } from './model-catalog.js'
 import { desktopCliRuntimeCommand, resolveZCodeDesktopRuntime, type CodingNsDesktopAppRuntime } from './desktop-app-runtime.js'
 import { promptWithAttachmentPaths, withAttachmentPaths } from './attachment-utils.js'
@@ -27,6 +29,7 @@ const record = (value: unknown): Record<string, any> => isRecord(value) ? value 
 const text = (value: unknown): string => typeof value === 'string' ? value : ''
 
 export interface ZcodeCliDriverOptions {
+  readonly compactionTimeoutMs?: number
   readonly homeDirectory?: string
   readonly desktopRuntime?: CodingNsDesktopAppRuntime | null
   readonly binaries?: readonly string[]
@@ -71,6 +74,18 @@ interface ZcodeSession {
   readonly emittedInteractions: Set<string>
   lastUsage: unknown
   supportsContextSnapshot: boolean
+  compacting: boolean
+}
+
+const ZCODE_COMPACTION_TIMEOUT_MS = 300_000
+
+export class ZcodeCompactionTimeoutError extends Error {
+  readonly code = NATIVE_COMPACTION_TIMEOUT_CODE
+
+  constructor() {
+    super('ZCode 上下文压缩超时')
+    this.name = 'ZcodeCompactionTimeoutError'
+  }
 }
 
 interface ZcodeTurnEventQueue {
@@ -124,12 +139,14 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   private readonly processes = new Set<JsonRpcProcess>()
   private cachedCatalog: CodingNsCliModelCatalog | null = null
   private cachedCatalogFingerprint: string | undefined
+  private readonly compactionTimeoutMs: number
   private readonly homeDirectory: string
   private readonly hasExplicitDesktopRuntime: boolean
   /** 模型目录声明的默认思考档位；切换 DeepSeek 时服务端要求显式传入。 */
   private readonly defaultEfforts = new Map<string, string>()
 
   constructor(options: ZcodeCliDriverOptions = {}) {
+    this.compactionTimeoutMs = options.compactionTimeoutMs ?? ZCODE_COMPACTION_TIMEOUT_MS
     this.homeDirectory = options.homeDirectory ?? homedir()
     this.hasExplicitDesktopRuntime = options.desktopRuntime !== undefined
     this.cachedRuntime = options.desktopRuntime
@@ -231,6 +248,98 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       return { state: 'unknown', reason: `会话探测失败: ${error instanceof Error ? error.message : String(error)}` }
     } finally {
       rpc?.dispose()
+    }
+  }
+
+  async compact(input: CodingNsCliCompactionInput): Promise<CodingNsCliCompactionResult> {
+    input.signal?.throwIfAborted()
+    if (!input.providerSessionId) throw new Error('ZCODE_COMPACTION_SESSION_REQUIRED')
+    const existing = this.sessions.get(input.sessionId)
+    // 回合进行中不能压缩：协议会拒绝，提前给出可诊断的忙碌错误。
+    if (existing?.acceptingInteractions === true || existing?.compacting || compactionBackground(existing)?.hasActive) throw new Error('ZCODE_COMPACTION_BUSY')
+    if (!(await this.detect()).installed) throw new Error('ZCode 未安装')
+    // 压缩是维护操作，不是新回合：必须复用已有的常驻会话实例。走 getSession 会在
+    // 「绑定已存在」时另起一个 app-server，而那个进程并不知道原生会话，压缩前的
+    // resume 又可能因权限模式尚未下发而被拒，压缩就此中断。
+    const session = existing ?? await this.getSession({ ...input, messages: [], prompt: '' })
+    const timeout = AbortSignal.timeout(this.compactionTimeoutMs)
+    const signal = input.signal ? AbortSignal.any([input.signal, timeout]) : timeout
+    // 压缩在 ZCode 侧是一个真实回合：期间必须把它的通知挡在后台回合判定之外，
+    // 否则会被当成「后台回合」，往会话里插一条工作流结果通知、并把压缩标记
+    // （Compacted）当成助手回复显示。
+    session.compacting = true
+    // Background-aware drivers must classify the maintenance turn as owned
+    // foreground work, so its output cannot become a workflow notification.
+    const background = compactionBackground(session)
+    background?.beginForeground()
+    const compactionId = `zcode-compaction-${randomUUID()}`
+    const emit = input.onCompactionEvent
+    let started = false
+    let accepted = false
+    let completion: ReturnType<typeof observeZcodeCompaction> | undefined
+    try {
+      if (session.acpSessionId === '') {
+        const resumed = await session.rpc.request('session/resume', {
+          sessionId: input.providerSessionId,
+          workspace: zcodeWorkspace(input.cwd),
+        }, { signal, killOnAbort: false })
+        const resumedId = readSessionId(resumed)
+        if (resumedId !== input.providerSessionId) throw new Error('ZCode 返回了不同的原生会话 ID，已停止压缩')
+        session.acpSessionId = resumedId
+      }
+      if (session.acpSessionId !== input.providerSessionId) throw new Error('ZCODE_COMPACTION_SESSION_MISMATCH')
+      await this.subscribeSessionEvents(session, signal)
+      const before = zcodeContextUsed(await readZcodeSessionData(session.rpc, 'session/read', session.acpSessionId))
+      signal.throwIfAborted()
+      completion = observeZcodeCompaction(session.rpc, session.acpSessionId, signal)
+      const compactStartedAt = Date.now()
+      emit?.({ type: 'context-compaction', phase: 'start', compactionId })
+      started = true
+      const response = await session.rpc.request('session/compact', {
+        sessionId: session.acpSessionId,
+        inputId: randomUUID(),
+      }, { signal, killOnAbort: false })
+      const state = compactionRecord(compactionRecord(response).compact).state
+      accepted = state === 'accepted'
+      if (accepted) await completion.promise
+      else if (state === 'failed' || state === 'cancelled') throw new Error(`ZCODE_COMPACTION_${state.toUpperCase()}`)
+      signal.throwIfAborted()
+      // Native completion carries no text. The persisted compact_summary is a
+      // separate hidden message; read it before releasing maintenance to queued turns.
+      const summary = zcodeCompactionSummary(
+        await readZcodeSessionData(session.rpc, 'session/read', session.acpSessionId, 8), compactStartedAt,
+      )
+      // 压缩改变了原生会话规模：丢弃旧基线，下一轮按新会话重新取增量。
+      session.lastUsage = undefined
+      const events: Extract<CodingNsAgentEvent, { type: 'context-compaction' }>[] = [
+        {
+          type: 'context-compaction', phase: 'summary', compactionId,
+          provider: 'zcode',
+          ...(summary === undefined ? {} : { summary }),
+          ...(before === undefined ? {} : { shadowedTokenCount: before }),
+        },
+        { type: 'context-compaction', phase: 'end', compactionId },
+      ]
+      // DSH accepts null-turn maintenance lifecycles. Registry callers project live;
+      // callers without a display sink retain the legacy next-turn fallback.
+      if (emit) for (const event of events) emit(event)
+
+      return { compacted: true }
+    } catch (error) {
+      if (started) emit?.({ type: 'context-compaction', phase: 'end', compactionId,
+        error: error instanceof Error ? error.message : String(error) })
+      if (accepted) {
+        // The RPC acknowledgement does not end the native turn. Settle it before
+        // releasing the execution lock, including on cancellation and timeout.
+        try { await session.rpc.request('session/stop', { sessionId: session.acpSessionId },
+          { signal: AbortSignal.timeout(1_500), killOnAbort: false }) } catch { /* original failure remains authoritative */ }
+      }
+      if (input.signal?.aborted !== true && isZcodeTimeoutAbort(signal, error)) throw new ZcodeCompactionTimeoutError()
+      throw error
+    } finally {
+      completion?.dispose()
+      background?.endForeground()
+      session.compacting = false
     }
   }
 
@@ -605,6 +714,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       emittedInteractions: new Set(),
       lastUsage: undefined,
       supportsContextSnapshot: false,
+      compacting: false,
     }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, session)
@@ -895,12 +1005,79 @@ function zcodeFailure(session: ZcodeSession): { message: string; code?: string }
   return code ? { message, code } : { message }
 }
 
-async function readZcodeSessionData(rpc: JsonRpcProcess, method: 'session/usage' | 'session/read', sessionId: string): Promise<unknown> {
+function compactionRecord(value: unknown): Record<string, any> {
+  return isRecord(value) ? value : {}
+}
+
+function compactionBackground(session: ZcodeSession | undefined) {
+  const background = (session as ZcodeSession & {
+    readonly background?: { readonly hasActive: boolean; beginForeground(): void; endForeground(): void }
+  } | undefined)?.background
+  return background && typeof background.beginForeground === 'function' && typeof background.endForeground === 'function'
+    ? background : undefined
+}
+
+function zcodeContextUsed(value: unknown): number | undefined {
+  const root = isRecord(value) && isRecord(value.snapshot) ? value.snapshot : isRecord(value) ? value : undefined
+  const projection = isRecord(root) && isRecord(root.projection) ? root.projection : undefined
+  const used = projection?.contextUsed
+  return typeof used === 'number' && Number.isFinite(used) && used >= 0 ? used : undefined
+}
+
+function isZcodeTimeoutAbort(signal: AbortSignal, error: unknown): boolean {
+  if (!signal.aborted) return false
+  if (isRecord(signal.reason) && signal.reason.name === 'TimeoutError') return true
+  return error instanceof Error && error.name === 'TimeoutError'
+}
+
+function observeZcodeCompaction(
+  rpc: JsonRpcProcess,
+  sessionId: string,
+  signal: AbortSignal,
+) {
+  let resolve!: () => void, reject!: (error: unknown) => void
+  const promise = new Promise<void>((onResolve, onReject) => { resolve = onResolve; reject = onReject })
+  // Completion can arrive before the acknowledgement; attach before sending.
+  void promise.catch(() => undefined)
+  const abort = () => reject(signal.reason ?? new Error('ZCODE_COMPACTION_CANCELLED'))
+  signal.addEventListener('abort', abort, { once: true })
+  if (signal.aborted) abort()
+  const removeExit = rpc.addExitListener(error => reject(error))
+  const removeNotification = rpc.addNotificationListener(message => {
+    const params = compactionRecord(message.params), patch = compactionRecord(params.patch)
+    const id = params.sessionId ?? patch.sessionId
+    if (typeof id === 'string' && id !== sessionId) return
+    if (message.method !== 'state.updated') return
+    if (params.reason === 'session_compacted') resolve()
+    else if (params.reason === 'session_compact_failed' || params.reason === 'session_compact_cancelled') reject(new Error(String(params.reason)))
+  })
+  return { promise, dispose() { signal.removeEventListener('abort', abort); removeExit(); removeNotification() } }
+}
+
+function zcodeCompactionSummary(value: unknown, startedAt: number): string | undefined {
+  const root = isRecord(value) && isRecord(value.snapshot) ? value.snapshot : value
+  if (!isRecord(root) || !Array.isArray(root.messages)) return undefined
+  // Use the native semantic marker and this operation's timestamp, so an older
+  // summary or the visible "Compacted" assistant marker cannot become its body.
+  const message = [...root.messages].reverse().find(candidate => {
+    const info = compactionRecord(compactionRecord(candidate).info)
+    return compactionRecord(info.semantics).kind === 'compact_summary'
+      && typeof compactionRecord(info.time).created === 'number'
+      && compactionRecord(info.time).created >= startedAt
+  })
+  const parts = compactionRecord(message).parts
+  if (!Array.isArray(parts)) return undefined
+  const text = parts.filter(part => isRecord(part) && part.type === 'text' && typeof part.text === 'string')
+    .map(part => part.text).join('\n\n')
+  return text.trim() === '' ? undefined : text
+}
+
+async function readZcodeSessionData(rpc: JsonRpcProcess, method: 'session/usage' | 'session/read', sessionId: string, messageLimit = 1): Promise<unknown> {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 1_500)
   timer.unref?.()
   try {
-    return await rpc.request(method, { sessionId, ...(method === 'session/read' ? { messageLimit: 1 } : {}) },
+    return await rpc.request(method, { sessionId, ...(method === 'session/read' ? { messageLimit } : {}) },
       { signal: controller.signal, killOnAbort: false })
   } catch {
     return null

@@ -42,12 +42,17 @@ export interface CodingNsCliSessionProbeResult {
 
 /** A maintenance operation on an existing provider conversation, never a new user turn. */
 export type CodingNsCliCompactionInput = Pick<CodingNsCliTurnInput,
-  'sessionId' | 'providerSessionId' | 'cwd' | 'modelId' | 'effortId' | 'signal'>
+  'sessionId' | 'providerSessionId' | 'cwd' | 'modelId' | 'effortId' | 'signal'> & {
+    /** Standalone maintenance uses DSH's null-turn lifecycle immediately. */
+    readonly onCompactionEvent?: (event: Extract<CodingNsAgentEvent, { type: 'context-compaction' }>) => void
+  }
 
 export interface CodingNsCliCompactionResult {
   readonly compacted: boolean
   /** Provider-owned status text, including the reason when there is nothing to compact. */
   readonly message?: string
+  /** Native summary for command/result correlation, as in DSH /compact. */
+  readonly sourceEventSeq?: number
 }
 
 /**

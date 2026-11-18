@@ -17,6 +17,7 @@ import type {
   CodingNsCliDetection,
 } from '../../shared/contracts/cli-adapter.js'
 import { invalidateCommandEnvironment, withCommandSignal } from './process-utils.js'
+import { isRecord } from './rpc-driver-utils.js'
 import { failedDetection } from './binary-detection.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import { debugInfo } from '../../shared/debug.js'
@@ -596,7 +597,7 @@ export class CodingNsCliAdapterRegistry {
   }
 
   /** Shares the execution lock with normal turns, installation and suspended steps. */
-  async compact(sessionId: string, cwd: string | undefined, signal: AbortSignal): Promise<CodingNsCliCompactionResult> {
+  async compact(sessionId: string, cwd: string | undefined, signal: AbortSignal, sourceCommandId?: string): Promise<CodingNsCliCompactionResult> {
     signal.throwIfAborted()
     if (this.disposed) throw new CodingNsRpcError('CODINGNS_CLI_UNAVAILABLE', 'Agent adapters have been stopped.')
     const config = this.getSession(sessionId)
@@ -608,6 +609,7 @@ export class CodingNsCliAdapterRegistry {
     }
     if (!config.providerSessionId) throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', 'There is no provider conversation to compact yet.')
     this.executingSessions.set(sessionId, config.adapterId)
+    let sourceEventSeq: number | undefined
     try {
       const result = await driver.compact({
         sessionId, providerSessionId: config.providerSessionId,
@@ -615,10 +617,28 @@ export class CodingNsCliAdapterRegistry {
         ...(config.modelId === undefined ? {} : { modelId: config.modelId }),
         ...(config.effortId === undefined ? {} : { effortId: config.effortId }),
         signal: AbortSignal.any([signal, this.lifetime.signal]),
+        onCompactionEvent: event => {
+          try {
+            const bridge = this.nativeSessions
+            if (!bridge?.appendCompactionEvent?.(sessionId, { ...event,
+              provider: event.provider ?? config.adapterId, model: event.model ?? config.modelId ?? config.adapterId,
+              ...(sourceCommandId === undefined ? {} : { sourceCommandId }),
+            })) return
+            if (event.phase === 'summary') {
+              const session = bridge.get(sessionId) as { snapshotEvents?(): readonly unknown[] } | undefined
+              const summary = [...session?.snapshotEvents?.() ?? []].reverse().find(candidate => isRecord(candidate)
+                && candidate.type === 'compaction/summary' && isRecord(candidate.data)
+                && candidate.data.compactionId === event.compactionId)
+              if (isRecord(summary) && typeof summary.seq === 'number') sourceEventSeq = summary.seq
+            }
+          } catch { /* Display projection must not interrupt native maintenance. */ }
+        },
       })
       // Until the next real usage report, do not present pre-compaction usage as current.
-      if (result.compacted) this.lastUsages.delete(sessionId)
-      return result
+      if (result.compacted) {
+        this.lastUsages.delete(sessionId)
+      }
+      return { ...result, ...(sourceEventSeq === undefined ? {} : { sourceEventSeq }) }
     } finally {
       this.executingSessions.delete(sessionId)
     }
