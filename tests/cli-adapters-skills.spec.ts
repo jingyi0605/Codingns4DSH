@@ -82,7 +82,7 @@ test('Claude 显式 Skill 命令通过原生 user 消息传递，参数和正文
   const messages: Record<string, unknown>[] = []
   const args: string[][] = []
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: (() => ({ status: 0, stdout: 'claude 2.1.288', stderr: '' })) as never,
     spawn: ((_command: string, parameters: string[]) => {
       args.push(parameters)

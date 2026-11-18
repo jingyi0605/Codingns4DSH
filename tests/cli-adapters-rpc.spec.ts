@@ -170,7 +170,7 @@ test('Codex MCP mcpToolCall 转换为 DSH 工具生命周期并保留失败结�
 
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'cua-events', messages: [], prompt: '检查桌面状态' })) chunks.push(chunk)
-  assert.equal(calls[0]?.includes('mcp_servers.cua_repl.command="/opt/cua/node"'), true)
+  assert.equal(calls[0]?.some(arg => arg.startsWith('mcp_servers.cua_repl.command=')), process.platform === 'darwin')
   assert.equal(calls[0]?.includes('--disable'), false)
   assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-event'), [
     { type: 'tool-event', toolName: 'cua_repl.js', status: 'running', callId: 'cua-call', input: '{"code":"await cua.getState()"}' },

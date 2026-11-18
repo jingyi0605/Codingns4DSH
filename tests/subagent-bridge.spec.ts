@@ -42,7 +42,7 @@ function sourceEntry(path: string): string {
   return existsSync(path) ? path : path.replace(/\.js$/u, '.ts')
 }
 function bridgeEntryArgs(): string[] {
-  return ['--import', fileURLToPath(new URL('./register-source-loader.mjs', import.meta.url)), sourceEntry(bridgeMcpEntryPath())]
+  return ['--import', new URL('./register-source-loader.mjs', import.meta.url).href, sourceEntry(bridgeMcpEntryPath())]
 }
 
 function enableBridge(): ReturnType<typeof createSubagentBridgeRuntime> {
@@ -60,7 +60,7 @@ test('子代理桥接注入：Command Code 始终屏蔽原生 agent，桥接开�
     assert.deepEqual(commandCodeNativeAgentEnvironment('s1', 'command-code'), { CODINGNS_DISABLE_NATIVE_AGENT: '1' })
     assert.deepEqual(claudeBridgeArgs('s1', 'claude-code'), [])
     assert.deepEqual(acpBridgeMcpServers('s1', 'gemini'), [])
-    assert.deepEqual(codexBridgeArgs('s1', 'codex'), [])
+    assert.deepEqual(codexBridgeArgs('s1', 'codex', 'linux'), [])
     assert.equal(codexBridgeDeveloperInstructions('s1'), undefined)
 
     enableBridge()
@@ -96,7 +96,7 @@ test('子代理桥接注入：Command Code 始终屏蔽原生 agent，桥接开�
     assert.equal(acp[0].command, process.execPath)
     assert.deepEqual(acp[0].env.find((item: { name: string }) => item.name === 'CODINGNS_ADAPTER_ID'), { name: 'CODINGNS_ADAPTER_ID', value: 'gemini' })
 
-    const codex = codexBridgeArgs('s1', 'codex')
+    const codex = codexBridgeArgs('s1', 'codex', 'linux')
     assert.ok(codex.includes(`mcp_servers.codingns.command=${JSON.stringify(process.execPath)}`))
     assert.ok(codex.join(' ').includes('CODINGNS_BRIDGE_TOKEN="secret-token"'))
     // Codex 对 MCP 工具强制审批；必须固定自动批准，否则 approvalPolicy=never 的会话直接失败。
@@ -378,7 +378,7 @@ test('MCP 入口：initialize / tools/list / tools/call 端到端经过桥接', 
   const mcp = claudeConfig.mcpServers.codingns
   assert.equal(mcp.env.CODINGNS_ADAPTER_ID, 'claude-code')
   const child = spawn(mcp.command, [
-    '--import', fileURLToPath(new URL('./register-source-loader.mjs', import.meta.url)),
+    '--import', new URL('./register-source-loader.mjs', import.meta.url).href,
     sourceEntry(mcp.args[0]!),
   ], {
     env: {

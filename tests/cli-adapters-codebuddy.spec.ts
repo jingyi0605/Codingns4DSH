@@ -597,7 +597,7 @@ test('CodeBuddy 自动识别 CN 后优先读取官方 product.internal.json 模�
     environment: { CODEBUDDY_INTERNET_ENVIRONMENT: 'internal' },
     readFileSync: ((path: string) => {
       reads.push(path)
-      if (path.endsWith('/product.internal.json')) {
+      if (path.endsWith('product.internal.json')) {
         return JSON.stringify({
           agents: [{ name: 'cli', models: ['hy4-preview', 'glm-5.3'] }],
           models: [
@@ -611,7 +611,7 @@ test('CodeBuddy 自动识别 CN 后优先读取官方 product.internal.json 模�
   })
   const catalog = await driver.listModels()
   assert.deepEqual(catalog.groups[0]?.models.map((model) => model.id), ['provider-default', 'hy4-preview', 'glm-5.3'])
-  assert.equal(reads.some((path) => path.endsWith('/product.internal.json')), true)
+  assert.equal(reads.some((path) => path.endsWith('product.internal.json')), true)
   driver.dispose()
 })
 

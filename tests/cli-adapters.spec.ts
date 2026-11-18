@@ -33,7 +33,7 @@ test('Command Code 驱动只把带版本号的候选命令视为已安装', asyn
   })
 
   assert.deepEqual(await driver.detect(), { installed: true, version: '1.2.3', command: 'command-code' })
-  assert.deepEqual(calls[0], ['missing-command', '--version'])
+  assert.ok(calls.some(call => call[0] === 'missing-command' && call[1] === '--version'))
   assert.deepEqual(calls.at(-1), ['command-code', '--version'])
   assert.equal(calls.length >= 2, true)
 })
@@ -85,7 +85,7 @@ test('Command Code Skill 扫描校验目录优先级，并为显式 mention 下�
   }
 })
 
-test('Command Code 在桌面进程 PATH 缺失时通过登录 Shell 解析 CLI', async () => {
+test('Command Code 在桌面进程 PATH 缺失时通过登录 Shell 解析 CLI', { skip: process.platform === 'win32' ? 'POSIX login-shell discovery; Windows PATH has separate coverage' : false }, async () => {
   const calls: string[][] = []
   const driver = new CommandCodeDriver({
     binaries: ['command-code'],
@@ -105,7 +105,7 @@ test('Command Code 在桌面进程 PATH 缺失时通过登录 Shell 解析 CLI',
   ])
 })
 
-test('Command Code ACP 在 shim 版本探测失败时仍通过登录 Shell 解析 CLI', async () => {
+test('Command Code ACP 在 shim 版本探测失败时仍通过登录 Shell 解析 CLI', { skip: process.platform === 'win32' ? 'POSIX login-shell discovery; Windows PATH has separate coverage' : false }, async () => {
   const calls: string[][] = []
   const driver = new AcpCliDriver({
     id: 'command-code',

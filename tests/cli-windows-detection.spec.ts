@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test, { after, beforeEach } from 'node:test'
 import childProcess, { type SpawnSyncOptions } from 'node:child_process'
 import { PassThrough } from 'node:stream'
+import { win32 } from 'node:path'
 import { windowsCommandEnvironment } from '../src/host/cli-adapters/windows-command-environment.js'
 
 // 在独立测试进程内切换平台分支；所有系统命令都拦截，绝不操作 Desktop 或真实安装。
@@ -147,7 +148,9 @@ test('产品覆盖项保留 Host 自定义 PATH，完整环境不恢复已过滤
   }) as never
   await detectBinary({ binaries: ['probe'], spawnSync: run, environment: { CODINGNS_TEST_SETTING: 'custom' } })
   const env = calls[0]!.env!
-  for (const entry of (process.env.PATH ?? process.env.Path ?? '').split(';').filter(Boolean)) assert.ok(env.PATH?.includes(entry))
+  const identity = (path: string) => win32.normalize(path.trim().replace(/^"(.*)"$/u, '$1')).replace(/[\\/]+$/u, '').toLowerCase()
+  const actualPaths = (env.PATH ?? '').split(';').map(identity)
+  for (const entry of (process.env.PATH ?? process.env.Path ?? '').split(';').filter(Boolean)) assert.ok(actualPaths.includes(identity(entry)), 'Host PATH entry must be preserved')
   assert.equal(env.CODINGNS_TEST_SETTING, 'custom')
   await runAsyncCommand(run, 'probe', ['--version'], { shell: true, env: { Path: 'D:\\Explicit' } })
   assert.equal(calls[1]!.env?.PATH, 'D:\\Explicit')

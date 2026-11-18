@@ -4,6 +4,7 @@ import test from 'node:test'
 import { PassThrough, Readable } from 'node:stream'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { ClaudeCodeDriver } from '../data/build/dist/host/cli-adapters/claude-driver.js'
 import { CommandCodeDriver } from '../data/build/dist/host/cli-adapters/command-code-driver.js'
 import { GeminiCliDriver } from '../data/build/dist/host/cli-adapters/gemini-driver.js'
@@ -27,7 +28,7 @@ test('文本 CLI 适配器把附件路径和可访问目录传给 Provider', () 
   }
   const expectedPrompt = '请检查附件\n请读取并处理以下消息附件：\n附件「photo.png」：@/tmp/codingns-attachments/photo.png\n附件「readme.md」：@/tmp/codingns-attachments/readme.md'
 
-  const claudeArgs = (new ClaudeCodeDriver({ binaries: ['fake-claude'] }) as unknown as { buildArgs(value: typeof input): readonly string[] }).buildArgs(input)
+  const claudeArgs = (new ClaudeCodeDriver({ binaries: ['fake-claude.exe'] }) as unknown as { buildArgs(value: typeof input): readonly string[] }).buildArgs(input)
   assert.equal(claudeArgs.includes('--print'), true)
   assert.equal(claudeArgs.includes('-p'), false)
   assert.equal(claudeArgs.includes(expectedPrompt), false)
@@ -52,7 +53,7 @@ test('Claude Code 将无扩展名 PNG、JPEG、GIF、WebP 作为原生图片内�
       writeFileSync(imagePath, format.bytes)
       let received: unknown
       const driver = new ClaudeCodeDriver({
-        binaries: ['fake-claude'], spawnSync: detection,
+        binaries: ['fake-claude.exe'], spawnSync: detection,
         spawn: (() => {
           const stdin = new PassThrough()
           stdin.on('data', (chunk) => {
@@ -167,7 +168,7 @@ test('ACP 附件块内联图片并以 file URI 暴露普通文件', async () => 
     ]), [
       { type: 'text', text: '查看附件' },
       { type: 'image', data: Buffer.from([0xde, 0xad, 0xbe, 0xef]).toString('base64'), mimeType: 'image/png' },
-      { type: 'resource_link', uri: `file://${filePath}`, name: 'report.pdf', mimeType: 'application/pdf', size: 15 },
+      { type: 'resource_link', uri: pathToFileURL(filePath).href, name: 'report.pdf', mimeType: 'application/pdf', size: 15 },
     ])
   } finally {
     rmSync(root, { recursive: true, force: true })
@@ -203,7 +204,7 @@ test('Gemini ACP 将附件块传递到 session/prompt', async () => {
     })) { /* 只检查 ACP 请求。 */ }
     assert.deepEqual(prompt, [
       { type: 'text', text: '读取' },
-      { type: 'resource_link', uri: `file://${filePath}`, name: 'report.txt', mimeType: 'text/plain', size: Buffer.byteLength('Gemini 文件') },
+      { type: 'resource_link', uri: pathToFileURL(filePath).href, name: 'report.txt', mimeType: 'text/plain', size: Buffer.byteLength('Gemini 文件') },
     ])
   } finally {
     driver.dispose()

@@ -2710,7 +2710,7 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   assert.match(pageContent, /报告费用/u)
   assert.match(pageContent, /输出速度/u)
   assert.match(pageContent, /首字耗时/u)
-  assert.match(pageContent, /4\.9M/u, 'the metric strip uses complete usage metrics instead of the loaded rows')
+  assert.match(pageContent, /490万/u, 'the Chinese metric strip uses complete usage metrics instead of the loaded rows')
   assert.match(pageContent, /150/u, 'the request count is not limited to the loaded page')
   assert.match(pageContent, /回合/u)
   assert.match(pageContent, /12/u)

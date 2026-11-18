@@ -437,7 +437,7 @@ test('MCP Team tool reaches the bound Host endpoint and rejects the shared legac
     setSubagentBridge(server.runtime)
     const args = claudeBridgeArgs('root', 'claude-code')
     const mcp = JSON.parse(args[args.indexOf('--mcp-config') + 1]!).mcpServers.codingns
-    child = spawn(process.execPath, ['--import', fileURLToPath(new URL('./register-source-loader.mjs', import.meta.url)), mcp.args[0]], { env: { ...process.env, ...mcp.env }, stdio: ['pipe', 'pipe', 'pipe'] })
+    child = spawn(process.execPath, ['--import', new URL('./register-source-loader.mjs', import.meta.url).href, mcp.args[0]], { env: { ...process.env, ...mcp.env }, stdio: ['pipe', 'pipe', 'pipe'] })
     const pending = new Map<number, (value: any) => void>()
     let buffer = ''
     child.stdout!.on('data', chunk => {

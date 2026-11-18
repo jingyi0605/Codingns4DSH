@@ -15,7 +15,7 @@ Options:
 /** 记录 buildArgs 结果；detect 与 --help 探测都由 spawnSync 桩提供。 */
 function driverWithHelp(help: string): { driver: ClaudeCodeDriver; args: (input: Record<string, unknown>) => readonly string[] } {
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: ((command: string, args: string[]) => {
       if (args[0] === '--version') return { status: 0, stdout: 'claude 2.1.177', stderr: '' }
       if (args[0] === '--help') return { status: 0, stdout: help, stderr: '' }
@@ -82,7 +82,7 @@ test('CLI 不支持 --effort 时不下发该参数，避免旧版本因未知选
 })
 
 test('CLI 探测尚未完成时保守跳过 --effort', () => {
-  const driver = new ClaudeCodeDriver({ binaries: ['fake-claude'], spawnSync: (() => { throw new Error('missing') }) as never })
+  const driver = new ClaudeCodeDriver({ binaries: ['fake-claude.exe'], spawnSync: (() => { throw new Error('missing') }) as never })
   const result = (driver as unknown as { buildArgs(value: Record<string, unknown>): readonly string[] }).buildArgs({ sessionId: 's1', messages: [], prompt: '你好', effortId: 'high' })
   assert.equal(result.includes('--effort'), false)
 })
@@ -91,7 +91,7 @@ test('探测失败不会被缓存成「不支持」，下一轮重试即可恢�
   let failHelp = true
   let helpCalls = 0
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: ((command: string, args: string[]) => {
       if (args[0] === '--version') return { status: 0, stdout: 'claude 2.1.177', stderr: '' }
       if (args[0] === '--help') {
@@ -117,7 +117,7 @@ test('CLI 原地升级后重新探测，不会沿用旧版本的结论', async (
   let help = 'Usage: claude [options]\n\nOptions:\n  --model <model>  Model\n'
   let helpCalls = 0
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: ((command: string, args: string[]) => {
       if (args[0] === '--version') return { status: 0, stdout: `claude ${version}`, stderr: '' }
       if (args[0] === '--help') { helpCalls += 1; return { status: 0, stdout: help, stderr: '' } }
@@ -138,7 +138,7 @@ test('CLI 原地升级后重新探测，不会沿用旧版本的结论', async (
 test('Claude Code 执行回合时真实下发 --effort 参数', async () => {
   const calls: string[][] = []
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: ((command: string, args: string[]) => {
       if (args[0] === '--version') return { status: 0, stdout: 'claude 2.1.177', stderr: '' }
       if (args[0] === '--help') return { status: 0, stdout: HELP_WITH_EFFORT, stderr: '' }

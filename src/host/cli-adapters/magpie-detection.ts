@@ -1,5 +1,5 @@
 import { access, constants, readdir, stat } from 'node:fs/promises'
-import { win32, join } from 'node:path'
+import { win32, posix } from 'node:path'
 import type {
   MagpieDetectionFailure,
   MagpieDetectionRequest,
@@ -157,14 +157,14 @@ export class MagpieInstallDetectionService {
       ...this.pathEntries().split(':'),
       ...POSIX_COMMON_BIN_DIRS,
       ...(this.environment.HOME === undefined ? [] : [
-        join(this.environment.HOME, '.local', 'bin'),
-        join(this.environment.HOME, '.bun', 'bin'),
-        join(this.environment.HOME, '.npm-global', 'bin'),
+        posix.join(this.environment.HOME, '.local', 'bin'),
+        posix.join(this.environment.HOME, '.bun', 'bin'),
+        posix.join(this.environment.HOME, '.npm-global', 'bin'),
       ]),
     ]
     const candidates: string[] = []
     for (const directory of uniqueDirectories(directories)) {
-      const command = join(directory, MAGPIE_COMMAND)
+      const command = posix.join(directory, MAGPIE_COMMAND)
       if (await this.isExecutable(command, this.platform)) candidates.push(command)
     }
     return candidates

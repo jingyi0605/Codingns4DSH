@@ -368,8 +368,8 @@ test('Workspace MCP key file uses owner-only permissions and contains no setting
     await store.write(key)
     assert.equal(await store.read(), key)
     assert.equal((await readFile(path, 'utf8')).trim(), key)
-    assert.equal((await stat(path)).mode & 0o777, 0o600)
-    assert.equal((await stat(join(directory, 'private'))).mode & 0o777, 0o700)
+    if (process.platform !== 'win32') assert.equal((await stat(path)).mode & 0o777, 0o600)
+    if (process.platform !== 'win32') assert.equal((await stat(join(directory, 'private'))).mode & 0o777, 0o700)
     await store.clear()
     assert.equal(await store.read(), null)
   } finally {

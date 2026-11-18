@@ -3,7 +3,7 @@ import { spawn, spawnSync } from 'node:child_process'
 import { lstatSync, readFileSync, realpathSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, parse, relative, resolve, sep } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsAgentImageArtifact, CodingNsCliModelCatalog, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
@@ -945,19 +945,27 @@ function isAdmittedGrokPermission(message: JsonRpcMessage, input: CodingNsCliTur
 
 /** Resolve existing ancestors, rejecting broken links and non-missing filesystem errors. */
 function canonicalGrokPath(path: string): string | undefined {
-  const suffix: string[] = []
-  let current = path
-  for (;;) {
-    try { lstatSync(current) }
+  const root = parse(path).root
+  if (!root) return undefined
+  let current: string
+  try { current = realpathSync.native(root) } catch { return undefined }
+  // Resolve each link before visiting a following '..'. Windows filesystem
+  // calls normalize dot segments before lstat, which otherwise hides escapes.
+  const parts = path.slice(root.length).split(process.platform === 'win32' ? /[\\/]/u : /\//u)
+  for (const part of parts) {
+    if (!part || part === '.') continue
+    if (part === '..') { current = dirname(current); continue }
+    const next = join(current, part)
+    try { lstatSync(next) }
     catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || dirname(current) === current) return undefined
-      suffix.unshift(basename(current))
-      current = dirname(current)
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return undefined
+      current = next
       continue
     }
-    try { return resolve(realpathSync.native(current), ...suffix) }
+    try { current = realpathSync.native(next) }
     catch { return undefined }
   }
+  return current
 }
 
 /** Cache metadata enriches only IDs admitted by the native CLI's filtered list. */
