@@ -153,6 +153,55 @@ test('Claude 长工具的 tool_progress 心跳不创建虚假调用，也不阻�
   assert.equal(output.closed, true)
 })
 
+const streamEvent = (event: object, parent_tool_use_id: string | null = null) => ({ type: 'stream_event', parent_tool_use_id, event })
+
+test('Claude 父子流交错时只投影主代理正文、思考和父级 Agent 工具结果', async () => {
+  const agentInput = { prompt: 'Check the fixture', subagent_type: 'Explore' }
+  const output = await replay([
+    streamEvent({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '先检查。' } }),
+    streamEvent({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '已委派。' } }),
+    call('agent-1', 'Agent', agentInput),
+    streamEvent({ type: 'message_start', message: { id: 'child-message' } }, 'agent-1'),
+    streamEvent({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '子代理思考。' } }, 'agent-1'),
+    streamEvent({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '子代理正文。' } }, 'agent-1'),
+    { ...call('child-read', 'Read', { file_path: 'fixture.txt' }), parent_tool_use_id: 'agent-1' },
+    { ...result('child-read', 'Fixture contents'), parent_tool_use_id: 'agent-1' },
+    result('agent-1', '检查通过。'),
+    streamEvent({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: '已核对。' } }),
+    streamEvent({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '已确认结果。' } }),
+    { type: 'result' },
+  ])
+  const blocks = output.chunks.flatMap(chunk => chunk.type === 'block-end' ? [chunk.block as { type: string; text: string }] : [])
+  assert.deepEqual({
+    text: blocks.filter(block => block.type === 'text').map(block => block.text).join(''),
+    reasoning: blocks.filter(block => block.type === 'reasoning').map(block => block.text).join(''),
+  }, { text: '已委派。已确认结果。', reasoning: '先检查。已核对。' })
+  assert.deepEqual(output.batches, [['agent-1'], []])
+  assert.deepEqual(output.events.filter(event => event.type === 'tool/call').map(event => [event.data.callId, event.data.arguments]), [
+    ['agent-1', JSON.stringify(agentInput)],
+  ])
+  assert.deepEqual(output.events.filter(event => event.type === 'tool/result').map(event => [event.data.message.toolCallId, event.data.message.content]), [
+    ['agent-1', [{ type: 'text', text: '检查通过。' }]],
+  ])
+})
+
+test('Claude 子代理 message_start 和重叠的块索引不会清除主代理工具参数', async () => {
+  const output = await replay([
+    call('agent-1', 'Agent', { prompt: 'Check the fixture' }),
+    streamEvent({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'parent-read', name: 'Read', input: {} } }),
+    streamEvent({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"file_path":' } }),
+    streamEvent({ type: 'message_start', message: { id: 'child-message' } }, 'agent-1'),
+    streamEvent({ type: 'content_block_stop', index: 0 }, 'agent-1'),
+    streamEvent({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '"fixture.txt"}' } }),
+    streamEvent({ type: 'content_block_stop', index: 0 }),
+    result('parent-read', 'Fixture contents'),
+    result('agent-1', 'Checked'),
+    { type: 'result' },
+  ])
+  const parentRead = output.events.find(event => event.type === 'tool/call' && event.data.callId === 'parent-read')
+  assert.equal(parentRead?.data.arguments, '{"file_path":"fixture.txt"}')
+})
+
 test('Claude 出错后同一会话续跑，长工具心跳不污染新回合的分步和历史', async () => {
   const output = await replay([
     call('interrupted', 'Bash', { command: 'interrupted task' }),

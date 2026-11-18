@@ -395,6 +395,7 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     if (value.type === 'tool_progress') return []
     const interaction = this.parseInteraction(value, input.sessionId)
     if (interaction !== null) return [interaction]
+    if (firstToolText(value.parent_tool_use_id) !== undefined) return []
     const event = value.type === 'stream_event' && typeof value.event === 'object' && value.event !== null ? value.event as Record<string, unknown> : value
     const usageState = this.usageStates.get(input.sessionId) ?? {}
     this.usageStates.set(input.sessionId, usageState)
@@ -645,12 +646,15 @@ function remainingClaudeUsage(usage: ClaudeUsageEvent, settled: ClaudeSettledUsa
   const cacheReadTokens = Math.max(0, (usage.cacheReadTokens ?? 0) - settled.cacheReadTokens)
   const cacheWriteTokens = Math.max(0, (usage.cacheWriteTokens ?? 0) - settled.cacheWriteTokens)
   const fullInputTokens = inputTokens + cacheReadTokens + cacheWriteTokens
+  const hasCacheBreakdown = usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined
+  const totalTokens = hasCacheBreakdown ? fullInputTokens + outputTokens
+    : usage.totalTokens === undefined ? undefined : Math.max(0, usage.totalTokens - settled.totalTokens)
   const { cacheHitRate: _aggregateHitRate, ...rest } = usage
   return {
     ...rest, inputTokens, uncachedInputTokens: inputTokens, outputTokens,
     ...(usage.cacheReadTokens === undefined ? {} : { cacheReadTokens }),
     ...(usage.cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
-    ...(usage.totalTokens === undefined ? {} : { totalTokens: Math.max(0, usage.totalTokens - settled.totalTokens) }),
+    ...(totalTokens === undefined ? {} : { totalTokens }),
     ...(usage.cacheReadTokens === undefined || fullInputTokens === 0 ? {} : {
       cacheHitRate: Number((cacheReadTokens / fullInputTokens * 100).toFixed(4)),
     }),
@@ -664,7 +668,6 @@ function readClaudeUsage(
   input: CodingNsCliTurnInput,
   state: ClaudeUsageState,
 ): ClaudeUsageEvent | null {
-  if (value.parent_tool_use_id != null) return null
   const message = isRecord(event.message) ? event.message : null
   const rawUsage = message !== null && isRecord(message.usage)
     ? message.usage
@@ -673,7 +676,8 @@ function readClaudeUsage(
       : isRecord(event.usage)
         ? event.usage
         : null
-  if (rawUsage === null) return null
+  const usageInput = value.type === 'result' ? mergeClaudeModelUsageCache(rawUsage, value.modelUsage) : rawUsage
+  if (usageInput === null) return null
   const modelId = typeof message?.model === 'string'
     ? message.model
     : typeof value.model === 'string'
@@ -681,17 +685,18 @@ function readClaudeUsage(
       : state.modelId ?? input.modelId
   if (modelId !== undefined) state.modelId = modelId
   const contextWindow = readClaudeContextWindow(value, event, modelId)
-    ?? positiveNumber(rawUsage.contextWindow ?? rawUsage.context_window)
+    ?? positiveNumber(usageInput.contextWindow ?? usageInput.context_window)
     ?? state.contextWindow
-  const usageInput = value.type === 'result'
-    ? mergeClaudeModelUsageCache(rawUsage, value, event, modelId)
-    : rawUsage
-  const parsed = usageChunk(contextWindow === undefined ? usageInput : { ...usageInput, contextWindow })
+  const parsed = usageChunk({
+    ...usageInput,
+    ...(contextWindow === undefined ? {} : { contextWindow }),
+    ...(value.type === 'result' && state.contextTokens !== undefined ? { contextTokens: state.contextTokens } : {}),
+  })
   if (parsed?.type !== 'usage') return null
   if (contextWindow !== undefined) state.contextWindow = contextWindow
   if (parsed.contextTokens !== undefined) state.contextTokens = parsed.contextTokens
   else if ((value.type === 'assistant' || event.type === 'message_start')
-    && (typeof rawUsage.input_tokens === 'number' || typeof rawUsage.inputTokens === 'number'
+    && (typeof usageInput.input_tokens === 'number' || typeof usageInput.inputTokens === 'number'
       || parsed.cacheReadTokens !== undefined || parsed.cacheWriteTokens !== undefined)) {
     // Anthropic input tokens exclude both cache buckets. Result usage sums requests.
     state.contextTokens = parsed.inputTokens + (parsed.cacheReadTokens ?? 0) + (parsed.cacheWriteTokens ?? 0)
@@ -700,88 +705,51 @@ function readClaudeUsage(
   return enrichClaudeUsage(usage, state)
 }
 
-/**
- * Some Claude Code versions put the cumulative cache buckets on `modelUsage`
- * while leaving the result-level `usage` with only input/output totals.
- * Preserve those buckets before the common parser builds the DSH usage event;
- * otherwise the terminal result replaces the richer per-step sample with a
- * cache-less snapshot.
- */
+const claudeCacheReadKeys = [
+  'cacheReadTokens', 'cachedReadTokens', 'cache_read_tokens', 'cached_read_tokens', 'cache_read_input_tokens',
+  'cachedInputTokens', 'cached_input_tokens', 'cachedContentTokenCount', 'cacheReadInputTokens',
+]
+const claudeCacheWriteKeys = [
+  'cacheWriteTokens', 'cacheCreationTokens', 'cache_write_tokens', 'cache_creation_tokens', 'cache_write_input_tokens',
+  'cache_creation_input_tokens', 'cacheCreationInputTokens',
+]
+
+/** Prefer the turn totals, filling omitted or zero cache buckets from all billed models. */
 function mergeClaudeModelUsageCache(
-  usage: Record<string, unknown>,
-  value: Record<string, unknown>,
-  event: Record<string, unknown>,
-  modelId: string | undefined,
-): Record<string, unknown> {
-  const model = readClaudeModelUsage(value, event, modelId)
-  if (model === null) return usage
-  const resultCacheRead = firstNumber(
-    usage.cacheReadTokens,
-    usage.cachedReadTokens,
-    usage.cache_read_tokens,
-    usage.cached_read_tokens,
-    usage.cache_read_input_tokens,
-    usage.cacheReadInputTokens,
-  )
-  const resultCacheWrite = firstNumber(
-    usage.cacheWriteTokens,
-    usage.cacheCreationTokens,
-    usage.cache_write_tokens,
-    usage.cache_creation_tokens,
-    usage.cache_write_input_tokens,
-    usage.cache_creation_input_tokens,
-    usage.cacheCreationInputTokens,
-  )
+  usage: Record<string, unknown> | null,
+  modelUsage: unknown,
+): Record<string, unknown> | null {
+  const models = isRecord(modelUsage) ? Object.values(modelUsage).filter(isRecord) : []
+  const resultCacheRead = firstNumber(...claudeCacheReadKeys.map(key => usage?.[key]))
+  const resultCacheWrite = firstNumber(...claudeCacheWriteKeys.map(key => usage?.[key]))
+  const cacheReadTokens = positiveNumber(resultCacheRead) ?? sumClaudeModelTokens(models, claudeCacheReadKeys) ?? resultCacheRead
+  const cacheWriteTokens = positiveNumber(resultCacheWrite) ?? sumClaudeModelTokens(models, claudeCacheWriteKeys) ?? resultCacheWrite
+  const inputTokens = firstNumber(
+    usage?.uncachedInputTokens, usage?.uncached_input_tokens, usage?.inputTokens, usage?.input_tokens,
+    usage?.prompt_tokens, usage?.promptTokenCount,
+  ) ?? sumClaudeModelTokens(models, ['inputTokens', 'input_tokens'])
+  const outputTokens = firstNumber(usage?.outputTokens, usage?.output_tokens, usage?.completion_tokens, usage?.candidatesTokenCount)
+    ?? sumClaudeModelTokens(models, ['outputTokens', 'output_tokens'])
+  const hasCacheBreakdown = cacheReadTokens !== undefined || cacheWriteTokens !== undefined
+  if (!hasCacheBreakdown && inputTokens === undefined && outputTokens === undefined) return usage
   return {
     ...usage,
-    ...(model.cacheReadTokens !== undefined
-      ? {
-          cacheReadTokens: model.cacheReadTokens,
-          cacheReadInputTokens: model.cacheReadTokens,
-          cache_read_input_tokens: model.cacheReadTokens,
-        }
-      : resultCacheRead === undefined ? {} : { cacheReadInputTokens: resultCacheRead }),
-    ...(model.cacheWriteTokens !== undefined
-      ? {
-          cacheWriteTokens: model.cacheWriteTokens,
-          cacheCreationInputTokens: model.cacheWriteTokens,
-          cache_creation_input_tokens: model.cacheWriteTokens,
-        }
-      : resultCacheWrite === undefined ? {} : { cacheCreationInputTokens: resultCacheWrite }),
+    ...(inputTokens === undefined ? {} : { inputTokens }),
+    ...(outputTokens === undefined ? {} : { outputTokens }),
+    ...(hasCacheBreakdown ? { uncachedInputTokens: inputTokens ?? 0, cacheReadTokens, cacheWriteTokens } : {}),
+    ...(hasCacheBreakdown || usage === null ? {
+      totalTokens: (inputTokens ?? 0) + (outputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0),
+    } : {}),
   }
 }
 
-function readClaudeModelUsage(
-  value: Record<string, unknown>,
-  event: Record<string, unknown>,
-  modelId: string | undefined,
-): { readonly cacheReadTokens?: number; readonly cacheWriteTokens?: number } | null {
-  for (const source of [value.modelUsage, event.modelUsage]) {
-    if (!isRecord(source)) continue
-    const entries = Object.entries(source)
-    const selected = (modelId === undefined ? undefined : source[modelId])
-      ?? (entries.length === 1 ? entries[0]?.[1] : undefined)
-    if (!isRecord(selected)) continue
-    const cacheReadTokens = firstNumber(
-      selected.cacheReadInputTokens,
-      selected.cache_read_input_tokens,
-      selected.cacheReadTokens,
-      selected.cache_read_tokens,
-    )
-    const cacheWriteTokens = firstNumber(
-      selected.cacheCreationInputTokens,
-      selected.cache_creation_input_tokens,
-      selected.cacheWriteTokens,
-      selected.cache_write_tokens,
-    )
-    if (cacheReadTokens !== undefined || cacheWriteTokens !== undefined) {
-      return {
-        ...(cacheReadTokens === undefined ? {} : { cacheReadTokens }),
-        ...(cacheWriteTokens === undefined ? {} : { cacheWriteTokens }),
-      }
-    }
+function sumClaudeModelTokens(models: readonly Record<string, unknown>[], keys: readonly string[]): number | undefined {
+  let total: number | undefined
+  for (const model of models) {
+    const count = firstNumber(...keys.map(key => model[key]))
+    if (count !== undefined) total = (total ?? 0) + count
   }
-  return null
+  return total
 }
 
 function firstNumber(...values: readonly unknown[]): number | undefined {
