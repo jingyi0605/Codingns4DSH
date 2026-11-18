@@ -2703,7 +2703,19 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   const overlay = findTestElement(dialogTree, (element) => element.type === 'div' && element.props?.className === 'codingns4dsh-magpie-requests-overlay')
   assert.equal((overlay?.props?.style as { readonly zIndex?: number } | undefined)?.zIndex, 2147483000, 'the request modal must stay above the right sidebar')
   assert.equal((overlay as { readonly ref?: unknown } | null)?.ref, requestsDialogRef, 'the portaled overlay must be registered as inside the usage popover for outside-pointer dismissal')
-  const pageContent = renderRequestsPageContent(dialog)
+  // 中文界面用量应显示「490万」。跑测机默认 locale 可能是 en，compact 会输出 4.9M，
+  // 与本用例的中文断言不符。这里仅在本用例作用域内把 NumberFormat 的 locale 固定为 zh-CN，
+  // 用完立即恢复；产品实现（formatCompact 仍用 Intl.NumberFormat(undefined, …)）不改。
+  const originalNumberFormat = Intl.NumberFormat
+  Intl.NumberFormat = function (this: unknown, locales?: string | string[], options?: Intl.NumberFormatOptions) {
+    return new originalNumberFormat(locales ?? 'zh-CN', options)
+  } as unknown as typeof Intl.NumberFormat
+  let pageContent: string
+  try {
+    pageContent = renderRequestsPageContent(dialog)
+  } finally {
+    Intl.NumberFormat = originalNumberFormat
+  }
   assert.match(pageContent, /请求模型/u, 'the reused management view should render its table headers')
   assert.match(pageContent, /Native DSH title/u, 'the request dialog should display the matched DSH session name')
   assert.match(pageContent, /实际模型/u)
