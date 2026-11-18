@@ -424,7 +424,14 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       // 与父仓库 CodexRuntimeAdapter 一致：监听器必须先于 turn/start 注册，
       // 否则响应前到达的 turn/started 或文本通知也会丢失。
       const removeNotificationListener = rpc.addNotificationListener(onNotification)
+      const removeExitListener = rpc.addExitListener(error => {
+        if (terminalReason !== null || input.signal?.aborted) return
+        terminalReason = 'error'
+        failure = { message: error.message, code: 'PROVIDER_ERROR' }
+        eventQueue.close()
+      })
       const onAbort = (): void => {
+        if (terminalReason !== null) return
         terminalReason = 'cancel'
         eventQueue.close()
       }
@@ -458,11 +465,12 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         }
         if (input.signal?.aborted) await this.interrupt(input.sessionId)
       } catch (error) {
-        if (!input.signal?.aborted) throw error
-        await this.interrupt(input.sessionId)
+        if (input.signal?.aborted) await this.interrupt(input.sessionId)
+        else if (terminalReason !== 'error') throw error
       } finally {
         input.signal?.removeEventListener('abort', onAbort)
         removeNotificationListener()
+        removeExitListener()
         eventQueue.close()
       }
       // 终态 chunk 之后调用方不会再拉动本迭代器，turnId 必须在产出 finish
@@ -474,8 +482,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         yield { type: 'text-delta', text: 'CODINGNS_PROVIDER_EMPTY_RESPONSE: Codex Provider 未返回任何有效事件。' }
         yield { type: 'finish', reason: 'error', ...(failure === undefined ? {} : { failure }) }
       } else {
-        const reason = input.signal?.aborted ? 'cancel' : terminalReason ?? 'stop'
-        yield { type: 'finish', reason }
+        const reason = (terminalReason as 'stop' | 'cancel' | 'error' | null) ?? (input.signal?.aborted ? 'cancel' : 'stop')
+        yield { type: 'finish', reason, ...(reason === 'error' && failure !== undefined ? { failure } : {}) }
       }
     } finally {
       // app-server 在会话结束前保持连接；但回合中止时仍挂起的问题/审批必须

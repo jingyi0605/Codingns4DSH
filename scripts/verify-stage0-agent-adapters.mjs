@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { createHash, randomUUID } from 'node:crypto'
 import { execFileSync } from 'node:child_process'
 import { readFile, writeFile, readdir, stat, mkdtemp } from 'node:fs/promises'
+import { realpathSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,7 +21,9 @@ const home = join(homedir(), '.dsh-stage0-020')
 const owner = execFileSync('lsof', ['-t', '-iTCP:17891', '-sTCP:LISTEN'], { encoding: 'utf8' }).trim()
 assert.match(owner, /^\d+$/u)
 const command = execFileSync('ps', ['-o', 'command=', '-p', owner], { encoding: 'utf8' })
-assert.ok(command.includes('--profile stage0') && command.includes(`--patch ${join(repository, 'dsh-stage0.patch.yml')}`))
+const patchPath = command.match(/(?:^|\s)--patch\s+(\S+)/u)?.[1]
+assert.ok(command.includes('--profile stage0') && patchPath)
+assert.equal(realpathSync(patchPath), realpathSync(join(repository, 'dsh-stage0.patch.yml')))
 const environment = execFileSync('ps', ['eww', '-o', 'command=', '-p', owner], { encoding: 'utf8' })
 assert.equal(environment.match(/(?:^|\s)DSH_HOME=([^\s]*)/u)?.[1], home)
 const launch = [...(await readFile(runtimeLog, 'utf8')).matchAll(/http:\/\/(?:127\.0\.0\.1|localhost):17891\/[^\s\x1b]*/gu)]

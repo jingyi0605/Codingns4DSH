@@ -14,6 +14,9 @@ export interface DshCapabilityMatrixRoute {
 }
 
 /** 能力版本矩阵是运行时路由和版本检查的共同事实源。 */
+// DSH rc.3 and rc.4 share these structural routes, including tokenUsage.
+// rc.4 verification covers macOS Stage0 and local CLI protocols only; see
+// docs/开发记录/20261118-DSH-rc4兼容升级与Stage0验收.md for unverified platforms.
 export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('plugin.update.inspect', 'plugin-manager-inspect-021', 'host', '>=0.2.1-rc.2', 'supported', ['dsh-capabilities/host/plugin-update-adapter.ts', 'host/features/plugin-update.ts']),
   route('plugin.update.apply', 'plugin-manager-install-021', 'host', '>=0.2.1-rc.2', 'supported', ['dsh-capabilities/host/plugin-update-adapter.ts', 'host/update/service.ts']),

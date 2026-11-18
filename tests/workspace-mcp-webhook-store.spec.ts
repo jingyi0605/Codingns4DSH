@@ -87,7 +87,7 @@ test('webhook store backs up corrupt data and starts with an empty recovered sto
 test('destination removal drops pending deliveries but preserves finished records', async () => {
   const root = await mkdtemp(join(tmpdir(), 'codingns-webhook-delete-'))
   const file = join(root, 'workspace-mcp-webhooks.json')
-  const store = new FileWorkspaceMcpWebhookStore(file)
+  const store = new FileWorkspaceMcpWebhookStore(file, () => Date.parse('2026-11-10T00:00:00.000Z'))
   try {
     await store.createDestination(destination())
     await store.enqueue(delivery('pending-1'))
