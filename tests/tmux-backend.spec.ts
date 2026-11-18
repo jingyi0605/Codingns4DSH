@@ -127,7 +127,7 @@ test('tmux 调试命令退出后保留交互 Shell，并包装真实退出码', 
     assert.doesNotMatch(script, /exec/u)
     // 包装必须把交互 Shell 的真实退出码写到插件私有目录。
     assert.match(script, /__codingns4dsh_exit=\$\?/u)
-    assert.match(script, new RegExp(`${join(directory, 'exit')}/`, 'u'))
+    assert.ok(script.includes(join(directory, 'exit')))
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

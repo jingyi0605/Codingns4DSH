@@ -315,7 +315,7 @@ test('Git Host 允许脏工作区 Push，并在 Pull 后恢复本地改动', asy
     // 裸仓库的默认 HEAD 在不同 Git 发行版中可能仍指向 master，显式检出 main 才能
     // 验证 push 后的提交内容，而不是依赖运行环境的 init.defaultBranch 配置。
     await execFile('git', ['clone', '--branch', 'main', remote, peer])
-    assert.equal(await readFile(`${peer}/pushed.md`, 'utf8'), '待推送提交\n')
+    assert.equal((await readFile(`${peer}/pushed.md`, 'utf8')).replaceAll('\r\n', '\n'), '待推送提交\n')
 
     await git(peer, ['config', 'user.name', 'CodingNS Peer'])
     await git(peer, ['config', 'user.email', 'codingns-peer@example.invalid'])
@@ -326,8 +326,8 @@ test('Git Host 允许脏工作区 Push，并在 Pull 后恢复本地改动', asy
 
     // Pull 使用 autostash：快进远程提交后，本地已跟踪改动仍然保留。
     await rpc(table, 'git/pull', { workspaceId: 'workspace-sync' })
-    assert.equal(await readFile(`${root}/README.md`, 'utf8'), 'base\n本地未提交改动\n')
-    assert.equal(await readFile(`${root}/remote.md`, 'utf8'), '远程新增提交\n')
+    assert.equal((await readFile(`${root}/README.md`, 'utf8')).replaceAll('\r\n', '\n'), 'base\n本地未提交改动\n')
+    assert.equal((await readFile(`${root}/remote.md`, 'utf8')).replaceAll('\r\n', '\n'), '远程新增提交\n')
   } finally {
     await rm(root, { recursive: true, force: true })
     await rm(remote, { recursive: true, force: true })

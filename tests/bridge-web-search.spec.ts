@@ -16,7 +16,7 @@ function sourceEntry(path: string): string {
 }
 
 function bridgeEntryArgs(): string[] {
-  return ['--import', fileURLToPath(new URL('./register-source-loader.mjs', import.meta.url)), sourceEntry(bridgeMcpEntryPath())]
+  return ['--import', new URL('./register-source-loader.mjs', import.meta.url).href, sourceEntry(bridgeMcpEntryPath())]
 }
 
 function stubWeb(queries: string[] = [], urls: string[] = []) {

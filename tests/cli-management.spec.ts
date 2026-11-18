@@ -251,7 +251,7 @@ test('CodeBuddy npm upgrades use the checked registry and unchanged versions can
   let upgrade = false
   const commands: unknown[] = []
   const service = new CliManagementService({ refreshCatalog: async () => [detected], beginMaintenance: () => () => {} }, {
-    resolveCommand: async command => command,
+    platform: 'linux', resolveCommand: async command => command,
     run: async (command, _signal, output) => {
       commands.push(command)
       output(upgrade ? 'Updated' : 'CodeBuddy Code is up to date (2.161.1)')
@@ -333,7 +333,7 @@ test('duplicate starts, active turns and native subagents cannot race an update'
   const f = fixture(); f.install()
   let complete!: () => void
   const started = Promise.withResolvers<void>()
-  const service = new CliManagementService(f.registry, { resolveCommand: async () => '/custom/lib/node_modules/@openai/codex/bin/codex.js', run: async () => { await new Promise<void>(resolve => { complete = resolve; started.resolve() }); f.setDetection({ installed: true, command: '/tools/codex', version: '3.0.0' }); return 0 } })
+  const service = new CliManagementService(f.registry, { platform: 'linux', resolveCommand: async () => '/custom/lib/node_modules/@openai/codex/bin/codex.js', run: async () => { await new Promise<void>(resolve => { complete = resolve; started.resolve() }); f.setDetection({ installed: true, command: '/tools/codex', version: '3.0.0' }); return 0 } })
   t.after(async () => { complete?.(); await service.dispose(); await f.registry.dispose() })
   const plan = await service.plan('codex', 'update')
   service.start(request(plan))
