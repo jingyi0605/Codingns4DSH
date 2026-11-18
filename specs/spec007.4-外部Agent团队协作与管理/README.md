@@ -18,6 +18,8 @@ The user authorized this Spec workflow after selecting **DSH `0.2.1-alpha.2` as 
 
 ## Documents
 
+Ordinary subagent follow-up (2026-11-17): [Activation contract regression](docs/20261117-普通子代理启动契约回归记录.md) tracks the `request.parent` versus top-level `parent` mismatch on the named-tree host interface. Task 4.7 covers the capability-boundary repair independently of Team enablement.
+
 - [Requirements](specs/spec007.4-外部Agent团队协作与管理/requirements.md): user stories, scope, and acceptance criteria.
 - [Design](specs/spec007.4-外部Agent团队协作与管理/design.md): ownership, interfaces, message forwarding, and compatibility.
 - [Tasks](specs/spec007.4-外部Agent团队协作与管理/tasks.md): implementation order, dependencies, and verification evidence.
