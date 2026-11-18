@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
+import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import { JsonRpcRequestError } from '../data/build/dist/host/cli-adapters/json-rpc-process.js'
 import type { CodingNsAgentEvent } from '../src/shared/contracts/cli-adapter.js'
 
@@ -137,6 +138,46 @@ async function createSteerHarness(segmented: boolean, steerTerminalGraceMs = 20)
 
 for (const segmented of [false, true]) {
   const mode = segmented ? '分段' : '普通'
+  test(`Codex ${mode}回合重试只替换中断正文，保留此前的进度与唯一终态`, async () => {
+    const harness = await createSteerHarness(segmented)
+    try {
+      const { threadId, turnId } = harness
+      const notify = (method: string, params: Record<string, unknown>) => harness.sendNotification(method, { threadId, turnId, ...params })
+      harness.sendTurnText(turnId, '已检查工作区', 'progress')
+      notify('item/completed', { item: { type: 'agentMessage', id: 'progress', phase: 'commentary' } })
+      notify('error', { willRetry: true })
+      harness.sendTurnText(turnId, '审查写到一半', 'first')
+      notify('item/completed', { item: { type: 'agentMessage', id: 'first', phase: null } })
+      notify('error', { willRetry: true })
+      notify('item/reasoning/summaryTextDelta', { itemId: 'reason', delta: '重新组织结论' })
+      harness.sendTurnText(turnId, '再次中断', 'second')
+      notify('error', { willRetry: true })
+      harness.sendTurnText(turnId, '完整', 'final')
+      harness.sendTurnText(turnId, '审查', 'final')
+      harness.completeTurn()
+      const projector = new CodingNsDshMessageProjector({ adapterId: 'codex', sessionId: harness.sessionId })
+      const chunks = []
+      for (const event of await harness.drain()) chunks.push(...await projector.push(event))
+      assert.deepEqual(chunks.filter(chunk => chunk.type === 'block-end' && chunk.block.type === 'text' && chunk.block.text).map(chunk => chunk.block.text), ['已检查工作区', '完整审查'])
+      assert.deepEqual(chunks.filter(chunk => chunk.type === 'block-end' && chunk.block.type === 'reasoning').map(chunk => chunk.block.text), ['重新组织结论'])
+      assert.deepEqual(chunks.filter(chunk => chunk.type === 'finish').map(chunk => chunk.reason.kind), ['stop'])
+    } finally { await harness.dispose() }
+  })
+
+  test(`Codex ${mode}回合重试耗尽时保留最后可读的正文`, async () => {
+    const harness = await createSteerHarness(segmented)
+    try {
+      const { threadId, turnId } = harness
+      harness.sendTurnText(turnId, '中断前正文', 'first')
+      for (const willRetry of [true, false]) harness.sendNotification('error', { threadId, turnId, willRetry, error: { message: 'stream disconnected' } })
+      const projector = new CodingNsDshMessageProjector({ adapterId: 'codex', sessionId: harness.sessionId })
+      const chunks = []
+      for (const event of await harness.drain()) chunks.push(...await projector.push(event))
+      assert.deepEqual(chunks.filter(chunk => chunk.type === 'block-end' && chunk.block.type === 'text').map(chunk => chunk.block.text), ['中断前正文'])
+      assert.deepEqual(chunks.filter(chunk => chunk.type === 'finish').map(chunk => chunk.reason.kind), ['error'])
+    } finally { await harness.dispose() }
+  })
+
   test(`Codex ${mode}回合插话携带 expectedTurnId，连续插话复用当前回合且中断协议不变`, { timeout: 5_000 }, async () => {
     const harness = await createSteerHarness(segmented)
     try {

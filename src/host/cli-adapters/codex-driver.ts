@@ -39,6 +39,7 @@ const DEFAULT_STEER_TERMINAL_GRACE_MS = 2_000
 
 interface CodexSegmentedTurn {
   readonly queue: CodexTurnEventQueue
+  readonly decode: ReturnType<typeof createCodexTurnDecoder>
   removeNotificationListener: () => void
   removeAbortListener: () => void
   terminalReason: 'stop' | 'cancel' | 'error' | null
@@ -475,8 +476,9 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         const responseTerminal = buildCodexCompletionNotification(response, session.threadId)
         if (responseTerminal !== null) onNotification(responseTerminal)
 
+        const decode = createCodexTurnDecoder(input.cwd)
         for await (const message of eventQueue.iterable) {
-          const rawChunk = codexMessageToChunk(message, input.cwd)
+          const rawChunk = decode(message)
           if (rawChunk === null) continue
           for (const chunk of expandCodexCompactionChunk(session, rawChunk)) {
             if (chunk.type !== 'finish') sawMeaningfulEvent = true
@@ -650,6 +652,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     const notificationsBeforeTurnStart: JsonRpcMessage[] = []
     const active: CodexSegmentedTurn = {
       queue: eventQueue,
+      decode: createCodexTurnDecoder(input.cwd),
       removeNotificationListener: () => undefined,
       terminalReason: null,
       failure: undefined,
@@ -740,7 +743,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
           return
         }
         if (input.signal?.aborted) throw new Error('请求已取消')
-        chunk = codexMessageToChunk(next.value, input.cwd)
+        chunk = active.decode(next.value)
       }
       if (chunk === null) continue
 
@@ -1601,6 +1604,26 @@ function summarizeCodexAuth(auth: string): string {
   const hasTokens = tokens !== undefined && typeof tokens.refresh_token === 'string'
   const accountId = tokens !== undefined && typeof tokens.account_id === 'string' ? tokens.account_id : ''
   return `${mode}|apiKey=${hasApiKey}|tokens=${hasTokens}|account=${accountId}`
+}
+
+function createCodexTurnDecoder(cwd?: string) {
+  let candidate: { messageId: string; turnId: string | null } | undefined
+  return (message: JsonRpcMessage): CodingNsAgentEvent | null => {
+    const params = isRecord(message.params) ? message.params : {}
+    const item = isRecord(params.item) ? params.item : undefined
+    if (message.method === 'error' && params.willRetry === true) {
+      if (candidate === undefined || candidate.turnId !== readTurnId(message)) return null
+      return { type: 'text-retry', messageId: candidate.messageId }
+    }
+    const chunk = codexMessageToChunk(message, cwd)
+    if (chunk?.type === 'text-delta' && chunk.messageId !== undefined) {
+      candidate = { messageId: chunk.messageId, turnId: readTurnId(message) }
+    } else if (message.method === 'item/started' || item?.phase === 'commentary' || chunk?.type === 'tool-event'
+      || chunk?.type === 'question-request' || chunk?.type === 'permission-request') {
+      candidate = undefined
+    }
+    return chunk
+  }
 }
 
 function codexMessageToChunk(message: Record<string, any>, cwd?: string): CodingNsAgentEvent | null {
