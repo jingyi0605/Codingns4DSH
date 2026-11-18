@@ -13,7 +13,7 @@ import type { CodingNsAgentEvent } from '../src/shared/contracts/cli-adapter.js'
  */
 function scriptedDriver(
   turns: readonly (readonly Record<string, unknown>[])[],
-  options: { readonly contextWindow?: number; readonly modelId?: string | null } = {},
+  options: { readonly contextWindow?: number; readonly modelId?: string | null; readonly resolveDefaultContextWindow?: boolean } = {},
 ) {
   const calls: string[][] = []
   const inputs: string[] = []
@@ -22,7 +22,9 @@ function scriptedDriver(
     autoUpdater: { check() {}, dispose() {} },
     binaries: ['fake-agy'],
     spawnSync: (() => ({ status: 0, stdout: 'agy 1.2.17', stderr: '' })) as never,
-    resolveContextWindow: options.contextWindow === undefined ? () => undefined : () => options.contextWindow,
+    ...(options.resolveDefaultContextWindow === true
+      ? {}
+      : { resolveContextWindow: options.contextWindow === undefined ? () => undefined : () => options.contextWindow }),
     // 实测所有模型的 input_tokens 都不含缓存读取；modelId 只影响上下文窗口和 --effort。
     resolveModelId: () => options.modelId ?? null,
     spawn: ((command: string, args: string[]) => {
@@ -369,6 +371,25 @@ test('Antigravity 为单轮用量补上上下文窗口与当前上下文占用',
   assert.equal(usage.contextTokens, 11758)
   assert.equal(usage.contextUsageRatio, Number((11758 / 1_048_576).toFixed(6)))
   driver.dispose()
+})
+
+test('Antigravity Hydrogen 模型使用默认解析器提供的上下文窗口', async () => {
+  const { driver } = scriptedDriver([[
+    agentResponseUsage(1, { input_tokens: 100, output_tokens: 5, cache_read_tokens: 200, total_tokens: 105 }),
+    agentResponseUsage(3, { input_tokens: 10, output_tokens: 3, cache_read_tokens: 20, total_tokens: 13 }),
+    resultEvent({ input_tokens: 110, output_tokens: 8, cache_read_tokens: 220, total_tokens: 118 }),
+  ]], { modelId: 'gemini-4-hydrogen', resolveDefaultContextWindow: true })
+
+  try {
+    const usage = (await collect(driver, { modelId: 'gemini-4-hydrogen' })).find(chunk => chunk.type === 'usage')
+    assert.equal(usage.contextWindow, 1_048_576)
+    assert.equal(usage.inputTokens, 110)
+    assert.equal(usage.cacheReadTokens, 220)
+    assert.equal(usage.contextTokens, 30)
+    assert.equal(usage.contextUsageRatio, Number((30 / 1_048_576).toFixed(6)))
+  } finally {
+    driver.dispose()
+  }
 })
 
 test('Antigravity 缓存读取不计入未缓存输入，Claude 与 Gemini 口径一致', async () => {

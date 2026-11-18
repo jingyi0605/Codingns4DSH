@@ -403,6 +403,8 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
       } catch (error) {
         throw new TerminalRuntimeError('TERMINAL_RUNTIME_UNAVAILABLE', `tmux 配置目录不可写：${errorMessage(error)}`)
       }
+      if (this.platform === 'darwin') await this.startServerViaLaunchd(tmuxPath)
+      // 服务器已在运行时是空操作；launchd 路径失败时也由这里按旧方式直接拉起。
       const started = await this.runner.run(tmuxPath, ['-S', this.server.socket, '-f', this.server.config, 'start-server'])
       if (started.status !== 0) {
         throw new TerminalRuntimeError('TERMINAL_RUNTIME_UNAVAILABLE', sanitizeCommandError('tmux 服务器启动失败', started.stderr))
@@ -418,6 +420,65 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
       throw error
     })
     return this.serverReady
+  }
+
+  private async isServerRunning(tmuxPath: string): Promise<boolean> {
+    const probe = await this.runner.run(tmuxPath, ['-S', this.server.socket, 'show-options', '-g', 'exit-empty'])
+    return probe.status === 0
+  }
+
+  /**
+   * macOS：让 launchd 而不是 Desktop 进程成为 tmux 服务器的启动者。
+   *
+   * macOS 的“本地网络”权限按启动者（责任进程）判定。服务器由 Desktop 直接拉起时，
+   * Desktop 彻底退出后服务器和里面的 Shell 失去有效归属，再访问局域网地址会被拒绝。
+   * 交给 launchd 后，服务器的归属不再随 Desktop 的启动和退出变化。
+   *
+   * 服务器已经存活时什么都不做，沿用现有 socket、配置和会话。任何一步失败都返回，
+   * 由调用方按旧方式直接拉起，终端不会因此不可用。
+   */
+  private async startServerViaLaunchd(tmuxPath: string): Promise<void> {
+    if (await this.isServerRunning(tmuxPath)) return
+    const uid = process.getuid?.() ?? 0
+    const label = launchdLabel(this.server.socket)
+    const plistPath = join(this.server.directory, `${label}.plist`)
+    try {
+      writeFileSync(plistPath, launchdPlist(label, tmuxPath, this.server), { encoding: 'utf8', mode: 0o600 })
+    } catch (error) {
+      debugWarn('codingns4dsh: launchd plist write failed', { error: errorMessage(error) })
+      return
+    }
+    // 服务器退出后 job 仍留在 launchd 里，重复 bootstrap 会失败；先清掉旧登记。
+    await this.runner.run('launchctl', ['bootout', `gui/${uid}/${label}`])
+    const loaded = await this.runner.run('launchctl', ['bootstrap', `gui/${uid}`, plistPath])
+    if (loaded.status !== 0) {
+      debugWarn('codingns4dsh: launchctl bootstrap failed, fallback to direct start', {
+        status: loaded.status,
+        stderr: loaded.stderr,
+      })
+      return
+    }
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      if (await this.isServerRunning(tmuxPath)) {
+        await this.inheritProcessEnvironment(tmuxPath)
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    debugWarn('codingns4dsh: launchd tmux server did not come up, fallback to direct start', {})
+  }
+
+  /**
+   * launchd 的环境很精简（没有 Homebrew PATH 等）。把 Host 当前环境写进服务器的
+   * 全局环境，让新会话的 Shell 与直接拉起时一致。只写内存，不落盘。
+   */
+  private async inheritProcessEnvironment(tmuxPath: string): Promise<void> {
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value === undefined || key === '' || key.includes('=') || key === 'TMUX' || key === 'TMUX_PANE') continue
+      // tmux 把以分号结尾的参数当作命令分隔符，字面分号需要写成 `\;`。
+      const safe = value.endsWith(';') ? `${value.slice(0, -1)}\\;` : value
+      await this.runner.run(tmuxPath, ['-S', this.server.socket, 'set-environment', '-g', key, safe])
+    }
   }
 
   private async readPanePid(name: string): Promise<number | null> {
@@ -467,6 +528,34 @@ function tmuxLaunchCommand(session: TerminalRuntimeSession, exitCodePath: string
     '-c',
     `${inner}; __codingns4dsh_exit=$?; printf %s "$__codingns4dsh_exit" > ${shellQuote(exitCodePath)}; exit $__codingns4dsh_exit`,
   ]
+}
+
+/** 同一个 socket 对应唯一的 launchd job；不同服务器目录（如测试）互不冲突。 */
+export function launchdLabel(socket: string): string {
+  return `local.${TMUX_SERVER_SOCKET_NAME}.tmux.${createHash('sha256').update(socket).digest('hex').slice(0, 8)}`
+}
+
+function xmlEscape(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
+}
+
+/**
+ * `start-server` 会 fork 出守护进程后立刻退出，`AbandonProcessGroup` 让 launchd
+ * 不去清理这个守护进程；不设 KeepAlive，服务器退出后由下一次 create 重新拉起。
+ */
+export function launchdPlist(label: string, tmuxPath: string, server: TmuxServerPaths): string {
+  const args = [tmuxPath, '-S', server.socket, '-f', server.config, 'start-server']
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0"><dict>',
+    `<key>Label</key><string>${xmlEscape(label)}</string>`,
+    `<key>ProgramArguments</key><array>${args.map((arg) => `<string>${xmlEscape(arg)}</string>`).join('')}</array>`,
+    '<key>RunAtLoad</key><true/>',
+    '<key>AbandonProcessGroup</key><true/>',
+    '</dict></plist>',
+    '',
+  ].join('\n')
 }
 
 function shellQuote(value: string): string {

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { ClaudeCodeDriver } from '../data/build/dist/host/cli-adapters/claude-driver.js'
@@ -7,16 +8,18 @@ import { KimiCliDriver } from '../data/build/dist/host/cli-adapters/kimi-driver.
 import { CodingNsAgentEventNormalizer } from '../data/build/dist/host/cli-adapters/stream-normalizer.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 
+// Protocol fixtures receive argv directly. Windows .cmd quoting and cleanup are
+// covered separately in cli-adapters-claude-process.spec.ts.
 test('Claude terminal results settle and release a process whose stdout remains open', { timeout: 1000 }, async () => {
   let killed = false
   const stdin = new PassThrough()
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: (() => ({ status: 0, stdout: 'claude 1.2.3', stderr: '' })) as never,
     spawn: (() => {
       const stdout = new PassThrough(); const stderr = new PassThrough()
       queueMicrotask(() => stdout.write(JSON.stringify({ type: 'result', subtype: 'success', result: 'PONG' }) + '\n'))
-      return { stdout, stderr, stdin, kill() { killed = true; stdout.end(); stderr.end(); return true } }
+      return Object.assign(new EventEmitter(), { stdout, stderr, stdin, kill() { killed = true; stdout.end(); stderr.end(); this.emit('close', 0); return true } })
     }) as never,
   })
   try {
@@ -48,7 +51,7 @@ test('Claude、Gemini、Kimi 的标准流驱动统一转换文本和完成事件
     const calls: string[][] = []
     let killed = false
     const driver = new Driver({
-      binaries: ['fake-agent'],
+      binaries: ['fake-agent.exe'],
       spawnSync: (() => ({ status: 0, stdout: 'fake-agent 1.2.3', stderr: '' })) as never,
       spawn: ((command: string, args: string[]) => {
         calls.push([command, ...args])
@@ -60,12 +63,12 @@ test('Claude、Gemini、Kimi 的标准流驱动统一转换文本和完成事件
           stdout.end()
           stderr.end()
         })
-        return { stdout, stderr, stdin: new PassThrough(), kill() { killed = true; return true } }
+        return Object.assign(new EventEmitter(), { stdout, stderr, stdin: new PassThrough(), kill() { killed = true; this.emit('close', 0); return true } })
       }) as never,
     })
     const chunks = []
     for await (const chunk of driver.executeTurn({ sessionId: 's1', messages: [], prompt: '你好' })) chunks.push(chunk)
-    assert.equal(calls[0]?.[0], 'fake-agent')
+    assert.equal(calls[0]?.[0], 'fake-agent.exe')
     if (Driver === ClaudeCodeDriver) assert.equal(calls[0]?.includes('--include-partial-messages'), true)
     const expectedText = Driver === ClaudeCodeDriver
       ? { type: 'text-delta', text: '完成', messageId: 'assistant-claude-code-s1-0' }
@@ -83,7 +86,7 @@ test('Claude Code 通过公开 control_request/control_response 接入权限与�
   const responses: Array<Record<string, any>> = []
   const inputs: Array<Record<string, any>> = []
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: (() => ({ status: 0, stdout: 'claude 1.2.3', stderr: '' })) as never,
     spawn: ((_command: string, args: string[]) => {
       assert.equal(args.includes('--permission-prompt-tool'), true)
@@ -132,7 +135,7 @@ test('Claude Code 通过公开 control_request/control_response 接入权限与�
           decision_reason: '需要执行命令',
         },
       })}\n`))
-      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); stdin.end(); return true } }
+      return Object.assign(new EventEmitter(), { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); stdin.end(); this.emit('close', 0); return true } })
     }) as never,
   })
 
@@ -197,7 +200,7 @@ test('Claude stdio 提问在完全权限下仍进入 DSH 组件，多选和自�
   const responses: Array<Record<string, any>> = []
   const asked: Array<Record<string, any>> = []
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: (() => ({ status: 0, stdout: 'claude 2.1.288', stderr: '' })) as never,
     spawn: ((_command: string, args: string[]) => {
       assert.deepEqual(args.slice(args.indexOf('--permission-prompt-tool'), args.indexOf('--permission-prompt-tool') + 2), ['--permission-prompt-tool', 'stdio'])
@@ -221,7 +224,7 @@ test('Claude stdio 提问在完全权限下仍进入 DSH 组件，多选和自�
         stdout.end()
         stderr.end()
       })
-      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); stdin.end(); return true } }
+      return Object.assign(new EventEmitter(), { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); stdin.end(); this.emit('close', 0); return true } })
     }) as never,
   })
   const projector = new CodingNsDshMessageProjector({
@@ -265,7 +268,7 @@ test('Claude stdio 提问在完全权限下仍进入 DSH 组件，多选和自�
 
 test('Claude stream-json 保留 tool_use 与 tool_result 的完整生命周期', async () => {
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: (() => ({ status: 0, stdout: 'claude 1.2.3', stderr: '' })) as never,
     spawn: (() => {
       const stdout = new PassThrough()
@@ -277,7 +280,7 @@ test('Claude stream-json 保留 tool_use 与 tool_result 的完整生命周期',
         stdout.end()
         stderr.end()
       })
-      return { stdout, stderr, kill() { return true } }
+      return Object.assign(new EventEmitter(), { stdout, stderr, stdin: new PassThrough(), kill() { this.emit('close', 0); return true } })
     }) as never,
   })
   const chunks = []
@@ -292,7 +295,7 @@ test('Claude stream-json 保留 tool_use 与 tool_result 的完整生命周期',
 
 test('Claude stream-json 不重复投影 assistant 结算快照，并按工具切换消息段', async () => {
   const driver = new ClaudeCodeDriver({
-    binaries: ['fake-claude'],
+    binaries: ['fake-claude.exe'],
     spawnSync: (() => ({ status: 0, stdout: 'claude 1.2.3', stderr: '' })) as never,
     spawn: (() => {
       const stdout = new PassThrough()
@@ -316,7 +319,7 @@ test('Claude stream-json 不重复投影 assistant 结算快照，并按工具�
         stdout.end()
         stderr.end()
       })
-      return { stdout, stderr, kill() { return true } }
+      return Object.assign(new EventEmitter(), { stdout, stderr, stdin: new PassThrough(), kill() { this.emit('close', 0); return true } })
     }) as never,
   })
 

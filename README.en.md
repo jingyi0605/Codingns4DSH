@@ -83,7 +83,7 @@ The table highlights selected capabilities; availability depends on the Agent an
 | **OpenCode** | Skills, approvals, questions, usage | Supports a local CLI or existing server, plus native skills |
 | **Grok Build** | Skills, approvals, questions, usage | Supports native skill discovery and structured questions |
 | **MiniMax Code** | Approvals, questions, usage | Default integration supports interaction; explicit-effort execution does not return interactive responses.<br>Upstream contributor: [chenjunyi000](https://github.com/chenjunyi000)<br>PRs [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6), [#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
-| **ZCode** | Model selection, session resume, usage | Uses the CLI or the desktop app's bundled runtime.<br>Upstream contributor: [chenjunyi000](https://github.com/chenjunyi000)<br>PRs [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6), [#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
+| **ZCode** | Model selection, session resume, native workflows, subagent progress, usage | Uses the CLI or the desktop app's bundled runtime.<br>Upstream contributor: [chenjunyi000](https://github.com/chenjunyi000)<br>PRs [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6), [#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
 | **CodeBuddy** | Approvals, questions, usage | Automatically detects CN/international editions.<br>CodexHost contributor: [mouzhi](https://github.com/mouzhi)<br>Initial integration: [f30b000](https://github.com/BytePioneer-AI/codex-host/commit/f30b000f88950c40844b071eec2f6f385c6bcb49) |
 | **WorkBuddy** | Approvals, questions, thinking controls | Starts the bundled CLI directly after WorkBuddy installation and login; no open desktop window or prior chat message is needed.<br>CodexHost contributor: [BytePioneer-AI (ChongWen)](https://github.com/BytePioneer-AI)<br>Initial integration: [6e9f365](https://github.com/BytePioneer-AI/codex-host/commit/6e9f365e2bf8ac61716f8250475530ae790f2d2f) |
 | **Cursor CLI** | Approvals, questions, thinking controls | CodexHost contributor: [mouzhi](https://github.com/mouzhi)<br>Initial integration: [ad6ba8e](https://github.com/BytePioneer-AI/codex-host/commit/ad6ba8e04d294c473d2dcad99880496ff39c1f7e) |
@@ -116,6 +116,10 @@ On DSH `>=0.2.1-rc.5`, run `/compact` without arguments while a Codex or Claude 
     </tr>
   </table>
 </div>
+
+### ZCode Native Workflows and Subagents
+
+Ask ZCode to create a native workflow, then open progress beside the session title to inspect participants, results and read-only timelines. Automatic replies after the parent turn finishes continue into DSH chat and durable history. The panel keeps lifecycle-aware folding and adapts to three, two or one column. See the [guide and synthetic previews](docs/zcode-workflows.md).
 
 ### Session Enhancement and Usage
 

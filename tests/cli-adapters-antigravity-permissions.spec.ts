@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { EventEmitter } from 'node:events'
 import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import { AntigravityDriver } from '../src/host/cli-adapters/antigravity-driver.js'
@@ -20,17 +21,19 @@ function fixture(events: Record<string, unknown>[], stderrText = '') {
   const calls: string[][] = []
   const driver = new AntigravityDriver({
     binaries: ['fixture-agy'], resolveContextWindow: () => undefined, resolveModelId: () => null,
+    // Update scheduling has its own integration tests; these calls belong to the conversation.
+    autoUpdater: { check() {}, dispose() {} },
     spawnSync: (() => ({ status: 0, stdout: 'agy 1.5.9', stderr: '' })) as never,
     spawn: ((_command: string, args: string[]) => {
       calls.push(args)
       const stdout = new PassThrough(), stderr = new PassThrough()
-      return { stdout, stderr, kill() { return true }, stdin: { end() {
+      return Object.assign(new EventEmitter(), { stdout, stderr, kill() { this.emit('close', 0); return true }, stdin: { end() {
         queueMicrotask(() => {
           if (stderrText) stderr.write(stderrText)
           for (const event of events) stdout.write(JSON.stringify(event) + '\n')
           stdout.end(); stderr.end()
         })
-      } } }
+      } } })
     }) as never,
   })
   return { driver, calls }

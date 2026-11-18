@@ -1,0 +1,37 @@
+{
+  "date": "2026-11-16",
+  "zcodeVersion": "3.18.2",
+  "provider": "account:bigmodel-team-coding-plan",
+  "model": "GLM-5.3",
+  "nativeStorageIsolated": true,
+  "originalConfigFilesUnchanged": true,
+  "workspaceDefaultModelChanged": false,
+  "workflow": {
+    "createCalls": 1,
+    "runs": 1,
+    "participants": 1,
+    "runStatus": "completed",
+    "participantStatus": "completed",
+    "participantUsesSelectedModel": true
+  },
+  "nativeExecution": {
+    "hostSessionSendRequests": 1,
+    "completedModelRequests": 6,
+    "otherProvidersUsed": false,
+    "foregroundEndedBeforeBackground": true,
+    "backgroundReply": "PR57_WORKFLOW_OK",
+    "completedDurableReplies": 1
+  },
+  "coldHostRecovery": {
+    "source": "new native SQLite result through production plugin code with an isolated DSH session fixture",
+    "followupDeliveries": 1,
+    "projectedReplyMatched": true,
+    "fixtureDurableAcknowledgements": 1,
+    "participantDetailEntries": 3,
+    "cliProcessesStarted": 0,
+    "modelRequests": 0
+  },
+  "installedDesktopSessionVerified": false,
+  "physicalPhoneVerified": false,
+  "pluginInstalledOrRestarted": false
+}

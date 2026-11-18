@@ -1,4 +1,5 @@
 import * as nativeApprovalDictionary from './locales/nativeApproval.js'
+import * as zcodeWorkflowDictionary from './locales/zcodeWorkflow.js'
 import { useMemo, useSyncExternalStore } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import type { LocaleRuntime } from '@deepseek-ai/dsh-client-locale/client'
@@ -1113,6 +1114,7 @@ const en: Record<string, string> = {
   ...subagentCollapsedDictionary.en,
   ...cliManagementDictionary.en,
   ...nativeApprovalDictionary.en,
+  ...zcodeWorkflowDictionary.en,
   ...magpieDictionary.en,
   ...pluginUpdateDictionary.en,
   ...credentialsDictionary.en,
@@ -1131,6 +1133,7 @@ const zh: Record<string, string> = {
   ...subagentCollapsedDictionary.zh,
   ...cliManagementDictionary.zh,
   ...nativeApprovalDictionary.zh,
+  ...zcodeWorkflowDictionary.zh,
   ...magpieDictionary.zh,
   ...pluginUpdateDictionary.zh,
   ...credentialsDictionary.zh,

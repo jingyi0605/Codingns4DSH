@@ -4,7 +4,6 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { PassThrough, Readable } from 'node:stream'
 import test, { type TestContext } from 'node:test'
-import { AntigravityDriver } from '../data/build/dist/host/cli-adapters/antigravity-driver.js'
 import { CommandCodeDriver } from '../data/build/dist/host/cli-adapters/command-code-driver.js'
 import { GeminiCliDriver } from '../data/build/dist/host/cli-adapters/gemini-driver.js'
 import { KimiCliDriver } from '../data/build/dist/host/cli-adapters/kimi-driver.js'
@@ -125,32 +124,21 @@ test('无法识别的无后缀图片在派发前明确失败，不发送 applica
   assert.equal(existsSync(path), true)
 })
 
-test('Antigravity 和 Gemini 旧协议实际收到带后缀图片及可访问目录，结束后清理副本', async (t) => {
+test('Gemini 旧协议实际收到带后缀图片及可访问目录，结束后清理副本', async (t) => {
   const { input, path } = fixture(t)
-  for (const kind of ['antigravity', 'gemini'] as const) {
-    let imagePath = ''
-    const spawn = ((_command: string, args: string[]) => {
-      if (args.includes('--experimental-acp')) throw new Error('旧 CLI 不支持 ACP')
-      if (kind === 'gemini') {
-        imagePath = readableImagePath(args[args.indexOf('-p') + 1]!)
-        assert.ok(args.includes(dirname(imagePath)))
-      }
-      const stdin = new PassThrough()
-      stdin.on('data', (line) => {
-        imagePath = readableImagePath(JSON.parse(String(line)).message.content)
-        assert.ok(args.includes(dirname(imagePath)))
-      })
-      return { stdin, stdout: Readable.from([`${JSON.stringify(kind === 'gemini' ? { type: 'result', status: 'success' } : { event: 'result', result: {} })}\n`]), stderr: new PassThrough(), kill() { return true } }
-    }) as never
-    const driver = kind === 'gemini'
-      ? new GeminiCliDriver({ binaries: ['fake-gemini'], spawnSync: detection, spawn })
-      : new AntigravityDriver({ autoUpdater: { check() {}, dispose() {} }, binaries: ['fake-agy'], spawnSync: detection, spawn, resolveContextWindow: () => undefined, resolveModelId: () => null })
-    t.after(() => driver.dispose())
-    const events = await collect(driver.executeTurn(input))
-    assert.equal(events.at(-1)?.type, 'finish')
-    assert.equal(existsSync(imagePath), false)
-    assert.deepEqual(readFileSync(path), PNG)
-  }
+  let imagePath = ''
+  const spawn = ((_command: string, args: string[]) => {
+    if (args.includes('--experimental-acp')) throw new Error('旧 CLI 不支持 ACP')
+    imagePath = readableImagePath(args[args.indexOf('-p') + 1]!)
+    assert.ok(args.includes(dirname(imagePath)))
+    return { stdin: new PassThrough(), stdout: Readable.from([`${JSON.stringify({ type: 'result', status: 'success' })}\n`]), stderr: new PassThrough(), kill() { return true } }
+  }) as never
+  const driver = new GeminiCliDriver({ binaries: ['fake-gemini'], spawnSync: detection, spawn })
+  t.after(() => driver.dispose())
+  const events = await collect(driver.executeTurn(input))
+  assert.equal(events.at(-1)?.type, 'finish')
+  assert.equal(existsSync(imagePath), false)
+  assert.deepEqual(readFileSync(path), PNG)
 })
 
 test('ZCode session/send 不再暴露无后缀对象路径，连续回合各自回收副本', { timeout: 5_000 }, async (t) => {
@@ -270,13 +258,12 @@ test('取消文本 Provider 时回收图片副本，原始对象不受影响', a
   const { input, path } = fixture(t)
   const controller = new AbortController()
   let imagePath = ''
-  const driver = new AntigravityDriver({ autoUpdater: { check() {}, dispose() {} }, binaries: ['fake-agy'], spawnSync: detection, resolveContextWindow: () => undefined, resolveModelId: () => null, spawn: (() => {
-    const stdout = new PassThrough(); const stderr = new PassThrough(); const stdin = new PassThrough()
-    stdin.on('data', (line) => {
-      imagePath = readableImagePath(JSON.parse(String(line)).message.content)
-      controller.abort()
-    })
-    return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+  const driver = new GeminiCliDriver({ binaries: ['fake-gemini'], spawnSync: detection, spawn: ((_command: string, args: string[]) => {
+    if (args.includes('--experimental-acp')) throw new Error('旧 CLI 不支持 ACP')
+    imagePath = readableImagePath(args[args.indexOf('-p') + 1]!)
+    controller.abort()
+    const stdout = new PassThrough(); const stderr = new PassThrough()
+    return { stdout, stderr, stdin: new PassThrough(), kill() { stdout.end(); stderr.end(); return true } }
   }) as never })
   t.after(() => driver.dispose())
   const events = await collect(driver.executeTurn({ ...input, signal: controller.signal }))

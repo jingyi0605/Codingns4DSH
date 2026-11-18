@@ -450,6 +450,12 @@ export class AcpCliDriver implements CodingNsCliDriver {
     session.rpc.dispose()
   }
 
+  /** 关闭一个 DSH 会话持有的 ACP 进程；供只在个别回合临时借用 Provider 进程的适配器使用。 */
+  closeSession(sessionKey: string): void {
+    const session = this.sessions.get(sessionKey)
+    if (session !== undefined) this.abandonSession(sessionKey, session)
+  }
+
   async interrupt(sessionId: string): Promise<void> {
     const session = this.sessions.get(sessionId)
     if (session === undefined || session.acpSessionId === '') return

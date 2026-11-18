@@ -10,6 +10,7 @@ export class ZcodeTurnTelemetry {
   private readonly samples: UsageEvent[] = []
   private readonly tools = new Map<string, { name: string; input?: string }>()
   private context: Pick<UsageEvent, 'contextWindow' | 'contextTokens'> = {}
+  private contextPending = false
 
   constructor(private readonly sessionId: string) {}
 
@@ -31,6 +32,7 @@ export class ZcodeTurnTelemetry {
         if (payload.querySource === 'main_turn' || payload.querySource === undefined) {
           this.context = { contextTokens: sample.totalTokens ?? sample.inputTokens + sample.outputTokens,
             ...(positive(payload.contextWindow) === undefined ? {} : { contextWindow: payload.contextWindow }) }
+          this.contextPending = true
         }
       }
     }
@@ -71,6 +73,12 @@ export class ZcodeTurnTelemetry {
 
   /** 原生模型完成事件没有窗口时才读取快照；窗口以实际请求报告为准。 */
   get needsContextSnapshot(): boolean { return this.context.contextWindow === undefined }
+
+  takeContextObservation(): Extract<CodingNsAgentEvent, { type: 'usage-observation' }> | null {
+    if (!this.contextPending) return null
+    this.contextPending = false
+    return { type: 'usage-observation', ...this.context }
+  }
 
   readContextSnapshot(value: unknown): void {
     const root = isRecord(value) && isRecord(value.snapshot) ? value.snapshot : value

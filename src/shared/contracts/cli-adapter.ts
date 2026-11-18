@@ -298,6 +298,8 @@ export interface CodingNsCliPermissionState {
 /** 传给 CLI 驱动的一轮完整上下文。 */
 export interface CodingNsCliTurnInput {
   readonly sessionId: string
+  /** Host-only control: consume existing native output without sending a prompt. */
+  readonly externalTurnId?: string
   readonly messages: readonly CodingNsCliMessage[]
   readonly prompt: string
   /** Trusted Host marker for newly accepted peer input at a resumed provider boundary. */
@@ -390,6 +392,8 @@ export interface CodingNsCliMessage {
     readonly callId?: string
     /** Native peer and settlement messages retain the originating child identity. */
     readonly senderSessionId?: string
+    readonly externalTurnId?: string
+    readonly providerSessionId?: string
     /** DSH 用户消息的双语展示元数据；只在 Host 内部剥离，不发送给 Provider。 */
     readonly codingnsTranslationInput?: SessionTranslationInputRecord
     /** Original host context remains auditable without changing its producer identity. */
