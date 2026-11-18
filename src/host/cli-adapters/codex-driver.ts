@@ -1156,6 +1156,11 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
 
   private async getSession(input: CodingNsCliTurnInput, command: string, preservePermission = false) {
     const previous = this.sessions.get(input.sessionId)
+    // 真实回合（非技能发现）若 Host 未提供权限事实，必须显式告警，不能静默按缺省处理。
+    // 技能发现走 preservePermission=true 复用既有权限，不属于真实回合，不告警。
+    if (!preservePermission && input.permission === undefined) {
+      console.warn(`[codingns4dsh] Codex 真实回合未收到 Host 权限事实（permission 缺省），本次启动不注入沙箱/审批覆盖，交由 Codex 自身配置；sessionId=${input.sessionId}`)
+    }
     const teamToken = teamBridgeToken(input.sessionId)
     const runtimeEnvFingerprint = fingerprintRuntimeEnvironment(input.runtimeEnv)
     // Only skill discovery omits permission intentionally. Otherwise the launch
