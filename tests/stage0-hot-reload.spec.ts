@@ -12,6 +12,7 @@ import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import { reloadScript } from '../scripts/stage0-client-hmr.mjs'
 import { registerStage0DevHmr } from '../data/build/dist/host/stage0-dev-hmr.js'
+import { DSH_TESTED_VERSION } from '../src/shared/contracts/version.js'
 
 const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
 const stage0Script = join(repositoryRoot, 'scripts/run-dsh-stage0.sh')
@@ -22,8 +23,8 @@ const yaml = createRequire(require.resolve('@deepseek-ai/cordis-plugin-include')
 
 test('Stage0 launcher defaults to the tested DSH runtime without changing persistent data paths', () => {
   const launcher = readFileSync(stage0Script, 'utf8')
-  assert.match(launcher, /deepseek-harness\/0\.2\.2-rc\.3\/node_modules\/@deepseek-ai\/dsh\/lib\/bin\.js/u)
-  assert.match(launcher, /DSH 0\.2\.2-rc\.3 launcher not found/u)
+  assert.ok(launcher.includes(`deepseek-harness/${DSH_TESTED_VERSION}/node_modules/@deepseek-ai/dsh/lib/bin.js`))
+  assert.ok(launcher.includes(`DSH ${DSH_TESTED_VERSION} launcher not found`))
   assert.match(launcher, /\.dsh-stage0-020/u)
   assert.match(launcher, /stage0-020/u)
 })
