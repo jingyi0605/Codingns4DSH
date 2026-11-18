@@ -823,7 +823,7 @@ test('Codex 上下文超限时自动压缩并重试第二轮', async () => {
 
   assert.equal(methods.filter((method) => method === 'thread/compact/start').length, 1)
   assert.equal(methods.filter((method) => method === 'turn/start').length, 3)
-  assert.deepEqual(second.filter((chunk) => chunk.type === 'context-compaction').map((chunk) => chunk.phase), ['start', 'summary', 'end'])
+  assert.deepEqual(second.filter((chunk) => chunk.type === 'context-compaction').map((chunk) => chunk.phase), ['start', 'end'])
   assert.equal(second.find((chunk) => chunk.type === 'text-delta')?.text, '压缩后继续')
   assert.equal(second.at(-1)?.reason, 'stop')
   driver.dispose()
@@ -876,7 +876,7 @@ test('Codex 上下文恰好达到窗口上限时在下一轮前主动压缩', as
   }
 
   assert.equal(methods.filter((method) => method === 'thread/compact/start').length, 1)
-  assert.deepEqual(second.filter((chunk) => chunk.type === 'context-compaction').map((chunk) => chunk.phase), ['start', 'summary', 'end'])
+  assert.deepEqual(second.filter((chunk) => chunk.type === 'context-compaction').map((chunk) => chunk.phase), ['start', 'end'])
   assert.equal(second.at(-1)?.type, 'finish')
   driver.dispose()
 })

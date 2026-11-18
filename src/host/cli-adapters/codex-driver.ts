@@ -4,7 +4,6 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, join, resolve } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsAgentImageArtifact, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliServiceTier, CodingNsAgentPermissionResponse, CodingNsCliSandboxMode, CodingNsCliTurnInput, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput } from '../../shared/contracts/cli-adapter.js'
-import { NATIVE_COMPACTION_TIMEOUT_CODE } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliCompactionInput, CodingNsCliCompactionResult, CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
@@ -67,16 +66,6 @@ interface CodexSession {
   modelId: string | undefined
   contextWindow: number | undefined
   contextTokens: number | undefined
-  /**
-   * 最近一次 sampling 的 prompt 规模（inputTokens，含缓存读取）。
-   *
-   * Codex 的 usage 通知不一定带 contextWindow；那种情况下 `contextTokens` 不会被
-   * 记录，但压缩摘要仍需要“压缩前有多大”这个事实。这里只保存规模本身，不参与
-   * 上下文窗口或压缩阈值的判断。
-   */
-  lastPromptTokens: number | undefined
-  /** 本次压缩开始前的 prompt 规模快照，供 summary 相位记账。 */
-  compactionBaselineTokens: number | undefined
   threadId: string
   /**
    * 线程当前真正生效的模型。
@@ -124,15 +113,7 @@ interface CodexSkillEntry extends CodingNsCliSkillDescriptor {
 // 只有 Provider 已明确报告超过窗口时才主动压缩；接近上限仍交给 Codex
 // 自身的 auto-compact，避免对正常的高占用回合重复发起压缩。
 const CODEX_COMPACTION_THRESHOLD = 1
-/**
- * 手动 /compact 等待 Codex 完成压缩的上限。
- *
- * Codex 的压缩是一次完整的服务端摘要调用，实测同一线程的自动压缩耗时
- * 95～160 秒（上下文越大越久）；旧的 60 秒会在压缩仍在进行时杀掉 app-server，
- * 表现为“原生上下文压缩未正常完成”。这里放宽到 5 分钟，并保留超时后重启
- * RPC 的行为，避免残留进程继续压缩同一线程。
- */
-export const CODEX_COMPACTION_TIMEOUT_MS = 300_000
+const CODEX_COMPACTION_TIMEOUT_MS = 60_000
 const CODEX_APP_SERVER_BASE_ARGS = [
   // 原生 request_permissions 默认关闭。必须在插件进程内启用，模型才能主动
   // 发出 item/permissions/requestApproval，而不是靠试写文件碰沙箱边界。
@@ -186,21 +167,6 @@ interface PendingCodexPermission {
    * 权限范围，拒绝必须给出空画像。丢掉请求画像就无法构造合法应答。
    */
   readonly requested?: unknown
-}
-
-/**
- * 手动压缩等待超时。
- *
- * 必须与“压缩失败”区分开：Codex 服务端在超时后通常仍在继续压缩，用户稍后重试
- * 往往就能成功；把它混进通用的 compact.failed 只会让人去检查安装和登录。
- */
-export class CodexCompactionTimeoutError extends Error {
-  readonly code = NATIVE_COMPACTION_TIMEOUT_CODE
-
-  constructor() {
-    super('Codex 上下文压缩超时')
-    this.name = 'CodexCompactionTimeoutError'
-  }
 }
 
 /** Codex app-server 的 JSON-RPC 驱动，Host 只暴露统一文本流，不暴露线程和 token。 */
@@ -364,7 +330,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         session.threadServiceTierId = readThreadServiceTier(response)
       }
       if (session.threadId !== input.providerSessionId) throw new Error('CODEX_COMPACTION_SESSION_MISMATCH')
-      await this.compactThread(session, turnInput, input.onCompactionEvent)
+      await this.compactThread(session, turnInput)
       return { compacted: true }
     } catch (error) {
       // Initialization and resume can fail or be cancelled before compaction starts.
@@ -944,12 +910,12 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   }
 
   /** thread/compact/start 立即返回，真正完成由 contextCompaction turn 的终态通知表示。 */
-  private async compactThread(session: CodexSession, input: CodingNsCliTurnInput, onCompactionEvent?: CodingNsCliCompactionInput['onCompactionEvent']): Promise<void> {
+  private async compactThread(session: CodexSession, input: CodingNsCliTurnInput): Promise<void> {
     if (session.compacting !== undefined) return session.compacting
     // 在创建异步等待器前同步设置，避免多个 RPC 监听器交错处理同一批通知时
     // 另一个监听器重复投影显式压缩事件。
     session.suppressCompactionNotifications = true
-    const compacting = this.waitForCompaction(session, input, onCompactionEvent)
+    const compacting = this.waitForCompaction(session, input)
     session.compacting = compacting
     try {
       await compacting
@@ -960,13 +926,9 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     }
   }
 
-  private async waitForCompaction(session: CodexSession, input: CodingNsCliTurnInput, onCompactionEvent?: CodingNsCliCompactionInput['onCompactionEvent']): Promise<void> {
+  private async waitForCompaction(session: CodexSession, input: CodingNsCliTurnInput): Promise<void> {
     const compactionId = `codex-compaction-${randomUUID()}`
-    const emit = (event: Extract<CodingNsAgentEvent, { type: 'context-compaction' }>) => {
-      if (onCompactionEvent) onCompactionEvent(event)
-      else session.pendingCompactionEvents.push(event)
-    }
-    emit({ type: 'context-compaction', phase: 'start', compactionId })
+    session.pendingCompactionEvents.push({ type: 'context-compaction', phase: 'start', compactionId })
     let compactTurnId: string | null = null
     let sawCompaction = false
     let summary: string | undefined
@@ -1031,23 +993,19 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     const removeListener = session.rpc.addNotificationListener(onNotification)
     const removeExitListener = session.rpc.addExitListener(error => rejectDone?.(error))
     const timer = setTimeout(() => {
-      rejectDone?.(new CodexCompactionTimeoutError())
+      rejectDone?.(new Error('Codex 上下文压缩超时'))
       session.rpc.dispose()
     }, CODEX_COMPACTION_TIMEOUT_MS)
     timer.unref?.()
     try {
       await session.rpc.request('thread/compact/start', { threadId: session.threadId }, { signal: input.signal, killOnAbort: false })
       await done
-      {
+      if (summary !== undefined || shadowedTokenCount !== undefined || shadowedItemCount !== undefined) {
         // Codex 的 app-server 通知通常不携带被压缩 token 数。DSH 的
-        // contextPressure 必须用该数扣除已被替换的 surface；这里按
-        // 压缩前快照 → 当前上下文规模 → 最近一次 prompt 规模的顺序取保守锚点，
-        // 不能把缺失值写成 0。
-        const resolvedShadowedTokenCount = shadowedTokenCount
-          ?? session.compactionBaselineTokens
-          ?? session.contextTokens
-          ?? session.lastPromptTokens
-        emit({
+        // contextPressure 必须用该数扣除已被替换的 surface；这里使用压缩前
+        // 最后一次 Provider prompt 规模作为保守锚点，不能把缺失值写成 0。
+        const resolvedShadowedTokenCount = shadowedTokenCount ?? session.contextTokens
+        session.pendingCompactionEvents.push({
           type: 'context-compaction',
           phase: 'summary',
           compactionId,
@@ -1056,9 +1014,9 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
           ...(shadowedItemCount === undefined ? {} : { shadowedItemCount }),
         })
       }
-      emit({ type: 'context-compaction', phase: 'end', compactionId })
+      session.pendingCompactionEvents.push({ type: 'context-compaction', phase: 'end', compactionId })
     } catch (error) {
-      emit({
+      session.pendingCompactionEvents.push({
         type: 'context-compaction',
         phase: 'end',
         compactionId,
@@ -1209,8 +1167,6 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       modelId: input.modelId,
       contextWindow: undefined as number | undefined,
       contextTokens: undefined as number | undefined,
-      lastPromptTokens: undefined as number | undefined,
-      compactionBaselineTokens: undefined as number | undefined,
       threadId: '',
       threadModelId: undefined as string | undefined,
       threadServiceTierId: undefined as string | undefined,
@@ -1270,9 +1226,6 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
 
 function stabilizeCodexUsage(session: CodexSession, event: CodingNsAgentEvent): CodingNsAgentEvent {
   if (event.type !== 'usage') return event
-  // 与 contextTokens 分开记录：Codex 允许 usage 不带 contextWindow，而压缩摘要
-  // 在没有窗口时同样需要“压缩前 prompt 有多大”。0 表示“没有可信规模”，不写入。
-  if (typeof event.inputTokens === 'number' && event.inputTokens > 0) session.lastPromptTokens = event.inputTokens
   if (event.contextTokens !== undefined) session.contextTokens = event.contextTokens
   if (event.contextWindow === undefined) return event
   if (session.contextWindow === undefined) {
@@ -1294,26 +1247,15 @@ function stabilizeCodexUsage(session: CodexSession, event: CodingNsAgentEvent): 
 function stabilizeCodexEvent(session: CodexSession, event: CodingNsAgentEvent): CodingNsAgentEvent {
   if (event.type !== 'context-compaction') return stabilizeCodexUsage(session, event)
 
-  // 压缩开始时冻结规模：start 与 summary 之间还会到达 usage（压缩请求本身也会
-  // 上报），那时再读就是压缩后的新值，记进摘要会低估被替换的历史。
-  if (event.phase === 'start') {
-    const baseline = Math.max(session.contextTokens ?? 0, session.lastPromptTokens ?? 0)
-    session.compactionBaselineTokens = baseline > 0 ? baseline : undefined
-    return event
-  }
-
   // 自动压缩的 item 通知没有独立 usage。压缩结束后清零本地状态，避免下一轮
   // 把压缩前的旧 prompt 规模误认为当前上下文并再次发起压缩。
   if (event.phase === 'end') {
     session.contextTokens = 0
-    session.lastPromptTokens = 0
-    session.compactionBaselineTokens = undefined
     return event
   }
 
-  if (event.phase !== 'summary' || event.shadowedTokenCount !== undefined) return event
-  const shadowed = session.compactionBaselineTokens ?? session.contextTokens ?? session.lastPromptTokens
-  return shadowed === undefined ? event : { ...event, shadowedTokenCount: shadowed }
+  if (event.phase !== 'summary' || event.shadowedTokenCount !== undefined || session.contextTokens === undefined) return event
+  return { ...event, shadowedTokenCount: session.contextTokens }
 }
 
 function prepareCodexSession(session: CodexSession, input: CodingNsCliTurnInput): void {
