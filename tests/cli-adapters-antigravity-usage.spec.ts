@@ -138,6 +138,9 @@ test('Antigravity CLI 额度兜底和分组补全禁用自动更新', async () =
 })
 
 test('Antigravity 上下文窗口按模型 id 与 AGY 设置里的展示名解析', () => {
+  assert.equal(knownAntigravityContextWindow('gemini-4-argon'), 1_048_576)
+  assert.equal(knownAntigravityContextWindow('gemini-4-argon-high'), 1_048_576)
+  assert.equal(knownAntigravityContextWindow('magpie/tlp/gemini-4-argon'), undefined)
   assert.equal(knownAntigravityContextWindow('gemini-3.8-flash'), 1_048_576)
   assert.equal(knownAntigravityContextWindow('gemini-3.1-pro'), 1_048_576)
   assert.equal(knownAntigravityContextWindow('claude-sonnet-4-6'), 250_000)

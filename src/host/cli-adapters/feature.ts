@@ -2,7 +2,7 @@ import { isNativeApprovalMode, resolveNativeApprovalPermission } from '../../sha
 import { ZcodeSubagentService } from './zcode-subagent-service.js'
 import { readExternalTurn } from './background-turn.js'
 import { installBackgroundTurnDelivery } from './background-turn-delivery.js'
-import { zcodeContextProjection } from './zcode-context-projection.js'
+import { antigravityContextProjection, zcodeContextProjection } from './provider-context-projection.js'
 import type { FeatureModule, FeatureResourceScope } from '../../shared/contracts/feature.js'
 import type { CodingNsCliApprovalPolicy, CodingNsCliAttachment, CodingNsCliMessage, CodingNsCliModelCatalog, CodingNsCliPermissionState, CodingNsCliSandboxMode, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
 import { CommandCodeDriver } from './command-code-driver.js'
@@ -200,7 +200,7 @@ export function createCliAdaptersFeature(options: {
         const performance = createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext)
           .getProfile(context.services.dshContext).capabilities.get('session.external-performance')?.value as SessionPerformanceAdapter | undefined
         if (performance !== undefined) {
-          for (const projection of [codexPerformanceProjection, claudePerformanceProjection, grokPerformanceProjection, grokContextProjection, zcodeContextProjection, piPerformanceProjection, antigravityPerformanceProjection]) {
+          for (const projection of [codexPerformanceProjection, claudePerformanceProjection, grokPerformanceProjection, grokContextProjection, zcodeContextProjection, piPerformanceProjection, antigravityPerformanceProjection, antigravityContextProjection]) {
             context.resources.add(await performance.install(projection))
           }
         }
