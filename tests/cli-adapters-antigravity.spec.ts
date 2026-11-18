@@ -15,7 +15,7 @@ import type { CodingNsAgentEvent } from '../src/shared/contracts/cli-adapter.js'
  */
 function scriptedDriver(
   turns: readonly (readonly Record<string, unknown>[])[],
-  options: { readonly contextWindow?: number; readonly modelId?: string | null; readonly resolveDefaultContextWindow?: boolean } = {},
+  options: { readonly contextWindow?: number; readonly modelId?: string | null; readonly resolveDefaultContextWindow?: boolean; readonly onRequest?: () => void } = {},
 ) {
   const calls: string[][] = []
   const inputs: string[] = []
@@ -42,6 +42,7 @@ function scriptedDriver(
           if (emitted) return
           emitted = true
           queueMicrotask(() => {
+            options.onRequest?.()
             for (const line of lines) stdout.write(`${JSON.stringify(line)}\n`)
             stdout.end()
             stderr.end()
@@ -886,7 +887,22 @@ test('Antigravity 失败终态仍保留本轮已发生的真实用量', async ()
   assert.deepEqual(chunks.map((chunk) => chunk.type), ['session-binding', 'usage', 'finish'])
   assert.equal(chunks[1].inputTokens, 11758)
   assert.equal(chunks[2].reason, 'error')
+  assert.deepEqual(chunks[2].failure, { message: '模型失败' })
   driver.dispose()
+})
+
+test('Antigravity 请求发出后取消，仍解析随后 ERROR 的用量并以 cancel 结算', async () => {
+  const controller = new AbortController()
+  const { driver, inputs } = scriptedDriver([[
+    resultEvent({ input_tokens: 17, output_tokens: 3 }, { status: 'ERROR', error: 'user denied permission', response: '' }),
+  ]], { onRequest: () => controller.abort() })
+  try {
+    const chunks = await collect(driver, { signal: controller.signal })
+    assert.deepEqual(inputs.map(input => JSON.parse(input)), [{ event: 'user', message: { content: '你好' } }])
+    assert.deepEqual(chunks.map(chunk => chunk.type), ['session-binding', 'usage', 'finish'])
+    assert.equal(chunks[1].inputTokens, 17)
+    assert.deepEqual(chunks[2], { type: 'finish', reason: 'cancel' })
+  } finally { driver.dispose() }
 })
 
 test('Antigravity 子进程提前退出或 stdin 断开时不会触发宿主未捕获异常', async () => {

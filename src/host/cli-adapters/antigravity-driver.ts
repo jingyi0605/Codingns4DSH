@@ -420,6 +420,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     const cancelled = input.signal?.aborted ?? false
     const step = readRecord(value.step_update)
     const result = value.event === 'result' ? readRecord(value.result) : null
+    const resultSucceeded = isSuccessStatus(result?.status)
     let chunks: CodingNsAgentEvent[]
     if (value.event === 'step_update' && step !== null) {
       // AGY 的 step_update（agent_response / state=DONE）携带的是「这一次模型调用」
@@ -448,7 +449,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       // AGY 会把会话库里上一轮遗留的 error 字符串带进后续轮次的 result，即使本轮
       // status 已经是成功。通用解析会把任何 error 字段当成失败，导致已经生成完
       // 的结算文本被一个 finish:error 吞掉。成功态以 status 为准，丢弃陈旧 error。
-      if (isSuccessStatus(result.status)) delete sanitizedResult.error
+      if (resultSucceeded) delete sanitizedResult.error
       chunks = genericEventChunks({ ...value, usage: undefined, result: sanitizedResult }, cancelled)
     } else {
       chunks = genericEventChunks(value, cancelled)
@@ -463,7 +464,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     // step_update 一定包含 agent_response 增量。
     if (result !== null) {
       const status = typeof result.status === 'string' ? result.status.trim().toLowerCase() : ''
-      if (status !== '' && !isSuccessStatus(result.status)) {
+      if (!cancelled && status !== '' && !resultSucceeded) {
         const failureMessage = typeof result.error === 'string' && result.error.trim() !== ''
           ? result.error.trim()
           : `Antigravity result status: ${String(result.status)}`
@@ -481,7 +482,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       const reportedCumulative = readAntigravityUsage(result.usage)
       // Parameter/input failures may carry an all-zero usage envelope. It is not
       // evidence that the existing session baseline was reset.
-      const cumulative = status !== '' && !isSuccessStatus(result.status)
+      const cumulative = status !== '' && !resultSucceeded
         && reportedCumulative !== null
         && Object.values(reportedCumulative).every(count => count === 0)
         ? null
@@ -512,7 +513,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     if (deniedReason === undefined) {
       deniedReason = diagnostic.split(/\r?\n/u).find(isAntigravityPermissionDenial)
     }
-    if (deniedReason === undefined && typeof result?.error === 'string' && isAntigravityPermissionDenial(result.error)) {
+    if (deniedReason === undefined && !resultSucceeded && typeof result?.error === 'string' && isAntigravityPermissionDenial(result.error)) {
       deniedReason = result.error
     }
     if (!cancelled && (autoUnavailable || deniedReason !== undefined)) {
