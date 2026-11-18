@@ -38,6 +38,7 @@ export type HostBrowserTextKey =
   | 'compact.usage'
   | 'compact.busy'
   | 'compact.cancelled'
+  | 'compact.timeout'
   | 'compact.failed'
 
 const TEXT: Record<HostLocale, Record<HostBrowserTextKey, string>> = {
@@ -69,6 +70,7 @@ const TEXT: Record<HostLocale, Record<HostBrowserTextKey, string>> = {
     'compact.usage': 'Usage: /compact (no arguments).',
     'compact.busy': 'Compaction is unavailable while the Agent is busy.',
     'compact.cancelled': 'Compaction cancelled.',
+    'compact.timeout': 'Timed out waiting for native context compaction. Retry /compact later.',
     'compact.failed': 'Native compaction did not finish cleanly. Check the Agent installation, authentication and session before retrying.',
   },
   zh: {
@@ -99,6 +101,7 @@ const TEXT: Record<HostLocale, Record<HostBrowserTextKey, string>> = {
     'compact.usage': '用法：/compact（不带参数）。',
     'compact.busy': 'Agent 正在运行，暂时无法压缩上下文。',
     'compact.cancelled': '已取消上下文压缩。',
+    'compact.timeout': '等待原生上下文压缩超时，请稍后重试 /compact。',
     'compact.failed': '原生上下文压缩未正常完成，请检查 Agent 安装、登录状态和会话后重试。',
   },
 }

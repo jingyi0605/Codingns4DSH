@@ -30,6 +30,8 @@ async function rpc(url: string, apiKey: string | undefined, request: unknown, in
     headers: {
       ...(apiKey === undefined ? {} : { authorization: `Bearer ${apiKey}` }),
       'content-type': 'application/json',
+      // Each test owns a short-lived listener; do not reuse sockets across ports.
+      connection: 'close',
       accept: 'application/json, text/event-stream',
       ...(modern ? {
         'mcp-protocol-version': String((params?._meta as Record<string, unknown>)?.['io.modelcontextprotocol/protocolVersion']),
@@ -277,7 +279,7 @@ test('a timed-out callback keeps its concurrency slot until the operation actual
   assert.equal(calls, 2)
 })
 
-test('revoke invalidates credentials immediately and aborts active tool work', async () => {
+test('revoke invalidates credentials immediately and aborts active tool work', async (t) => {
   const started = deferred<void>()
   const gate = deferred<unknown>()
   let signal: AbortSignal | undefined
@@ -292,12 +294,15 @@ test('revoke invalidates credentials immediately and aborts active tool work', a
     }),
   })
   const pending = rpc(transport.url!, 'revoke-key', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'echo' } })
-  await started.promise
+  t.after(async () => { gate.resolve({ ignored: true }); await transport.revoke() })
+  await Promise.race([started.promise, pending.then(() => {
+    if (signal === undefined) throw new Error('Tool request ended before dispatch')
+  })])
   await transport.revoke()
   assert.equal(transport.active, false)
   assert.equal(signal?.aborted, true)
   const result = await pending
   assert.equal(result.status, 503)
   gate.resolve({ ignored: true })
-  await assert.rejects(fetch(transport.url!, { method: 'POST', headers: { authorization: 'Bearer revoke-key' } }))
+  await assert.rejects(fetch(transport.url!, { method: 'POST', headers: { authorization: 'Bearer revoke-key', connection: 'close' } }))
 })

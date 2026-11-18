@@ -17,6 +17,7 @@ import type {
   CodingNsCliDetection,
 } from '../../shared/contracts/cli-adapter.js'
 import { invalidateCommandEnvironment, withCommandSignal } from './process-utils.js'
+import { isRecord } from './rpc-driver-utils.js'
 import { failedDetection } from './binary-detection.js'
 import { CodingNsRpcError } from '../rpc-table.js'
 import { debugInfo } from '../../shared/debug.js'
@@ -99,6 +100,30 @@ export class CodingNsCliAdapterRegistry {
   private readonly drivers = new Map<CodingNsCliAdapterId, CodingNsCliDriver>()
   private readonly sessions = new Map<string, CodingNsCliSessionConfig>()
   private readonly lastUsages = new Map<string, CodingNsCliSessionUsage>()
+  /** 支持插件侧自动压缩的适配器；目前只有 ZCode（Codex 自己会压）。 */
+  private readonly autoCompactAdapters = new Set<CodingNsCliAdapterId>(['zcode'])
+  private readonly autoCompactionTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly autoCompactedAt = new Map<string, number>()
+  /**
+   * 正在进行中的插件侧自动压缩。
+   *
+   * 压缩会占用与会话执行同一把锁（`executingSessions`），如果任由它挡住用户，
+   * 用户会看到「外部会话已有一轮执行正在进行」这种看不懂的错误。用户发来新回合时
+   * 用这里的 controller 让压缩让位。
+   */
+  private readonly autoCompactions = new Map<string, AbortController>()
+  /**
+   * 刚压缩过、还没等到新的用量上报的会话。
+   *
+   * 压缩成功后原先只是删掉旧快照，但如果这段时间里又读到压缩前的旧规模（例如让位
+   * 路径没有清掉基线），就会拿过期数据再压一次——实测出现过 10 毫秒的「空压缩」，
+   * 还在会话里留下噪声。这里要求压缩后必须先收到**新**的用量上报才允许重新判定。
+   */
+  private readonly awaitingFreshUsage = new Set<string>()
+  private readonly autoCompactionSettleMs: number
+  private readonly autoCompactionThresholdRatio: number
+  private readonly autoCompactionRatioOverridden: boolean
+  private autoCompactionFailures = 0
   private readonly enabled = new Map<CodingNsCliAdapterId, boolean>()
   private readonly providerProbeTtlMs: number
   private readonly missingConfirmationDelayMs: number
@@ -162,6 +187,8 @@ export class CodingNsCliAdapterRegistry {
       readonly modelCacheTtlMs?: number
       readonly modelRetryTtlMs?: number
       /** 适配器级最近模型选择的持久化设置。 */
+      readonly autoCompactionSettleMs?: number
+      readonly autoCompactionThresholdRatio?: number
       readonly settings?: DshHostSettingsScope<CodingNsSettings>
     } = {},
   ) {
@@ -172,6 +199,13 @@ export class CodingNsCliAdapterRegistry {
     this.missingConfirmationDelayMs = options.missingConfirmationDelayMs ?? 2_000
     this.providerProbeTimeoutMs = Math.max(1, options.providerProbeTimeoutMs ?? 10_000)
     this.providerProbeConcurrency = Math.max(1, Math.floor(options.providerProbeConcurrency ?? 4))
+    this.autoCompactionSettleMs = Math.max(0, options.autoCompactionSettleMs ?? AUTO_COMPACTION_SETTLE_MS)
+    const ratioOverride = options.autoCompactionThresholdRatio
+    this.autoCompactionThresholdRatio = ratioOverride !== undefined && ratioOverride > 0 && ratioOverride <= 1
+      ? ratioOverride
+      : AUTO_COMPACTION_THRESHOLD_RATIO
+    // 显式给了比例（选项或环境变量）时忽略 Provider 原生阈值：调用方明确要求按这个比例判。
+    this.autoCompactionRatioOverridden = ratioOverride !== undefined || COMPACTION_RATIO_OVERRIDDEN
     const configuredPreferences = options.settings?.get().agentAdapterPreferences
     const legacyPreferences = options.settings === undefined ? {} : readLegacyImportedAdapterPreferences()
     const mergedPreferences = mergePreferenceRecords(legacyPreferences, configuredPreferences)
@@ -592,11 +626,22 @@ export class CodingNsCliAdapterRegistry {
   }
 
   supportsCompaction(sessionId: string): boolean {
-    return typeof this.drivers.get(this.getSession(sessionId).adapterId)?.compact === 'function'
+    return this.supportsCompactionFor(this.getSession(sessionId).adapterId, sessionId)
+  }
+
+  /**
+   * 驱动能力判断。
+   *
+   * 绑定尚未建立时也可能没有会话记录，此时按适配器直接判断，避免把「刚开的新会话」
+   * 误判成不支持压缩。
+   */
+  private supportsCompactionFor(adapterId: CodingNsCliAdapterId, sessionId: string): boolean {
+    const driver = this.drivers.get(adapterId) ?? this.drivers.get(this.getSession(sessionId).adapterId)
+    return typeof driver?.compact === 'function'
   }
 
   /** Shares the execution lock with normal turns, installation and suspended steps. */
-  async compact(sessionId: string, cwd: string | undefined, signal: AbortSignal): Promise<CodingNsCliCompactionResult> {
+  async compact(sessionId: string, cwd: string | undefined, signal: AbortSignal, sourceCommandId?: string): Promise<CodingNsCliCompactionResult> {
     signal.throwIfAborted()
     if (this.disposed) throw new CodingNsRpcError('CODINGNS_CLI_UNAVAILABLE', 'Agent adapters have been stopped.')
     const config = this.getSession(sessionId)
@@ -608,6 +653,7 @@ export class CodingNsCliAdapterRegistry {
     }
     if (!config.providerSessionId) throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', 'There is no provider conversation to compact yet.')
     this.executingSessions.set(sessionId, config.adapterId)
+    let sourceEventSeq: number | undefined
     try {
       const result = await driver.compact({
         sessionId, providerSessionId: config.providerSessionId,
@@ -615,10 +661,29 @@ export class CodingNsCliAdapterRegistry {
         ...(config.modelId === undefined ? {} : { modelId: config.modelId }),
         ...(config.effortId === undefined ? {} : { effortId: config.effortId }),
         signal: AbortSignal.any([signal, this.lifetime.signal]),
+        onCompactionEvent: event => {
+          try {
+            const bridge = this.nativeSessions
+            if (!bridge?.appendCompactionEvent?.(sessionId, { ...event,
+              provider: event.provider ?? config.adapterId, model: event.model ?? config.modelId ?? config.adapterId,
+              ...(sourceCommandId === undefined ? {} : { sourceCommandId }),
+            })) return
+            if (event.phase === 'summary') {
+              const session = bridge.get(sessionId) as { snapshotEvents?(): readonly unknown[] } | undefined
+              const summary = [...session?.snapshotEvents?.() ?? []].reverse().find(candidate => isRecord(candidate)
+                && candidate.type === 'compaction/summary' && isRecord(candidate.data)
+                && candidate.data.compactionId === event.compactionId)
+              if (isRecord(summary) && typeof summary.seq === 'number') sourceEventSeq = summary.seq
+            }
+          } catch { /* Display projection must not interrupt native maintenance. */ }
+        },
       })
       // Until the next real usage report, do not present pre-compaction usage as current.
-      if (result.compacted) this.lastUsages.delete(sessionId)
-      return result
+      if (result.compacted) {
+        this.lastUsages.delete(sessionId)
+        this.awaitingFreshUsage.add(sessionId)
+      }
+      return { ...result, ...(sourceEventSeq === undefined ? {} : { sourceEventSeq }) }
     } finally {
       this.executingSessions.delete(sessionId)
     }
@@ -649,6 +714,13 @@ export class CodingNsCliAdapterRegistry {
     if (this.archivingSessions.has(input.sessionId)) {
       throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', '外部会话正在归档，不能开始新一轮执行')
     }
+    const pendingTimer = this.autoCompactionTimers.get(input.sessionId)
+    if (pendingTimer !== undefined) {
+      clearTimeout(pendingTimer)
+      this.autoCompactionTimers.delete(input.sessionId)
+    }
+    await this.awaitAutoCompaction(input.sessionId, input.signal)
+    if (input.signal?.aborted || this.disposed) { yield { type: 'finish', reason: 'cancel' }; return }
     if (this.executingSessions.has(input.sessionId)) {
       throw new CodingNsRpcError('CODINGNS_CLI_INVALID_SESSION', '外部会话已有一轮执行正在进行')
     }
@@ -690,9 +762,11 @@ export class CodingNsCliAdapterRegistry {
       if (resumingSegmentedTurn) driverInput = withTurnPermission(driverInput, suspended.permission)
       let deferredPeerInput = resumingSegmentedTurn ? suspended?.deferredPeerInput : undefined
       if (resumingSegmentedTurn && input.peerInput) {
-        if (suspended?.iterator !== null && driver.steer !== undefined) {
-          await driver.steer(input.sessionId, input.prompt)
-        } else if (driver.steer === undefined) {
+        // ZCode's explicit user steer may stop the current turn. Peer input still waits for it.
+        const steerPeer = input.adapterId === 'zcode' ? undefined : driver.steer
+        if (suspended?.iterator !== null && steerPeer !== undefined) {
+          await steerPeer.call(driver, input.sessionId, input.prompt)
+        } else if (steerPeer === undefined) {
           deferredPeerInput = deferredPeerInput ? {
             ...input, prompt: `${deferredPeerInput.prompt}\n\n${input.prompt}`,
             attachments: [...(deferredPeerInput.attachments ?? []), ...(input.attachments ?? [])],
@@ -785,7 +859,10 @@ export class CodingNsCliAdapterRegistry {
           if (event.status === 'completed' || event.status === 'failed') pendingToolCalls.delete(event.callId)
           else if (event.status === 'started' || event.status === 'running') pendingToolCalls.add(event.callId)
         }
-        if (event.type === 'usage') this.lastUsages.set(input.sessionId, usageSnapshot(event))
+        if (event.type === 'usage') {
+          this.lastUsages.set(input.sessionId, usageSnapshot(event))
+          this.awaitingFreshUsage.delete(input.sessionId)
+        }
         if (event.type === 'session-binding') {
           const latest = this.sessions.get(input.sessionId)
           if (latest?.adapterId === current.adapterId) current = { ...current, ...latest }
@@ -814,6 +891,7 @@ export class CodingNsCliAdapterRegistry {
         if (event.type === 'finish') {
           this.segmentedTurns.delete(input.sessionId)
           this.sessionStore?.upsert(input.sessionId, { ...this.sessions.get(input.sessionId) ?? current, status: event.reason === 'error' ? 'error' : 'idle' })
+          if (event.reason === 'error' && event.failure?.contextOverflow === true) this.scheduleOverflowRecovery(input.sessionId, input.adapterId)
         }
         // Explicit boundaries preserve the driver's grouping of messages and tool batches.
         if (event.type === 'step-boundary') {
@@ -882,6 +960,7 @@ export class CodingNsCliAdapterRegistry {
     } finally {
       if (iterator !== undefined) await closeAgentIterator(iterator)
       this.executingSessions.delete(input.sessionId)
+      this.scheduleAutoCompaction(input.sessionId, input.adapterId)
       try { if (nativeSessionReady) await this.nativeSessions?.flush(input.sessionId) } catch { /* DSH 自身检查点策略负责重试 */ }
     }
   }
@@ -1007,6 +1086,196 @@ export class CodingNsCliAdapterRegistry {
     await driver.respondQuestion(sessionId, response)
   }
 
+  private scheduleAutoCompaction(sessionId: string, adapterId: CodingNsCliAdapterId): void {
+    if (this.disposed) return
+    if (!this.autoCompactAdapters.has(adapterId)) return
+    // 回合刚结束但用户立刻又发了一轮（常见于长任务连发）：此刻压缩会打断新一轮，
+    // 直接跳过。冷却标记留到真正执行时才打，下一次回合结束仍会重新评估。
+    if (this.executingSessions.has(sessionId) || this.segmentedTurns.has(sessionId)) return
+    // 刚压过、还没拿到新的用量读数：不拿压缩前的旧规模重复判定。
+    if (this.awaitingFreshUsage.has(sessionId)) return
+    if (!this.supportsCompactionFor(adapterId, sessionId)) return
+    const config = this.sessions.get(sessionId) ?? this.sessionStore?.get(sessionId)
+    if (config === undefined) return
+    if (this.sessionStore?.get(sessionId)?.status === 'archived') return
+    const usage = this.lastUsages.get(sessionId)
+    if (!autoCompactionDue(usage, this.autoCompactionThresholdRatio, this.autoCompactionRatioOverridden)) return
+    const now = Date.now()
+    if (now - (this.autoCompactedAt.get(sessionId) ?? 0) < AUTO_COMPACTION_COOLDOWN_MS) return
+    if (this.autoCompactionTimers.has(sessionId)) return
+    this.logAutoCompaction('上下文接近窗口上限，准备自动压缩', sessionId, `${usageSummaryForLog(usage)}（阈值 ${describeCompactionThreshold(usage, this.autoCompactionThresholdRatio, this.autoCompactionRatioOverridden)}）`)
+    const timer = setTimeout(() => {
+      this.autoCompactionTimers.delete(sessionId)
+      void this.runAutoCompaction(sessionId)
+    }, this.autoCompactionSettleMs)
+    unrefTimer(timer)
+    this.autoCompactionTimers.set(sessionId, timer)
+  }
+
+  /**
+   * 自动压缩只做一次尝试；失败只记日志，下一次用量上报会重新评估。
+   *
+   * 冷却标记必须在「确认会话空闲」之后才打：繁忙会话里每轮结束都会触发，
+   * 若先打标记再发现忙，冷却会被白白消耗，压缩可能永远轮不到。
+   */
+  private async runAutoCompaction(sessionId: string): Promise<void> {
+    if (this.disposed) return
+    if (this.executingSessions.has(sessionId) || this.segmentedTurns.has(sessionId)) return
+    const config = this.sessions.get(sessionId) ?? this.sessionStore?.get(sessionId)
+    if (config === undefined || !this.autoCompactAdapters.has(config.adapterId)) return
+    const controller = new AbortController()
+    this.autoCompactions.set(sessionId, controller)
+    try {
+      // cwd 以原生会话表为准：内存绑定不一定带它，而 ZCode 恢复会话需要工作区。
+      const cwd = this.sessionStore?.get(sessionId)?.cwd
+      // 先用原生阈值兜住第一次判断；驱动没给（旧版或没有会话快照）时才按比例。
+      await this.refreshAutoCompactionThreshold(sessionId, config.adapterId)
+      if (controller.signal.aborted) return
+      // 不值得压时不消耗冷却：只有真正发起压缩才算一次尝试。
+      if (!autoCompactionDue(this.lastUsages.get(sessionId), this.autoCompactionThresholdRatio, this.autoCompactionRatioOverridden)) return
+      // 先把压缩前的规模记下来：成功后会清掉基线，届时就读不到了。
+      const before = usageSummaryForLog(this.lastUsages.get(sessionId))
+      const result = await this.compactInNativeMaintenance(sessionId, cwd,
+        AbortSignal.any([controller.signal, this.lifetime.signal, AbortSignal.timeout(AUTO_COMPACTION_TIMEOUT_MS)]))
+      if (result.compacted) {
+        // 压缩已经改变原生会话规模：丢弃旧基线并等新的用量上报，避免按压缩前的规模再次触发。
+        // 驱动经 compact() 的事件回调立即投影 DSH 原生节点，无需等待下一条消息。
+        this.logAutoCompaction('已自动压缩上下文', sessionId, `压缩前约 ${before}`)
+      }
+    } catch (error) {
+      // 用户抢先发了新回合：这是让位，不是失败；冷却退回，下一轮结束再评估。
+      if (controller.signal.aborted && !this.disposed) {
+        this.autoCompactedAt.delete(sessionId)
+        this.logAutoCompaction('自动压缩已让位给新回合', sessionId, '下一轮结束后重新评估')
+        return
+      }
+      this.autoCompactionFailures += 1
+      this.logAutoCompaction('自动上下文压缩未完成', sessionId, error instanceof Error ? error.message : String(error))
+    } finally {
+      if (this.autoCompactions.get(sessionId) === controller) this.autoCompactions.delete(sessionId)
+    }
+  }
+
+  /**
+   * 用户发来新回合时，等正在进行的自动压缩收尾。
+   *
+   * 压缩与回合执行共用同一把锁：如果放它继续跑、同时让新回合开始，原生会话会把压缩
+   * 那一轮的输出混进用户回合（实测把 ZCode 的「Context is up to date…」当成助手回复
+   * 显示）；如果直接报错，用户会看到与自己的操作无关的失败。
+   *
+   * 压缩期间不开新回合；等待跟随驱动的五分钟预算，用户取消时立即退出等待。
+   */
+  private async awaitAutoCompaction(sessionId: string, signal?: AbortSignal): Promise<void> {
+    if (!this.autoCompactions.has(sessionId)) return
+    this.logAutoCompaction('上下文压缩进行中，等待完成后再开始新回合', sessionId, '')
+    const waiting = AbortSignal.any([this.lifetime.signal, ...(signal ? [signal] : [])])
+    while (this.autoCompactions.has(sessionId) && !waiting.aborted) {
+      await new Promise<void>(resolve => {
+        const finish = () => { clearTimeout(timer); waiting.removeEventListener('abort', finish); resolve() }
+        const timer = setTimeout(finish, AUTO_COMPACTION_WAIT_POLL_MS)
+        waiting.addEventListener('abort', finish, { once: true })
+        if (waiting.aborted) finish()
+      })
+    }
+  }
+
+  /** Native maintenance must precede compaction/start: Registry's lock alone
+   * cannot stop DSH from opening the next turn before execute() is called. */
+  private async compactInNativeMaintenance(sessionId: string, cwd: string | undefined, signal: AbortSignal): Promise<CodingNsCliCompactionResult> {
+    const job = (maintenanceSignal: AbortSignal) => {
+      signal.throwIfAborted()
+      this.autoCompactedAt.set(sessionId, Date.now())
+      return this.compact(sessionId, cwd, AbortSignal.any([signal, maintenanceSignal]))
+    }
+    if (this.nativeSessions === undefined) return job(signal)
+    // Older bridges must not project a standalone lifecycle without the
+    // Agent's maintenance lock: a new turn could cross an open compaction.
+    if (this.nativeSessions.runMaintenance === undefined) return { compacted: false }
+    try { return await this.nativeSessions.runMaintenance(sessionId, job) }
+    catch (error) {
+      if (error instanceof Error && error.message === 'CODINGNS_NATIVE_MAINTENANCE_UNAVAILABLE') return { compacted: false }
+      throw error
+    }
+  }
+
+
+  private logAutoCompaction(message: string, sessionId: string, detail: string): void {
+    try {
+      console.warn(`codingns4dsh: ${message} (${sessionId}): ${detail}`)
+    } catch { /* 日志不可用时不影响回合结束 */ }
+  }
+
+  /**
+   * 撞上「上下文超出窗口」后的补救：自动压缩一次，并告诉用户重试即可。
+   *
+   * 这是 reactive 兜底——阈值估算可能偏差，但真实失败不会骗人。这里不做自动重发：
+   * 重发等于替用户重跑一次可能带副作用的回合，先把上下文清出来、把状态说清楚，
+   * 让用户决定是否重试。
+   */
+  private scheduleOverflowRecovery(sessionId: string, adapterId: CodingNsCliAdapterId): void {
+    if (this.disposed) return
+    if (!this.autoCompactAdapters.has(adapterId)) return
+    if (!this.supportsCompactionFor(adapterId, sessionId)) return
+    if (this.autoCompactionTimers.has(sessionId)) return
+    const now = Date.now()
+    if (now - (this.autoCompactedAt.get(sessionId) ?? 0) < AUTO_COMPACTION_COOLDOWN_MS) return
+    this.logAutoCompaction('回合因上下文超限失败，准备自动压缩，完成后可手动重发', sessionId, usageSummaryForLog(this.lastUsages.get(sessionId)))
+    const timer = setTimeout(() => {
+      this.autoCompactionTimers.delete(sessionId)
+      void this.runOverflowRecovery(sessionId)
+    }, this.autoCompactionSettleMs)
+    unrefTimer(timer)
+    this.autoCompactionTimers.set(sessionId, timer)
+  }
+
+  /** 超限恢复：同样先确认空闲再打冷却标记，避免忙时白耗冷却。 */
+  private async runOverflowRecovery(sessionId: string): Promise<void> {
+    if (this.disposed) return
+    if (this.executingSessions.has(sessionId) || this.segmentedTurns.has(sessionId)) return
+    const config = this.sessions.get(sessionId) ?? this.sessionStore?.get(sessionId)
+    if (config === undefined || !this.autoCompactAdapters.has(config.adapterId)) return
+    const controller = new AbortController()
+    this.autoCompactions.set(sessionId, controller)
+    // 超限恢复不看阈值：请求已经被拒过，压缩是唯一出路。
+    try {
+      const cwd = this.sessionStore?.get(sessionId)?.cwd
+      const result = await this.compactInNativeMaintenance(sessionId, cwd,
+        AbortSignal.any([controller.signal, this.lifetime.signal, AbortSignal.timeout(AUTO_COMPACTION_TIMEOUT_MS)]))
+      if (result.compacted) {
+        this.lastUsages.delete(sessionId)
+        this.logAutoCompaction('已压缩上下文，可重新发送上一条消息', sessionId, '上下文超限恢复')
+      }
+    } catch (error) {
+      if (controller.signal.aborted && !this.disposed) {
+        this.autoCompactedAt.delete(sessionId)
+        this.logAutoCompaction('超限恢复压缩已让位给新回合', sessionId, '下一轮结束后重新评估')
+        return
+      }
+      this.autoCompactionFailures += 1
+      this.logAutoCompaction('上下文超限后的自动压缩未完成', sessionId, error instanceof Error ? error.message : String(error))
+    } finally {
+      if (this.autoCompactions.get(sessionId) === controller) this.autoCompactions.delete(sessionId)
+    }
+  }
+
+  /**
+   * 向驱动取一次原生自动压缩阈值并写进用量快照。
+   *
+   * 触发前主动刷新一次，是为了让第一次判断就用上 Provider 自己的口径；取不到
+   * （旧版没有该字段、或没有会话快照）时保持原快照，由 `autoCompactionDue` 按比例兜底。
+   */
+  private async refreshAutoCompactionThreshold(sessionId: string, adapterId: CodingNsCliAdapterId): Promise<void> {
+    const driver = this.drivers.get(adapterId)
+    if (driver?.readAutoCompactThreshold === undefined) return
+    const current = this.lastUsages.get(sessionId)
+    try {
+      const threshold = await driver.readAutoCompactThreshold(sessionId, AbortSignal.any([this.lifetime.signal, AbortSignal.timeout(AUTO_COMPACTION_THRESHOLD_TIMEOUT_MS)]))
+      if (threshold === undefined || current === undefined) return
+      if (current.autoCompactThresholdTokens === threshold) return
+      this.lastUsages.set(sessionId, { ...current, autoCompactThresholdTokens: threshold })
+    } catch { /* 阈值读取失败不阻断判断：按比例兜底即可 */ }
+  }
+
   async steer(sessionId: string, prompt: string, followUp = false): Promise<void> {
     const session = this.requireSession(sessionId)
     const driver = this.requireEnabledDriver(session.adapterId)
@@ -1035,6 +1304,11 @@ export class CodingNsCliAdapterRegistry {
   async dispose(): Promise<void> {
     if (this.disposed) return
     this.disposed = true
+    for (const timer of this.autoCompactionTimers.values()) clearTimeout(timer)
+    this.autoCompactionTimers.clear()
+    for (const controller of this.autoCompactions.values()) controller.abort()
+    this.autoCompactions.clear()
+    this.awaitingFreshUsage.clear()
     this.lifetime.abort()
     this.cacheGeneration += 1
     clearTimeout(this.startupTimer)
@@ -1485,9 +1759,86 @@ function usageSnapshot(event: Extract<CodingNsAgentEvent, { type: 'usage' }>): C
     ...(event.contextWindow === undefined ? {} : { contextWindow: event.contextWindow }),
     ...(event.contextTokens === undefined ? {} : { contextTokens: event.contextTokens }),
     ...(event.contextUsageRatio === undefined ? {} : { contextUsageRatio: event.contextUsageRatio }),
+    ...(event.autoCompactThresholdTokens === undefined ? {} : { autoCompactThresholdTokens: event.autoCompactThresholdTokens }),
     ...(event.providerCredits === undefined ? {} : { providerCredits: event.providerCredits }),
     capturedAt: Date.now(),
   }
+}
+
+const AUTO_COMPACTION_THRESHOLD_RATIO = readRatioOverride('CODINGNS_AUTO_COMPACT_RATIO', 0.8)
+const AUTO_COMPACTION_COOLDOWN_MS = readNumberOverride('CODINGNS_AUTO_COMPACT_COOLDOWN_MS', 10 * 60_000)
+const AUTO_COMPACTION_SETTLE_MS = readNumberOverride('CODINGNS_AUTO_COMPACT_SETTLE_MS', 3_000)
+/** 是否显式覆盖过阈值比例；覆盖时忽略 Provider 原生阈值。 */
+const COMPACTION_RATIO_OVERRIDDEN = (process.env.CODINGNS_AUTO_COMPACT_RATIO ?? '').trim() !== ''
+/** 自动压缩自己的等待上限；超时只放弃这一次，不影响会话。 */
+const AUTO_COMPACTION_TIMEOUT_MS = 300_000
+/** 读取原生阈值的时间上限：只读一次快照，慢就放弃并退回比例。 */
+const AUTO_COMPACTION_THRESHOLD_TIMEOUT_MS = 3_000
+const AUTO_COMPACTION_WAIT_POLL_MS = 200
+
+function readRatioOverride(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim()
+  if (raw === undefined || raw === '') return fallback
+  const value = Number(raw)
+  return Number.isFinite(value) && value > 0 && value <= 1 ? value : fallback
+}
+
+function readNumberOverride(name: string, fallback: number): number {
+  const raw = process.env[name]?.trim()
+  if (raw === undefined || raw === '') return fallback
+  const value = Number(raw)
+  return Number.isFinite(value) && value >= 0 ? value : fallback
+}
+
+/**
+ * 判断当前用量是否已经需要压缩。
+ *
+ * 只认权威的**上下文占用**（`contextTokens`，由用量事件按请求粒度给出）：
+ * 整轮的累计 token 会把压缩误判成每轮都触发。窗口缺失时退回比例字段；
+ * 两者都没有就一律不自动压缩，宁可不动也不能误伤。
+ */
+function autoCompactionDue(usage: CodingNsCliSessionUsage | undefined, ratio: number, ratioOverridden: boolean): boolean {
+  if (usage === undefined) return false
+  const hasTokens = typeof usage.contextTokens === 'number' && Number.isFinite(usage.contextTokens) && usage.contextTokens >= 0
+  // 显式覆盖了比例（环境变量或构造选项）时忽略原生阈值，直接按比例判定。
+  if (hasTokens && ratioOverridden && typeof usage.contextWindow === 'number' && usage.contextWindow > 0) {
+    return usage.contextTokens! >= usage.contextWindow * ratio
+  }
+  // 原生阈值优先：Provider 自己定的口径比我们猜的比例更贴近它的实际行为。
+  if (hasTokens && typeof usage.autoCompactThresholdTokens === 'number' && usage.autoCompactThresholdTokens > 0) {
+    return usage.contextTokens! >= usage.autoCompactThresholdTokens
+  }
+  if (hasTokens && typeof usage.contextWindow === 'number' && usage.contextWindow > 0) {
+    return usage.contextTokens! >= usage.contextWindow * ratio
+  }
+  if (typeof usage.contextUsageRatio === 'number' && Number.isFinite(usage.contextUsageRatio)) return usage.contextUsageRatio >= ratio
+  return false
+}
+
+/** 日志用的规模摘要；不含消息内容。 */
+function usageSummaryForLog(usage: CodingNsCliSessionUsage | undefined): string {
+  if (usage === undefined) return '规模未知'
+  const ratio = usage.contextUsageRatio
+  const threshold = usage.autoCompactThresholdTokens === undefined
+    ? ''
+    : `，原生阈值 ${usage.autoCompactThresholdTokens}`
+  return `${usage.contextTokens ?? '?'} / ${usage.contextWindow ?? '?'} tokens（${ratio === undefined ? '比例未知' : `${Math.round(ratio * 100)}%`}${threshold}）`
+}
+
+/** 说明本次判定实际用的阈值来源，便于确认走的是原生口径还是兜底比例。 */
+function describeCompactionThreshold(
+  usage: CodingNsCliSessionUsage | undefined,
+  ratio: number,
+  ratioOverridden: boolean,
+): string {
+  if (usage !== undefined && !ratioOverridden
+    && typeof usage.autoCompactThresholdTokens === 'number' && usage.autoCompactThresholdTokens > 0) {
+    return `原生 ${usage.autoCompactThresholdTokens}`
+  }
+  if (usage !== undefined && typeof usage.contextWindow === 'number' && usage.contextWindow > 0) {
+    return `比例 ${Math.round(ratio * 100)}% ≈ ${Math.round(usage.contextWindow * ratio)}`
+  }
+  return `比例 ${Math.round(ratio * 100)}%`
 }
 
 function lastUsageField(usage: CodingNsCliSessionUsage | undefined): { readonly lastUsage?: CodingNsCliSessionUsage } {

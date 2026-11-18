@@ -175,3 +175,44 @@ test('ZCode 默认用量来源与同账户族已保存套餐一致，显式来�
   assert.equal((await readZcodeProviderConfigsAsync(start, options))[0]?.providerId, start)
   assert.equal((await readZcodeProviderConfigsAsync(individual, options))[0]?.source, null)
 })
+
+test('账号套餐的 key 记在别的槽位时，用量读取仍落到所选套餐（同族复用）', async (t) => {
+  const paid = 'account:bigmodel-individual-coding-plan'
+  const team = 'account:bigmodel-team-coding-plan'
+  const baseUrl = 'https://open.bigmodel.cn/api/anthropic'
+  const options = fixture(t, [
+    { providerId: paid, config: { api: { baseUrl }, access: { mode: 'individual-coding-plan' } } },
+    { providerId: team, config: { api: { baseUrl }, access: { mode: 'team-coding-plan' } } },
+  ])
+  writeFileSync(join(options.homeDirectory, '.zcode', 'v2', 'setting.json'), JSON.stringify({
+    providerFamilyConnectionSelections: { bigmodel: { kind: 'individual-coding-plan' } },
+  }))
+  writeFileSync(join(options.homeDirectory, '.zcode', 'v2', 'credentials.json'), JSON.stringify({
+    [`account-provider:coding-plan:${team}:account:user:api-key`]: 'team-owner-secret',
+  }))
+  assert.equal(readZcodeProviderConfigs(paid, options)[0]?.source?.apiKey, 'team-owner-secret', '个人版应复用同族那把 key')
+  const preferred = await readPreferredZcodeProviderConfig(options)
+  assert.equal(preferred?.providerId, paid, '用量来源应为所选套餐而不是另一条槽位')
+  assert.equal(preferred?.source?.apiKey, 'team-owner-secret')
+})
+
+test('同族存在两个账号身份时不复用，用量来源退回确有 key 的槽位', async (t) => {
+  const paid = 'account:bigmodel-individual-coding-plan'
+  const team = 'account:bigmodel-team-coding-plan'
+  const baseUrl = 'https://open.bigmodel.cn/api/anthropic'
+  const options = fixture(t, [
+    { providerId: paid, config: { api: { baseUrl }, access: { mode: 'individual-coding-plan' } } },
+    { providerId: team, config: { api: { baseUrl }, access: { mode: 'team-coding-plan' } } },
+  ])
+  writeFileSync(join(options.homeDirectory, '.zcode', 'v2', 'setting.json'), JSON.stringify({
+    providerFamilyConnectionSelections: { bigmodel: { kind: 'individual-coding-plan' } },
+  }))
+  writeFileSync(join(options.homeDirectory, '.zcode', 'v2', 'credentials.json'), JSON.stringify({
+    [`account-provider:coding-plan:${team}:account:user-a:api-key`]: 'owner-a-secret',
+    [`account-provider:coding-plan:account:bigmodel-offpeak-idle-plan:account:user-b:api-key`]: 'owner-b-secret',
+  }))
+  assert.equal(readZcodeProviderConfigs(paid, options)[0]?.source, null, '身份有歧义时不能替用户猜')
+  const preferred = await readPreferredZcodeProviderConfig(options)
+  assert.equal(preferred?.providerId, team, '退回确有 key 的槽位')
+  assert.equal(preferred?.source?.apiKey, 'owner-a-secret')
+})

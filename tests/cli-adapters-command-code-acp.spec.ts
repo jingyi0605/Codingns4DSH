@@ -22,7 +22,7 @@ test('Command Code ACP initializes the managed Mod before loading its host', asy
     process.env.CODINGNS_DISABLE_NATIVE_AGENT = '1'
     const paths = await module.runAcp()
     assert.equal(paths.length, 1)
-    assert.ok(paths[0].endsWith('/cli-bridge/command-code-mod.js'))
+    assert.ok(paths[0].endsWith(join('cli-bridge', 'command-code-mod.js')))
   } finally {
     if (previous === undefined) delete process.env.CODINGNS_DISABLE_NATIVE_AGENT
     else process.env.CODINGNS_DISABLE_NATIVE_AGENT = previous
