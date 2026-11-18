@@ -122,6 +122,10 @@ async function createSteerHarness(segmented: boolean, steerTerminalGraceMs = 20)
       completeTurn(turnId)
     },
     drain,
+    cancel() {
+      controller.abort()
+      return drain()
+    },
     async finish() {
       completeTurn(turnId)
       const events = await drain()
@@ -289,6 +293,40 @@ async function suspendAfterTool(harness: SteerHarness, bufferedText: string): Pr
   harness.sendTurnText(harness.turnId, bufferedText, 'next-message')
   assert.equal((await harness.next()).value?.type, 'tool-event')
   assert.equal((await harness.next()).value?.type, 'step-boundary')
+}
+
+for (const cleanup of ['cancel', 'discard'] as const) {
+  test(`Codex ${cleanup} settles pending approvals with the protocol response for each request`, { timeout: 5_000 }, async () => {
+    const harness = await createSteerHarness(cleanup === 'discard')
+    try {
+      const { calls, driver, sessionId, threadId, turnId } = harness
+      const requests = [
+        { id: 901, method: 'item/commandExecution/requestApproval', params: { threadId, turnId, itemId: 'command', command: 'pwd' }, result: { decision: 'decline' } },
+        { id: 902, method: 'item/fileChange/requestApproval', params: { threadId, turnId, itemId: 'change' }, result: { decision: 'decline' } },
+        { id: 903, method: 'item/permissions/requestApproval', params: { threadId, turnId, itemId: 'permissions', permissions: { network: { enabled: true } } }, result: { permissions: {}, scope: 'turn' } },
+        { id: 904, method: 'execCommandApproval', params: { command: 'pwd' }, result: { approved: false } },
+      ]
+      for (const { id, method, params } of requests) harness.sendServerRequest(id, method, params)
+      for (const { id } of requests) {
+        const { value } = await harness.next()
+        assert.equal(value?.type, 'permission-request')
+        assert.equal(value?.requestId, String(id))
+      }
+      if (cleanup === 'discard') {
+        await suspendAfterTool(harness, 'Buffered output')
+        driver.discardSegmentedTurn(sessionId)
+        driver.discardSegmentedTurn(sessionId)
+      } else {
+        await harness.cancel()
+      }
+      for (const { id } of requests) {
+        assert.throws(() => driver.respondPermission(sessionId, { requestId: String(id), approved: false }), /Codex 权限请求不存在/u)
+      }
+      await new Promise(resolve => setImmediate(resolve))
+      const replies = calls.filter(call => call.method === undefined && requests.some(request => request.id === call.id))
+      assert.deepEqual(replies, requests.map(({ id, result }) => ({ jsonrpc: '2.0', id, result })))
+    } finally { await harness.dispose() }
+  })
 }
 
 /** 以 DSH 续段方式提交一条真实用户插话。 */
