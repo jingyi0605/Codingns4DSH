@@ -42,12 +42,17 @@ export interface CodingNsCliSessionProbeResult {
 
 /** A maintenance operation on an existing provider conversation, never a new user turn. */
 export type CodingNsCliCompactionInput = Pick<CodingNsCliTurnInput,
-  'sessionId' | 'providerSessionId' | 'cwd' | 'modelId' | 'effortId' | 'signal'>
+  'sessionId' | 'providerSessionId' | 'cwd' | 'modelId' | 'effortId' | 'signal'> & {
+    /** Standalone maintenance uses DSH's null-turn lifecycle immediately. */
+    readonly onCompactionEvent?: (event: Extract<CodingNsAgentEvent, { type: 'context-compaction' }>) => void
+  }
 
 export interface CodingNsCliCompactionResult {
   readonly compacted: boolean
   /** Provider-owned status text, including the reason when there is nothing to compact. */
   readonly message?: string
+  /** Native summary for command/result correlation, as in DSH /compact. */
+  readonly sourceEventSeq?: number
 }
 
 /**
@@ -100,6 +105,8 @@ export interface CodingNsCliDriver {
   probeSession?(input: CodingNsCliSessionProbeInput): Promise<CodingNsCliSessionProbeResult>
   executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent>
   compact?(input: CodingNsCliCompactionInput): Promise<CodingNsCliCompactionResult>
+  /** Provider-owned context threshold; absent on older runtimes. */
+  readAutoCompactThreshold?(sessionId: string, signal?: AbortSignal): Promise<number | undefined>
   respondPermission?(sessionId: string, response: CodingNsAgentPermissionResponse): Promise<void> | void
   respondQuestion?(sessionId: string, response: CodingNsAgentQuestionResponse): Promise<void> | void
   steer?(sessionId: string, prompt: string): Promise<void> | void

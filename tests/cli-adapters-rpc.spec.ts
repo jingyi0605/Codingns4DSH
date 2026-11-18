@@ -170,8 +170,22 @@ test('Codex MCP mcpToolCall 转换为 DSH 工具生命周期并保留失败结�
 
   const chunks = []
   for await (const chunk of driver.executeTurn({ sessionId: 'cua-events', messages: [], prompt: '检查桌面状态' })) chunks.push(chunk)
-  assert.equal(calls[0]?.some(arg => arg.startsWith('mcp_servers.cua_repl.command=')), process.platform === 'darwin')
-  assert.equal(calls[0]?.includes('--disable'), false)
+  const launch = calls[0] ?? []
+  // #67：win32 下 TOML 覆盖项会被包进 `cmd /c` 的命令行串里，不是顶层参数，故按平台判断。
+  assert.equal(launch.some(arg => arg.startsWith('mcp_servers.cua_repl.command=')), process.platform === 'darwin')
+  assert.equal(launch.includes('--disable'), false)
+  // #68：显式断言 Windows `cmd /c` 包装、TOML 参数与 computer_use 开关（保留 #68 语义）。
+  if (process.platform === 'win32') {
+    assert.deepEqual(launch.slice(1, 4), ['/d', '/s', '/c'])
+    const commandLine = launch[4] ?? ''
+    assert.ok(commandLine.includes(`-c "mcp_servers.cua_repl.command='/opt/cua/node'"`))
+    assert.match(commandLine, / --enable computer_use\b/u)
+    assert.doesNotMatch(commandLine, / --disable computer_use\b/u)
+  } else {
+    assert.ok(launch.includes('mcp_servers.cua_repl.command="/opt/cua/node"'))
+    assert.deepEqual(launch.slice(launch.indexOf('--enable'), launch.indexOf('--enable') + 2), ['--enable', 'computer_use'])
+    assert.equal(launch.includes('--disable'), false)
+  }
   assert.deepEqual(chunks.filter((chunk) => chunk.type === 'tool-event'), [
     { type: 'tool-event', toolName: 'cua_repl.js', status: 'running', callId: 'cua-call', input: '{"code":"await cua.getState()"}' },
     { type: 'tool-event', toolName: 'cua_repl.js', status: 'failed', callId: 'cua-call', input: '{"code":"await cua.getState()"}', error: '{"message":"Screen Recording permission denied"}' },

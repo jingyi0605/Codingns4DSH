@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
+import { setImmediate as nextTick } from 'node:timers/promises'
 import { ZcodeTurnTelemetry } from '../data/build/dist/host/cli-adapters/zcode-telemetry.js'
 import { ZcodeAppServerDriver } from '../data/build/dist/host/cli-adapters/zcode-driver.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
@@ -8,6 +9,83 @@ import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapter
 // 实机有两种带 usage 的通知；只有带 stopReason 的模型完成事件应计费。
 function event(eventId: string, payload: object, type = 'session.updated', sessionId = 'sess-probe') {
   return { method: 'session/event', params: { sessionId, eventId, type, payload } }
+}
+
+for (const action of ['complete-tool', 'late-state', 'cancel'] as const) {
+  test(`ZCode steer preserves the active tool until ${action}`, { timeout: 5000 }, async () => {
+    const stdout = new PassThrough()
+    const stderr = new PassThrough()
+    const notify = (message: object) => stdout.write(`${JSON.stringify(message)}\n`)
+    const state = (status: string) => notify({ method: 'state.updated', params: { sessionId: 'sess-probe', patch: { status } } })
+    const turn = (type: 'turn.started' | 'turn.completed', turnId: string) => notify({
+      method: 'session/event', params: { sessionId: 'sess-probe', type, turnId, eventId: `${turnId}-${type}` },
+    })
+    const commands: string[] = []
+    const prompts: string[] = []
+    const signal = new AbortController()
+    const toolStarted = Promise.withResolvers<void>()
+    const driver = new ZcodeAppServerDriver({ desktopRuntime: null, binaries: ['fake-zcode'],
+      spawnSync: (() => ({ status: 0, stdout: '3.14.4', stderr: '' })) as never,
+      spawn: (() => ({ stdout, stderr, kill() { stdout.end(); stderr.end(); return true }, stdin: { write(line: string) {
+        const request = JSON.parse(line)
+        if (request.method === 'session/send') {
+          commands.push('send')
+          prompts.push(request.params.content)
+          if (prompts.length === 2) {
+            notify({ id: request.id, error: { code: -32010, message: 'A prompt is already running' } })
+            return
+          }
+        }
+        notify({ id: request.id, result: request.method === 'session/create' ? { session: { sessionId: 'sess-probe' } } : {} })
+        if (request.method === 'session/stop') {
+          commands.push('stop')
+          if (action === 'late-state') turn('turn.completed', 'original')
+          else state('idle')
+        } else if (request.method === 'session/send') {
+          state('running')
+          if (prompts.length === 1) {
+            if (action === 'late-state') turn('turn.started', 'original')
+            notify(event('tool-start', { kind: 'started', toolCallId: 'call-1', toolName: 'Bash' }, 'tool.updated'))
+          } else {
+            if (action === 'late-state') {
+              turn('turn.started', 'replacement')
+              // A real stop emits this unscoped notification after replacement has started.
+              notify({ method: 'state.updated', params: { sessionId: 'sess-probe', reason: 'prompt_failed', patch: {} } })
+            }
+            notify(event('new-answer', { kind: 'text_delta', delta: '插话已执行', assistantMessageId: 'new' }, 'model.streaming'))
+            if (action === 'late-state') turn('turn.completed', 'replacement')
+            else state('idle')
+          }
+        }
+      } } })) as never })
+    const run = (async () => {
+      const events = []
+      for await (const chunk of driver.executeTurn({ sessionId: 'dsh', messages: [], prompt: '跑工具', signal: signal.signal })) {
+        if (chunk.type === 'tool-event' && chunk.status === 'started') toolStarted.resolve()
+        events.push(chunk)
+      }
+      return events
+    })()
+    try {
+      await Promise.race([toolStarted.promise, run.then(() => assert.fail('The turn ended before the tool started'))])
+      driver.steer('dsh', '换个做法')
+      await nextTick()
+      assert.deepEqual(commands, ['send'], 'An in-flight tool must finish before stopping the turn')
+      if (action === 'cancel') {
+        signal.abort()
+        assert.deepEqual((await run).at(-1), { type: 'finish', reason: 'cancel' })
+        assert.equal(prompts.length, 1, 'Cancellation discards pending steer')
+      } else {
+        notify(event('tool-finished', { kind: 'result', toolCallId: 'call-1', result: { success: true } }, 'tool.updated'))
+        const events = await run
+        assert.deepEqual(commands, ['send', 'stop', 'send', 'send'])
+        assert.equal(prompts[1], prompts[2])
+        assert.match(prompts[2], /^换个做法/u)
+        assert.ok(events.some(chunk => chunk.type === 'text-delta' && chunk.text === '插话已执行'))
+        assert.deepEqual(events.at(-1), { type: 'finish', reason: 'stop' })
+      }
+    } finally { driver.dispose() }
+  })
 }
 
 test('ZCode 汇总当前回合请求并使用最后一次主请求上下文，忽略网络镜像和重放', () => {
@@ -109,7 +187,7 @@ test('ZCode 驱动两轮用量不串账，原生上下文进入 DSH，会话不�
     const billed = samples.filter(sample => sample.contextObservation === undefined)
     const observations = samples.filter(sample => sample.contextObservation !== undefined)
     assert.deepEqual(billed.map((sample) => sample.inputTokens), [501, 502])
-    assert.deepEqual(billed.map((sample) => sample.contextTokens), [5011, 5012])
+    assert.deepEqual(billed.map((sample) => sample.contextTokens), [9501, 9502])
     assert.deepEqual(observations.map(sample => sample.contextTokens), [5011, 5012])
     assert.ok(observations.every(sample => sample.inputTokens === 0 && sample.outputTokens === 0), 'live occupancy does not add billable tokens')
     assert.ok(contexts.every((context) => context.contextWindow === 1_000_000 && context.confirmed))

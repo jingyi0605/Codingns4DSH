@@ -784,8 +784,40 @@ test('原生会话桥接把 Codex 压缩活动写成标准 compaction 生命周�
     provider: 'codex',
     model: 'gpt-5.3-codex',
   })
-  assert.deepEqual(events[6]?.options, { surfaceOp: { op: 'replace', startSeq: 2, endSeq: 3 }, sourceEventSeqs: [2, 3] })
+  assert.deepEqual(events[6]?.options, { surfaceOp: { op: 'replace', startSeq: 2, endSeq: 3 }, sourceEventSeqs: [4, 5, 2, 3] })
   assert.deepEqual(events[6]?.data?.source, { kind: 'plugin', plugin: 'compact' })
+})
+
+test('没有 Provider 摘要时，检查点写真实的被压缩规模而不是空白说法', () => {
+  const events: Array<Record<string, any>> = [
+    { type: 'turn/start', seq: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+    { type: 'user/message', seq: 2, data: { id: 'user-1', role: 'user', content: [{ type: 'text', text: '旧问题' }], source: { kind: 'user' } }, surfaceOp: 'append' },
+    { type: 'assistant/message', seq: 3, data: { turn: 1, step: 1, message: { id: 'assistant-1', role: 'assistant', content: [{ type: 'text', text: '旧回答' }], source: { kind: 'model', provider: 'codex', model: 'gpt-5.3-codex' } }, stream: [] }, surfaceOp: 'append' },
+  ]
+  const session = {
+    surface: { nodes: [2, 3] },
+    snapshotEvents() { return [...events] },
+    append(type: string, data: unknown, options?: unknown) {
+      const event = { type, seq: events.length, data, ...(options === undefined ? {} : { options }) }
+      events.push(event)
+      return event
+    },
+  }
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      return name === 'sessions'
+        ? { get(id: string) { return id === 'native-compaction-no-summary' ? session : undefined }, list() { return [session] } }
+        : undefined
+    },
+  } as never)
+
+  assert.equal(bridge.appendCompactionEvent?.('native-compaction-no-summary', { type: 'context-compaction', phase: 'start', compactionId: 'compact-2', provider: 'codex', model: 'gpt-5.3-codex' }), true)
+  assert.equal(bridge.appendCompactionEvent?.('native-compaction-no-summary', { type: 'context-compaction', phase: 'summary', compactionId: 'compact-2', provider: 'codex', model: 'gpt-5.3-codex', shadowedTokenCount: 312000 }), true)
+  assert.deepEqual(events[5]?.data?.summary, [{ type: 'text', text: '已压缩较早的上下文（约 312K tokens）。' }])
+  assert.equal(events[5]?.data?.shadowedTokenCount, 312000)
+  // 检查点正文与 compaction/summary 必须一致，否则界面显示的和记账的口径会分裂。
+  assert.deepEqual(events[6]?.data?.content, [{ type: 'text', text: '已压缩较早的上下文（约 312K tokens）。' }])
 })
 
 test('携带摘要的压缩 end 事件仍会闭合 compaction 事务', () => {
@@ -887,7 +919,7 @@ test('Session V4 的压缩检查点改用生产者自持的 compact-checkpoint �
   assert.deepEqual(events.slice(5).map((event) => event.type), ['compaction/start', 'compaction/summary', 'user/message'])
   assert.deepEqual(events[7]?.data?.source, { kind: 'compact-checkpoint', compactionId: 'compact-v4' })
   assert.deepEqual(events[7]?.data?.content, [{ type: 'text', text: '保留任务目标。' }])
-  assert.deepEqual(events[7]?.options, { surfaceOp: { op: 'replace', startSeq: 3, endSeq: 4 }, sourceEventSeqs: [3, 4] })
+  assert.deepEqual(events[7]?.options, { surfaceOp: { op: 'replace', startSeq: 3, endSeq: 4 }, sourceEventSeqs: [5, 6, 3, 4] })
 })
 
 test('原生会话桥接把失败结果写成带 isError 的 V4 tool-role 消息', () => {
