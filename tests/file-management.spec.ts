@@ -1,3 +1,4 @@
+import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -18,7 +19,7 @@ async function call(table: CodingNsRpcTable, endpoint: string, payload: unknown)
 }
 
 test('文件管理 Host 模块支持编辑、目录操作、复制移动和 Git 排除', async () => {
-  const root = await mkdtemp('/tmp/codingns-file-management-')
+  const root = await mkdtemp(join(tmpdir(), 'codingns-file-management-'))
   const table = new CodingNsRpcTable()
   const resources: ResourceScope = { disposers: [], add(disposer) { this.disposers.push(disposer) } }
   const feature = createFileManagementFeature()

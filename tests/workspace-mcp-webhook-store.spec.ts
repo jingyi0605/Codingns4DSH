@@ -53,8 +53,8 @@ test('webhook store uses owner-only permissions and restores in-flight deliverie
     await store.createDestination(destination())
     await store.enqueue(delivery('sending-1', undefined, 'sending'))
     const saved = JSON.parse(await readFile(file, 'utf8')) as { destinations: unknown[]; deliveries: Array<{ status: string }> }
-    assert.equal((await stat(join(root, 'private'))).mode & 0o777, 0o700)
-    assert.equal((await stat(file)).mode & 0o777, 0o600)
+    if (process.platform !== 'win32') assert.equal((await stat(join(root, 'private'))).mode & 0o777, 0o700)
+    if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o600)
     assert.equal(saved.destinations.length, 1)
     assert.equal(saved.deliveries[0]?.status, 'sending')
 

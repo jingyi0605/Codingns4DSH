@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import test from 'node:test'
 import { runHtmlWorkspaceFileOperation } from '../src/host/html-workspace-files.js'
@@ -62,6 +62,11 @@ test('HTML file writes reject stale versions and serialize simultaneous saves', 
   try {
     const original = await f.call('read', { path: '../members/one.md' })
     await writeFile(join(f.root, 'members/one.md'), '# External change')
+    // ifMtime compares filesystem timestamps. Two writes can share one clock tick,
+    // so explicitly create a different version instead of relying on scheduling.
+    const changedAt = new Date(original.mtime + 2000)
+    await utimes(join(f.root, 'members/one.md'), changedAt, changedAt)
+    assert.notEqual((await stat(join(f.root, 'members/one.md'))).mtimeMs, original.mtime)
     await assert.rejects(f.call('write', { path: '../members/one.md', content: 'Stale', ifMtime: original.mtime }), /changed/u)
     const fresh = await f.call('read', { path: '../members/one.md' })
     const results = await Promise.allSettled(['A', 'B'].map(content => f.call('write', { path: '../members/one.md', content, ifMtime: fresh.mtime })))

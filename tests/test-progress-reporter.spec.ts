@@ -4,7 +4,7 @@ import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const reporterPath = fileURLToPath(new URL('../scripts/test-progress-reporter.mjs', import.meta.url))
 
@@ -15,7 +15,7 @@ function runFixture(source: string) {
     const fixture = join(directory, 'fixture.mjs')
     copyFileSync(reporterPath, reporter)
     writeFileSync(fixture, source)
-    const env = { ...process.env, NODE_OPTIONS: `--no-warnings --test-reporter="${reporter}"` }
+    const env = { ...process.env, NODE_OPTIONS: `--no-warnings --test-reporter="${pathToFileURL(reporter).href}"` }
     // Start an independent runner instead of inheriting the parent test worker.
     delete env.NODE_TEST_CONTEXT
     return spawnSync(process.execPath, ['--test', fixture], {

@@ -3,6 +3,8 @@ import { execFile } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { promisify } from 'node:util'
 import { Readable } from 'node:stream'
+import { delimiter, join } from 'node:path'
+import { windowsShellInvocation } from '../src/host/cli-adapters/process-utils.js'
 import test from 'node:test'
 import type { ChildProcess } from 'node:child_process'
 import { CredentialBroker } from '../data/build/dist/host/credentials/broker.js'
@@ -53,6 +55,36 @@ test('credential request codes and handles are reusable only within their owning
   assert.equal(second.stdout, 'root')
 })
 
+test('native credential commands preserve literal argv without shell interpretation', async (t) => {
+  const { service, broker } = await createBroker()
+  t.after(async () => { await broker.deactivate(); service.deactivate() })
+  const issued = await broker.issue({ sessionId: 'literal-argv', credentialId: 'ssh' })
+  const args = ['space and & sign', '(parentheses)', '"quoted"', '%PATH%', '$HOME']
+  const result = await broker.executeRequest({
+    sessionId: 'literal-argv', requestCode: issued.requestCode,
+    argv: [process.execPath, '-e', 'process.stdout.write(JSON.stringify(process.argv.slice(1)))', ...args],
+  })
+  assert.equal(result.exitCode, 0, result.stderr)
+  assert.deepEqual(JSON.parse(result.stdout), args)
+})
+
+test('Windows broker retains cmd built-ins and launchers in the requested cwd', { skip: process.platform !== 'win32' }, async (t) => {
+  const { mkdtemp, rm, writeFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { service, broker } = await createBroker()
+  const cwd = await mkdtemp(join(tmpdir(), 'credential batch '))
+  t.after(async () => { await broker.deactivate(); service.deactivate(); await rm(cwd, { recursive: true, force: true }) })
+  const issued = await broker.issue({ sessionId: 'windows-launchers', credentialId: 'ssh' })
+  const exec = (argv: string[]) => broker.executeRequest({ sessionId: 'windows-launchers', requestCode: issued.requestCode, cwd, argv })
+  const builtin = await exec(['echo', 'builtin-ok'])
+  assert.equal(builtin.exitCode, 0, builtin.stderr)
+  assert.equal(builtin.stdout.trim(), 'builtin-ok')
+  await writeFile(join(cwd, 'codingns-regression-launcher.cmd'), '@echo off\r\n@echo batch-ok\r\n')
+  const batch = await exec(['codingns-regression-launcher'])
+  assert.equal(batch.exitCode, 0, batch.stderr)
+  assert.equal(batch.stdout.trim(), 'batch-ok')
+})
+
 test('SSH askpass is configured from the session binding without putting the secret in argv', async (t) => {
   if (process.platform === 'win32') return t.skip('OpenSSH askpass process replay is Unix-specific')
   const { service, broker } = await createBroker()
@@ -88,12 +120,16 @@ test('codingns-credential describe and exec use the Host broker without exposing
     CODINGNS_CREDENTIAL_SESSION: processEnvironment.sessionId,
     PATH: processEnvironment.path,
   }
-  const described = await execFileAsync('codingns-credential', ['describe', '--code', issued.requestCode], { env })
+  const cli = process.platform === 'win32' ? [process.execPath, join(processEnvironment.path.split(delimiter)[0]!, 'codingns-credential.mjs')] : ['codingns-credential']
+  const describe = process.platform === 'win32'
+    ? windowsShellInvocation(join(processEnvironment.path.split(delimiter)[0]!, 'codingns-credential.cmd'), ['describe', '--code', issued.requestCode])
+    : { command: cli[0]!, args: ['describe', '--code', issued.requestCode] }
+  const described = await execFileAsync(describe.command, [...describe.args], { env, windowsHide: true, ...(process.platform === 'win32' ? { windowsVerbatimArguments: true } : {}) })
   assert.match(described.stdout, /CREDENTIAL_USERNAME/u)
   assert.doesNotMatch(described.stdout, /secret-value/u)
   const handle = JSON.parse(described.stdout).handle as string
-  const executed = await execFileAsync('codingns-credential', [
-    'exec',
+  const executed = await execFileAsync(cli[0]!, [
+    ...cli.slice(1), 'exec',
     '--handle',
     handle,
     '--',

@@ -170,7 +170,8 @@ async function fixture(options: { readonly preconfigured?: boolean } = {}) {
       }
     },
     async waitFor(predicate: () => boolean) {
-      for (let index = 0; index < 100 && !predicate(); index += 1) await new Promise((resolve) => setImmediate(resolve))
+      const deadline = Date.now() + 5000
+      while (!predicate() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5))
       assert.equal(predicate(), true)
     },
     async dispose() {

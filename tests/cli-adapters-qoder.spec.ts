@@ -168,7 +168,7 @@ test('Qoder ACP 读取 session/prompt 终态中的真实 usage 与上下文字�
 test('Qoder ACP 在终态 token 为 0 时回读 transcript 的 credits 和上下文比例', async () => {
   const home = mkdtempSync(join(tmpdir(), 'codingns-qoder-home-'))
   const cwd = mkdtempSync(join(tmpdir(), 'codingns-qoder-project-'))
-  const projectKey = resolve(cwd).replace(/[\\/]/gu, '-')
+  const projectKey = resolve(cwd).replace(process.platform === 'win32' ? /[\\/:]/gu : /[\\/]/gu, '-')
   const transcriptDirectory = join(home, '.qoder-cn', 'projects', projectKey)
   mkdirSync(transcriptDirectory, { recursive: true })
   writeFileSync(join(transcriptDirectory, 'transcript-session.jsonl'), `${JSON.stringify({
@@ -221,7 +221,7 @@ test('Qoder ACP 在终态 token 为 0 时回读 transcript 的 credits 和上下
 test('Qoder ACP 在 runtime-config 缺失时从同会话 CLI 日志回读上下文窗口', async () => {
   const home = mkdtempSync(join(tmpdir(), 'codingns-qoder-log-home-'))
   const cwd = mkdtempSync(join(tmpdir(), 'codingns-qoder-log-project-'))
-  const projectKey = resolve(cwd).replace(/[\\/]/gu, '-')
+  const projectKey = resolve(cwd).replace(process.platform === 'win32' ? /[\\/:]/gu : /[\\/]/gu, '-')
   const transcriptDirectory = join(home, '.qoder-cn', 'projects', projectKey)
   const logsDirectory = join(home, '.qoder-cn', 'logs', 'runs', '2026-10-06T00-00-00-run')
   mkdirSync(transcriptDirectory, { recursive: true })
@@ -260,7 +260,7 @@ test('Qoder ACP 在 runtime-config 缺失时从同会话 CLI 日志回读上下�
 test('Qoder ACP 不让通知流中的不完整 usage 阻断 transcript 补全', async () => {
   const home = mkdtempSync(join(tmpdir(), 'codingns-qoder-stream-usage-home-'))
   const cwd = mkdtempSync(join(tmpdir(), 'codingns-qoder-stream-usage-project-'))
-  const projectKey = resolve(cwd).replace(/[\\/]/gu, '-')
+  const projectKey = resolve(cwd).replace(process.platform === 'win32' ? /[\\/:]/gu : /[\\/]/gu, '-')
   const transcriptDirectory = join(home, '.qoder-cn', 'projects', projectKey)
   mkdirSync(transcriptDirectory, { recursive: true })
   writeFileSync(join(transcriptDirectory, 'stream-usage-session.jsonl'), `${JSON.stringify({
