@@ -84,11 +84,24 @@ test('skills discovery without permission does not downgrade an existing backend
   assert.equal(retired.length, 0)
 })
 
-test('new session with unknown policy retains conservative defaults', async () => {
+test('未指定 permission 时不得静默降级为保守策略：启动不注入 -c 权限对', async () => {
   const d = new CodexAppServerDriver()
   const first = await d.getSession(base, 'codex')
-  assert.equal(launchConfig(first, 'sandbox_mode'), 'workspace-write')
-  assert.equal(launchConfig(first, 'approval_policy'), 'on-request')
+  const args = first.rpc.options.args
+  assert.equal(args.some(x => x.startsWith('sandbox_mode=')), false)
+  assert.equal(args.some(x => x.startsWith('approval_policy=')), false)
+})
+
+test('工作区默认权限变化时重建后端并同步启动覆盖项', async () => {
+  const d = new CodexAppServerDriver()
+  // 模拟 DSH 工作区实际生效的默认权限由 workspace-write/ask 变为 danger-full-access/never。
+  const first = await d.getSession({ ...base, permission: limited }, 'codex')
+  const next = await d.getSession({ ...base, permission: full }, 'codex')
+  assert.notEqual(first, next)
+  assert.equal(first.rpc.isClosed, true)
+  assert.equal(launchConfig(next, 'sandbox_mode'), 'danger-full-access')
+  assert.equal(launchConfig(next, 'approval_policy'), 'never')
+  assert.equal(d.processes.size, 1)
 })
 
 test('explicit redetection of a new version and changed binary refresh the backend', async () => {
@@ -105,13 +118,15 @@ test('explicit redetection of a new version and changed binary refresh the backe
   assert.equal(retired.length, 2)
 })
 
-test('an unresolved real turn after full access falls back to conservative policy', async () => {
+test('完全权限之后未读到权限：重建后端且不静默保留旧权限、不注入保守 -c 对', async () => {
   const d = new CodexAppServerDriver()
   const first = await d.getSession({ ...base, permission: full }, 'codex')
   const next = await d.getSession(base, 'codex')
   assert.notEqual(next, first)
-  assert.equal(launchConfig(next, 'sandbox_mode'), 'workspace-write')
-  assert.equal(launchConfig(next, 'approval_policy'), 'on-request')
+  assert.equal(retired.length, 1)
+  const args = next.rpc.options.args
+  assert.equal(args.some(x => x.startsWith('sandbox_mode=')), false)
+  assert.equal(args.some(x => x.startsWith('approval_policy=')), false)
 })
 
 test('changing launch policy during a suspended step stops rather than replays work', async () => {
