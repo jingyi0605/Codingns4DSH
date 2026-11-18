@@ -12,7 +12,7 @@ import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters
 import { DELEGATE_COMMAND_NAME, delegateAdapterOptions, extractDelegateTask } from '../data/build/dist/client/delegate-plan.js'
 import { appendDelegateCarrier, parseDelegationCarriers } from '../data/build/dist/client/delegate-plan.js'
 import { rewriteDelegationMessages } from '../data/build/dist/host/cli-adapters/delegation-mention-rewrite.js'
-import { externalTeamProvider, hasNativeSubagentStart, startNativeSubagent } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
+import { EXTERNAL_SUBAGENT_IDS, externalTeamProvider, hasNativeSubagentStart, startNativeSubagent } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -494,6 +494,61 @@ test('原生子代理启动入口按世代归一化：alpha.2 走 startActivatio
   // delivery 是 alpha.2 的必填参数：必须显式声明，否则 startActivation 直接拒绝。
   assert.equal(calls[0]!.delivery, 'parent')
   assert.equal(calls[0]!.provider, 'codingns-external-codex')
+})
+
+test('rc.2 子代理启动使用顶层父身份，并保留提示词、目录、模型与取消信号', async () => {
+  const parent = { id: 'flat-parent' }
+  const signal = new AbortController().signal
+  const prompt = [{ type: 'text' as const, text: '分析当前项目' }]
+  const agentOptions = { model: 'native-model', reasoningEffort: 'high' }
+  const calls: Array<Record<string, any>> = []
+  const service = {
+    namesOf: () => ({ self: 'lead' }),
+    rootOf: () => parent,
+    startActivation: async (spec: Record<string, any>) => {
+      // rc.2/rc.3 的真实入口先读取 spec.parent.id；旧参数会在此抛出同一 TypeError。
+      assert.equal(spec.parent.id, parent.id)
+      assert.equal(spec.parent, parent)
+      calls.push(spec)
+      return { childId: 'flat-child', messageId: 'flat-message', result: Promise.resolve({ ok: true }) }
+    },
+  }
+  for (const adapterId of EXTERNAL_SUBAGENT_IDS) {
+    const provider = externalTeamProvider(adapterId)
+    const started = await startNativeSubagent(service as never, {
+      provider, label: '分析项目', request: { parent, prompt, cwd: 'packages/app', agentOptions }, signal,
+    })
+    assert.deepEqual(started, { childId: 'flat-child', messageId: 'flat-message' })
+    const call = calls.at(-1)!
+    assert.equal(call.provider, provider)
+    assert.equal(call.label, '分析项目')
+    assert.equal(call.prompt, prompt)
+    assert.equal(call.cwd, 'packages/app')
+    assert.equal(call.agentOptions, agentOptions)
+    assert.equal(call.signal, signal)
+    assert.equal(call.delivery, 'parent')
+    assert.equal('request' in call, false)
+  }
+  assert.equal(calls.length, EXTERNAL_SUBAGENT_IDS.length)
+})
+
+test('rc.2 子代理启动失败原样返回且不通过旧入口重试', async () => {
+  const error = new Error('native admission failed')
+  let calls = 0
+  const service = {
+    namesOf: () => ({ self: 'lead' }),
+    rootOf: () => undefined,
+    startActivation: async (spec: Record<string, any>) => {
+      assert.equal(spec.parent.id, 'failed-parent')
+      calls++
+      throw error
+    },
+    startContinuable: async () => { throw new Error('must not retry creation') },
+  }
+  await assert.rejects(() => startNativeSubagent(service as never, {
+    provider: 'codingns-external-codex', request: { parent: { id: 'failed-parent' }, prompt: [] },
+  }), candidate => candidate === error)
+  assert.equal(calls, 1)
 })
 
 test('原生子代理启动入口在旧宿主回退到 startContinuable 并保留 messageId', async () => {

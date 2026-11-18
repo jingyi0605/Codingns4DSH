@@ -250,6 +250,31 @@ All document paths below are repository-root-relative. Requirements and design s
   - Record: `specs/spec007.4-外部Agent团队协作与管理/docs/20261017-CommandCode与Grok团队故障修复记录.md`.
   - Trace: R2–R8; design §4–9.
 
+- [x] 4.7 Restore ordinary subagent creation with the named-tree Activation contract
+  - State: DONE within source and isolated contract verification; live Agent/browser acceptance remains unperformed.
+  - Work: reproduce ordinary Codex bridge creation failing before a child ID is returned; normalize nested and flat Activation requests inside the DSH capability boundary without retrying creation.
+  - Result: ordinary delegation and MCP subagent calls retain the exact parent identity, prompt, directory, model options, cancellation signal, and parent delivery policy across supported host contracts.
+  - Dependencies: the existing native activation, provider selection queue, and ordinary bridge lifecycle observer; no Team-mode enablement is required.
+  - Read first: design §3–4, the external Agent adapter rules, `native-team-subagent.ts`, the capability routes/matrix, and the focused delegation/bridge tests.
+  - Files: `src/dsh-capabilities/host/subagent-activation-adapter.ts`, capability routes/matrix, the compatibility exports in `native-team-subagent.ts`, focused tests, and this Spec.
+  - Excludes: changing Team enablement or permissions, replaying the historical task, modifying Desktop/Stage0, builds, dependency changes, commits, pushes, and releases.
+  - Verify: failing-first request-shape and bridge lifecycle regressions; legacy activation/continuation, failure propagation, capability routing, affected source tests, typecheck, version/capability checks, and final diff review. Record existing Windows-only test failures separately from the repair.
+  - Verification (2026-11-17): all three new regressions failed before repair and passed afterward. The focused suite passed 104 tests with five failures reproduced on untouched main; the additional capability/wiring/input suite passed 55 tests. The wider adapter suite passed 721 tests, skipped six, and failed 30; all 30 failures also reproduced on main (`100821bb`). Typecheck, version/capability checks, Spec evidence links, and whitespace checks passed. The installed DSH `0.2.2-rc.3` startup method accepted the repaired source parameters with an isolated stub creation manager. No build or live runtime modification occurred.
+  - Coverage follow-up: all 11 registered targets passed ordinary creation and `wait`/`read` under both nested/flat contracts (22 cases); parameter preservation covers every target's provider route. The updated affected suite passed 125 tests with zero failures, excluding the five known baseline failures by name. This verifies shared Host dispatch with fixtures, not real per-CLI usability.
+  - Evidence: [20261117 ordinary subagent activation regression](docs/20261117-普通子代理启动契约回归记录.md).
+  - Trace: R2, R4, R7–R8; design §3–4.
+
+- [x] 4.8 Configure Stage0 for user acceptance and record real ordinary subagent outcomes
+  - State: DONE for environment setup and bounded runtime verification. The user confirmed acceptance and requested shutdown/cleanup and an upstream PR. Grok execution is not certified as successful.
+  - Work: the user's subsequent instruction authorizes the Stage0 build/configuration and real verification that task 4.7 initially excluded. Reuse the isolated Windows Stage0 home, switch its local launcher to the installed DSH `0.2.2-rc.3`, build the repair branch, enable the ordinary subagent bridge, and leave an authenticated acceptance entry point running.
+  - Result: Stage0 listens on `127.0.0.1:17891`, serves the repaired CodingNS Host/Client, and retains named acceptance conversations with observed success/failure outcomes.
+  - Dependencies/read first: task 4.7; design §3–4; `scripts/run-dsh-stage0.sh`, `scripts/stage0-runtime.mjs`, `dsh-stage0.patch.yml`, and the existing machine-local Windows launcher. Inspect port/process ownership and the source link before starting or building.
+  - Files: the machine-local Stage0 launcher, Stage0 profile/settings and acceptance fixtures under the isolated home, startup/verification logs, this task, and its linked regression record. No further production source change is needed.
+  - Excludes: Desktop/profile/credential changes, installing missing Agents, replaying the historical task, unrelated Grok or HMR repairs, commits, pushes, and release actions.
+  - Verification: `pnpm run build` passed. Page and actual CodingNS Client module returned HTTP 200. Real Codex → Codex creation, wait, and same-child follow-up completed twice with Team mode disabled. Codex → Grok created a correctly routed child, whose CLI then returned `-32603 Internal error`; retain the failed conversation without retry. All owned turns ended and Stage0 remains running for user acceptance.
+  - Evidence: [Stage0 setup and real acceptance](docs/20261117-普通子代理启动契约回归记录.md#stage0-setup-and-real-acceptance).
+  - Acceptance/shutdown (2026-11-17): the user reported verification passed. Only the owned Stage0 listener/supervisor/launcher were stopped; port 17891 is free. The local launcher version, bridge enablement, and Codex defaults were restored to their pre-acceptance values; exactly four owned plugin session bindings were removed. Automatic command review rejected bulk filesystem cleanup with `blocked by policy`; raw acceptance sessions, projection caches, fixtures, and local logs remain and no alternate deletion was attempted. Existing Stage0 data/source link and Desktop were preserved. The same request authorizes a Chinese commit and upstream PR; earlier commit/push exclusions were limited to those earlier tasks.
+
 ## Planning verification (2026-10-17)
 
 Only documentation was created or updated. Source code, version manifests, runtime configuration, applications, and the Git index were unchanged. The initial checks covered local links, task completeness, and whitespace; implementation tests were not run for this documentation-only change.

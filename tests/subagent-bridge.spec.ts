@@ -25,7 +25,7 @@ import {
 import { dispatchBridgeSubagent } from '../data/build/dist/host/cli-bridge/dispatch.js'
 import { isNativeSubagentSession, nativeSubagentParentSessionId, sendNativeSubagentParentMessage } from '../data/build/dist/host/cli-adapters/native-subagent-dispatch.js'
 import { setNativeSubagents } from '../data/build/dist/host/cli-adapters/native-subagent-holder.js'
-import { registerNativeTeamSubagentProviders } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
+import { EXTERNAL_SUBAGENT_IDS, externalTeamProvider, registerNativeTeamSubagentProviders } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
 import { setAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry-holder.js'
 import { setDelegationAuthorization } from '../data/build/dist/host/cli-adapters/delegation-authorization.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
@@ -570,6 +570,71 @@ test('MCP 入口：独立 start 请求并行处理，不串行等待前一个子
     await server.close()
   }
 })
+
+for (const contract of ['nested', 'flat'] as const) {
+  for (const adapterId of EXTERNAL_SUBAGENT_IDS) {
+    test(`${adapterId} 普通桥接在 ${contract} 启动契约下创建子会话并通过 read/wait 收取结果`, async () => {
+      const parentId = `${contract}-bridge-parent-${adapterId}`
+      const childId = `${contract}-bridge-child-${adapterId}`
+      const parent = { id: parentId, session: { header: { id: parentId } } }
+      let starts = 0
+      const events = [
+        { type: 'assistant/message', seq: 1, data: { message: { content: [{ type: 'text', text: 'review complete' }] } } },
+        { type: 'turn/end', seq: 2, data: { reason: { kind: 'completed' } } },
+      ]
+      const sessions = {
+        available: true,
+        get: (id: string) => id === childId
+          ? { header: { id: childId, origin: 'subagent', parentSession: parentId }, snapshotEvents: () => events }
+          : id === parentId ? parent.session : undefined,
+        subscribe: () => () => undefined,
+        list: () => [],
+      }
+      const service = {
+        ...(contract === 'flat' ? { namesOf: () => ({ self: 'lead' }), rootOf: () => parent } : {}),
+        startActivation: async (spec: Record<string, any>) => {
+          const request = contract === 'flat' ? spec : spec.request
+          assert.equal(request.parent.id, parentId)
+          assert.equal(request.parent, parent)
+          assert.equal(spec.provider, externalTeamProvider(adapterId))
+          assert.deepEqual(request.prompt, [{ type: 'text', text: 'review the installer' }])
+          assert.equal(spec.delivery, 'parent')
+          assert.ok(spec.signal instanceof AbortSignal)
+          assert.equal('request' in spec, contract === 'nested')
+          starts++
+          return { childId, result: Promise.resolve({ ok: true }) }
+        },
+      }
+      // 只模拟目标安装状态；不启动真实 CLI，也不把共享派发测试视为 CLI 认证。
+      const registry = new CodingNsCliAdapterRegistry(adapterId === 'dsh' ? [] : [{
+        descriptor: { id: adapterId, name: adapterId, protocol: 'command', capabilities: [] },
+        detect: async () => ({ installed: true, version: '1.0.0', command: `/fake/${adapterId}` }),
+        listModels: async () => ({ groups: [], currentModel: null, currentEffort: null }),
+        executeTurn: async function* () {},
+      } as never])
+      registry.setSession(parentId, { adapterId })
+      const deps = { agents: { get: (id: string) => id === parentId ? parent : undefined }, nativeSessions: sessions as never }
+      setNativeSubagents(service as never)
+      setAdapterRegistry(registry)
+      try {
+        const started = await dispatchBridgeSubagent({ sessionId: parentId, agent: adapterId, prompt: 'review the installer', runInBackground: true }, deps)
+        assert.equal(started.ok, true, started.error)
+        assert.equal(started.childSessionId, childId)
+        assert.equal(started.status, 'running')
+        const waited = await dispatchBridgeSubagent({ sessionId: parentId, action: 'wait', childSessionId: childId, prompt: '', timeoutMs: 1000 }, deps)
+        assert.equal(waited.status, 'completed')
+        assert.equal(waited.text, 'review complete')
+        const read = await dispatchBridgeSubagent({ sessionId: parentId, action: 'read', childSessionId: childId, prompt: '' }, deps)
+        assert.equal(read.ok, true)
+        assert.equal(read.completed, true)
+        assert.equal(starts, 1)
+      } finally {
+        setNativeSubagents(undefined)
+        setAdapterRegistry(undefined)
+      }
+    })
+  }
+}
 
 test('桥接派发：解析父会话并把子代理绑定为原生可续子会话', async () => {
   const started: Array<Record<string, any>> = []
