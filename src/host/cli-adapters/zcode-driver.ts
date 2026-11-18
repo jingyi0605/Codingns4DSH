@@ -149,14 +149,12 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   private cachedCatalogFingerprint: string | undefined
   private readonly compactionTimeoutMs: number
   private readonly homeDirectory: string
-  private readonly hasExplicitDesktopRuntime: boolean
   /** 模型目录声明的默认思考档位；切换 DeepSeek 时服务端要求显式传入。 */
   private readonly defaultEfforts = new Map<string, string>()
 
   constructor(options: ZcodeCliDriverOptions = {}) {
     this.compactionTimeoutMs = options.compactionTimeoutMs ?? ZCODE_COMPACTION_TIMEOUT_MS
     this.homeDirectory = options.homeDirectory ?? homedir()
-    this.hasExplicitDesktopRuntime = options.desktopRuntime !== undefined
     this.cachedRuntime = options.desktopRuntime
     this.binaries = options.binaries ?? ['zcode', 'zcode.cmd']
     this.runSpawnSync = options.spawnSync ?? spawnSync
@@ -448,10 +446,26 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     let pendingSteer: string | undefined
     let steerTimer: ReturnType<typeof setTimeout> | undefined
     let waitingForStop = false
+    let activeNativeTurnId: string | undefined
+    let retiredNativeTurnId: string | undefined
+    let replacedBySteer = false
     const activeTools = new Set<string>()
+    const isRetiredNotification = (message: JsonRpcMessage): boolean => {
+      const params = record(message.params)
+      if (retiredNativeTurnId !== undefined && params.turnId === retiredNativeTurnId) return true
+      if (!replacedBySteer || activeNativeTurnId === undefined) return false
+      if (message.method !== 'state.updated' || params.turnId !== undefined) return false
+      // The stopped turn can emit an unscoped prompt_failed after the new turn
+      // starts. Once the replacement has a native ID, use its scoped terminal events.
+      return String(params.reason ?? '').includes('failed') || record(params.patch).status === 'idle'
+    }
     // resume/subscribe 已完成；send 响应前的交互也必须立即消费，避免双向等待。
     const onNotification = (message: JsonRpcMessage): void => {
-      if (!session.acceptingInteractions) return
+      if (!session.acceptingInteractions || isRetiredNotification(message)) return
+      const params = record(message.params)
+      if (message.method === 'session/event' && params.type === 'turn.started' && typeof params.turnId === 'string') {
+        activeNativeTurnId = params.turnId
+      }
       // turn.terminal 详情略晚于 turn-failed 事件到达，宽限期结束前必须已经
       // 记下真实 errorCode/errorMessage。
       captureZcodeFailureDetail(message, session)
@@ -520,6 +534,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
         const next = await eventQueue.next()
         if (next.done) break
         if (input.signal?.aborted) break
+        if (isRetiredNotification(next.value)) continue
         if (sendAttempt.error !== null && !waitingForStop) throw sendAttempt.error
         if (next.value.method === 'codingns/steer-stop-timeout' && waitingForStop) {
           throw new Error('ZCode 未确认停止当前回合，插话未发送')
@@ -553,6 +568,9 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
             session.failureMessage = undefined
             yield { type: 'message-boundary', channel: 'text', messageId: randomUUID() }
             if (input.signal?.aborted) break
+            retiredNativeTurnId = activeNativeTurnId
+            activeNativeTurnId = undefined
+            replacedBySteer = true
             session.background.beginForeground()
             sendAttempt = send(zcodePrompt(prompt, session.workflowEnabled), true)
             continue
@@ -850,7 +868,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   }
 
   private async syncAccountProviderConfig(rpc: JsonRpcProcess, signal?: AbortSignal, providerId?: string): Promise<Record<string, unknown> | null> {
-    if (this.cachedBinary !== null && !this.hasExplicitDesktopRuntime) return null
+    // A PATH launcher may use the discovered desktop provider configuration too.
     const runtime = this.resolveRuntime()
     const snapshot = runtime === null ? null : readZcodeAccountProviderSnapshot(runtime, this.homeDirectory, providerId)
     if (snapshot === null) {

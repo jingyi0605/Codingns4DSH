@@ -16,7 +16,7 @@ const OTHER_ACCOUNT = 'fixture-account-b'
  * - `oauth: true` + 同族没有 key：个人版只可见、不可用，选中要给可操作原因；
  * - `oauth: false` + 没有 key：没有凭据的个人版根本不该出现。
  */
-function fixture(options: { oauth?: boolean; family?: string; keys?: Array<{ slot: string; identity: string }> } = {}) {
+function fixture(options: { oauth?: boolean; family?: string; discoveredDesktop?: boolean; keys?: Array<{ slot: string; identity: string }> } = {}) {
   const family = options.family ?? 'bigmodel'
   const oauth = options.oauth ?? true
   // slot 是 provider id 的 kind 后缀（例如 `team-coding-plan`），拼出来必须与真实
@@ -64,9 +64,10 @@ function fixture(options: { oauth?: boolean; family?: string; keys?: Array<{ slo
   let active = ids.start
   let selection = { providerId: ids.start, modelId: 'GLM-5.3-Flash' }
   let nativeCounter = 0
+  const desktopRuntime = { entry: 'fake-zcode.cjs', appVersion: '3.18.2', env: { ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: builtin } }
   const driver = new ZcodeAppServerDriver({
     homeDirectory: home,
-    desktopRuntime: { entry: 'fake-zcode.cjs', appVersion: '3.18.2', env: { ZCODE_BUILTIN_PROVIDER_CONFIG_FILE: builtin } },
+    ...(options.discoveredDesktop ? {} : { desktopRuntime }),
     binaries: ['fake-zcode'],
     spawnSync: (() => ({ status: 0, stdout: 'zcode 3.18.2', stderr: '' })) as never,
     spawn: (() => {
@@ -113,6 +114,8 @@ function fixture(options: { oauth?: boolean; family?: string; keys?: Array<{ slo
       } }, kill() { stdout.end(); stderr.end(); return true } }
     }) as never,
   } as any)
+  // Supply the desktop discovery result without looking at the Windows/macOS test host.
+  if (options.discoveredDesktop) Object.assign(driver, { cachedRuntime: desktopRuntime })
   return { driver, home, root, calls, auth, builtin, ids }
 }
 
@@ -120,7 +123,7 @@ const currentOf = (call: any) => Object.entries(call.params.states).find(([, s]:
 const firstUpdate = (calls: any[]) => calls.find(v => v.method === 'provider/updateAccountConfig')
 
 test('个人版 key 记在别的槽位时：同家族复用该 key，个人版可用并成为 current', async () => {
-  const f = fixture()
+  const f = fixture({ discoveredDesktop: true })
   try {
     const catalog = await f.driver.listModels()
     assert.ok(catalog.groups.some(g => g.id === f.ids.paid), '个人版应出现在模型菜单中')

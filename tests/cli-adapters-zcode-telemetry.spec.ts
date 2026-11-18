@@ -11,12 +11,15 @@ function event(eventId: string, payload: object, type = 'session.updated', sessi
   return { method: 'session/event', params: { sessionId, eventId, type, payload } }
 }
 
-for (const action of ['complete-tool', 'cancel'] as const) {
+for (const action of ['complete-tool', 'late-state', 'cancel'] as const) {
   test(`ZCode steer preserves the active tool until ${action}`, { timeout: 5000 }, async () => {
     const stdout = new PassThrough()
     const stderr = new PassThrough()
     const notify = (message: object) => stdout.write(`${JSON.stringify(message)}\n`)
     const state = (status: string) => notify({ method: 'state.updated', params: { sessionId: 'sess-probe', patch: { status } } })
+    const turn = (type: 'turn.started' | 'turn.completed', turnId: string) => notify({
+      method: 'session/event', params: { sessionId: 'sess-probe', type, turnId, eventId: `${turnId}-${type}` },
+    })
     const commands: string[] = []
     const prompts: string[] = []
     const signal = new AbortController()
@@ -36,14 +39,22 @@ for (const action of ['complete-tool', 'cancel'] as const) {
         notify({ id: request.id, result: request.method === 'session/create' ? { session: { sessionId: 'sess-probe' } } : {} })
         if (request.method === 'session/stop') {
           commands.push('stop')
-          state('idle')
+          if (action === 'late-state') turn('turn.completed', 'original')
+          else state('idle')
         } else if (request.method === 'session/send') {
           state('running')
           if (prompts.length === 1) {
+            if (action === 'late-state') turn('turn.started', 'original')
             notify(event('tool-start', { kind: 'started', toolCallId: 'call-1', toolName: 'Bash' }, 'tool.updated'))
           } else {
+            if (action === 'late-state') {
+              turn('turn.started', 'replacement')
+              // A real stop emits this unscoped notification after replacement has started.
+              notify({ method: 'state.updated', params: { sessionId: 'sess-probe', reason: 'prompt_failed', patch: {} } })
+            }
             notify(event('new-answer', { kind: 'text_delta', delta: '插话已执行', assistantMessageId: 'new' }, 'model.streaming'))
-            state('idle')
+            if (action === 'late-state') turn('turn.completed', 'replacement')
+            else state('idle')
           }
         }
       } } })) as never })
