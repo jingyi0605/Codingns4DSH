@@ -38,7 +38,7 @@ export interface AcpCliDriverOptions {
   /** Provider 是否支持在已经建立的 ACP 会话内切换模型。 */
   readonly runtimeModelSelection?: boolean
   /** 产品通过原生 ACP 请求设置会话模型、权限和思考强度；失败时禁止继续发送 prompt。 */
-  readonly configureSession?: (rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput) => Promise<void>
+  readonly configureSession?: (rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput, openedSession: unknown) => Promise<void>
   /**
    * 会话配置失败（例如 Provider 仍认为上一轮 prompt 未结束）时重建会话并重试一次。
    * 返回 true 表示会话已被丢弃、可以新建；缺省不重试，保持各产品原有失败语义。
@@ -229,10 +229,11 @@ export class AcpCliDriver implements CodingNsCliDriver {
     const command = this.cachedBinary ?? (await this.detect()).command
     if (command === null) throw new Error(`${this.descriptor.name} 未安装`)
     let session = await this.getSession(input, command, this.buildArgsForTurn(input))
-    let providerSessionId = await this.createAcpSessionId(session, input)
+    const openedSession = await this.openAcpSession(session, input)
+    let providerSessionId = session.acpSessionId
     yield { type: 'session-binding', providerSessionId }
 
-    const configured = await this.configureWithRecovery(session, providerSessionId, input)
+    const configured = await this.configureWithRecovery(session, providerSessionId, input, openedSession)
     if (configured.session !== session) {
       // 会话配置失败已被恢复：换了新的进程和会话，必须把新的绑定告诉 DSH，
       // 否则下一轮还会拿着旧会话 ID 去恢复一个已经不存在的 Provider 会话。
@@ -406,10 +407,10 @@ export class AcpCliDriver implements CodingNsCliDriver {
    *
    * 返回本回合最终使用的会话（可能是新建的），调用方必须用返回值继续。
    */
-  private async configureWithRecovery(session: AcpSession, providerSessionId: string, input: CodingNsCliTurnInput): Promise<{ session: AcpSession; providerSessionId: string }> {
+  private async configureWithRecovery(session: AcpSession, providerSessionId: string, input: CodingNsCliTurnInput, openedSession: unknown): Promise<{ session: AcpSession; providerSessionId: string }> {
     if (this.configureSession === undefined) return { session, providerSessionId }
     try {
-      await this.configureSession(session.rpc, providerSessionId, input)
+      await this.configureSession(session.rpc, providerSessionId, input, openedSession)
       return { session, providerSessionId }
     } catch (error) {
       if (this.recoverConfigureSession === undefined) throw error
@@ -423,24 +424,24 @@ export class AcpCliDriver implements CodingNsCliDriver {
       if (!recovered) throw error
       // 旧会话已被产品丢弃；同一回合内重建进程与新会话，避免把这一轮判死。
       const replacement = await this.getSession(input, this.cachedBinary ?? (await this.detect()).command ?? '', this.buildArgsForTurn(input))
-      const replacedSessionId = await this.createAcpSessionId(replacement, input)
-      await this.configureSession(replacement.rpc, replacedSessionId, input)
+      const reopenedSession = await this.openAcpSession(replacement, input)
+      const replacedSessionId = replacement.acpSessionId
+      await this.configureSession(replacement.rpc, replacedSessionId, input, reopenedSession)
       return { session: replacement, providerSessionId: replacedSessionId }
     }
   }
 
   /** 在一个已经拿到进程的会话上确保存在 ACP 会话 ID（session/new 或 session/load）。 */
-  private async createAcpSessionId(session: AcpSession, input: CodingNsCliTurnInput): Promise<string> {
-    if (session.acpSessionId !== '') return session.acpSessionId
+  private async openAcpSession(session: AcpSession, input: CodingNsCliTurnInput): Promise<unknown> {
+    if (session.acpSessionId !== '') return undefined
     const created = input.providerSessionId === undefined
       ? await session.rpc.request('session/new', {
         cwd: input.cwd ?? process.cwd(),
         mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),
       }, { signal: input.signal, killOnAbort: false })
       : await this.loadOrCreate(session.rpc, input)
-    const sessionId = readSessionId(created) ?? input.providerSessionId ?? input.sessionId
-    session.acpSessionId = sessionId
-    return sessionId
+    session.acpSessionId = readSessionId(created) ?? input.providerSessionId ?? input.sessionId
+    return created
   }
 
   /** 丢弃一个会话及其进程，下次执行会重新 spawn 并按需建立新会话。 */

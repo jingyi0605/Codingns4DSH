@@ -17,6 +17,8 @@ interface FakeOptions {
   /** prompt 期间由服务端主动发给客户端的请求，例如权限或提问。 */
   readonly serverRequests?: readonly Record<string, unknown>[]
   readonly sessionId?: string
+  readonly sessionState?: Record<string, unknown>
+  readonly configuredState?: Record<string, unknown>
 }
 
 /** 造一个说 ACP 的 agy 子进程，记录所有客户端请求与命令行。 */
@@ -64,7 +66,8 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
           if (failure !== undefined) {
             stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: failure })}\n`)
           } else if (request.method === 'initialize') reply(request.id, {})
-          else if (request.method === 'session/new' || request.method === 'session/load') reply(request.id, { sessionId: options.sessionId ?? 'agy-acp-session' })
+          else if (request.method === 'session/new' || request.method === 'session/load') reply(request.id, { sessionId: options.sessionId ?? 'agy-acp-session', ...options.sessionState })
+          else if (request.method === 'session/set_config_option') reply(request.id, options.configuredState ?? {})
           else if (request.method === 'session/prompt') {
             promptId = request.id ?? 0
             if (pendingServerRequests.length > 0) {
@@ -177,16 +180,37 @@ test('Antigravity 图片回合：Claude 不下发思考档位，provider-default
   })
 })
 
-test('Antigravity 图片回合：未知内置模型明确报错，Magpie 自定义模型沿用会话默认配置', async () => {
+test('Antigravity 图片回合：无法确认选定模型时明确报错，图片和提示词均未发送', async () => {
   await withAttachments(async ({ image }) => {
-    const unknown = { 'session/set_config_option:model': { code: -32602, message: 'Unknown model ID: nope' } }
-    const builtin = acpDriver({ failures: unknown })
-    await assert.rejects(collect(builtin.driver, { modelId: 'nope', attachments: [{ kind: 'image', path: image }] }), /Unknown model ID: nope/u)
+    const failures = { 'session/set_config_option:model': { code: -32602, message: 'Unknown model ID' } }
+    const custom = 'magpie/antigravity-bridge/gemini-4-hydrogen'
+    const otherModel = { models: { currentModelId: 'other', availableModels: [{ modelId: custom, name: custom }] } }
+    for (const [modelId, options] of [
+      ['nope', { failures }],
+      [custom, { failures }],
+      [custom, { failures, sessionState: otherModel }],
+      [custom, { configuredState: otherModel }],
+    ] as const) {
+      const { driver, requests } = acpDriver(options)
+      await assert.rejects(collect(driver, { modelId, attachments: [{ kind: 'image', path: image }] }), (error: Error) => error.message.includes(modelId))
+      assert.equal(requests.filter(request => request.method === 'session/prompt').length, 0)
+    }
+  })
+})
 
-    const custom = acpDriver({ failures: unknown })
-    const chunks = await collect(custom.driver, { modelId: 'magpie/antigravity-bridge/gemini-4-hydrogen', attachments: [{ kind: 'image', path: image }] })
-    assert.equal(chunks.at(-1)?.reason, 'stop')
-    assert.equal(custom.requests.some((request) => request.method === 'session/prompt'), true)
+test('Antigravity 图片回合：ACP 拒绝设置时，新建或恢复的会话确认 Magpie 当前模型后可以发送', async () => {
+  await withAttachments(async ({ image }) => {
+    const modelId = 'magpie/antigravity-bridge/gemini-4-hydrogen'
+    const failures = { 'session/set_config_option:model': { code: -32602, message: 'Unknown model ID' } }
+    for (const [providerSessionId, sessionState] of [
+      [undefined, { configOptions: [{ id: 'model', currentValue: modelId }] }],
+      ['agy-acp-session', { models: { currentModelId: modelId } }],
+    ] as const) {
+      const { driver, requests } = acpDriver({ failures, sessionState })
+      const chunks = await collect(driver, { modelId, providerSessionId, attachments: [{ kind: 'image', path: image }] })
+      assert.equal(chunks.at(-1)?.reason, 'stop')
+      assert.equal(requests.filter(request => request.method === 'session/prompt').length, 1)
+    }
   })
 })
 
