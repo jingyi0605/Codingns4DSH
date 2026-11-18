@@ -16,6 +16,7 @@ import { createPresentationSlots } from './fixtures/presentation-slots.js'
 const t = (key: string) => zh[key] ?? key
 const result = { event: 'result', result: { conversation_id: 'agy-permissions', status: 'SUCCESS', response: '完成' } }
 const denial = 'permission check failed for unsandboxed "Get-ChildItem": user denied permission to run command'
+const usage = { input_tokens: 100, output_tokens: 10 }
 
 function fixture(events: Record<string, unknown>[], stderrText = '') {
   const calls: string[][] = []
@@ -43,6 +44,14 @@ const collect = async (driver: AntigravityDriver, input: Record<string, unknown>
   const events: any[] = []
   for await (const event of driver.executeTurn({ sessionId: 'agy-permissions', messages: [], prompt: 'test', ...input } as never)) events.push(event)
   return events
+}
+
+function finishAfterUsage(events: Awaited<ReturnType<typeof collect>>) {
+  const settlement = events.filter(event => event.type === 'usage' || event.type === 'finish')
+  assert.deepEqual(settlement.map(event => event.type), ['usage', 'finish'])
+  assert.equal(settlement[0].inputTokens, usage.input_tokens)
+  assert.equal(settlement[0].outputTokens, usage.output_tokens)
+  return settlement[1]
 }
 
 test('AGY exposes its four native modes, defaults to plan, and does not claim interactive approval', () => {
@@ -83,42 +92,55 @@ test('AGY legacy defaults stay conservative and never inherit full access withou
   assert.notEqual(permission?.sandboxMode, 'danger-full-access')
 })
 
+test('AGY SUCCESS keeps the new response when only the result carries a stale permission denial', async () => {
+  const { driver } = fixture([{ ...result, result: { ...result.result, error: denial, usage } }])
+  try {
+    const events = await collect(driver)
+    assert.deepEqual(events.filter(event => event.type === 'text-delta').map(event => event.text), ['完成'])
+    assert.deepEqual(finishAfterUsage(events), { type: 'finish', reason: 'stop' })
+  } finally { driver.dispose() }
+})
+
 test('AGY screenshot denial becomes a failed tool and an actionable error, even when CLI reports SUCCESS', async () => {
   const { driver } = fixture([
-    { event: 'step_update', step_update: { step_type: 'agent_response', step_index: 1, state: 'DONE', usage: { input_tokens: 100, output_tokens: 10 } } },
+    { event: 'step_update', step_update: { step_type: 'agent_response', step_index: 1, state: 'DONE', usage } },
     { event: 'step_update', step_update: { step_type: 'tool', step_index: 2, state: 'DONE', tool_name: 'run_command', tool_info: { error: { type: 'TOOL_ERROR', message: denial } } } },
     result,
   ])
   try {
     const events = await collect(driver)
     assert.equal(events.find(event => event.type === 'tool-event')?.status, 'failed')
-    const finish = events.filter(event => event.type === 'finish')
-    assert.equal(finish.length, 1)
-    assert.equal(finish[0].reason, 'error')
-    assert.equal(finish[0].failure.code, 'AGY_PERMISSION_DENIED')
-    assert.match(finish[0].failure.message, /无头|非交互/)
-    assert.match(finish[0].failure.message, /permissions/)
+    const finish = finishAfterUsage(events)
+    assert.equal(finish.reason, 'error')
+    assert.equal(finish.failure.code, 'AGY_PERMISSION_DENIED')
+    assert.match(finish.failure.message, /无头|非交互/)
+    assert.match(finish.failure.message, /permissions/)
     assert.equal(events.some(event => event.type === 'text-delta' && event.text === '完成'), false)
-    assert.equal(events.find(event => event.type === 'usage')?.inputTokens, 100)
   } finally { driver.dispose() }
 })
 
 test('AGY stderr soft-denial is surfaced when stdout otherwise looks successful', async () => {
-  const { driver } = fixture([result], 'Print mode: soft-denying tool confirmation "Bash" at step 10\n')
+  const { driver } = fixture([{ ...result, result: { ...result.result, usage } }], 'Print mode: soft-denying tool confirmation "Bash" at step 10\n')
   try {
     const events = await collect(driver)
-    const finish = events.find(event => event.type === 'finish')
+    const finish = finishAfterUsage(events)
     assert.equal(finish.reason, 'error')
     assert.equal(finish.failure.code, 'AGY_PERMISSION_DENIED')
     assert.equal(events.some(event => event.type === 'text-delta' && event.text === '完成'), false)
   } finally { driver.dispose() }
 })
 
-test('AGY terminal permission errors are actionable, while cancellation still wins', async () => {
-  const failed = fixture([{ event: 'result', result: { status: 'ERROR', error: denial } }])
+test('AGY terminal permission errors are actionable', async () => {
+  const failed = fixture([{ event: 'result', result: { status: 'ERROR', error: denial, usage } }])
   try {
-    assert.equal((await collect(failed.driver)).find(event => event.type === 'finish')?.failure?.code, 'AGY_PERMISSION_DENIED')
+    const finish = finishAfterUsage(await collect(failed.driver))
+    assert.equal(finish.reason, 'error')
+    assert.equal(finish.failure.code, 'AGY_PERMISSION_DENIED')
+    assert.match(finish.failure.message, /agy \/permissions/)
   } finally { failed.driver.dispose() }
+})
+
+test('AGY rejects a turn cancelled before startup', async () => {
   const cancelled = fixture([result], 'soft-denying tool confirmation "Bash"')
   try {
     const controller = new AbortController(); controller.abort()
