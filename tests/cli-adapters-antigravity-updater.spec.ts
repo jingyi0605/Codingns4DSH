@@ -32,7 +32,7 @@ test('Windows 自动更新使用隐藏的官方 update 入口，合并并发并�
     assert.equal(f.calls.length, 1)
     assert.deepEqual(f.calls[0], {
       command: 'agy', args: ['update'],
-      options: { env: { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' }, windowsHide: true, shell: true, stdio: ['ignore', 'pipe', 'pipe'] },
+      options: { env: { ...env, AGY_CLI_DISABLE_AUTO_UPDATE: 'true' }, windowsHide: true, shell: false, windowsVerbatimArguments: false, stdio: ['ignore', 'pipe', 'pipe'] },
     })
     assert.equal(env.AGY_CLI_DISABLE_AUTO_UPDATE, 'false')
     f.children[0]!.emit('close', 0)

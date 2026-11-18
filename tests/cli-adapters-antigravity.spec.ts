@@ -739,7 +739,7 @@ test('Antigravity 从 stdout 加载目录并合并档位，只有诊断时返回
   ])
   assert.deepEqual(modelProbeCalls[0], ['fake-agy', 'models'])
   assert.deepEqual(modelProbeOptions[0]?.stdio, ['ignore', 'pipe', 'pipe'])
-  assert.equal(modelProbeOptions[0]?.shell, process.platform === 'win32')
+  assert.equal(modelProbeOptions[0]?.shell, false)
   assert.equal(typeof modelProbeOptions[0]?.env?.PATH, 'string')
   const fallback = await driver.listModels()
   assert.equal(fallback.fallback, true)

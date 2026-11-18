@@ -11,6 +11,7 @@ export interface RpcBinaryOptions {
   readonly parseVersion?: (output: string) => string | null
   /** OpenCode 旧协议允许成功退出但不返回语义版本，保持这一兼容行为。 */
   readonly allowUnknownVersion?: boolean
+  readonly resolveWindowsCommand?: boolean
 }
 
 const absent: CodingNsCliDetection = { installed: false, version: null, command: null }
@@ -32,10 +33,12 @@ export async function detectBinary(options: RpcBinaryOptions): Promise<CodingNsC
   const parseVersion = options.parseVersion ?? ((output: string) => output.match(/\d+\.\d+(?:\.\d+)?(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?/u)?.[0] ?? null)
   let failure: CodingNsCliDetection | undefined
   for (const command of options.binaries) {
-    const direct = await probe(command)
+    const preferred = WINDOWS && options.resolveWindowsCommand ? await resolveCommandPath(command, run) : undefined
+    const candidate = preferred ?? command
+    const direct = await probe(candidate)
     if (direct.detection.installed) return direct.detection
-    const resolved = await resolveCommandPath(command, run)
-    if (resolved !== null && resolved !== command) {
+    const resolved = preferred === undefined ? await resolveCommandPath(command, run) : preferred
+    if (resolved !== null && resolved !== candidate) {
       const fallback = await probe(resolved)
       if (fallback.detection.installed) return fallback.detection
       failure ??= fallback.detection.detectionFailure === undefined ? failedDetection('launch') : fallback.detection

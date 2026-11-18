@@ -10,6 +10,7 @@ import type {
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
+import { isWindowsBatchCommand } from './process-utils.js'
 import { detectBinary, emptyCatalog, isRecord, streamRpcRequest, usageChunk } from './rpc-driver-utils.js'
 import { acpToolStatusFields, firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
 import { buildAcpPromptBlocks } from './attachment-utils.js'
@@ -20,6 +21,7 @@ import { ACP_FORM_CLIENT_CAPABILITIES, acpElicitationResponse, readAcpElicitatio
 
 export interface AcpCliDriverOptions {
   readonly binaries?: readonly string[]
+  readonly resolveWindowsCommand?: boolean
   readonly spawnSync?: typeof spawnSync
   readonly spawn?: typeof spawn
   /** 传给 Provider 子进程的环境覆盖；不会改写 Host 自身的 process.env。 */
@@ -129,6 +131,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
   /** Cursor/Kiro 的 ACP 流可由 Registry 在工具完成后暂停并续读。 */
   readonly supportsToolStepSplitting = true
   private readonly binaries: readonly string[]
+  private readonly resolveWindowsCommand: boolean
   private readonly args: readonly string[]
   private readonly buildArgsForTurn: (input: CodingNsCliTurnInput) => readonly string[]
   private readonly runtimeModelSelection: boolean
@@ -158,6 +161,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
       capabilities: options.capabilities,
     }
     this.binaries = options.binaries ?? []
+    this.resolveWindowsCommand = options.resolveWindowsCommand ?? false
     this.args = options.args
     this.buildArgsForTurn = options.buildArgs ?? (() => this.args)
     this.runtimeModelSelection = options.runtimeModelSelection ?? true
@@ -178,7 +182,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
-    const result = await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync, environment: this.environment })
+    const result = await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync, environment: this.environment, resolveWindowsCommand: this.resolveWindowsCommand })
     if (result.installed) this.cachedBinary = result.command
     return result
   }
@@ -484,7 +488,10 @@ export class AcpCliDriver implements CodingNsCliDriver {
       ...(input.runtimeEnv ?? {}),
       ...this.sessionEnvironmentForInput(input),
     }
-    const rpc = new JsonRpcProcess({ command, args, cwd: input.cwd, env: sessionEnvironment, spawn: this.runSpawn })
+    const rpc = new JsonRpcProcess({
+      command, args, cwd: input.cwd, env: sessionEnvironment, spawn: this.runSpawn,
+      ...(this.resolveWindowsCommand ? { shell: false, explicitWindowsShell: isWindowsBatchCommand(command) } : {}),
+    })
     const state: AcpSession = {
       teamToken,
       rpc,
