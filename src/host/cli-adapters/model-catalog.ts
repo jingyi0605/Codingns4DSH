@@ -337,8 +337,7 @@ export function parseAntigravityModels(output: string): CodingNsCliModelCatalog 
   const grouped = new Map<string, { name: string; efforts: string[] }>()
   for (const rawLine of output.split(/\r?\n/u)) {
     const line = rawLine.trim()
-    if (line === '' || /^fetching available models\.\.\.$/iu.test(line)) continue
-    const match = line.match(/^([^\s]+)[\t ]+(.+)$/u)
+    const match = line.match(/^(\S+)\t+(.+)$/u)
     if (!match) continue
     const id = match[1]!.trim()
     const label = match[2]!.trim()
