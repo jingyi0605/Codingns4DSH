@@ -1,5 +1,11 @@
-import { spawn } from 'node:child_process'
-import { terminateChildProcess } from './process-utils.js'
+import { spawn, type SpawnOptions } from 'node:child_process'
+import { isWindowsBatchCommand, terminateChildProcess, windowsShellInvocation, type CodingNsChildProcess } from './process-utils.js'
+
+export function spawnAntigravity(runSpawn: typeof spawn, command: string, args: readonly string[], options: SpawnOptions): CodingNsChildProcess {
+  const batch = isWindowsBatchCommand(command)
+  const invocation = batch ? windowsShellInvocation(command, args) : { command, args }
+  return runSpawn(invocation.command, invocation.args, { ...options, shell: false, windowsVerbatimArguments: batch }) as CodingNsChildProcess
+}
 
 /** Windows 的 detached updater 会在探测版本时创建可见终端；其它平台保留原生更新。 */
 export function antigravityCommandEnvironment(
@@ -33,10 +39,9 @@ export class AntigravityAutoUpdater {
     this.nextCheck = now + 15 * 60_000
     let child: ReturnType<typeof spawn>
     try {
-      child = this.runSpawn(command, ['update'], {
+      child = spawnAntigravity(this.runSpawn, command, ['update'], {
         env: antigravityCommandEnvironment(environment, 'win32'),
         windowsHide: true,
-        shell: true,
         stdio: ['ignore', 'pipe', 'pipe'],
       })
     } catch {

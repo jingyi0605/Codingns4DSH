@@ -13,7 +13,7 @@ import { commandEnvironment, runAsyncCommand, terminateChildProcess, withCommand
 import { usageChunk } from './rpc-driver-utils.js'
 import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 import { normalizeToolStatus, serializeToolValue } from './tool-observation.js'
-import { AntigravityAutoUpdater, antigravityCommandEnvironment } from './antigravity-updater.js'
+import { AntigravityAutoUpdater, antigravityCommandEnvironment, spawnAntigravity } from './antigravity-updater.js'
 import { readAntigravityToolDetail, type AntigravityToolDetailRequest, type AntigravityToolDetail } from './antigravity-tool-detail.js'
 
 const ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS = 30_000
@@ -50,12 +50,11 @@ async function runBufferedModels(
     }
     let child: CodingNsChildProcess
     try {
-      child = runSpawn(command, args, {
+      child = spawnAntigravity(runSpawn, command, args, {
         env: antigravityCommandEnvironment(environment),
         windowsHide: true,
-        shell: process.platform === 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
-      }) as CodingNsChildProcess
+      })
     } catch (error) {
       reject(error)
       return
@@ -169,6 +168,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       binaries: options.binaries ?? ['agy'],
       versionArgs: ['--version'],
       modelArgs: ['models'],
+      resolveWindowsCommand: true,
     }, options)
     this.resolveContextWindow = options.resolveContextWindow ?? ((modelId) => knownAntigravityContextWindow(modelId))
     this.resolveModelId = options.resolveModelId ?? ((modelId) => resolveAntigravityModelId(modelId))
@@ -180,6 +180,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       name: 'Antigravity',
       binaries: options.binaries ?? ['agy'],
       ...(options.spawn === undefined ? {} : { spawn: options.spawn }),
+      resolveWindowsCommand: true,
       ...(options.spawnSync === undefined ? {} : { spawnSync: options.spawnSync }),
       environment: antigravityCommandEnvironment({}),
       args: ['acp'],
@@ -372,7 +373,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   protected override spawnProcess(command: string, args: readonly string[], options: SpawnOptions): CodingNsChildProcess {
     // Windows 更新由 autoUpdater 自动调用官方 update 入口，业务进程避开 detached 路径。
     this.autoUpdater.check(command, this.resolvedEnvironment ?? commandEnvironment(command))
-    return super.spawnProcess(command, args, {
+    return spawnAntigravity(this.runSpawn, command, args, {
       ...options,
       env: antigravityCommandEnvironment(options.env ?? {}),
     })

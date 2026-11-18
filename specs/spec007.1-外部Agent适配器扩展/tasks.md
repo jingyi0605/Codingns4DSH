@@ -305,6 +305,7 @@
 - [x] 4.4 Antigravity
   - 状态：DONE
   - 结果：复用 stream-json 事件归一化并增加 stdin NDJSON 输入；调用 `agy models` 动态加载模型并合并思考档位；不声明危险 headless 模式之外的权限能力。
+  - Windows 路径回归（2026-11-18）：`node --import ./tests/register-source-loader.mjs --test tests/cli-adapters-antigravity-argv.spec.ts` 使用本地子进程记录实际 argv。文本回合、模型探测及图片 ACP 回合分别通过原生 `.exe`、`.cmd`、`.bat` 启动，九组实测均保留了带空格路径的参数边界。
 - [x] 4.5 登记、图标、回归测试与文档
   - 状态：DONE
   - 结果：七个 adapter ID 已登记，新增 SVG 图标、驱动测试、README 能力表和开发记录。

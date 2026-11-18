@@ -717,7 +717,7 @@ test('Antigravity 从 agy models 动态加载模型并合并思考档位', async
   ])
   assert.deepEqual(modelProbeCalls[0], ['fake-agy', 'models'])
   assert.deepEqual(modelProbeOptions[0]?.stdio, ['ignore', 'pipe', 'pipe'])
-  assert.equal(modelProbeOptions[0]?.shell, process.platform === 'win32')
+  assert.equal(modelProbeOptions[0]?.shell, false)
   assert.equal(typeof modelProbeOptions[0]?.env?.PATH, 'string')
   driver.dispose()
 })

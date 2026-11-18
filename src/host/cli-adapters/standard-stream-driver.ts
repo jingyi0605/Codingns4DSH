@@ -47,25 +47,27 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
   protected observeStderr?: (chunk: string, input: CodingNsCliTurnInput) => void
   private readonly versionArgs: readonly string[]
   private readonly modelArgs: readonly string[]
+  private readonly resolveWindowsCommand: boolean
   private cachedBinary: string | null = null
   private cachedEnvironment: Record<string, string | undefined> | undefined
   private readonly processes = new Set<CodingNsChildProcess>()
 
   protected constructor(
     descriptor: Omit<CodingNsCliAdapterDescriptor, 'installed' | 'enabled' | 'version' | 'command'>,
-    defaults: { binaries: readonly string[]; versionArgs?: readonly string[]; modelArgs?: readonly string[] },
+    defaults: { binaries: readonly string[]; versionArgs?: readonly string[]; modelArgs?: readonly string[]; resolveWindowsCommand?: boolean },
     options: StandardStreamDriverOptions = {},
   ) {
     this.descriptor = descriptor
     this.binaries = options.binaries ?? defaults.binaries
     this.versionArgs = options.versionArgs ?? defaults.versionArgs ?? ['--version']
     this.modelArgs = options.modelArgs ?? defaults.modelArgs ?? ['--help']
+    this.resolveWindowsCommand = defaults.resolveWindowsCommand ?? false
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
-    const result = await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync, versionArgs: this.versionArgs, timeout: 5_000, parseVersion: (output) => this.parseVersion(output) })
+    const result = await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync, versionArgs: this.versionArgs, resolveWindowsCommand: this.resolveWindowsCommand, timeout: 5_000, parseVersion: (output) => this.parseVersion(output) })
     this.cachedBinary = result.command
     this.cachedEnvironment = result.command === null ? undefined : commandEnvironment(result.command)
     return result

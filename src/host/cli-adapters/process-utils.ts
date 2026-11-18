@@ -20,6 +20,9 @@ interface KillableChild {
 
 /** Windows 的 npm CLI 通常是 .cmd 包装器，必须经由 shell 才能启动。 */
 export const WINDOWS = process.platform === 'win32'
+export function isWindowsBatchCommand(command: string): boolean {
+  return WINDOWS && /\.(?:cmd|bat)$/iu.test(command)
+}
 let loginShellPath: string | undefined
 let loginShellLookup: Promise<void> | undefined
 let windowsEnvironment: WindowsEnvironmentSnapshot | undefined
