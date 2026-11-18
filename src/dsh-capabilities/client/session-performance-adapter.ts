@@ -1,6 +1,6 @@
 import type { ComponentType } from 'react'
 import { CODEX_PERFORMANCE_PROJECTION } from '../../shared/codex-performance.js'
-import { ANTIGRAVITY_PERFORMANCE_PROJECTION, CLAUDE_PERFORMANCE_PROJECTION, GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION, PI_PERFORMANCE_PROJECTION, ZCODE_CONTEXT_PROJECTION } from '../../shared/request-performance.js'
+import { ANTIGRAVITY_CONTEXT_PROJECTION, ANTIGRAVITY_PERFORMANCE_PROJECTION, CLAUDE_PERFORMANCE_PROJECTION, GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION, PI_PERFORMANCE_PROJECTION, ZCODE_CONTEXT_PROJECTION } from '../../shared/request-performance.js'
 import type { MagpieContextSession } from '../../shared/contracts/magpie-management.js'
 import { installComposerPresentation, type ComposerPresentationHooks } from './composer-presentation-adapter.js'
 import { followPresentationEntry, type PresentationSlots, type RenderElement } from './slot-presentation-mirror.js'
@@ -98,18 +98,19 @@ function installGrokContextPresentation(
       ...props,
       useProjection: (key: string, ...args: unknown[]) => {
         const original = props.useProjection(key, ...args)
-        if (key === 'contextBreakdown' && (adapter === 'grok' || adapter === 'zcode' || magpieReady)) return undefined
+        if (key === 'contextBreakdown' && (adapter === 'grok' || adapter === 'zcode' || adapter === 'antigravity' || magpieReady)) return undefined
         if (key !== 'contextPressure') return original
         // Projection readers are hooks; loading Magpie must not skip this read.
         const value = props.useProjection(GROK_CONTEXT_PROJECTION)
         const zcodeValue = props.useProjection(ZCODE_CONTEXT_PROJECTION)
+        const antigravityValue = props.useProjection(ANTIGRAVITY_CONTEXT_PROJECTION)
         if (magpieSnapshot !== null) {
           const pressure = { pressureTokens: magpieSnapshot.usedTokens, contextWindow: magpieSnapshot.contextWindow }
           return typeof args[0] === 'function' ? args[0](pressure) : pressure
         }
         if (magpieReady) return undefined
-        if (adapter !== 'grok' && adapter !== 'zcode') return original
-        const pressure = (adapter === 'zcode' ? zcodeValue : value) ?? {}
+        if (adapter !== 'grok' && adapter !== 'zcode' && adapter !== 'antigravity') return original
+        const pressure = (adapter === 'antigravity' ? antigravityValue : adapter === 'zcode' ? zcodeValue : value) ?? {}
         return typeof args[0] === 'function' ? args[0](pressure) : pressure
       },
     })

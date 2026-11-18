@@ -1,6 +1,7 @@
 // Decision-level lifecycle regression checks; transport is mocked, no external CLI is spawned.
 import { test, beforeEach, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { PassThrough } from 'node:stream'
 import { CodexAppServerDriver as Driver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
 import { JsonRpcProcess as Rpc } from '../data/build/dist/host/cli-adapters/json-rpc-process.js'
 // Inspect lifecycle internals without adding a public test-only API.
@@ -82,6 +83,18 @@ test('skills discovery without permission does not downgrade an existing backend
   assert.deepEqual(await d.listSkills({ sessionId: base.sessionId, cwd: base.cwd }), [])
   assert.equal(d.sessions.get(base.sessionId), first)
   assert.equal(retired.length, 0)
+})
+
+test('turns replace the backend when the runtime environment changes or is removed', async () => {
+  const driver = new CodexAppServerDriver()
+  const first = await driver.getSession({ ...base, runtimeEnv: { CODINGNS_TEST_CREDENTIAL: 'old' } }, 'codex')
+  const rotated = await driver.getSession({ ...base, runtimeEnv: { CODINGNS_TEST_CREDENTIAL: 'new' } }, 'codex')
+  const cleared = await driver.getSession(base, 'codex')
+  assert.notEqual(rotated, first)
+  assert.notEqual(cleared, rotated)
+  assert.deepEqual(retired, [first.rpc, rotated.rpc])
+  assert.equal(rotated.rpc.options.env.CODINGNS_TEST_CREDENTIAL, 'new')
+  assert.equal(cleared.rpc.options.env.CODINGNS_TEST_CREDENTIAL, undefined)
 })
 
 test('未指定 permission 时不得静默降级为保守策略：启动不注入 -c 权限对', async () => {
@@ -168,4 +181,106 @@ test('manual compaction uses lifecycle checks instead of retaining old permissio
   assert.notEqual(compacted, first)
   assert.equal(compacted.threadId, 'persisted-thread')
   assert.equal(launchConfig(compacted, 'sandbox_mode'), 'danger-full-access')
+})
+
+function createHandshakeHarness() {
+  JsonRpcProcess.prototype.request = originalRequest
+  JsonRpcProcess.prototype.notify = originalNotify
+  JsonRpcProcess.prototype.disposeAndWait = originalDispose
+  const firstInitialize = Promise.withResolvers<(error?: string) => void>()
+  const backends: { calls: string[]; closed: boolean; answer?: unknown }[] = []
+  const driver = new Driver({
+    binaries: ['fake-codex'],
+    spawnSync: (() => ({ status: 0, stdout: 'codex 1.0.0', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const backend: typeof backends[number] = { calls: [], closed: false }
+      backends.push(backend)
+      const send = (message: object) => stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`)
+      const turn = { threadId: 'handshake-thread', turnId: 'handshake-turn' }
+      const stdin = { write(data: string) {
+        const { id, method, result } = JSON.parse(data)
+        if (method !== undefined) backend.calls.push(method)
+        if (method === 'initialize' && backends.length === 1) {
+          firstInitialize.resolve((error) => send(error === undefined
+            ? { id, result: {} }
+            : { id, error: { code: -32600, message: error } }))
+        } else if (method === 'thread/start') {
+          send({ id, result: { thread: { id: turn.threadId } } })
+        } else if (method === 'turn/start') {
+          send({ id, result: { turn: { id: turn.turnId, status: 'inProgress' } } })
+          send({ id: 'question', method: 'item/tool/requestUserInput', params: {
+            ...turn, itemId: 'question-item', questions: [{ id: 'continue', question: 'Continue?', options: [{ label: 'Yes' }] }],
+          } })
+        } else if (id === 'question' && method === undefined) {
+          backend.answer = result
+          send({ method: 'turn/completed', params: { ...turn, turn: { id: turn.turnId, status: 'completed' } } })
+        } else if (id !== undefined) {
+          send({ id, result: method === 'skills/list' ? { data: [] } : {} })
+        }
+      } }
+      return { stdout, stderr, stdin, kill() { backend.closed = true; stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  return { driver, backends, firstInitialize: firstInitialize.promise }
+}
+
+test('a rejected Codex handshake closes the backend and a retry can answer a reverse request', { timeout: 5_000 }, async () => {
+  const { driver, backends, firstInitialize } = createHandshakeHarness()
+  const turn = { ...base, permission: limited } as const
+  try {
+    const failed = driver.executeTurn(turn)[Symbol.asyncIterator]().next()
+    const rejection = assert.rejects(failed, /handshake rejected/)
+    const reply = await firstInitialize
+    reply('handshake rejected')
+    await rejection
+    assert.equal(backends[0]?.closed, true)
+
+    const events = []
+    for await (const event of driver.executeTurn(turn)) {
+      events.push(event)
+      if (event.type === 'question-request') {
+        driver.respondQuestion(base.sessionId, { requestId: event.requestId, answers: [{ id: 'continue', selected: ['Yes'] }] })
+      }
+    }
+    assert.deepEqual(backends.map(backend => backend.calls), [['initialize'], ['initialize', 'initialized', 'thread/start', 'turn/start']])
+    assert.deepEqual(backends[1]?.answer, { answers: { continue: { answers: ['Yes'] } } })
+    assert.deepEqual(events.at(-1), { type: 'finish', reason: 'stop' })
+  } finally { driver.dispose() }
+})
+
+test('concurrent Codex skills queries wait for the same handshake', { timeout: 5_000 }, async () => {
+  const { driver, backends, firstInitialize } = createHandshakeHarness()
+  const input = { sessionId: base.sessionId, cwd: base.cwd }
+  let results: Promise<unknown> | undefined
+  try {
+    const first = driver.listSkills(input)
+    const reply = await firstInitialize
+    const second = driver.listSkills(input)
+    results = Promise.all([first, second])
+    await new Promise(resolve => setImmediate(resolve))
+    assert.deepEqual(backends.map(backend => backend.calls), [['initialize']])
+    reply()
+    assert.deepEqual(await results, [[], []])
+    assert.deepEqual(backends.map(backend => backend.calls), [['initialize', 'initialized', 'skills/list', 'skills/list']])
+  } finally {
+    driver.dispose()
+    await results?.catch(() => undefined)
+  }
+})
+
+test('cancelling a Codex handshake closes the backend and permits another handshake', { timeout: 5_000 }, async () => {
+  const { driver, backends, firstInitialize } = createHandshakeHarness()
+  const input = { sessionId: base.sessionId, cwd: base.cwd }
+  const controller = new AbortController()
+  try {
+    const rejection = assert.rejects(driver.listSkills({ ...input, signal: controller.signal }), /请求已取消/)
+    await firstInitialize
+    controller.abort()
+    await rejection
+    assert.equal(backends[0]?.closed, true)
+    assert.deepEqual(await driver.listSkills(input), [])
+    assert.deepEqual(backends.map(backend => backend.calls), [['initialize', '$/cancelRequest'], ['initialize', 'initialized', 'skills/list']])
+  } finally { driver.dispose() }
 })

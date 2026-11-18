@@ -450,11 +450,13 @@ export type CodingNsAgentEvent =
   | { readonly type: 'reasoning-snapshot'; readonly text: string }
   | { readonly type: 'text-delta'; readonly text: string; readonly messageId?: string }
   | { readonly type: 'text-snapshot'; readonly text: string }
+  | { readonly type: 'text-retry'; readonly messageId: string }
   | {
       /** Provider 在同一回合中切换 assistant item 时的内容块边界。 */
       readonly type: 'message-boundary'
       readonly channel: 'reasoning' | 'text'
       readonly messageId: string
+      readonly discardPrevious?: true
     }
   | {
       /** Provider 的 assistant item 已切换，Host 应在当前流结束后注入下一个 DSH step。 */

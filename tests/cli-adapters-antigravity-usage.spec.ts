@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
@@ -138,6 +138,9 @@ test('Antigravity CLI 额度兜底和分组补全禁用自动更新', async () =
 })
 
 test('Antigravity 上下文窗口按模型 id 与 AGY 设置里的展示名解析', () => {
+  assert.equal(knownAntigravityContextWindow('gemini-4-argon'), 1_048_576)
+  assert.equal(knownAntigravityContextWindow('gemini-4-argon-high'), 1_048_576)
+  assert.equal(knownAntigravityContextWindow('magpie/tlp/gemini-4-argon'), undefined)
   assert.equal(knownAntigravityContextWindow('gemini-3.8-flash'), 1_048_576)
   assert.equal(knownAntigravityContextWindow('gemini-3.1-pro'), 1_048_576)
   assert.equal(knownAntigravityContextWindow('claude-sonnet-4-6'), 250_000)
@@ -420,4 +423,35 @@ test('ProviderSubscriptionService 把 antigravity 路由到官方用量读取器
   assert.equal(claude?.primary?.remainingPercent, 97.2433)
   // 未支持的适配器仍然返回 null，不影响既有行为
   assert.equal(await service.read('cursor-cli'), null)
+})
+
+test('ProviderSubscriptionService 按 AGY 当前设置或会话显式模型选择额度组', async (context) => {
+  const homeDirectory = mkdtempSync(join(tmpdir(), 'codingns-agy-quota-'))
+  context.after(() => rmSync(homeDirectory, { recursive: true, force: true }))
+  const settingsDirectory = join(homeDirectory, '.gemini', 'antigravity-cli')
+  mkdirSync(settingsDirectory, { recursive: true })
+  const settingsPath = join(settingsDirectory, 'settings.json')
+  const service = new ProviderSubscriptionService({
+    antigravity: {
+      homeDirectory,
+      platform: 'linux',
+      resolveCommand: () => '/fake/agy',
+      spawn: stubUsageSpawn([
+        'Gemini Models\tWeekly Limit Remaining\t85%\t2026-11-21T16:31:02Z',
+        'Claude and GPT models\tWeekly Limit Remaining\t45%\t2026-11-21T16:31:02Z',
+        'Gemini 4 Argon\tGemini 4 Argon Weekly Limit\t10%\t2026-11-21T16:31:02Z',
+      ].join('\n')),
+    },
+  })
+  const weeklyRemaining = async (modelId?: string) =>
+    (await service.read('antigravity', undefined, modelId))?.secondary?.remainingPercent
+
+  assert.equal(await weeklyRemaining('provider-default'), 85)
+  writeFileSync(settingsPath, JSON.stringify({ model: 'Gemini 4 Argon (High)' }))
+  assert.equal(await weeklyRemaining('provider-default'), 10)
+  writeFileSync(settingsPath, JSON.stringify({ model: 'Claude Sonnet 4.6 (Thinking)' }))
+  assert.equal(await weeklyRemaining(), 45)
+  assert.equal(await weeklyRemaining('gemini-4-argon-medium'), 10)
+  writeFileSync(settingsPath, JSON.stringify({ model: 'Unknown Model' }))
+  assert.equal(await weeklyRemaining('provider-default'), 85)
 })

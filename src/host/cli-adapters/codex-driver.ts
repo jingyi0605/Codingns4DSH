@@ -39,9 +39,10 @@ const DEFAULT_STEER_TERMINAL_GRACE_MS = 2_000
 
 interface CodexSegmentedTurn {
   readonly queue: CodexTurnEventQueue
+  readonly decode: ReturnType<typeof createCodexTurnDecoder>
   removeNotificationListener: () => void
   removeAbortListener: () => void
-  removeExitListener: () => void
+  removeExitListener?: () => void
   terminalReason: 'stop' | 'cancel' | 'error' | null
   failure: { message: string; code?: string } | undefined
   done: boolean
@@ -203,6 +204,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   private binaryFingerprint = ''
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, CodexSession>()
+  private readonly startingSessions = new Map<string, Promise<CodexSession>>()
 
   constructor(options: CodexAppServerDriverOptions = {}) {
     this.binaries = options.binaries ?? ['codex']
@@ -332,7 +334,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     if (command === null) throw new Error('Codex 未安装')
     if (previous && previous.threadId !== '' && previous.threadId !== input.providerSessionId) {
       await this.retireSession(previous)
-      this.sessions.delete(input.sessionId)
+      if (this.sessions.get(input.sessionId) === previous) this.sessions.delete(input.sessionId)
     }
     let session: CodexSession | undefined
     try {
@@ -350,12 +352,9 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       await this.compactThread(session, turnInput)
       return { compacted: true }
     } catch (error) {
-      // Initialization and resume can fail or be cancelled before compaction starts.
-      // Discard that process as well; the next operation resumes the persisted thread.
-      const failed = this.sessions.get(input.sessionId)
-      if (failed !== undefined) {
-        await this.retireSession(failed)
-        this.sessions.delete(input.sessionId)
+      if (session !== undefined) {
+        await this.retireSession(session)
+        if (this.sessions.get(input.sessionId) === session) this.sessions.delete(input.sessionId)
       }
       throw error
     } finally {
@@ -476,8 +475,9 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         const responseTerminal = buildCodexCompletionNotification(response, session.threadId)
         if (responseTerminal !== null) onNotification(responseTerminal)
 
+        const decode = createCodexTurnDecoder(input.cwd)
         for await (const message of eventQueue.iterable) {
-          const rawChunk = codexMessageToChunk(message, input.cwd)
+          const rawChunk = decode(message)
           if (rawChunk === null) continue
           for (const chunk of expandCodexCompactionChunk(session, rawChunk)) {
             if (chunk.type !== 'finish') sawMeaningfulEvent = true
@@ -651,6 +651,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     const notificationsBeforeTurnStart: JsonRpcMessage[] = []
     const active: CodexSegmentedTurn = {
       queue: eventQueue,
+      decode: createCodexTurnDecoder(input.cwd),
       removeNotificationListener: () => undefined,
       terminalReason: null,
       failure: undefined,
@@ -659,7 +660,6 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       currentAssistantMessageId: undefined,
       sawCompletedTool: false,
       removeAbortListener: () => undefined,
-      removeExitListener: () => undefined,
     }
     const acceptNotification = (message: JsonRpcMessage, allowUnidentifiedTool: boolean): void => {
       if (isCodexCompactionNotification(message, session.threadId)) {
@@ -747,7 +747,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
           return
         }
         if (input.signal?.aborted) throw new Error('请求已取消')
-        chunk = codexMessageToChunk(next.value, input.cwd)
+        chunk = active.decode(next.value)
       }
       if (chunk === null) continue
 
@@ -794,7 +794,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     active.done = true
     active.removeAbortListener()
     active.removeNotificationListener()
-    active.removeExitListener()
+    active.removeExitListener?.()
     active.queue.close()
     if (session.segmentedTurn === active) session.segmentedTurn = undefined
     this.releasePendingRequests(session)
@@ -1113,9 +1113,10 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     for (const session of this.sessions.values()) {
       if (session.segmentedTurn !== undefined) this.closeSegmentedTurn(session, session.segmentedTurn)
       else this.releasePendingRequests(session)
-      session.rpc.dispose()
     }
+    for (const rpc of this.processes) rpc.dispose()
     this.sessions.clear()
+    this.startingSessions.clear()
     this.processes.clear()
     this.cachedBinary = null
   }
@@ -1142,11 +1143,19 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     this.processes.delete(session.rpc)
   }
 
-  private async getSession(input: CodingNsCliTurnInput, command: string, preservePermission = false) {
+  private async getSession(input: CodingNsCliTurnInput, command: string, skillDiscovery = false): Promise<CodexSession> {
+    input.signal?.throwIfAborted()
+    let starting = this.startingSessions.get(input.sessionId)
+    while (starting !== undefined) {
+      await starting
+      input.signal?.throwIfAborted()
+      starting = this.startingSessions.get(input.sessionId)
+    }
     const previous = this.sessions.get(input.sessionId)
+    const sameWorkspace = previous !== undefined && previous.cwd === input.cwd
+    if (skillDiscovery && sameWorkspace && !previous.rpc.isClosed) return previous
     // 真实回合（非技能发现）若 Host 未提供权限事实，必须显式告警，不能静默按缺省处理。
-    // 技能发现走 preservePermission=true 复用既有权限，不属于真实回合，不告警。
-    if (!preservePermission && input.permission === undefined) {
+    if (!skillDiscovery && input.permission === undefined) {
       console.warn(`[codingns4dsh] Codex 真实回合未收到 Host 权限事实（permission 缺省），本次启动不注入沙箱/审批覆盖，交由 Codex 自身配置；sessionId=${input.sessionId}`)
     }
     const teamToken = teamBridgeToken(input.sessionId)
@@ -1155,23 +1164,37 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     // overrides come from the DSH-resolved effective permission: when Host has not
     // read any effective value yet, we omit the `-c` pair and let Codex use its own
     // config.toml instead of silently forcing workspace-write + on-request.
-    const permission = preservePermission && input.permission === undefined && previous !== undefined
+    const permission = skillDiscovery && previous !== undefined
       ? previous.permission
       : codexLaunchPermission(input)
     const launchFingerprint = JSON.stringify([command, this.binaryFingerprint, permission ?? null])
     const canDrainClosedSegment = input.splitToolSteps === true && input.resumeSegmentedTurn === true
       && previous?.segmentedTurn !== undefined && previous.segmentedTurn.terminalReason !== null
-    if (previous !== undefined
-      && previous.cwd === input.cwd
+    if (sameWorkspace
       && previous.teamToken === teamToken
       && previous.runtimeEnvFingerprint === runtimeEnvFingerprint
       && previous.launchFingerprint === launchFingerprint
       && (!previous.rpc.isClosed || canDrainClosedSegment)) return previous
-    if (previous !== undefined) {
-      const interruptedSegment = input.resumeSegmentedTurn === true && previous.segmentedTurn !== undefined
+
+    const start = this.startSession(input, command, previous, { teamToken, runtimeEnvFingerprint, permission, launchFingerprint })
+    this.startingSessions.set(input.sessionId, start)
+    try {
+      return await start
+    } finally {
+      if (this.startingSessions.get(input.sessionId) === start) this.startingSessions.delete(input.sessionId)
+    }
+  }
+
+  private async startSession(
+    input: CodingNsCliTurnInput,
+    command: string,
+    previous: CodexSession | undefined,
+    launch: Pick<CodexSession, 'teamToken' | 'runtimeEnvFingerprint' | 'permission' | 'launchFingerprint'>,
+  ): Promise<CodexSession> {
+    if (input.resumeSegmentedTurn === true && previous?.segmentedTurn !== undefined) {
       await this.retireSession(previous)
       // Do not automatically replay a partially executed prompt after replacement.
-      if (interruptedSegment) throw new Error('Codex 启动配置或权限已更改，旧回合已停止；请重新发送后续请求。')
+      throw new Error('Codex 启动配置或权限已更改，旧回合已停止；请重新发送后续请求。')
     }
     // 子代理托管开启时用 `-c` 覆盖注入 MCP 替身工具；工具由桥接转投成 DSH 原生子会话。
     const bridgeArgs = codexBridgeArgs(input.sessionId, this.descriptor.id)
@@ -1182,6 +1205,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
     // Codex 的 `-c` 覆盖项必须与 app-server 的其余启动参数放在同一侧；
     // 统一置于子命令前，避免不同版本对全局/子命令参数的解析差异。
     // 只下发 Host 实际解析到的权限字段；缺省字段保留 Codex 自身配置默认值。
+    const { permission } = launch
     const permissionArgs = permission === undefined ? [] : [
       ...(permission.sandboxMode === undefined ? [] : ['-c', `sandbox_mode=${JSON.stringify(permission.sandboxMode)}`]),
       ...(permission.approvalPolicy === undefined ? [] : ['-c', `approval_policy=${JSON.stringify(permission.approvalPolicy)}`]),
@@ -1199,11 +1223,8 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       explicitWindowsShell: true,
       spawn: this.runSpawn,
     })
-    const session = {
-      teamToken,
-      runtimeEnvFingerprint,
-      permission,
-      launchFingerprint,
+    const session: CodexSession = {
+      ...launch,
       resumeThreadId: input.providerSessionId ?? (previous?.cwd === input.cwd ? previous?.threadId || previous?.resumeThreadId : undefined),
       performance: new CodexPerformanceTracker(this.now),
       rpc,
@@ -1229,15 +1250,12 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
       skills: new Map<string, CodexSkillEntry>(),
     }
     this.processes.add(rpc)
-    this.sessions.set(input.sessionId, session)
     // Codex 目录发生变化时丢弃 Host 侧路径缓存；下一次显式调用会重新读取目录。
     rpc.addNotificationListener((message) => {
       if (message.method !== 'skills/changed') return
       session.skills.clear()
       session.skillsCwd = undefined
     })
-    await rpc.request('initialize', { clientInfo: { name: 'Codex', version: '0.1.1' }, capabilities: { experimentalApi: true } }, { signal: input.signal, killOnAbort: false })
-    rpc.notify('initialized', {})
     rpc.setServerRequestHandler((request) => {
       const requestId = readRequestId(request)
       if (requestId === null) return { approved: false }
@@ -1264,7 +1282,18 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
         ...(kind === 'permissions' ? { requested: params.permissions } : {}),
       }))
     })
-    return session
+    try {
+      if (previous !== undefined) await this.retireSession(previous)
+      input.signal?.throwIfAborted()
+      await rpc.request('initialize', { clientInfo: { name: 'Codex', version: '0.1.1' }, capabilities: { experimentalApi: true } }, { signal: input.signal, killOnAbort: false })
+      input.signal?.throwIfAborted()
+      rpc.notify('initialized', {})
+      this.sessions.set(input.sessionId, session)
+      return session
+    } catch (error) {
+      await this.retireSession(session)
+      throw error
+    }
   }
 }
 
@@ -1591,6 +1620,26 @@ function summarizeCodexAuth(auth: string): string {
   const hasTokens = tokens !== undefined && typeof tokens.refresh_token === 'string'
   const accountId = tokens !== undefined && typeof tokens.account_id === 'string' ? tokens.account_id : ''
   return `${mode}|apiKey=${hasApiKey}|tokens=${hasTokens}|account=${accountId}`
+}
+
+function createCodexTurnDecoder(cwd?: string) {
+  let candidate: { messageId: string; turnId: string | null } | undefined
+  return (message: JsonRpcMessage): CodingNsAgentEvent | null => {
+    const params = isRecord(message.params) ? message.params : {}
+    const item = isRecord(params.item) ? params.item : undefined
+    if (message.method === 'error' && params.willRetry === true) {
+      if (candidate === undefined || candidate.turnId !== readTurnId(message)) return null
+      return { type: 'text-retry', messageId: candidate.messageId }
+    }
+    const chunk = codexMessageToChunk(message, cwd)
+    if (chunk?.type === 'text-delta' && chunk.messageId !== undefined) {
+      candidate = { messageId: chunk.messageId, turnId: readTurnId(message) }
+    } else if (message.method === 'item/started' || item?.phase === 'commentary' || chunk?.type === 'tool-event'
+      || chunk?.type === 'question-request' || chunk?.type === 'permission-request') {
+      candidate = undefined
+    }
+    return chunk
+  }
 }
 
 function codexMessageToChunk(message: Record<string, any>, cwd?: string): CodingNsAgentEvent | null {
