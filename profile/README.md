@@ -1,6 +1,8 @@
 # Codingns4DSH Profile
 
-这是独立的 Codingns4DSH Profile，插件版本为 `0.2.2-rc.7`，最低支持 DSH `0.2.1-alpha.2`，已验证 `0.2.2-rc.3`。更新的 DSH 版本会显示未验证警告，但不会阻止安装或启用。
+这是独立的 Codingns4DSH Profile，插件版本为 `0.2.2-rc.8`，最低支持 DSH `0.2.1-alpha.2`，已验证 `0.2.2-rc.4`。更新的 DSH 版本会显示未验证警告，但不会阻止安装或启用。
+
+本次验证限于 macOS Stage0 Web、原生会话回放及真实 Codex / Claude CLI 配合本地模型协议夹具的生命周期。Desktop、Windows/Linux 实机、公网 Relay 和真实模型服务尚未验证。详见 [验收记录](../docs/开发记录/20261118-DSH-rc4兼容升级与Stage0验收.md)。
 
 Profile 选择 `dsh-multi-model-provider` 和 `codingns4dsh` Bundle。
 全局语音助理由 CodingNS 自己负责 Host 租约、浏览器设备、PCM 数据面、摘要和动作闭环，
@@ -12,7 +14,7 @@ Profile 选择 `dsh-multi-model-provider` 和 `codingns4dsh` Bundle。
 发布后，在 DSH 的 Profile 中安装精确版本的插件 Bundle：
 
 ```bash
-dsh plugin --profile codingns4dsh add @jingyi0605/codingns4dsh@0.2.2-rc.7
+dsh plugin --profile codingns4dsh add @jingyi0605/codingns4dsh@0.2.2-rc.8
 ```
 
 Profile 安装完成后，使用 DSH 官方启动器启动：

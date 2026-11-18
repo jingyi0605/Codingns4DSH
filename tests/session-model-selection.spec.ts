@@ -141,18 +141,35 @@ const controllerPackage = join(runtime, 'dsh-api-session-controller')
 const available = existsSync(join(controllerPackage, 'lib/types/commands.js'))
 const version = available ? JSON.parse(readFileSync(join(controllerPackage, 'package.json'), 'utf8')).version : ''
 
+async function nativeModelFixture(id: string, fallback: SessionModelSelection) {
+  const [{ Context }, { SessionProjectionRegistry }, { Session }, { AgentModel, AgentRegistry, installModelSelection }, { AgentLoop }, { SystemPrompt }] = await Promise.all([
+    'cordis', 'dsh-session-projection', 'dsh-session', 'dsh-agent', 'dsh-agent-loop', 'dsh-system-prompt',
+  ].map(name => import(pathToFileURL(join(runtime, name, 'lib/index.js')).href)))
+  const ctx = new Context()
+  new SessionProjectionRegistry(ctx)
+  new AgentRegistry(ctx)
+  new SystemPrompt(ctx, { includeHarnessIdentity: false, includeRuntimeContext: false })
+  for (const name of ['sessions', 'llm', 'tools']) ctx.provide(name, {})
+  const loop = ctx.plugin(AgentLoop, { agents: [], maxParallelToolCalls: 1 })
+  await loop.await()
+  const session = new Session(id)
+  const model = new AgentModel(ctx.get('agentLoop').modelProjectionHandle.readerFor(session), session, fallback)
+  return { ctx, session, model, installModelSelection, dispose: () => loop.dispose() }
+}
+
 test('fresh Grok image prompt passes real DSH admission without changing the native default', { skip: !available || version !== DSH_TESTED_VERSION }, async () => {
   const [{ ApiSessionAgentController }, { SessionCommandController }] = await Promise.all([
     import(pathToFileURL(join(controllerPackage, 'lib/types/agent.js')).href),
     import(pathToFileURL(join(controllerPackage, 'lib/types/commands.js')).href),
   ])
   const defaultSelection = { provider: 'native', model: 'text-only', reasoningEffort: 'high' }
+  const fixture = await nativeModelFixture('fresh-session', defaultSelection)
   const delivered: unknown[] = []
   const checked: Array<{ provider: string; model: string }> = []
   let virtual: { resolveModel(provider: string, model: string): Promise<unknown> } | undefined
   const agent = {
     id: 'fresh-session', ctx: { on: () => () => {} },
-    session: { requestHeader: () => undefined, snapshotEvents: () => [] },
+    session: fixture.session, model: fixture.model,
     inbox: { nextTurn: [], nextStep: [] },
     followup: (message: unknown) => delivered.push(message),
   }
@@ -173,7 +190,7 @@ test('fresh Grok image prompt passes real DSH admission without changing the nat
   }
   const native = new ApiSessionAgentController(context)
   native.resolveAgent = async () => ({ agent })
-  const nativeRef = native.selectionFor(agent)
+  const nativeRef = agent.model
   const commands = new SessionCommandController(context, native, '/unused')
   const request = { sessionId: agent.id, requestId: 'image-request', mode: 'followup', content: [{ type: 'image', attachment: { attachmentId: 'image-test', mediaType: 'image/png', bytes: 1, width: 1, height: 1 } }] }
   const send = () => commands.prompt(request, { kind: 'user', rpcId: 'image-request' })
@@ -187,7 +204,7 @@ test('fresh Grok image prompt passes real DSH admission without changing the nat
     async listModels() { return { groups: [], currentModel: null, currentEffort: null } },
     async *executeTurn() { assert.fail('Admission must not execute Grok') },
   }])
-  const services = { llm, sessionController: { agents: native } }
+  const services = { llm, sessionController: { agents: context.agents }, agents: context.agents, agentDefaultModel: context.agentDefaultModel }
   const features = new FeatureRegistry({ rpc: table, dshVersion: version, dshContext: { get: (name: keyof typeof services) => services[name] } as never })
   features.register(createCliAdaptersFeature({ registry }))
   await features.start('cliAdapters')
@@ -199,36 +216,36 @@ test('fresh Grok image prompt passes real DSH admission without changing the nat
     await set('grok', 'selected-grok-model')
     assert.deepEqual(await send(), { accepted: true })
     assert.deepEqual(checked.at(-1), { provider: 'codingns-cli-grok', model: 'selected-grok-model' })
-    assert.deepEqual(nativeRef.current, { provider: 'codingns-cli-grok', model: 'selected-grok-model' })
+    assert.deepEqual(nativeRef.current(), { provider: 'codingns-cli-grok', model: 'selected-grok-model' })
     assert.equal(context.agentDefaultModel.currentSelection(), defaultSelection)
     assert.equal(delivered.length, 2)
+    await set('dsh')
     registry.setEnabled('grok', false)
+    await assert.rejects(async () => set('grok'), { code: 'CODINGNS_CLI_DISABLED' })
     await assert.rejects(send(), /does not support image input/u)
     registry.setEnabled('grok', true)
     await set('dsh')
     await assert.rejects(send(), /does not support image input/u)
-    assert.equal(native.selectionFor(agent), nativeRef)
-    assert.equal(nativeRef.current, defaultSelection)
+    assert.equal(agent.model, nativeRef)
+    assert.deepEqual(nativeRef.current(), defaultSelection)
     await set('grok')
+    await set('dsh')
   } finally {
     await features.disable('cliAdapters')
+    await fixture.dispose()
   }
-  assert.equal(native.selectionFor(agent), nativeRef)
-  assert.equal(nativeRef.current, defaultSelection)
+  assert.equal(agent.model, nativeRef)
+  assert.deepEqual(nativeRef.current(), defaultSelection)
   await assert.rejects(send(), /does not support image input/u)
 })
 
 test('retained native selection drives real DSH assembly without repeated model-switch notices', { skip: !available || version !== DSH_TESTED_VERSION }, async () => {
-  const { ApiSessionAgentController } = await import(pathToFileURL(join(controllerPackage, 'lib/types/agent.js')).href)
   const nativeChoice = { provider: 'native', model: 'text-only', reasoningEffort: 'high' }
+  const fixture = await nativeModelFixture('external-session', nativeChoice)
   const hooks = new Map<string, (...args: any[]) => Promise<any>>()
-  const context = {
-    typert: { lookups: { configure() {} }, contexts: { configureHost() {} } },
-    sessionProjections: { stateOf: () => ({ pending: nativeChoice }) },
-    agentDefaultModel: { currentSelection: () => nativeChoice },
-  }
-  let route: SessionModelSelection | undefined = { provider: 'codingns-cli-codex', model: 'selected-codex' }
+  let route: SessionModelSelection = { provider: 'codingns-cli-codex', model: 'selected-codex' }
   let previous = route
+  fixture.session.requestHeader = () => ({ config: previous })
   const agent = {
     id: 'external-session',
     ctx: {
@@ -237,43 +254,43 @@ test('retained native selection drives real DSH assembly without repeated model-
         return () => hooks.delete(name)
       },
     },
-    session: { requestHeader: () => ({ config: previous }) },
+    session: fixture.session, model: fixture.model,
   }
-  const owner = new ApiSessionAgentController(context)
-  // DSH's installed listeners retain this reference, not the accessor's return value.
-  const retained = owner.selectionFor(agent)
-  const descriptor = Object.getOwnPropertyDescriptor(retained, 'current')
-  const dispose = createSessionModelSelectionAdapter({ agents: owner }).install(() => route)
+  const retained = agent.model
+  const originalCurrent = retained.current
+  const removeHook = fixture.installModelSelection(agent.ctx)
+  const dispose = createSessionModelSelectionAdapter({ agents: { get: () => agent } }).install(() => route)
+  const assemble = () => fixture.ctx.get('systemPrompt').assemble({ agent, modelSelection: retained.current() })
+  const preStep = (messages: unknown[]) => hooks.get('agent/pre-step')!({
+    agent, messages, signal: new AbortController().signal, step: 1, modelSelection: retained.current(),
+  }, async () => ({ kind: 'enter', messages }))
   try {
-    owner.selectionFor(agent)
+    retained.select(route)
     for (let turn = 0; turn < 2; turn += 1) {
-      const assembly = await hooks.get('system-prompt/assemble')!({}, {}, async () => ({ variables: {} }))
+      const assembly = await assemble()
       assert.deepEqual(assembly.variables, { provider: route.provider, model: route.model })
       const input = [{ role: 'user', source: { kind: 'user' }, content: `Split D:\\video-${turn}.mp4 at 05:00` }]
-      const decision = await hooks.get('agent/pre-step')!({ agent, messages: input, signal: new AbortController().signal, step: 1 }, async () => ({ kind: 'enter', messages: input }))
+      const decision = await preStep(input)
       assert.deepEqual(decision.messages, input)
     }
-    assert.equal(owner.selectionFor(agent), retained)
+    assert.equal(agent.model, retained)
     route = { provider: 'codingns-cli-codex', model: 'another-codex' }
-    await hooks.get('system-prompt/assemble')!({}, {}, async () => ({ variables: {} }))
-    assert.deepEqual(retained.assembled, route)
+    retained.select(route)
+    assert.deepEqual((await assemble()).variables, { provider: route.provider, model: route.model })
     const input = [{ role: 'user', source: { kind: 'user' }, content: 'Continue with the new model' }]
-    const payload = { agent, messages: input, signal: new AbortController().signal, step: 1 }
-    const decision = await hooks.get('agent/pre-step')!(payload, async () => ({ kind: 'enter', messages: input }))
+    const decision = await preStep(input)
     assert.equal(decision.messages.length, 2)
     assert.equal(decision.messages[1].source.kind, 'model-selection')
     assert.match(decision.messages[1].content[0].text, /selected-codex.*another-codex/u)
     previous = route
-    const next = await hooks.get('agent/pre-step')!(payload, async () => ({ kind: 'enter', messages: input }))
+    const next = await preStep(input)
     assert.deepEqual(next.messages, input)
-    retained.current = { provider: 'native', model: 'updated-native' }
-    assert.deepEqual(retained.current, route)
-    route = undefined
-    assert.deepEqual(retained.current, { provider: 'native', model: 'updated-native' })
-    previous = retained.current
-    await hooks.get('system-prompt/assemble')!({}, {}, async () => ({ variables: {} }))
-    assert.deepEqual(retained.assembled, previous)
-    assert.equal(context.agentDefaultModel.currentSelection(), nativeChoice)
-  } finally { dispose() }
-  assert.deepEqual(Object.getOwnPropertyDescriptor(retained, 'current'), descriptor)
+    assert.deepEqual(retained.current(), route)
+    retained.select({ provider: 'native', model: 'updated-native' })
+    previous = retained.current()
+    assert.deepEqual(previous, { provider: 'native', model: 'updated-native' })
+    assert.deepEqual((await assemble()).variables, { provider: previous.provider, model: previous.model })
+    assert.deepEqual(nativeChoice, { provider: 'native', model: 'text-only', reasoningEffort: 'high' })
+  } finally { dispose(); removeHook(); await fixture.dispose() }
+  assert.equal(retained.current, originalCurrent)
 })

@@ -122,6 +122,33 @@ test('user abort does not emit failure and approval event carries its native req
   }
 })
 
+test('refused attempts deliver only one failure and retain the provider error code', async () => {
+  const f = await fixture()
+  try {
+    f.emit({ type: 'turn/start', seq: 1, data: { turn: 1 } })
+    f.emit({ type: 'assistant/attempt', seq: 2, data: { turn: 1, step: 1, stream: [
+      { type: 'text-chunks', index: 0, texts: ['Unaccepted draft'] },
+    ] } })
+    const terminal = { type: 'turn/end', seq: 3, data: {
+      turn: 1, reason: { kind: 'error', error: { code: 'CONTENT_REFUSED', message: 'Provider refused the request' } },
+    } }
+    f.emit(terminal)
+    f.emit(terminal)
+    await waitFor(() => f.queuedCount() === 1)
+    const rows = (await f.store.snapshot()).deliveries
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0]!.eventType, 'session.failed')
+    assert.deepEqual(JSON.parse(rows[0]!.body).data, {
+      errorCode: 'CONTENT_REFUSED', errorMessage: 'Provider refused the request',
+    })
+    assert.doesNotMatch(rows[0]!.body, /Unaccepted draft/u)
+  } finally {
+    f.controller.dispose()
+    await f.store.close()
+    await rm(f.root, { recursive: true, force: true })
+  }
+})
+
 test('question signals retry the activity snapshot and route its exact call ID', async () => {
   let reads = 0
   const timers = new Map<number, { callback: () => void; delay: number }>()

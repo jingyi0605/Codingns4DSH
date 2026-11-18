@@ -11,7 +11,9 @@ export class TranslationValidationError extends Error {
 /** Only known transient failures qualify for an automatic retry. */
 export function translationFailure(error: unknown, signal?: AbortSignal): SessionTranslationFailure {
   const cause = signal?.aborted ? signal.reason : error
-  const value = cause as { name?: string; message?: string; code?: string; status?: number; statusCode?: number; cause?: { code?: string } } | undefined
+  const value = cause as { name?: string; message?: string; code?: string; status?: number; statusCode?: number; failure?: { code?: string }; cause?: { code?: string } } | undefined
+  // Provider explanations are arbitrary text; an explicit refusal is not a transport retry.
+  if (!signal?.aborted && (value?.failure?.code ?? value?.code) === 'CONTENT_REFUSED') return { code: 'provider', retryable: false }
   const message = [value?.name, value?.message ?? String(cause), value?.code, value?.cause?.code].join(' ')
   const status = value?.status ?? value?.statusCode
   if (/timeout|timed out|ETIMEDOUT/iu.test(message)) return { code: 'timeout', retryable: true }
