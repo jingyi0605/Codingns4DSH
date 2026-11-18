@@ -324,7 +324,8 @@ test('real DSH preserves Grok billing, provider context, and source timing throu
     import(pathToFileURL(join(runtime, 'dsh-token-meter/lib/index.js')).href),
   ])
   const ctx = new Context(), registry = new SessionProjectionRegistry(ctx)
-  new TokenMeter(ctx)
+  const meter = ctx.plugin(TokenMeter)
+  await meter.await()
   const remove = await Promise.all([grokPerformanceProjection, grokContextProjection].map(projection => createSessionPerformanceAdapter(ctx).install(projection)))
   try {
     const session = new Session('grok-performance-fixture')
@@ -371,7 +372,10 @@ test('real DSH preserves Grok billing, provider context, and source timing throu
       contextObservation: { contextModelId: 'grok-fast', contextWindow: 500000, contextTokens: 20000 },
     }), true)
     assert.deepEqual(registry.snapshot(session).values[GROK_CONTEXT_PROJECTION], { contextWindow: 500000, pressureTokens: 20000 }, 'A live capacity change is not rewritten by the legacy first-window anchor')
-  } finally { for (const dispose of remove) await dispose() }
+  } finally {
+    for (const dispose of remove) await dispose()
+    await meter.dispose()
+  }
 })
 
 test('real DSH preserves Claude source timing and billing through translated delivery, checkpoints, and cold replay', { skip: !existsSync(registryPath) }, async () => {
@@ -379,8 +383,9 @@ test('real DSH preserves Claude source timing and billing through translated del
     'cordis/lib/index.js', 'dsh-session-projection/lib/index.js', 'dsh-session/lib/index.js', 'dsh-token-meter/lib/index.js',
   ].map(path => import(pathToFileURL(join(runtime, path)).href)))
   const ctx = new Context(), registry = new SessionProjectionRegistry(ctx)
-  new TokenMeter(ctx)
-  const remove = createSessionPerformanceAdapter(ctx).install(claudePerformanceProjection)
+  const meter = ctx.plugin(TokenMeter)
+  await meter.await()
+  const remove = await createSessionPerformanceAdapter(ctx).install(claudePerformanceProjection)
   try {
     const session = new Session('claude-performance-fixture')
     session.append('turn/start', { turn: 1 }); session.append('step/start', { turn: 1, step: 1 })
@@ -414,5 +419,5 @@ test('real DSH preserves Claude source timing and billing through translated del
     })
     assert.equal(legacy.decodeMs, 0)
     assert.equal(legacy.decodeTokens, 0, 'Old histories cannot recover source timing from a translated burst')
-  } finally { remove() }
+  } finally { await remove(); await meter.dispose() }
 })
