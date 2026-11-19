@@ -38,3 +38,11 @@
       - '**/*.map'
       - '**/*.d.ts'
       - 'data/build/dist/client/**'
+# DSH 的 Web 部署默认关闭会话全文搜索（session-query-sqlite 的 openAt: never），
+# 工作区 MCP 的 session_search 因此只会返回“搜索未开启”。这里改为首次搜索时才
+# 打开内存索引：不会在启动时加载 node:sqlite，也不与其他 DSH 进程共用索引文件。
+# 索引随进程重建，重启 Stage0 后第一次搜索会先读一遍会话日志，稍慢一些。
+- id: session-query-sqlite
+  config:
+    path: ':memory:'
+    openAt: first-search
