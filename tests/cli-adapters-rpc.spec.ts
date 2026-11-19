@@ -172,7 +172,7 @@ test('Codex MCP mcpToolCall 转换为 DSH 工具生命周期并保留失败结�
   for await (const chunk of driver.executeTurn({ sessionId: 'cua-events', messages: [], prompt: '检查桌面状态' })) chunks.push(chunk)
   const launch = calls[0] ?? []
   // #67：win32 下 TOML 覆盖项会被包进 `cmd /c` 的命令行串里，不是顶层参数，故按平台判断。
-  assert.equal(launch.some(arg => arg.startsWith('mcp_servers.cua_repl.command=')), process.platform === 'darwin')
+  assert.equal(launch.some(arg => arg.startsWith('mcp_servers.cua_repl.command=')), process.platform !== 'win32')
   assert.equal(launch.includes('--disable'), false)
   // #68：显式断言 Windows `cmd /c` 包装、TOML 参数与 computer_use 开关（保留 #68 语义）。
   if (process.platform === 'win32') {
