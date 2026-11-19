@@ -228,6 +228,7 @@ test('Stage0 patch 经原生 patch 算法后保留终端隔离并监听 Host 产
     { id: 'directory-picker', name: '@deepseek-ai/dsh-host-directory-picker-auto' },
     { id: 'client-hmr', name: '@deepseek-ai/dsh-client-hmr' },
     { id: 'hmr', name: '@deepseek-ai/dsh-hmr', config: { root: [] } },
+    { id: 'session-query-sqlite', name: '@deepseek-ai/dsh-session-query-sqlite', config: { path: ':memory:', openAt: 'never' } },
   ]
   const warnings: string[] = []
   const result = applyEntryPatches(entries, patches, (warning) => warnings.push(warning))
@@ -244,6 +245,10 @@ test('Stage0 patch 经原生 patch 算法后保留终端隔离并监听 Host 产
   assert.equal(config.ignored.includes('data'), false)
   assert.ok(config.debounce >= 500)
   assert.match(config.base.__jsExpr, /CODINGNS4DSH_STAGE0_REPO_URL/u)
+  assert.deepEqual(result.find((entry) => entry.id === 'session-query-sqlite')?.config, {
+    path: ':memory:',
+    openAt: 'first-search',
+  })
 })
 
 test('Stage0 runtime passes a file URL to the Host HMR configuration', () => {
