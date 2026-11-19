@@ -463,7 +463,7 @@ export class CodingNsDshMessageProjector {
     const reason = approvalReason(outcome, this.options.permission)
     await responder({ requestId: event.requestId, approved, ...(reason === undefined ? {} : { reason }) })
     if (outcome === 'policy-rejected' && this.options.adapterId === 'antigravity') {
-      return this.fail('DSH 已自动拒绝 agy 的工具请求。请在输入框旁的 DSH 权限菜单选择允许询问的权限模式，然后重试。', this.options.signal?.aborted)
+      return this.fail('DSH 已自动拒绝 agy 的工具请求。请在输入框旁选择 agy 模式后重试。', this.options.signal?.aborted)
     }
     return []
   }

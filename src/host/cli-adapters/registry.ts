@@ -472,7 +472,10 @@ export class CodingNsCliAdapterRegistry {
     }
     this.sessions.set(sessionId, normalized)
     this.sessionStore?.upsert(sessionId, normalized)
-    if (options.rememberPreference !== false && normalized.teamId === undefined && normalized.parentSessionId === undefined && normalized.origin !== 'subagent') this.rememberPreference(config.adapterId, normalized)
+    if (options.rememberPreference !== false && normalized.teamId === undefined && normalized.parentSessionId === undefined && normalized.origin !== 'subagent') {
+      const modeSelected = config.nativeApprovalMode !== undefined && (!sameAdapter || config.nativeApprovalMode !== previous?.nativeApprovalMode)
+      this.rememberPreference(config.adapterId, normalized, config.adapterId !== 'antigravity' || modeSelected)
+    }
     return normalized
   }
 
@@ -518,13 +521,13 @@ export class CodingNsCliAdapterRegistry {
     return undefined
   }
 
-  private rememberPreference(adapterId: CodingNsCliAdapterId, config: CodingNsCliSessionConfig): void {
+  private rememberPreference(adapterId: CodingNsCliAdapterId, config: CodingNsCliSessionConfig, rememberMode = true): void {
     const previous = this.preferences.get(adapterId)
     const modelId = config.modelId?.trim() || previous?.modelId
     const effortId = config.effortId?.trim() || previous?.effortId
     const serviceTierId = config.serviceTierId?.trim() || previous?.serviceTierId
     const translationEnabled = config.translationEnabled ?? previous?.translationEnabled
-    const nativeApprovalMode = config.nativeApprovalMode ?? previous?.nativeApprovalMode
+    const nativeApprovalMode = (rememberMode ? config.nativeApprovalMode : undefined) ?? previous?.nativeApprovalMode
     if (previous?.modelId === modelId && previous?.effortId === effortId && previous?.serviceTierId === serviceTierId && previous?.translationEnabled === translationEnabled && previous?.nativeApprovalMode === nativeApprovalMode) return
     const preference = {
       ...previous,

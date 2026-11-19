@@ -5,7 +5,8 @@ import type { CodingNsAgentImageArtifact } from '../../shared/contracts/cli-adap
 
 export interface AntigravityToolDetailRequest {
   readonly providerSessionId: string
-  readonly stepIndex: number
+  readonly stepIndex?: number
+  readonly callId?: string
   readonly toolName: string
   readonly parameters?: Record<string, unknown>
 }
@@ -30,12 +31,13 @@ export function readAntigravityToolDetail(
   conversationsRoot = join(homedir(), '.gemini', 'antigravity-cli', 'conversations'),
 ): AntigravityToolDetail | null {
   if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(request.providerSessionId)
-    || !Number.isSafeInteger(request.stepIndex) || request.stepIndex < 0) return null
+    || (request.stepIndex === undefined ? !request.callId : !Number.isSafeInteger(request.stepIndex) || request.stepIndex < 0)) return null
   let db: DatabaseSync | undefined
   try {
     db = new DatabaseSync(join(conversationsRoot, `${request.providerSessionId}.db`), { readOnly: true })
-    const row = db.prepare('SELECT step_payload FROM steps WHERE idx = ? AND step_type = 132 AND length(step_payload) <= ?')
-      .get(request.stepIndex, MAX_PAYLOAD_BYTES)
+    const row = request.stepIndex !== undefined
+      ? db.prepare('SELECT step_payload FROM steps WHERE idx = ? AND step_type = 132 AND length(step_payload) <= ?').get(request.stepIndex, MAX_PAYLOAD_BYTES)
+      : db.prepare('SELECT step_payload FROM steps WHERE step_type = 132 AND instr(metadata, ?) > 0 AND length(step_payload) <= ? ORDER BY idx DESC LIMIT 1').get(Buffer.from(request.callId!), MAX_PAYLOAD_BYTES)
     if (!(row?.step_payload instanceof Uint8Array)) return null
     return decodeToolDetail(row.step_payload, request)
   } catch {
@@ -51,6 +53,7 @@ function decodeToolDetail(bytes: Uint8Array, request: AntigravityToolDetailReque
   // tool_execution=140, tool_execution.result=2, result.text=1, result.images=4。
   const step = fields(bytes)
   const call = fields(first(fields(first(step, 5)), 4))
+  if (request.callId !== undefined && text(call, 1) !== request.callId) return null
   if (text(call, 2) !== request.toolName) return null
   const value: unknown = JSON.parse(text(call, 3) ?? 'null')
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null

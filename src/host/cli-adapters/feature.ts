@@ -883,7 +883,14 @@ export function createCliAdaptersFeature(options: {
             .join('\n\n')
           // 权限状态必须与 DSH 会话当前生效值同源。驱动不能自行假设“完全权限”，
           // 也不能把缺省当成“已确认无限制”：解析失败时留空，由驱动沿用保守默认。
-          const permission = resolveNativeApprovalPermission(config, resolveSessionPermission(context.services.dshContext, sessionId))
+          const inheritedPermission = resolveSessionPermission(context.services.dshContext, sessionId)
+          const permission = resolveNativeApprovalPermission(config, inheritedPermission)
+          if (config.adapterId === 'antigravity' && permission?.approvalPolicy === 'ask' && inheritedPermission?.preset === 'danger-full-access' && inheritedPermission.approvalPolicy === 'never') {
+            const host = context.services.dshContext
+            const session = host && nativeSessionFor(host, sessionId)
+            const presets = asRecord(host?.get('permissionPresets'))
+            if (session && typeof presets?.set === 'function') presets.set(session, 'workspace-write')
+          }
           let magpieCodexContextWindow: number | undefined
           if (config.adapterId === 'codex' && config.modelId !== undefined && typeof magpieUsage.readModelMetadata === 'function') {
             try {

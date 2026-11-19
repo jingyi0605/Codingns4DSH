@@ -1,10 +1,11 @@
 import { spawn, spawnSync, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsAgentPermissionResponse, CodingNsAgentToolEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsAgentPermissionResponse, CodingNsAgentQuestionResponse, CodingNsAgentToolEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
-import { AcpCliDriver } from './acp-cli-driver.js'
-import { JsonRpcRequestError, type JsonRpcProcess } from './json-rpc-process.js'
+import { AcpCliDriver, type AcpPendingQuestionRequest } from './acp-cli-driver.js'
+import { acpElicitationResponse, readAcpElicitationRequest } from './acp-elicitation.js'
+import { JsonRpcRequestError, type JsonRpcMessage, type JsonRpcProcess } from './json-rpc-process.js'
 import { StandardStreamDriver, emptyCatalog, genericEventChunks } from './standard-stream-driver.js'
 import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, isProviderDefaultModel, knownAntigravityContextWindow, parseAntigravityModels, resolveAntigravityEffort, resolveAntigravityModelId } from './model-catalog.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
@@ -160,7 +161,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     id: 'antigravity',
     name: 'Antigravity',
     protocol: 'stream-json',
-    capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'permission'],
+    capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'permission', 'questions'],
   }
 
   constructor(options: AntigravityDriverOptions = {}) {
@@ -168,7 +169,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       id: 'antigravity',
       name: 'Antigravity',
       protocol: 'stream-json',
-      capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'permission'],
+      capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'permission', 'questions'],
     }, {
       binaries: options.binaries ?? ['agy'],
       versionArgs: ['--version'],
@@ -193,9 +194,9 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       // 模型和思考档位走 ACP 的 config option，不用 session/set_model。
       runtimeModelSelection: false,
       configureSession: (rpc, sessionId, input, openedSession) => this.configureAcpSession(rpc, sessionId, input, openedSession),
-      capabilities: ['stream', 'resume', 'interrupt', 'tool-events', 'permission'],
+      capabilities: ['stream', 'resume', 'interrupt', 'tool-events', 'permission', 'questions'],
       permissionOptions: 'once',
-      readQuestionRequest: () => null,
+      readQuestionRequest: antigravityQuestionRequest,
       decidePermission: (_message, input) => input.permission?.nativeApprovalMode === undefined ? 'reject' : undefined,
       enrichUsage: (usage, input) => {
         if (usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined) {
@@ -254,7 +255,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         ...(magpie.settings === undefined ? {} : { magpieSettings: magpie.settings }),
       }
       const nativeMode = prepared.permission?.nativeApprovalMode
-      if ((nativeMode !== undefined && nativeMode !== 'full-access') || prepared.attachments?.some(attachment => attachment.kind === 'image')) {
+      if (nativeMode !== undefined || prepared.attachments?.some(attachment => attachment.kind === 'image')) {
         yield* this.executeAcpTurn(prepared)
         return
       }
@@ -286,6 +287,10 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     this.acp.respondPermission(sessionId, response)
   }
 
+  respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
+    this.acp.respondQuestion(sessionId, response)
+  }
+
   private async *executeAcpTurn(input: AntigravityTurnInput): AsyncGenerator<CodingNsAgentEvent> {
     const { command } = this.resolvedBinary === null ? await this.detect() : { command: this.resolvedBinary }
     if (command !== null) this.autoUpdater.check(command, this.resolvedEnvironment ?? commandEnvironment(command))
@@ -299,8 +304,24 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       acpAddDirectories: [...new Set(attachments.filter((attachment) => attachment.kind !== 'image').map((attachment) => dirname(attachment.path)))],
     }
     try {
+      let providerSessionId = acpInput.providerSessionId
       for await (const event of this.acp.executeTurn(acpInput)) {
-        if (event.type === 'session-binding') this.validateProviderSessionBinding(acpInput, event.providerSessionId)
+        if (event.type === 'session-binding') {
+          providerSessionId = event.providerSessionId
+          this.validateProviderSessionBinding(acpInput, providerSessionId)
+        }
+        if (event.type === 'tool-event' && providerSessionId && event.callId && (event.status === 'completed' || event.status === 'failed')) {
+          const detail = this.readToolDetail({ providerSessionId, callId: event.callId, toolName: event.toolName })
+          if (detail !== null) {
+            yield {
+              ...event,
+              ...(detail.output ? { output: detail.output, outputMode: 'snapshot' as const } : {}),
+              ...(detail.images ? { outputImages: detail.images } : {}),
+              ...(detail.error ? { status: 'failed' as const, error: detail.error } : {}),
+            }
+            continue
+          }
+        }
         yield event
       }
     } finally {
@@ -752,6 +773,25 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       args.push('--effort', input.effortId)
     }
     return args
+  }
+}
+
+function antigravityQuestionRequest(message: JsonRpcMessage): AcpPendingQuestionRequest | null {
+  const form = readAcpElicitationRequest(message)
+  if (!form) return null
+  const customKeys = new Set(form.questions.filter(question => form.bindings.some(binding => binding.propertyKey === `${question.id}_other`)).map(question => question.id))
+  return {
+    requestId: form.requestId, rpcId: form.rpcId,
+    questions: form.questions.filter(question => !question.id.endsWith('_other') || !customKeys.has(question.id.slice(0, -6)))
+      .map(question => ({ ...question, question: question.header ?? question.question })),
+    respond(response) {
+      const answers = response.answers.flatMap(answer => {
+        if (!customKeys.has(answer.id) || !answer.custom?.trim()) return [answer]
+        return [{ id: answer.id, selected: answer.selected }, { id: `${answer.id}_other`, selected: [answer.custom.trim()] }]
+      })
+      const result = acpElicitationResponse(form, { ...response, answers })
+      return Object.keys(result.content).length ? result : { action: 'cancel' }
+    },
   }
 }
 

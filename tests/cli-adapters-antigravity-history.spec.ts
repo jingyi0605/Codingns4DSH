@@ -41,9 +41,9 @@ function database(t: { after(callback: () => void): void }) {
   const root = mkdtempSync(join(tmpdir(), 'codingns-agy-history-'))
   const path = join(root, `${providerSessionId}.db`)
   const db = new DatabaseSync(path)
-  db.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB)')
+  db.exec('CREATE TABLE steps (idx INTEGER PRIMARY KEY, step_type INTEGER, step_payload BLOB, metadata BLOB)')
   t.after(() => { db.close(); rmSync(root, { recursive: true, force: true }) })
-  return { root, path, db, insert: (index: number, payload: Buffer) => db.prepare('INSERT INTO steps VALUES (?, 132, ?)').run(index, payload) }
+  return { root, path, db, insert: (index: number, payload: Buffer) => db.prepare('INSERT INTO steps VALUES (?, 132, ?, ?)').run(index, payload, Buffer.from('native-call-id')) }
 }
 
 function scriptedDriver(root: string, steps: readonly Record<string, unknown>[], options: {
@@ -117,6 +117,8 @@ test('Antigravity 只读取当前会话及匹配索引、工具名和路径的�
   native.insert(2, nativeStep('read_file', { Path: '/not-on-disk/source.txt' }, 'HISTORICAL_BYTES'))
   const request = { providerSessionId, stepIndex: 2, toolName: 'read_file', parameters: { Path: '/not-on-disk/source.txt' } }
   assert.equal(readAntigravityToolDetail(request, native.root)?.output, 'HISTORICAL_BYTES')
+  assert.equal(readAntigravityToolDetail({ providerSessionId, toolName: 'read_file', callId: 'native-call-id' }, native.root)?.output, 'HISTORICAL_BYTES')
+  assert.equal(readAntigravityToolDetail({ providerSessionId, toolName: 'read_file', callId: 'native-call' }, native.root), null)
   for (const patch of [{ stepIndex: 3 }, { toolName: 'write_file' }, { parameters: { Path: '/other.txt' } }, { providerSessionId: '../outside' }, { providerSessionId: '11111111-1111-1111-1111-111111111111' }]) {
     assert.equal(readAntigravityToolDetail({ ...request, ...patch }, native.root), null)
   }

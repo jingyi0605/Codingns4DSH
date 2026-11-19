@@ -54,32 +54,21 @@ function finishAfterUsage(events: Awaited<ReturnType<typeof collect>>) {
   return settlement[1]
 }
 
-test('AGY offers manual approval and retains plan as the default', () => {
-  assert.deepEqual(nativeApprovalModes('antigravity'), ['manual', 'auto-review', 'read-only', 'accept-edits', 'full-access'])
-  assert.equal(resolveNativeApprovalMode('antigravity', undefined), 'read-only')
-  assert.equal(resolveNativeApprovalMode('antigravity', 'inherit'), 'read-only')
+test('AGY menu matches the native ACP modes', () => {
+  assert.deepEqual(nativeApprovalModes('antigravity'), ['manual', 'accept-edits', 'read-only', 'full-access'])
+  assert.equal(resolveNativeApprovalMode('antigravity', undefined), 'manual')
+  assert.equal(resolveNativeApprovalMode('antigravity', 'inherit'), 'manual')
   const options = nativeApprovalCatalog('antigravity', t).options
-  assert.deepEqual(options.map(option => option.value), ['manual', 'auto', 'read-only', 'accept-edits', 'danger-full-access'])
+  assert.deepEqual(options.map(option => option.value), ['default', 'accept-edits', 'plan', 'danger-full-access'])
   assert.equal(options[2]?.name, '规划')
-  assert.match(options[1]!.description, /沙箱/)
-  assert.match(options[3]!.description, /审批的命令.*DSH/)
-  assert.match(options[4]!.description, /agy/)
-  assert.equal(nativeApprovalModeForValue('antigravity', 'manual'), 'manual')
+  assert.match(options[1]!.description, /审批的命令.*DSH/)
+  assert.equal(nativeApprovalModeForValue('antigravity', 'default'), 'manual')
 })
 
-test('AGY keeps headless execution for explicitly selected full access', async () => {
-  const { driver, calls } = fixture([result])
-  try {
-    const permission = resolveNativeApprovalPermission({ adapterId: 'antigravity', nativeApprovalMode: 'full-access' }, undefined)
-    await collect(driver, { permission })
-    assert.deepEqual(calls[0]?.slice(0, 5), ['--input-format', 'stream-json', '--output-format', 'stream-json', '--dangerously-skip-permissions'])
-  } finally { driver.dispose() }
-})
-
-test('AGY legacy defaults stay conservative and never inherit full access without a native choice', () => {
-  const permission = resolveNativeApprovalPermission({ adapterId: 'antigravity' }, { sandboxMode: 'danger-full-access', approvalPolicy: 'never' })
-  assert.equal(permission?.nativeApprovalMode, 'read-only')
-  assert.notEqual(permission?.sandboxMode, 'danger-full-access')
+test('Unsupported legacy modes resolve to the agy default', () => {
+  for (const nativeApprovalMode of ['inherit', 'auto-review'] as const) {
+    assert.deepEqual(resolveNativeApprovalPermission({ adapterId: 'antigravity', nativeApprovalMode }, { sandboxMode: 'danger-full-access', approvalPolicy: 'never' }), { nativeApprovalMode: 'manual', approvalPolicy: 'ask' })
+  }
 })
 
 test('AGY SUCCESS keeps the new response when only the result carries a stale permission denial', async () => {
@@ -163,8 +152,12 @@ test('AGY saved modes survive cold reload without losing provider session identi
     const cold = makeRegistry(coldStore)
     try {
       assert.equal(cold.getSession('s').nativeApprovalMode, 'accept-edits')
+      cold.setSession('old', { adapterId: 'antigravity', nativeApprovalMode: 'read-only' })
       assert.equal(cold.setSession('s', { adapterId: 'antigravity', nativeApprovalMode: 'full-access' }).providerSessionId, 'existing')
-      assert.equal(cold.setSession('new', { adapterId: 'antigravity' }).nativeApprovalMode, 'full-access')
+      cold.setSession('old', { adapterId: 'antigravity', modelId: 'another-model', nativeApprovalMode: 'read-only' })
+      const inherited = cold.setSession('new', { adapterId: 'antigravity' })
+      assert.equal(inherited.nativeApprovalMode, 'full-access')
+      assert.deepEqual(resolveNativeApprovalPermission(inherited, undefined), { nativeApprovalMode: 'full-access', approvalPolicy: 'never', sandboxMode: 'danger-full-access' })
       assert.equal(cold.setSession('s', { adapterId: 'antigravity', nativeApprovalMode: 'manual' }).providerSessionId, 'existing')
       assert.equal(cold.getSession('s').nativeApprovalMode, 'manual')
     } finally { await cold.dispose() }
@@ -209,17 +202,17 @@ test('AGY changing permission during a turn preserves the running snapshot and a
   const running = drain(registry.execute(input))
   try {
     await started
-    registry.setSession('running-agy', { adapterId: 'antigravity', nativeApprovalMode: 'full-access' })
+    registry.setSession('running-agy', { adapterId: 'antigravity', nativeApprovalMode: 'read-only' })
     release(); await running
     assert.deepEqual(received[0], initial)
-    assert.equal(registry.getSession('running-agy').nativeApprovalMode, 'full-access')
+    assert.equal(registry.getSession('running-agy').nativeApprovalMode, 'read-only')
     const next = resolveNativeApprovalPermission(registry.getSession('running-agy'), undefined)!
     await drain(registry.execute({ ...input, prompt: 'next', permission: next }))
-    assert.equal(received[1].nativeApprovalMode, 'full-access')
+    assert.equal(received[1].nativeApprovalMode, 'read-only')
   } finally { release(); await running; await registry.dispose() }
 })
 
-test('AGY actual native permission slot offers its modes and saves while a turn is active', async () => {
+test('AGY single native permission slot connects DSH approval when selecting a mode', async () => {
   const locale = { bind: () => resolveCodingNsTranslator(), getSnapshot: () => ({ revision: 0 }), subscribe: () => () => {}, register: () => () => {} } as never
   const slots = createPresentationSlots()
   const removeRoot = slots.register({ name: 'root', children: { 'conversation.input.left': { kind: 'list', scope: 'session' }, 'conversation.input.permission': { kind: 'single', scope: 'session' } } } as any, () => null)
@@ -232,27 +225,24 @@ test('AGY actual native permission slot offers its modes and saves while a turn 
   const slot: any = slots.entries('conversation.input.permission').find(entry => entry.options.id === 'codingns4dsh-native-approval')!
   const mounted = slot.component({ ...slot.inject('agy-permission-ui'), t: (key: string) => key, select: selectNative,
     useProjection: (key: string) => key === 'permissions' ? { currentValue: nativePreset } : undefined,
-    useSession: (select: any) => select({ sessionId: 'agy-permission-ui', running: true, queue: [] }) })
+    useSession: (select: any) => select({ sessionId: 'agy-permission-ui', running: false, queue: [] }) })
   const renderer = createHookRenderer(mounted.type, mounted.props, { checkHookOrder: true })
   try {
     renderer.render(); await new Promise(resolve => setImmediate(resolve))
     const tree: any = renderer.render()
     assert.equal(tree.props['data-codingns-approval'], 'override')
-    assert.equal(tree.props['data-codingns-approval-applies'], 'next-turn')
+    assert.equal(tree.props.children.filter(Boolean).length, 1)
     const control = tree.props.children[0]
     assert.match(control.props.t('confirm.description'), /agy/)
-    assert.equal(control.props.useProjection('permissions').currentValue, 'read-only')
-    assert.equal(control.props.usePermissionCatalog((state: any) => state).value.options.length, 5)
-    assert.equal(await control.props.select('manual'), true)
+    assert.equal(control.props.usePermissionCatalog((state: any) => state).value.options.length, 4)
+    assert.equal(control.props.useProjection('permissions').currentValue, 'default')
+    assert.equal(await control.props.select('default'), true)
     assert.equal(selection.nativeApprovalMode, 'manual')
     assert.equal(nativePreset, 'danger-full-access')
-    const nativeControl = tree.props.children[2].props.children[1]
-    assert.equal(nativeControl.props.useProjection('permissions').currentValue, 'danger-full-access')
-    assert.equal(await nativeControl.props.select('workspace-write'), true)
-    assert.equal(nativePreset, 'workspace-write')
     assert.equal(selection.nativeApprovalMode, 'manual')
     assert.equal(await control.props.select('accept-edits'), true)
     assert.equal(selection.nativeApprovalMode, 'accept-edits')
+    assert.equal(await control.props.select('inherit'), false)
     assert.equal(selection.providerSessionId, 'existing')
   } finally { renderer.dispose(); dispose(); removeNative(); removeRoot() }
 })

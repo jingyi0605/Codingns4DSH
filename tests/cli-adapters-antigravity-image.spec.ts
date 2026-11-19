@@ -237,6 +237,22 @@ test('Antigravity 图片回合：权限请求自动拒绝、提问直接取消�
   })
 })
 
+test('Antigravity forwards the actual agy form and returns its choice and optional free text', async () => {
+  const { driver, replies } = acpDriver({ serverRequests: [{ jsonrpc: '2.0', id: 42, method: 'elicitation/create', params: {
+    mode: 'form', message: 'The agent has a question.', requestedSchema: { type: 'object', properties: {
+      q1: { type: 'string', title: 'Pick a color', oneOf: [{ const: '2', title: 'Blue' }] }, q1_other: { type: 'string', title: 'Other' },
+    } },
+  } }] })
+  try {
+    for await (const event of driver.executeTurn({ sessionId: 'questions', messages: [], prompt: 'Test', permission: { nativeApprovalMode: 'manual' } })) {
+      if (event.type !== 'question-request') continue
+      assert.deepEqual(event.questions.map(question => question.question), ['Pick a color'])
+      driver.respondQuestion('questions', { requestId: event.requestId, answers: [{ id: 'q1', selected: ['Blue'], custom: 'Sky blue' }] })
+    }
+    assert.deepEqual(replies.get(42)?.result, { action: 'accept', content: { q1: '2', q1_other: 'Sky blue' } })
+  } finally { driver.dispose() }
+})
+
 const commandApproval = {
   jsonrpc: '2.0', id: 91, method: 'session/request_permission', params: {
     sessionId: 'agy-acp-session',
@@ -252,7 +268,6 @@ for (const [mode, modeId, decision, optionId] of [
   ['manual', 'default', 'allowed-once', 'approve-this-command'],
   ['accept-edits', 'accept-edits', 'rejected', 'deny-this-command'],
   ['read-only', 'plan', 'cancelled', undefined],
-  ['auto-review', 'auto', 'unavailable', 'deny-this-command'],
 ] as const) {
   test(`Antigravity text ${mode} returns DSH approval decision ${decision} through ACP`, { timeout: 5_000 }, async () => {
     const { driver, calls, requests, replies, killed } = acpDriver({ serverRequests: [commandApproval] })
@@ -323,7 +338,7 @@ test('Antigravity reports why DSH rejected a command when the session disables p
     }
     assert.equal(approvalCount, 1)
     assert.deepEqual(replies.get(91)?.result, { outcome: { outcome: 'selected', optionId: 'deny-this-command' } })
-    assert.match(JSON.stringify(chunks), /DSH 已自动拒绝 agy 的工具请求/u)
+    assert.match(JSON.stringify(chunks), /DSH 已自动拒绝 agy 的工具请求.*选择 agy 模式/u)
     assert.deepEqual(chunks.filter(chunk => chunk.type === 'finish').map(chunk => (chunk.reason as { kind: string }).kind), ['error'])
     assert.equal(killed(), 1)
   } finally { registry.dispose() }

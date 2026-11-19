@@ -6,9 +6,9 @@
 | --- | --- | --- |
 | Codex | 人工审批、自动审查、只读、完全访问 | 原有 sandbox/approvalPolicy；自动审查将 thread 和 turn 的 `approvalsReviewer` 设为 `auto_review`，其余模式恢复 `user` |
 | ZCode | 人工审批、自主审批、规划、自动接受编辑、完全访问 | `build`、`guarded`、`plan`、`edit`、`yolo` |
-| Antigravity | 自动审查、规划、自动接受编辑、完全访问 | `--mode auto`、`--mode plan`、`--mode accept-edits`、`--dangerously-skip-permissions` |
+| Antigravity | 默认、自动接受编辑、规划、完全访问 | `agy acp` 的 `default`、`accept-edits`、`plan`，以及启动开关 `--dangerously-skip-permissions` |
 
-其他 Agent 保留 DSH 原有权限入口。Codex 不展示 ZCode 的“自动接受编辑”；Antigravity 不展示无法在无头模式回传的“人工审批”。规划优先于 ZCode 的其他选择。ZCode 的 plan/guarded 和 Antigravity 的 plan 都不等于操作系统文件沙箱。
+其他 Agent 保留 DSH 原有权限入口。新建普通 agy 会话从第一轮使用最近一次选定的模式。需要审批的模式在回合开始时将 DSH 的「完全权限」预设切到「工作区内修改」。
 
 ## 保存与回合边界
 
@@ -16,13 +16,13 @@
 
 运行中或已有排队消息时仍可更改权限，但新设置只对下一轮生效。当前 Provider 回合、工具续段和同轮其他 Agent 输入使用启动时的权限快照；未知权限也必须保持未知。延迟返回的 Provider 身份绑定不会覆盖运行中刚保存的设置。保存失败时恢复之前的显示值。
 
-旧 Codex/ZCode 会话没有显式原生模式，或保存了旧 `inherit` 值时，继续保留原有 DSH 权限。打开会话、更改模型、同步偏好都不会把只读升级为可写。菜单不再提供“跟随 DSH”选项；只有用户选择新模式后才覆盖该会话的旧权限。Antigravity 在没有显式选择时使用保守的 plan。
+旧 Codex/ZCode 会话没有显式原生模式，或保存了旧 `inherit` 值时，继续保留原有 DSH 权限。Antigravity 未选模式或保存了已移除的模式时使用 `default`。
 
 ## CLI 条件
 
 Codex 自动审查要求 app-server 支持 `approvalsReviewer: auto_review`；本次从安装的 Codex 0.162.0 导出协议 schema，确认 thread/turn 参数支持该字段。ZCode 自主审批要求运行时支持 `guarded`。不支持这些原生能力的 CLI 应先升级或选用其支持的模式。
 
-Antigravity 的 auto 还依赖 CLI、账号和终端沙箱支持。无头执行无法把人工确认回传 DSH；权限拒绝会报告 `AGY_PERMISSION_DENIED`，auto 回退/不可用会报告 `AGY_AUTO_MODE_UNAVAILABLE`，不会自动转为完全访问。保留上游 Magpie 会话代理。
+本机 agy 1.5.12 的 `session/new` 返回 `currentModeId: default`，以及 `default`、`accept-edits`、`plan` 三个可选模式。
 
 ## 验证与复现
 

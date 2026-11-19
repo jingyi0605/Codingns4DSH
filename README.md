@@ -93,7 +93,7 @@ Agent、终端和项目文件在运行 DSH 的电脑（Host）上处理；浏览
 | **Kiro CLI** | 权限确认、提问、思考强度 | CodexHost 上游贡献者：[gy212](https://github.com/gy212)<br>首次适配 [79675cd](https://github.com/BytePioneer-AI/codex-host/commit/79675cdbfdc042eb37a849c3eb1539e9efc40a0d) |
 | **Qoder** | 权限确认、提问、思考强度 | CodexHost 上游贡献者：[gy212](https://github.com/gy212)、[BytePioneer-AI（ChongWen）](https://github.com/BytePioneer-AI)<br>PR #289 合并 [8926130](https://github.com/BytePioneer-AI/codex-host/commit/8926130af1426a467747b66d8d2dbf68f7764a7b) |
 | **Qoder CN** | 权限确认、提问、思考强度 | CodexHost 上游贡献者：[gy212](https://github.com/gy212)、[BytePioneer-AI（ChongWen）](https://github.com/BytePioneer-AI)<br>PR #289 合并 [8926130](https://github.com/BytePioneer-AI/codex-host/commit/8926130af1426a467747b66d8d2dbf68f7764a7b) |
-| **Antigravity** | 会话续接、工具调用、思考强度、原生工具审批 | 需要支持 `agy acp` 的 CLI。没有保存审批模式时，默认使用「规划」。选择 agy「人工审批」，并在旁边的 DSH 权限菜单选择允许弹出审批的模式，即可逐次确认需批准的工具操作。<br>CodexHost 上游贡献者：[gy212](https://github.com/gy212)<br>首次适配 [ed4e785](https://github.com/BytePioneer-AI/codex-host/commit/ed4e785116642eafc08e4186e92e83f3816c7765) |
+| **Antigravity** | 会话续接、工具调用、思考强度、原生工具审批 | agy 支持「默认」「自动接受编辑」「规划」和「完全访问」。新建普通 agy 会话自动沿用上次选择。完全访问会免确认执行命令和文件操作。<br>CodexHost 上游贡献者：[gy212](https://github.com/gy212)<br>首次适配 [ed4e785](https://github.com/BytePioneer-AI/codex-host/commit/ed4e785116642eafc08e4186e92e83f3816c7765) |
 
 Agent 的安装与登录由各自工具完成。适配细节见[外部 Agent 文档](specs/spec007.1-外部Agent适配器扩展/README.md)。
 

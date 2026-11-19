@@ -370,19 +370,19 @@ function NativeApprovalSlot(props: CliSlotProps & {
         if (key === 'auto.description' || key === 'auto.confirm.description') return t(nativeApprovalHintKey(selection.adapterId, 'auto-review'))
         return props.t(key, values)
       },
-      select: (value: string): Promise<boolean> => {
+      select: async (value: string): Promise<boolean> => {
         const next = nativeApprovalModeForValue(selection.adapterId, value)
-        if (next === undefined || pending || !canChangeNativeApproval(session)) return Promise.resolve(false)
+        if (next === undefined || pending || !canChangeNativeApproval(session)) return false
         setPending(true)
         setFailed(false)
-        return update({ ...selection, nativeApprovalMode: next }).then(saved => { setFailed(!saved); return saved }).finally(() => setPending(false))
+        try {
+          const saved = await update({ ...selection, nativeApprovalMode: next })
+          setFailed(!saved)
+          return saved
+        } catch { setFailed(true); return false } finally { setPending(false) }
       },
     }),
     failed && createElement('span', { role: 'alert', title: t('nativeApproval.failed'), style: { color: dshThemeColor.labelPrimary, fontSize: uiFontSize(12) } }, t('nativeApproval.failed')),
-    selection.adapterId === 'antigravity' && createElement('span', {
-      role: 'group', 'aria-label': t('nativeApproval.dshPermission'), title: t('nativeApproval.agyDshHint'),
-      style: { display: 'inline-flex', alignItems: 'center', gap: 4 },
-    }, 'DSH', createElement(props.NativePermission, { ...props, key: 'dsh' })),
   )
 }
 
