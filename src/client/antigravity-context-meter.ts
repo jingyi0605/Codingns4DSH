@@ -6,6 +6,7 @@ import type { CodingNsRpcClient } from './features/types.js'
 import { uiFontSize } from './font-scale.js'
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
+import { callCodingNsRpcResult } from './rpc-call.js'
 import { dshThemeColor } from './theme.js'
 
 interface AntigravityContextMeterProps {
@@ -28,12 +29,12 @@ function NativeCompactionThreshold(props: AntigravityContextMeterProps): ReactEl
     const dock = anchor.current?.closest('[data-composer-dock]')
     if (dock === undefined || dock === null) return
     const findPanel = () => {
-      const nativeRoot = dock.querySelector<HTMLElement>('.JObwrW_root')
-      const anchorName = nativeRoot?.style.getPropertyValue('anchor-name')
-      const next = anchorName ? Array.from(document.body.children).find(child => (
+      const anchorNames = new Set(Array.from(dock.querySelectorAll<HTMLElement>('[style]'), element =>
+        element.style.getPropertyValue('anchor-name')).filter(name => name.startsWith('--dsh-context-')))
+      const next = Array.from(document.body.children).find(child => (
         child.getAttribute('role') === 'dialog'
-        && (child as HTMLElement).style?.getPropertyValue('position-anchor') === anchorName
-      )) : undefined
+        && anchorNames.has((child as HTMLElement).style.getPropertyValue('position-anchor'))
+      ))
       setPanel(next ?? null)
     }
     findPanel()
@@ -71,7 +72,7 @@ function ContextDetails({ sessionId, rpc, pressureTokens, locale }: AntigravityC
     const controller = new AbortController()
     const read = async () => {
       try {
-        const result = await rpc.call('codingns', 'cli/session/antigravity-context', { sessionId }, controller.signal)
+        const result = await callCodingNsRpcResult(rpc, 'cli/session/antigravity-context', { sessionId }, controller.signal)
         if (controller.signal.aborted) return
         setDetails(result.ok && result.value !== null && typeof result.value === 'object' ? result.value as AntigravityContextDetails : null)
       } catch {
@@ -163,9 +164,10 @@ const breakdownParts = [
 ] as const
 const panelWidth = 324
 const responsivePanelWidth = `min(${panelWidth}px, calc(100vw - 24px))`
+const nativeSummaryPanel = '[role="dialog"]:has(> [data-codingns-antigravity-summary])'
 const nativeSummaryCss = `
-  .JObwrW_panel:has(> [data-codingns-antigravity-summary]) { width: ${responsivePanelWidth}; }
-  .JObwrW_panel:has(> [data-codingns-antigravity-summary]) > :is(.JObwrW_header, .JObwrW_bar) { display: none; }
+  ${nativeSummaryPanel} { width: ${responsivePanelWidth}; }
+  ${nativeSummaryPanel} > div:nth-child(-n + 2):not([data-codingns-antigravity-summary]) { display: none; }
 `
 
 const buttonStyle: CSSProperties = {

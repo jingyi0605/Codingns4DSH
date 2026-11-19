@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { setImmediate } from 'node:timers/promises'
 import test from 'node:test'
+import type { TestContext } from 'node:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { useState } from 'react'
 import type { ReactElement, ReactPortal } from 'react'
@@ -31,7 +32,10 @@ class ContextElement extends EventTarget {
     return this.selector === selector ? this : this.parentElement?.closest(selector) ?? null
   }
   querySelectorAll(selector: string): ContextElement[] {
-    return this.children.flatMap(child => [...(child.selector === selector ? [child] : []), ...child.querySelectorAll(selector)])
+    return this.children.flatMap(child => {
+      const matches = selector === '[style]' ? child.styleValues.size > 0 : child.selector === selector
+      return [...(matches ? [child] : []), ...child.querySelectorAll(selector)]
+    })
   }
   querySelector(selector: string): ContextElement | null { return this.querySelectorAll(selector)[0] ?? null }
   setAttribute(name: string, value: string): void { this.attributes.set(name, value) }
@@ -73,9 +77,9 @@ function contextValue(): MagpieContextSession {
   }
 }
 
-function nativeContext(dock: ContextElement): ContextElement {
-  const root = new ContextElement('.JObwrW_root')
-  const trigger = new ContextElement('button.JObwrW_trigger')
+function nativeContext(dock: ContextElement, classPrefix = 'JObwrW'): ContextElement {
+  const root = new ContextElement(`.${classPrefix}_root`)
+  const trigger = new ContextElement(`button.${classPrefix}_trigger`)
   trigger.setAttribute('aria-expanded', 'false')
   root.append(trigger)
   dock.append(root)
@@ -145,20 +149,36 @@ test('the Antigravity context button opens the observed tokens without inventing
   assert.equal(view.render().props.children[0].props['aria-expanded'], false)
 })
 
-test('Antigravity shows the session threshold and estimated token breakdown in its own native panel', async t => {
+test('Antigravity shows context details in the Desktop rc.5 panel over the Fetch route', t =>
+  assertAntigravityNativePanel(t, 'A6Bq1a', true))
+test('Antigravity shows context details in the Stage0 rc.5 panel over the native channel', t =>
+  assertAntigravityNativePanel(t, 'JObwrW', false))
+
+async function assertAntigravityNativePanel(t: TestContext, classPrefix: string, fetchFallback: boolean) {
   const { body, dock, anchor, restore } = setupDom()
-  nativeContext(dock).parentElement!.styleValues.set('anchor-name', '--dsh-context-current')
+  nativeContext(dock, classPrefix).parentElement!.styleValues.set('anchor-name', '--dsh-context-current')
+  const otherDock = new ContextElement('[data-composer-dock]')
+  body.append(otherDock)
+  nativeContext(otherDock, classPrefix).parentElement!.styleValues.set('anchor-name', '--dsh-context-other')
   const otherPanel = new ContextElement()
   otherPanel.setAttribute('role', 'dialog')
   otherPanel.styleValues.set('position-anchor', '--dsh-context-other')
   body.append(otherPanel)
+  const modelAnchor = new ContextElement()
+  modelAnchor.styleValues.set('anchor-name', '--dsh-model-anchor')
+  dock.append(modelAnchor)
+  const modelDialog = new ContextElement()
+  modelDialog.setAttribute('role', 'dialog')
+  modelDialog.styleValues.set('position-anchor', '--dsh-model-anchor')
+  body.append(modelDialog)
   const locale = { ...contextLocale('zh'), bind: () => resolveCodingNsTranslator() }
-  const requests: Array<{ endpoint: string; payload: unknown; signal?: AbortSignal }> = []
+  const requests: Array<{ channel: string; endpoint: string; payload: unknown }> = []
   let breakdown: Partial<Record<'systemTokens' | 'toolsTokens' | 'messageTokens', number>> = {
     systemTokens: 3_670, toolsTokens: 6_959, messageTokens: 1_825,
   }
-  const rpc = { async call(_channel: string, endpoint: string, payload: unknown, signal?: AbortSignal) {
-    requests.push({ endpoint, payload, signal })
+  const rpc = { async call(channel: string, endpoint: string, payload: unknown) {
+    requests.push({ channel, endpoint, payload })
+    if (fetchFallback && channel === '/codingns') throw new Error('HTTP 404')
     return { ok: true as const, value: { compactionThreshold: 512_000, breakdown } }
   } }
   const component = AntigravityContextMeter({
@@ -172,7 +192,7 @@ test('Antigravity shows the session threshold and estimated token breakdown in i
   t.after(() => { view.dispose(); restore() })
   assert.equal(view.render().props.children, null)
   assert.equal(requests.length, 0)
-  const panel = new ContextElement()
+  const panel = new ContextElement(`.${classPrefix}_panel`)
   panel.setAttribute('role', 'dialog')
   panel.styleValues.set('position-anchor', '--dsh-context-current')
   body.append(panel)
@@ -183,7 +203,7 @@ test('Antigravity shows the session threshold and estimated token breakdown in i
   const summaryView = createHookRenderer(summary.type, summary.props)
   t.after(() => summaryView.dispose())
   const [style, capacity, row] = summaryView.render().props.children
-  assert.match(style.props.children, /\[data-codingns-antigravity-summary\].+\.JObwrW_header/u)
+  assert.match(style.props.children, /\[role="dialog"\]:has\(> \[data-codingns-antigravity-summary\]\) > div:nth-child\(-n \+ 2\)/u)
   const capacityMarkup = renderToStaticMarkup(capacity)
   assert.match(capacityMarkup, /上下文已用<strong[^>]*> 12%<\/strong><\/span><strong[^>]*>~128K \/ 1M<\/strong>/u)
   assert.match(capacityMarkup, /aria-valuemax="1048576" aria-valuenow="128000"/u)
@@ -191,8 +211,9 @@ test('Antigravity shows the session threshold and estimated token breakdown in i
   t.after(() => threshold.dispose())
   assert.equal(threshold.render(), null)
   await setImmediate()
-  assert.deepEqual(requests.map(({ endpoint, payload }) => ({ endpoint, payload })), [
-    { endpoint: 'cli/session/antigravity-context', payload: { sessionId: 'agy-session' } },
+  assert.deepEqual(requests, [
+    { channel: '/codingns', endpoint: 'cli/session/antigravity-context', payload: { sessionId: 'agy-session' } },
+    ...(fetchFallback ? [{ channel: '/api', endpoint: 'codingns/cli/session/antigravity-context', payload: { sessionId: 'agy-session' } }] : []),
   ])
   const markup = renderToStaticMarkup(threshold.render())
   assert.match(markup, /自动压缩<strong[^>]*> 25%<\/strong><\/span><strong[^>]*>~128K \/ 512K<\/strong>/u)
@@ -214,7 +235,7 @@ test('Antigravity shows the session threshold and estimated token breakdown in i
   panel.remove()
   ContextObserver.instances[0]!.flush()
   assert.equal(view.render().props.children, null)
-})
+}
 
 test('the native context button opens Magpie through the slot outlet wrapper and refreshes in place', async t => {
   const { body, doc, dock, anchor, restore } = setupDom()
