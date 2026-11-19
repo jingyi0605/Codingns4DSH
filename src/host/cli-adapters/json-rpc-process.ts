@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import readline from 'node:readline'
+import { stripVTControlCharacters } from 'node:util'
 import { commandEnvironment, terminateChildProcess, windowsShellInvocation, WINDOWS, type CodingNsChildProcess } from './process-utils.js'
 
 /** JSON-RPC 消息的最小形状。不同 Agent 的扩展字段保持在 unknown 中。 */
@@ -26,6 +27,9 @@ export class JsonRpcRequestError extends Error {
   }
 }
 
+/** Pi rejected a command in its native success/error response. */
+export class PiRpcResponseError extends Error {}
+
 /** stdio 线协议的信封形状。 */
 export type JsonRpcWireFormat = 'jsonrpc' | 'pi' | 'zcode'
 
@@ -46,6 +50,8 @@ export interface JsonRpcProcessOptions {
 export interface JsonRpcRequestOptions {
   readonly signal?: AbortSignal | undefined
   readonly onNotification?: (message: JsonRpcMessage) => void
+  /** Read-only probes can stop waiting without sending a cancellation command to the Agent. */
+  readonly cancelOnAbort?: boolean
   /** 取消本次请求时是否同时终止整个 Agent 进程；长期会话应关闭此项。 */
   readonly killOnAbort?: boolean
   /** Pi 使用 type/data 顶层命令，不是 JSON-RPC method/params。 */
@@ -85,7 +91,7 @@ export class JsonRpcProcess {
     const promise = new Promise<unknown>((resolve, reject) => this.pending.set(id, { resolve, reject, wireFormat }))
     if (options.onNotification !== undefined) this.notificationHandlers.add(options.onNotification)
     const onAbort = (): void => {
-      this.cancel(id, wireFormat)
+      if (options.cancelOnAbort !== false) this.cancel(id, wireFormat)
       this.pending.get(id)?.reject(new Error('请求已取消'))
       if (options.killOnAbort !== false) {
         const child = this.child
@@ -262,7 +268,9 @@ export class JsonRpcProcess {
         if (value.id !== undefined && value.id !== null && value.type === 'response' && typeof value.success === 'boolean') {
           const pending = this.pending.get(value.id as number | string)
           if (pending === undefined) continue
-          if (value.success === false) pending.reject(new Error(readRpcFailure(value)))
+          if (value.success === false) pending.reject(pending.wireFormat === 'pi'
+            ? new PiRpcResponseError(readPiRpcFailure(value))
+            : new Error(readRpcFailure(value)))
           else pending.resolve(value.data)
           continue
         }
@@ -329,6 +337,16 @@ export class JsonRpcProcess {
       try { listener(error) } catch { /* 监听器异常不能阻止其他会话清理 */ }
     }
   }
+}
+
+function readPiRpcFailure(value: Record<string, unknown>): string {
+  const detail = typeof value.error === 'string' && value.error.trim() !== '' ? value.error : readRpcFailure(value)
+  return stripVTControlCharacters(detail)
+    .replace(/[\x00-\x1f\x7f]+/gu, ' ')
+    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/giu, '$1[redacted]@')
+    .replace(/(\b(?:authorization|(?:x[_-])?api[_-]?key|(?:access[_-]?|refresh[_-]?)?token|passw[o]rd|secret)["']?\s*[:=]\s*)(?:"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|(?:(?:Bearer|Basic)\s+)?[^\s,;&]+)/giu, '$1[redacted]')
+    .replace(/\bBearer\s+[^\s,;"']+|\bsk-[A-Za-z0-9_-]{12,}\b/giu, '[redacted]')
+    .trim().slice(0, 1_024) || 'JSON-RPC 请求失败'
 }
 
 /** 保留 Provider 返回的具体错误，同时限制长度，避免把整段响应写入会话。 */

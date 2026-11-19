@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto'
 import { WORKSPACE_MCP_TOOL_DEFINITIONS } from './tools.js'
-import type { WorkspaceMcpWebhookEventType } from './webhook-store.js'
+import type { QueueNotice } from './message-queue-handler.js'
+import type { WorkspaceMcpQueueWebhookEventType } from './webhook-store.js'
 
 export const WORKSPACE_MCP_WEBHOOK_MAX_BODY_BYTES = 16 * 1024
 
@@ -11,6 +12,8 @@ interface WorkspaceMcpWebhookPayloadBase {
   readonly workspace: { readonly id: string; readonly name: string }
   readonly session: { readonly id: string; readonly title?: string }
   readonly includeLastMessage?: boolean
+  readonly agentId?: string
+  readonly messageId?: string
 }
 
 export type WorkspaceMcpWebhookEventData =
@@ -19,7 +22,12 @@ export type WorkspaceMcpWebhookEventData =
   | { readonly requestId: string; readonly toolName: string; readonly reason?: string; readonly callId?: string; readonly decidableByExternalAgent: false }
   | { readonly callId: string; readonly questions: readonly { readonly id: string; readonly text: string; readonly detail?: string; readonly header?: string; readonly multiSelect?: boolean; readonly options?: readonly { readonly label: string; readonly description?: string }[] }[] }
 
+type QueuePayloadInput = {
+  [Type in WorkspaceMcpQueueWebhookEventType]: { readonly type: Type; readonly data: Omit<Extract<QueueNotice, { type: Type }>, 'type' | 'sessionId' | 'workspaceId' | 'agentId'> }
+}[WorkspaceMcpQueueWebhookEventType]
+
 export type WorkspaceMcpWebhookPayloadInput = WorkspaceMcpWebhookPayloadBase & (
+  | QueuePayloadInput
   | { readonly type: 'session.completed'; readonly data: { readonly lastMessage?: string } }
   | { readonly type: 'session.failed'; readonly data: { readonly errorCode: string; readonly errorMessage: string } }
   | { readonly type: 'session.permission_requested'; readonly data: { readonly requestId: string; readonly toolName: string; readonly reason?: string; readonly callId?: string; readonly decidableByExternalAgent: false } }
@@ -37,10 +45,13 @@ export interface WorkspaceMcpWebhookPayload {
   readonly schemaVersion: 1
   readonly eventId: string
   readonly type: WorkspaceMcpWebhookPayloadInput['type'] | 'webhook.test'
+  readonly eventType: WorkspaceMcpWebhookPayloadInput['type'] | 'webhook.test'
   readonly occurredAt: string
   readonly destinationId: string
   readonly workspace: { readonly id: string; readonly name: string }
   readonly session?: { readonly id: string; readonly title?: string }
+  readonly agentId?: string
+  readonly messageId?: string
   readonly data: Record<string, unknown>
   readonly nextActions: readonly WorkspaceMcpWebhookNextAction[]
   readonly truncated: boolean
@@ -75,6 +86,13 @@ export function createWorkspaceMcpWebhookPayload(input: WorkspaceMcpWebhookPaylo
     data.decidableByExternalAgent = false
     if (input.data.reason !== undefined) data.reason = truncateUtf8(input.data.reason, MAX_ERROR_TEXT_BYTES)
     if (input.data.callId !== undefined) data.callId = input.data.callId
+  } else if (input.type === 'session.agent_message_sent') {
+    data.messageId = input.data.messageId
+    if (input.agentId !== undefined) data.agentId = input.agentId
+    data.message = truncateUtf8(input.data.message, MAX_LAST_MESSAGE_BYTES)
+    truncated ||= data.message !== input.data.message
+  } else if (input.type !== 'session.question_asked') {
+    Object.assign(data, input.data)
   } else {
     data.callId = input.data.callId
     data.questions = input.data.questions.map((question) => ({
@@ -100,6 +118,7 @@ export function createWorkspaceMcpWebhookPayload(input: WorkspaceMcpWebhookPaylo
     schemaVersion: 1,
     eventId: input.eventId,
     type: input.type,
+    eventType: input.type,
     occurredAt: input.occurredAt,
     destinationId: input.destinationId,
     workspace: { id: input.workspace.id, name: truncateUtf8(input.workspace.name, 160) },
@@ -107,6 +126,8 @@ export function createWorkspaceMcpWebhookPayload(input: WorkspaceMcpWebhookPaylo
       id: input.session.id,
       ...(input.session.title === undefined ? {} : { title: truncateUtf8(input.session.title, 256) }),
     },
+    ...(input.agentId === undefined ? {} : { agentId: input.agentId }),
+    ...(input.messageId === undefined ? {} : { messageId: input.messageId }),
     data,
     nextActions: nextActions(input.type, input.session.id, input.workspace.id, data),
     truncated,
@@ -123,6 +144,7 @@ export function createWorkspaceMcpWebhookTestPayload(input: {
     schemaVersion: 1,
     eventId: input.eventId,
     type: 'webhook.test',
+    eventType: 'webhook.test',
     occurredAt: input.occurredAt,
     destinationId: input.destinationId,
     workspace: { id: '', name: '' },
@@ -180,6 +202,10 @@ function nextActions(
         action('session_create', 'Start a new session in the workspace.', { workspaceId }),
       ]
     case 'session.permission_requested':
+    case 'session.message_queued':
+    case 'session.message_dequeued':
+    case 'session.queue_changed':
+    case 'session.agent_message_sent':
       return []
     case 'session.question_asked': {
       const callId = typeof data.callId === 'string' ? data.callId : ''
@@ -205,7 +231,7 @@ function fitPayload(payload: WorkspaceMcpWebhookPayload): WorkspaceMcpWebhookPay
   if (Buffer.byteLength(JSON.stringify(payload), 'utf8') <= WORKSPACE_MCP_WEBHOOK_MAX_BODY_BYTES) return payload
   let result: WorkspaceMcpWebhookPayload = { ...payload, truncated: true }
   const data = { ...result.data }
-  for (const key of ['lastMessage', 'errorMessage', 'reason'] as const) {
+  for (const key of ['lastMessage', 'errorMessage', 'reason', 'message'] as const) {
     const original = data[key]
     if (typeof original !== 'string') continue
     let maximum = Buffer.byteLength(original, 'utf8')

@@ -2076,6 +2076,177 @@ test('Pi prompt 被拒绝时结束为 error', async () => {
   driver.dispose()
 })
 
+for (const stateReplies of [true, false]) {
+  test(`Pi 续轮被拒绝时保留错误，状态查询${stateReplies ? '有回应' : '超时'}且不发送 abort`, async () => {
+    const commands: string[] = []
+    let promptCount = 0
+    let spawnCount = 0
+    const driver = new PiAgentDriver({
+      binaries: ['fake-pi'],
+      spawnSync: (() => ({ status: 0, stdout: 'pi 1.5.2', stderr: '' })) as never,
+      spawn: (() => {
+        spawnCount++
+        const stdout = new PassThrough()
+        const stderr = new PassThrough()
+        const send = (value: unknown): void => { stdout.write(JSON.stringify(value) + '\n') }
+        const stdin = { write(raw: string): void {
+          const request = JSON.parse(raw) as { id: number; type: string }
+          commands.push(request.type)
+          const response = { id: request.id, type: 'response', command: request.type }
+          if (request.type === 'prompt') {
+            if (++promptCount === 1) {
+              send({ ...response, success: true })
+              send({ type: 'turn_end', message: { stopReason: 'error', errorMessage: 'Upstream response stream was interrupted' } })
+              send({ type: 'agent_end', willRetry: false })
+              send({ type: 'agent_settled' })
+            } else {
+              send({ ...response, success: false, error: 'Cannot submit a prompt while compaction is in progress.\nAuthorization: Bearer fake-auth; "api_key": "fake sensitive value"' })
+            }
+          } else if (request.type === 'get_state' && promptCount === 2) {
+            if (stateReplies) send({ ...response, success: true, data: { isStreaming: true, isCompacting: false, sessionFile: '/private/session.jsonl' } })
+          } else {
+            send({ ...response, success: true, data: {} })
+          }
+        } }
+        return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+      }) as never,
+    })
+    const turn = async () => {
+      const chunks = []
+      for await (const chunk of driver.executeTurn({ sessionId: 'pi-error', messages: [], prompt: '你好' })) chunks.push(chunk)
+      return chunks.at(-1)
+    }
+    try {
+      assert.deepEqual(await turn(), { type: 'finish', reason: 'error', failure: { message: 'Upstream response stream was interrupted' } })
+      const state = stateReplies ? 'isStreaming=true, isCompacting=false' : 'get_state=timeout'
+      assert.deepEqual(await turn(), {
+        type: 'finish', reason: 'error',
+        failure: { message: `Cannot submit a prompt while compaction is in progress. Authorization: [redacted]; "api_key": [redacted] [Pi ${state}]` },
+      })
+      assert.equal(spawnCount, 1)
+      assert.deepEqual(commands, ['get_state', 'prompt', 'get_session_stats', 'prompt', 'get_state'])
+    } finally {
+      driver.dispose()
+    }
+  })
+}
+
+test('Pi 上游流中断后自动重试成功，整轮继续接收到 agent_settled 并以 stop 结束', async () => {
+  const commands: string[] = []
+  const driver = new PiAgentDriver({
+    binaries: ['fake-pi'],
+    spawnSync: (() => ({ status: 0, stdout: 'pi 1.5.2', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const send = (value: unknown): void => { stdout.write(`${JSON.stringify(value)}\n`) }
+      const stdin = { write(raw: string): void {
+        const request = JSON.parse(raw) as { id: number; type: string }
+        commands.push(request.type)
+        send({ id: request.id, type: 'response', command: request.type, success: true, data: {} })
+        if (request.type !== 'prompt') return
+        setImmediate(() => {
+          send({ type: 'turn_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'Upstream response stream was interrupted' } })
+          send({ type: 'agent_end', willRetry: true })
+          send({ type: 'auto_retry_start', attempt: 1, maxAttempts: 3, delayMs: 20, errorMessage: 'Upstream response stream was interrupted' })
+          setTimeout(() => {
+            send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '重试后的回复' } })
+            send({ type: 'turn_end', message: { role: 'assistant', stopReason: 'stop' } })
+            send({ type: 'agent_end', willRetry: false })
+            send({ type: 'agent_settled' })
+          }, 40)
+        })
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  try {
+    const chunks = []
+    for await (const chunk of driver.executeTurn({ sessionId: 'pi-retry', messages: [], prompt: '你好' })) chunks.push(chunk)
+    assert.ok(chunks.some((chunk) => chunk.type === 'text-delta' && chunk.text === '重试后的回复'))
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'stop' })
+  } finally {
+    driver.dispose()
+  }
+})
+
+test('Pi 重试耗尽后以最后一次 Provider 错误结束', async () => {
+  const driver = new PiAgentDriver({
+    binaries: ['fake-pi'],
+    spawnSync: (() => ({ status: 0, stdout: 'pi 1.5.2', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const send = (value: unknown): void => { stdout.write(`${JSON.stringify(value)}\n`) }
+      const stdin = { write(raw: string): void {
+        const request = JSON.parse(raw) as { id: number; type: string }
+        send({ id: request.id, type: 'response', command: request.type, success: true, data: {} })
+        if (request.type !== 'prompt') return
+        setImmediate(() => {
+          send({ type: 'turn_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'first failure' } })
+          send({ type: 'agent_end', willRetry: true })
+          send({ type: 'auto_retry_start', attempt: 1, maxAttempts: 1, delayMs: 10, errorMessage: 'first failure' })
+          setTimeout(() => {
+            send({ type: 'turn_end', message: { role: 'assistant', stopReason: 'error', errorMessage: 'final failure' } })
+            send({ type: 'agent_end', willRetry: false })
+            send({ type: 'auto_retry_end', success: false, attempt: 1, finalError: 'final failure' })
+            send({ type: 'agent_settled' })
+          }, 30)
+        })
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  try {
+    const chunks = []
+    for await (const chunk of driver.executeTurn({ sessionId: 'pi-retry-exhausted', messages: [], prompt: '你好' })) chunks.push(chunk)
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'error', failure: { message: 'final failure' } })
+  } finally {
+    driver.dispose()
+  }
+})
+
+test('Pi 上一轮仍在后台运行时，新消息以 followUp 排队并继续接收到 agent_settled', async () => {
+  const prompts: Array<Record<string, unknown>> = []
+  const driver = new PiAgentDriver({
+    binaries: ['fake-pi'],
+    spawnSync: (() => ({ status: 0, stdout: 'pi 1.5.2', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough()
+      const stderr = new PassThrough()
+      const send = (value: unknown): void => { stdout.write(`${JSON.stringify(value)}\n`) }
+      const stdin = { write(raw: string): void {
+        const request = JSON.parse(raw) as { id: number; type: string; streamingBehavior?: string }
+        const response = { id: request.id, type: 'response', command: request.type }
+        if (request.type !== 'prompt') {
+          send({ ...response, success: true, data: {} })
+          return
+        }
+        prompts.push(request)
+        if (request.streamingBehavior === undefined) {
+          send({ ...response, success: false, error: "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message." })
+          return
+        }
+        send({ ...response, success: true, data: { disposition: 'queued' } })
+        setImmediate(() => {
+          send({ type: 'message_update', assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta: '后台任务的输出' } })
+          send({ type: 'agent_settled' })
+        })
+      } }
+      return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+    }) as never,
+  })
+  try {
+    const chunks = []
+    for await (const chunk of driver.executeTurn({ sessionId: 'pi-busy', messages: [], prompt: '继续' })) chunks.push(chunk)
+    assert.deepEqual(prompts.map((prompt) => prompt.streamingBehavior), [undefined, 'followUp'])
+    assert.ok(chunks.some((chunk) => chunk.type === 'text-delta' && chunk.text === '后台任务的输出'))
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'stop' })
+  } finally {
+    driver.dispose()
+  }
+})
+
 test('Pi prompt 已接受但进程退出时结束为 error，并清理失效会话', async () => {
   let spawnCount = 0
   const driver = new PiAgentDriver({

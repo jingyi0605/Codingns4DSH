@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { CodingNsCliModelCatalog, CodingNsAgentEvent, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
-import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
+import { JsonRpcProcess, PiRpcResponseError, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
 import { PI_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
@@ -17,6 +17,15 @@ import { piBridgeArgs, piBridgeEnvironment } from '../cli-bridge/injections.js'
 import { PiPerformanceTracker } from './pi-performance.js'
 
 const PI_ABORT_TIMEOUT_MS = 2_000
+const PI_PROMPT_STATE_TIMEOUT_MS = 1_000
+/** After a failed agent_end with no retry, how long to wait for Pi's own agent_settled. */
+const PI_SETTLE_GRACE_MS = 15_000
+
+interface PiPromptResult {
+  readonly reason: 'stop' | 'cancel' | 'error'
+  readonly failure?: { message: string; code?: string }
+  readonly rejection?: PiRpcResponseError
+}
 
 export interface PiAgentDriverOptions {
   readonly binaries?: readonly string[]
@@ -135,7 +144,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
         message: promptWithAttachmentPaths(input.prompt, (input.attachments ?? []).filter((attachment) => attachment.kind === 'file'), input.translationLanguage),
         ...(images.length > 0 ? { images } : {}),
       }, input.signal, (message, receivedAt) => performance.observe(message, receivedAt))
-      let finishResult: { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }
+      let finishResult: PiPromptResult
       let latestUsage: Extract<CodingNsAgentEvent, { type: 'usage' }> | null = null
       const streamState: PiStreamState = { streamed: new Set() }
       while (true) {
@@ -168,7 +177,11 @@ export class PiAgentDriver implements CodingNsCliDriver {
           } else yield chunk
         }
       }
-      const statsUsage = input.signal?.aborted
+      const failure = finishResult.rejection === undefined
+        ? finishResult.failure
+        : await diagnosePiPromptRejection(rpc, finishResult.rejection, input.signal)
+      // A rejected prompt has no usage of its own. Keep its only probe read-only.
+      const statsUsage = input.signal?.aborted || finishResult.rejection !== undefined
         ? null
         : await readPiSessionStats(rpc, input.signal, session.modelContextWindow)
       const enrichedUsage = enrichPiUsage(latestUsage, statsUsage, session.modelContextWindow)
@@ -176,7 +189,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
       if (finishResult.reason === 'cancel') {
         await this.interrupt(input.sessionId)
       }
-      yield { type: 'finish', reason: finishResult.reason, ...(finishResult.failure === undefined ? {} : { failure: finishResult.failure }) }
+      yield { type: 'finish', reason: finishResult.reason, ...(failure === undefined ? {} : { failure }) }
     } finally { /* 跨轮复用：仅 dispose() 才回收长期进程。 */ }
   }
 
@@ -281,24 +294,54 @@ async function* streamPiPrompt(
   prompt: Record<string, unknown>,
   signal: AbortSignal | undefined,
   observe?: (message: JsonRpcMessage, receivedAt: number) => import('../../shared/request-performance.js').RequestPerformance | undefined,
-): AsyncGenerator<{ message: JsonRpcMessage; performance?: import('../../shared/request-performance.js').RequestPerformance }, { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }, void> {
+): AsyncGenerator<{ message: JsonRpcMessage; performance?: import('../../shared/request-performance.js').RequestPerformance }, PiPromptResult, void> {
   const queue: Array<{ message: JsonRpcMessage; performance?: import('../../shared/request-performance.js').RequestPerformance }> = []
   let wake: (() => void) | undefined
   let promptSettled = false
   let terminalReason: 'stop' | 'cancel' | 'error' | null = null
   let failure: { message: string; code?: string } | undefined
+  let rejection: PiRpcResponseError | undefined
+  // Provider errors (stream interrupted, 5xx, overloaded) are retried by Pi itself while the run
+  // stays active. Ending the turn at the first error would leave that run working in the
+  // background with nobody listening, and every following prompt would be refused as busy.
+  let pendingFailure: { message: string; code?: string } | undefined
+  let settleTimer: ReturnType<typeof setTimeout> | undefined
   const notify = (): void => { wake?.(); wake = undefined }
+  const clearSettleTimer = (): void => {
+    if (settleTimer !== undefined) clearTimeout(settleTimer)
+    settleTimer = undefined
+  }
   const listener = (message: JsonRpcMessage): void => {
     if (terminalReason === 'cancel') return
     const receivedAt = Date.now()
     const performance = observe?.(message, receivedAt)
     queue.push({ message, ...(performance === undefined ? {} : { performance }) })
     const type = piEventType(message)
-    if (type === 'error' || type === 'agent_error' || type === 'agent_failed' || piEventHasError(message)) {
+    if (type === 'error' || type === 'agent_error' || type === 'agent_failed') {
       terminalReason = 'error'
       failure = piFailure(message)
+    } else if (type === 'agent_settled') {
+      clearSettleTimer()
+      if (terminalReason === null) {
+        terminalReason = pendingFailure === undefined ? 'stop' : 'error'
+        failure = pendingFailure
+      }
+    } else {
+      const outcome = piAssistantOutcome(message)
+      if (outcome === 'failed') pendingFailure = piFailure(message)
+      // A later assistant message without an error means Pi's automatic retry recovered.
+      else if (outcome === 'ok') pendingFailure = undefined
+      clearSettleTimer()
+      // No retry is coming and Pi still has not settled: do not wait forever for the final event.
+      if (type === 'agent_end' && pendingFailure !== undefined && !piWillRetry(message)) {
+        settleTimer = setTimeout(() => {
+          if (terminalReason !== null) return
+          terminalReason = 'error'
+          failure = pendingFailure
+          notify()
+        }, PI_SETTLE_GRACE_MS)
+      }
     }
-    else if (type === 'agent_settled' && terminalReason === null) terminalReason = 'stop'
     notify()
   }
   const removeListener = rpc.addNotificationListener(listener)
@@ -318,12 +361,25 @@ async function* streamPiPrompt(
   if (signal?.aborted) onAbort()
   else signal?.addEventListener('abort', onAbort, { once: true })
 
-  void rpc.request('prompt', prompt, { signal, killOnAbort: false, wireFormat: 'pi' }).then(
+  const sendPrompt = async (): Promise<unknown> => {
+    try {
+      return await rpc.request('prompt', prompt, { signal, killOnAbort: false, wireFormat: 'pi' })
+    } catch (error) {
+      if (!isPiBusyRejection(error) || prompt.streamingBehavior !== undefined) throw error
+      // The previous run is still active (for example inside an automatic retry). Queue behind it
+      // and keep streaming instead of failing every follow-up message until Pi settles.
+      return await rpc.request('prompt', { ...prompt, streamingBehavior: 'followUp' }, { signal, killOnAbort: false, wireFormat: 'pi' })
+    }
+  }
+  void sendPrompt().then(
     () => { promptSettled = true; notify() },
     (error: unknown) => {
       promptSettled = true
       terminalReason = signal?.aborted ? 'cancel' : 'error'
-      if (terminalReason === 'error') failure = errorMessageFromUnknown(error)
+      if (terminalReason === 'error') {
+        if (error instanceof PiRpcResponseError) rejection = error
+        else failure = errorMessageFromUnknown(error)
+      }
       notify()
     },
   )
@@ -336,12 +392,45 @@ async function* streamPiPrompt(
       }
       await new Promise<void>((resolve) => { wake = resolve })
     }
+    if (terminalReason === 'error' && rejection !== undefined) return { reason: 'error', rejection }
     return { reason: terminalReason, ...(failure === undefined ? {} : { failure }) }
   } finally {
+    clearSettleTimer()
     signal?.removeEventListener('abort', onAbort)
     removeListener()
     removeExitListener()
   }
+}
+
+function isPiBusyRejection(error: unknown): boolean {
+  return error instanceof PiRpcResponseError && /already processing/iu.test(error.message)
+}
+
+async function diagnosePiPromptRejection(rpc: JsonRpcProcess, error: PiRpcResponseError, signal: AbortSignal | undefined): Promise<{ message: string }> {
+  if (signal?.aborted) return { message: error.message }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), PI_PROMPT_STATE_TIMEOUT_MS)
+  const timeout = controller.signal
+  let state = 'get_state=unavailable'
+  try {
+    const result = await rpc.request('get_state', {}, {
+      signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
+      cancelOnAbort: false,
+      killOnAbort: false,
+      wireFormat: 'pi',
+    })
+    if (isRecord(result)) {
+      const data = isRecord(result.data) ? result.data : result
+      const streaming = typeof data.isStreaming === 'boolean' ? data.isStreaming : 'unknown'
+      const compacting = typeof data.isCompacting === 'boolean' ? data.isCompacting : 'unknown'
+      state = `isStreaming=${streaming}, isCompacting=${compacting}`
+    }
+  } catch {
+    if (timeout.aborted && !signal?.aborted) state = 'get_state=timeout'
+  } finally {
+    clearTimeout(timer)
+  }
+  return { message: `${error.message} [Pi ${state}]` }
 }
 
 function piEventType(message: JsonRpcMessage): string {
@@ -354,6 +443,23 @@ function piEventHasError(message: JsonRpcMessage): boolean {
   const event = isRecord(params.message) ? params.message : params
   const stopReason = textValue(event.stopReason ?? params.stopReason)
   return stopReason === 'error' || stopReason === 'failed' || typeof event.errorMessage === 'string' && event.errorMessage.trim() !== ''
+}
+
+/** Whether an event reports an assistant message that failed, or one that completed cleanly. */
+function piAssistantOutcome(message: JsonRpcMessage): 'failed' | 'ok' | null {
+  if (piEventHasError(message)) return 'failed'
+  const params = isRecord(message.params) ? message.params : message
+  const type = piEventType(message)
+  if (type !== 'message_end' && type !== 'turn_end') return null
+  const completed = isRecord(params.message) ? params.message : null
+  if (completed === null) return null
+  return completed.role === 'assistant' || (type === 'turn_end' && completed.role === undefined) ? 'ok' : null
+}
+
+/** Pi 1.5+ marks agent_end with willRetry when its automatic retry is about to run. */
+function piWillRetry(message: JsonRpcMessage): boolean {
+  const params = isRecord(message.params) ? message.params : message
+  return params.willRetry === true
 }
 
 function piFailure(message: JsonRpcMessage): { message: string; code?: string } {

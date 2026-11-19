@@ -127,14 +127,38 @@ test('dispatcher retries 5xx with the same body and Delivery-Id', async () => {
     await f.store.enqueue(delivery('stable-id', 'dst'))
     f.dispatcher.wake()
     await f.dispatcher.settleReady()
-    assert.deepEqual(f.timerDelays(), [2_000])
-    f.advance(2_000)
+    assert.deepEqual(f.timerDelays(), [1_000])
+    f.advance(1_000)
     f.runTimer()
     await f.dispatcher.settleReady()
     assert.equal(requests.length, 2)
     assert.equal(requests[1]?.deliveryId, requests[0]?.deliveryId)
     assert.equal(requests[1]?.body, requests[0]?.body)
     assert.equal((await f.store.snapshot()).deliveries[0]?.status, 'delivered')
+  } finally {
+    await f.dispatcher.close()
+    await rm(f.root, { recursive: true, force: true })
+  }
+})
+
+test('dispatcher persists failure after exactly three retries at 1, 2 and 4 seconds', async () => {
+  let attempts = 0
+  const f = await fixture({ fetch: (async () => { attempts += 1; return new Response(null, { status: 503 }) }) as typeof fetch })
+  try {
+    await f.store.createDestination(destination('dst'))
+    await f.store.enqueue(delivery('retry-limit', 'dst'))
+    await f.dispatcher.settleReady()
+    for (const delay of [1_000, 2_000, 4_000]) {
+      assert.deepEqual(f.timerDelays(), [delay])
+      f.advance(delay)
+      f.runTimer()
+      await f.dispatcher.settleReady()
+    }
+    assert.equal(attempts, 4)
+    assert.equal(f.timerCount(), 0)
+    const snapshot = await new FileWorkspaceMcpWebhookStore(join(f.root, 'workspace-mcp-webhooks.json'), f.now).snapshot()
+    assert.equal(snapshot.deliveries[0]?.status, 'failed')
+    assert.equal(snapshot.deliveries[0]?.attempts, 4)
   } finally {
     await f.dispatcher.close()
     await rm(f.root, { recursive: true, force: true })

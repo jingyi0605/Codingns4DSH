@@ -9,6 +9,8 @@ import { uiFontSize } from '../font-scale.js'
 import { SettingsToggleRow } from '../settings-controls.js'
 import { buildLanAccessUrls } from './lan-access-status.js'
 
+import { registerWorkspaceMcpMessageOrigins } from '../session-translation-chat.js'
+
 const fallbackT = resolveCodingNsTranslator()
 
 export const workspaceMcpFeature: CodingNsClientFeatureModule = {
@@ -27,7 +29,7 @@ export const workspaceMcpFeature: CodingNsClientFeatureModule = {
       defaultOpen: false,
     },
   },
-  start() {},
+  start: ({ services }) => registerWorkspaceMcpMessageOrigins(services),
   settingsPanel: WorkspaceMcpPanel,
 }
 
@@ -41,6 +43,7 @@ interface WorkspaceMcpStatus {
 }
 
 type WebhookEventType = 'session.completed' | 'session.failed' | 'session.permission_requested' | 'session.question_asked'
+  | 'session.message_queued' | 'session.message_dequeued' | 'session.queue_changed' | 'session.agent_message_sent'
 
 interface WebhookDestination {
   readonly id: string
@@ -84,21 +87,41 @@ const WEBHOOK_EVENT_LABELS: Readonly<Record<WebhookEventType, string>> = {
   'session.failed': 'workspaceMcp.webhook.event.failed',
   'session.permission_requested': 'workspaceMcp.webhook.event.permission',
   'session.question_asked': 'workspaceMcp.webhook.event.question',
+  'session.message_queued': 'workspaceMcp.webhook.event.queued',
+  'session.message_dequeued': 'workspaceMcp.webhook.event.dequeued',
+  'session.queue_changed': 'workspaceMcp.webhook.event.queueChanged',
+  'session.agent_message_sent': 'workspaceMcp.webhook.event.agentMessage',
 }
 
 interface WorkspaceMcpCapabilityDescription {
   readonly name: string
   readonly permissionKey: string
   readonly descriptionKey: string
-  readonly parametersKey: string
+  readonly parametersKey?: string
+  readonly parameters?: string
   readonly remarksKey: string
+}
+
+function toolDescription(name: string, parameters: string, group: string, manage = false): WorkspaceMcpCapabilityDescription {
+  return { name, parameters, permissionKey: manage ? 'workspaceMcp.capability.manage' : 'workspaceMcp.capability.read', descriptionKey: `workspaceMcp.capability.${name}`, remarksKey: `workspaceMcp.capability.${group}.limits` }
 }
 
 const WORKSPACE_MCP_CAPABILITIES: readonly WorkspaceMcpCapabilityDescription[] = [
   { name: 'workspace_list', permissionKey: 'workspaceMcp.capability.workspaceList.permission', descriptionKey: 'workspaceMcp.capability.workspaceList.description', parametersKey: 'workspaceMcp.capability.workspaceList.parameters', remarksKey: 'workspaceMcp.capability.workspaceList.remarks' },
+  toolDescription('workspace_file_list', '{ workspaceId, path?, depth? }', 'files'),
+  toolDescription('workspace_file_read', '{ workspaceId, path, encoding?, limitBytes? }', 'files'),
+  toolDescription('workspace_git_status', '{ workspaceId }', 'git'),
+  toolDescription('workspace_git_log', '{ workspaceId, branch?, limit?, skip? }', 'git'),
+  toolDescription('workspace_git_diff', '{ workspaceId, path?, fromRef?, toRef? }', 'git'),
   { name: 'session_list', permissionKey: 'workspaceMcp.capability.sessionList.permission', descriptionKey: 'workspaceMcp.capability.sessionList.description', parametersKey: 'workspaceMcp.capability.sessionList.parameters', remarksKey: 'workspaceMcp.capability.sessionList.remarks' },
+  toolDescription('session_history', '{ sessionId, limit?, cursor? }', 'history'),
+  toolDescription('session_search', '{ query, workspaceId?, limit? }', 'history'),
   { name: 'session_create', permissionKey: 'workspaceMcp.capability.sessionCreate.permission', descriptionKey: 'workspaceMcp.capability.sessionCreate.description', parametersKey: 'workspaceMcp.capability.sessionCreate.parameters', remarksKey: 'workspaceMcp.capability.sessionCreate.remarks' },
   { name: 'session_continue', permissionKey: 'workspaceMcp.capability.sessionContinue.permission', descriptionKey: 'workspaceMcp.capability.sessionContinue.description', parametersKey: 'workspaceMcp.capability.sessionContinue.parameters', remarksKey: 'workspaceMcp.capability.sessionContinue.remarks' },
+  toolDescription('message_status', '{ sessionId, messageId }', 'messages'),
+  toolDescription('message_cancel', '{ sessionId, messageId }', 'messages', true),
+  toolDescription('message_prioritize', '{ sessionId, messageId, priority }', 'messages', true),
+  toolDescription('session_queue_peek', '{ sessionId, limit?, includeProcessing? }', 'messages'),
   { name: 'session_questions', permissionKey: 'workspaceMcp.capability.sessionQuestions.permission', descriptionKey: 'workspaceMcp.capability.sessionQuestions.description', parametersKey: 'workspaceMcp.capability.sessionQuestions.parameters', remarksKey: 'workspaceMcp.capability.sessionQuestions.remarks' },
   { name: 'session_answer', permissionKey: 'workspaceMcp.capability.sessionAnswer.permission', descriptionKey: 'workspaceMcp.capability.sessionAnswer.description', parametersKey: 'workspaceMcp.capability.sessionAnswer.parameters', remarksKey: 'workspaceMcp.capability.sessionAnswer.remarks' },
   { name: 'session_request_permission', permissionKey: 'workspaceMcp.capability.sessionRequestPermission.permission', descriptionKey: 'workspaceMcp.capability.sessionRequestPermission.description', parametersKey: 'workspaceMcp.capability.sessionRequestPermission.parameters', remarksKey: 'workspaceMcp.capability.sessionRequestPermission.remarks' },
@@ -610,7 +633,7 @@ function createWorkspaceMcpCapabilitiesModal(
               createElement('td', { style: capabilityCellStyle }, createElement('code', { style: { overflowWrap: 'anywhere' } }, capability.name)),
               createElement('td', { style: capabilityCellStyle }, t(capability.permissionKey)),
               createElement('td', { style: capabilityCellStyle }, t(capability.descriptionKey)),
-              createElement('td', { style: capabilityCellStyle }, createElement('code', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, t(capability.parametersKey))),
+              createElement('td', { style: capabilityCellStyle }, createElement('code', { style: { whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' } }, capability.parametersKey === undefined ? capability.parameters : t(capability.parametersKey))),
               createElement('td', { style: capabilityCellStyle }, t(capability.remarksKey)),
             )),
           ),

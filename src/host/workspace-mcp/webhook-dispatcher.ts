@@ -10,8 +10,8 @@ import {
   type WorkspaceMcpWebhookDelivery,
 } from './webhook-store.js'
 
-const RETRY_DELAYS_MS = [2_000, 10_000, 60_000, 5 * 60_000, 30 * 60_000] as const
-const MAX_RETRIES = 5
+const RETRY_DELAYS_MS = [1_000, 2_000, 4_000] as const
+const MAX_RETRIES = RETRY_DELAYS_MS.length
 const MAX_RETRY_AFTER_MS = 30 * 60_000
 const REQUEST_TIMEOUT_MS = 10_000
 const DEFAULT_CONCURRENCY = 4
@@ -49,7 +49,7 @@ export class WorkspaceMcpWebhookDispatcher {
     this.now = options.now ?? Date.now
     this.setTimer = options.setTimer ?? ((callback, delay) => setTimeout(callback, delay))
     this.clearTimer = options.clearTimer ?? clearTimeout
-    this.random = options.random ?? Math.random
+    this.random = options.random ?? (() => 0)
     this.timeoutMs = options.timeoutMs ?? REQUEST_TIMEOUT_MS
     this.concurrency = Math.max(1, Math.floor(options.concurrency ?? DEFAULT_CONCURRENCY))
   }

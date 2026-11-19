@@ -299,7 +299,7 @@ const CODINGNS_RPC_ENDPOINTS = [
   'debug/port/check', 'debug/port/terminate', 'debug/port/kill', 'debug/proxy/get', 'debug/proxy/enable', 'debug/proxy/disable',
   'git/status', 'git/models', 'git/generate-message', 'git/init', 'git/diff', 'git/stage', 'git/unstage', 'git/discard', 'git/commit', 'git/commit-diff', 'git/history', 'git/branches', 'git/worktrees', 'git/session-worktree', 'git/switch', 'git/fetch', 'git/pull', 'git/push', 'git/undo',
   'fileManagement/session-changes', 'fileManagement/read', 'fileManagement/download', 'fileManagement/write', 'fileManagement/create-file', 'fileManagement/create-directory', 'fileManagement/rename', 'fileManagement/copy', 'fileManagement/move', 'fileManagement/delete', 'fileManagement/git-ignore',
-  'workspaceMcp/status', 'workspaceMcp/generate-key', 'workspaceMcp/webhook-list', 'workspaceMcp/webhook-create',
+  'workspaceMcp/status', 'workspaceMcp/generate-key', 'workspaceMcp/message-origin', 'workspaceMcp/webhook-list', 'workspaceMcp/webhook-create',
   'workspaceMcp/webhook-update', 'workspaceMcp/webhook-rotate-secret', 'workspaceMcp/webhook-delete', 'workspaceMcp/webhook-test',
   'credentials/list', 'credentials/save', 'credentials/delete', 'credentials/issue', 'credentials/capability', 'credentials/master-password/status', 'credentials/master-password/set',
   'lanAccessDsh/addresses', 'lanAccessDsh/detect', 'lanAccessDsh/get', 'lanAccessDsh/settings/get', 'lanAccessDsh/settings/set', 'lanAccessDsh/login/get', 'lanAccessDsh/login/set', 'lanAccessDsh/login/session/open', 'lanAccessDsh/login/session/refresh', 'lanAccessDsh/start', 'lanAccessDsh/stop',

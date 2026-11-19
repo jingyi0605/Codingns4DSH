@@ -4,6 +4,10 @@ import type { WorkspaceMcpTool } from './transport.js'
 import type { WorkspaceApprovalAdapter } from '../../dsh-capabilities/host/workspace-approval-adapter.js'
 import type { WorkspacePendingQuestionsAdapter } from '../../dsh-capabilities/host/workspace-pending-questions-adapter.js'
 import type { WorkspaceSessionControlAdapter } from '../../dsh-capabilities/host/workspace-session-control-adapter.js'
+import { listWorkspaceFiles, readWorkspaceFile, WorkspaceMcpHandlerError } from './file-handler.js'
+import type { WorkspaceMcpMessageQueue } from './message-queue-handler.js'
+import { getWorkspaceGitDiff, getWorkspaceGitLog, getWorkspaceGitStatus } from './git-handler.js'
+import { DEFAULT_HISTORY_LIMIT, DEFAULT_SEARCH_LIMIT, MAX_HISTORY_LIMIT, MAX_SEARCH_LIMIT, MAX_SEARCH_QUERY_LENGTH, readSessionHistory, searchSessions } from './history-handler.js'
 
 const MAX_PAGE_SIZE = 100
 const MAX_QUESTIONS = 16
@@ -21,21 +25,71 @@ const PERMISSION_RETENTION_MS = 15 * 60 * 1000
  */
 export const WORKSPACE_MCP_TOOL_DEFINITIONS = [
   defineTool('workspace_list', 'List managed workspaces without exposing filesystem roots.', {}),
+  defineTool('workspace_file_list', 'List files and directories beneath a managed workspace.', {
+    workspaceId: stringField('Managed workspace identifier.'),
+    path: stringField('Optional relative directory path; defaults to the workspace root.'),
+    depth: integerField(1, 5, 'Maximum directory depth, from 1 to 5.'),
+  }, ['workspaceId']),
+  defineTool('workspace_file_read', 'Read a bounded file beneath a managed workspace.', {
+    workspaceId: stringField('Managed workspace identifier.'),
+    path: stringField('Relative file path.'),
+    encoding: { type: 'string', enum: ['utf8', 'base64'], description: 'Returned content encoding.' },
+    limitBytes: integerField(1, 1024 * 1024, 'Maximum file size in bytes.'),
+  }, ['workspaceId', 'path']),
+  defineTool('workspace_git_status', 'Read the current branch and working tree status.', {
+    workspaceId: stringField('Managed workspace identifier.'),
+  }, ['workspaceId']),
+  defineTool('workspace_git_log', 'Read a bounded list of commits from a branch or revision.', {
+    workspaceId: stringField('Managed workspace identifier.'),
+    branch: stringField('Optional branch or revision.'),
+    limit: integerField(1, MAX_PAGE_SIZE, 'Maximum number of commits to return.'),
+    skip: integerField(0, Number.MAX_SAFE_INTEGER, 'Number of commits to skip.'),
+  }, ['workspaceId']),
+  defineTool('workspace_git_diff', 'Read a bounded diff for the working tree or a file.', {
+    workspaceId: stringField('Managed workspace identifier.'),
+    path: stringField('Optional relative file path.'),
+    fromRef: stringField('Optional starting Git revision.'),
+    toRef: stringField('Optional ending Git revision; omit to compare with the working tree.'),
+  }, ['workspaceId']),
   defineTool('session_list', 'List bounded session metadata in managed workspaces.', {
     workspaceId: stringField('Optional managed workspace identifier.'),
     limit: integerField(1, MAX_PAGE_SIZE, 'Maximum number of sessions to return.'),
     offset: integerField(0, Number.MAX_SAFE_INTEGER, 'Number of matching sessions to skip.'),
   }),
+  defineTool('session_history', 'Read user and assistant messages from a managed session, newest page first. Pass nextCursor as cursor to read older messages.', {
+    sessionId: stringField('Existing session identifier.'),
+    limit: integerField(1, MAX_HISTORY_LIMIT, `Maximum number of messages in this page; defaults to ${String(DEFAULT_HISTORY_LIMIT)}.`),
+    cursor: integerField(0, Number.MAX_SAFE_INTEGER, 'The nextCursor value from the previous page; omit to start from the newest messages.'),
+  }, ['sessionId']),
+  defineTool('session_search', 'Search the text of sessions in managed workspaces. Sessions outside managed workspaces are never returned.', {
+    query: { type: 'string', minLength: 1, maxLength: MAX_SEARCH_QUERY_LENGTH, description: 'Text to look for.' },
+    workspaceId: stringField('Optional managed workspace identifier to search within.'),
+    limit: integerField(1, MAX_SEARCH_LIMIT, `Maximum number of sessions to return; defaults to ${String(DEFAULT_SEARCH_LIMIT)}.`),
+  }, ['query']),
   defineTool('session_create', 'Create a native session in a managed workspace and optionally send an initial prompt. adapterId defaults to dsh; modelId is selected for the new session.', {
     workspaceId: stringField('Managed workspace identifier.'),
     adapterId: stringField('Optional adapter ID. Defaults to dsh.'),
     modelId: stringField('Optional model ID, validated against the matching model catalog.'),
     prompt: stringField('Initial prompt. Required when adapterId is an external adapter.'),
+    agentId: agentIdField(),
+    priority: priorityField(),
   }, ['workspaceId']),
   defineTool('session_continue', 'Queue a message to an exact existing session without replacing it.', {
     sessionId: stringField('Existing session identifier.'),
     message: stringField('Text to send.'),
+    agentId: agentIdField(),
+    priority: priorityField(),
   }, ['sessionId', 'message']),
+  defineTool('message_status', 'Read the current state and position of an MCP message.', messageFields(), ['sessionId', 'messageId']),
+  defineTool('message_cancel', 'Cancel a message that has not left the MCP queue.', messageFields(), ['sessionId', 'messageId']),
+  defineTool('message_prioritize', 'Set the priority of a waiting message without interrupting the active turn.', {
+    ...messageFields(), priority: priorityField(),
+  }, ['sessionId', 'messageId', 'priority']),
+  defineTool('session_queue_peek', 'View pending MCP messages in processing order.', {
+    sessionId: stringField('Existing session identifier.'),
+    limit: integerField(1, MAX_PAGE_SIZE, 'Maximum number of messages; defaults to 10.'),
+    includeProcessing: { type: 'boolean', description: 'Include the current submission; defaults to false.' },
+  }, ['sessionId']),
   defineTool('session_questions', 'List unresolved native questions for an existing session.', {
     sessionId: stringField('Existing session identifier.'),
   }, ['sessionId']),
@@ -115,6 +169,7 @@ export interface WorkspaceMcpAdapterRegistry {
 /** Create an isolated tool dispatcher over existing Host services. */
 export function createWorkspaceMcpToolHandlers(services: CodingNsHostServices, adapters?: {
   readonly sessionControl?: WorkspaceSessionControlAdapter
+  readonly queue?: WorkspaceMcpMessageQueue
   readonly pendingQuestions?: WorkspacePendingQuestionsAdapter
   readonly approval?: WorkspaceApprovalAdapter
   readonly getAdapterRegistry?: () => WorkspaceMcpAdapterRegistry | undefined
@@ -139,9 +194,20 @@ export function createWorkspaceMcpToolHandlers(services: CodingNsHostServices, a
         signal.throwIfAborted()
         switch (name) {
           case 'workspace_list': return toolSuccess(listWorkspaces(services))
-          case 'session_list': return toolSuccess(await listSessions(services, sessionControl, args, signal))
+          case 'workspace_file_list': return toolSuccess(await listWorkspaceFiles(requireWorkspaceRoot(services, args), args, signal))
+          case 'workspace_file_read': return toolSuccess(await readWorkspaceFile(requireWorkspaceRoot(services, args), args))
+          case 'workspace_git_status': return toolSuccess(await getWorkspaceGitStatus(requireWorkspaceRoot(services, args), signal))
+          case 'workspace_git_log': return toolSuccess(await getWorkspaceGitLog(requireWorkspaceRoot(services, args), args, signal))
+          case 'workspace_git_diff': return toolSuccess(await getWorkspaceGitDiff(requireWorkspaceRoot(services, args), args, signal))
+          case 'session_list': return toolSuccess(await listSessions(services, sessionControl, args, signal, adapters?.queue))
+          case 'session_history': return toolSuccess(await sessionHistory(services, sessionControl, args, signal, adapters?.queue))
+          case 'session_search': return toolSuccess(await sessionSearch(services, sessionControl, args, signal))
           case 'session_create': return toolSuccess(await createSession(services, sessionControl, args, signal, adapters))
-          case 'session_continue': return toolSuccess(await continueSession(services, sessionControl, args, signal))
+          case 'session_continue': return toolSuccess(await continueSession(services, sessionControl, args, signal, adapters?.queue))
+          case 'message_status':
+          case 'message_cancel':
+          case 'message_prioritize':
+          case 'session_queue_peek': return toolSuccess(await queueTool(services, adapters?.queue, name, args))
           case 'session_questions': return toolSuccess(listPendingQuestions(services, pendingQuestions, args))
           case 'session_answer': return toolSuccess(answerPendingQuestion(services, pendingQuestions, args))
           case 'session_request_permission': return toolSuccess(await requestPermission(services, approval, permissions, pendingPermissionSessions, args, permissionLifetime))
@@ -153,8 +219,8 @@ export function createWorkspaceMcpToolHandlers(services: CodingNsHostServices, a
         }
       } catch (error) {
         if (signal.aborted) return toolError('WORKSPACE_MCP_CANCELLED', 'The request was cancelled.')
-        return toolError(error instanceof WorkspaceToolError ? error.code : 'WORKSPACE_MCP_OPERATION_FAILED',
-          error instanceof WorkspaceToolError ? error.message : 'The requested operation could not be completed.')
+        if (error instanceof WorkspaceToolError || error instanceof WorkspaceMcpHandlerError) return toolError(error.code, error.message)
+        return toolError('WORKSPACE_MCP_OPERATION_FAILED', 'The requested operation could not be completed.')
       }
     },
     async dispose() {
@@ -218,7 +284,7 @@ function listWorkspaces(services: CodingNsHostServices): { readonly workspaces: 
   return { workspaces: rows.slice(0, MAX_PAGE_SIZE), hasMore: rows.length > MAX_PAGE_SIZE }
 }
 
-async function listSessions(services: CodingNsHostServices, capability: WorkspaceSessionControlAdapter | undefined, args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<unknown> {
+async function listSessions(services: CodingNsHostServices, capability: WorkspaceSessionControlAdapter | undefined, args: Readonly<Record<string, unknown>>, signal: AbortSignal, queue?: WorkspaceMcpMessageQueue): Promise<unknown> {
   const workspaceId = args.workspaceId === undefined ? undefined : requireId(args.workspaceId, 'workspaceId')
   const limit = args.limit === undefined ? 50 : requireInteger(args.limit, 1, MAX_PAGE_SIZE, 'limit')
   const offset = args.offset === undefined ? 0 : requireInteger(args.offset, 0, Number.MAX_SAFE_INTEGER, 'offset')
@@ -247,7 +313,10 @@ async function listSessions(services: CodingNsHostServices, capability: Workspac
   }
   const ordered = [...metadata.values()]
     .sort((left, right) => Number(right.updatedAt ?? 0) - Number(left.updatedAt ?? 0))
-  const page = ordered.slice(offset, offset + limit)
+  const page = await Promise.all(ordered.slice(offset, offset + limit).map(async (row) => {
+    const agentId = await queue?.sessionAgent(String(row.sessionId), String(row.workspaceId))
+    return agentId === undefined ? row : { ...row, agentId }
+  }))
   return {
     sessions: page,
     offset,
@@ -256,7 +325,35 @@ async function listSessions(services: CodingNsHostServices, capability: Workspac
   }
 }
 
-async function createSession(services: CodingNsHostServices, capability: WorkspaceSessionControlAdapter | undefined, args: Readonly<Record<string, unknown>>, signal: AbortSignal, adapters?: { readonly getAdapterRegistry?: () => WorkspaceMcpAdapterRegistry | undefined }): Promise<unknown> {
+async function sessionHistory(services: CodingNsHostServices, capability: WorkspaceSessionControlAdapter | undefined, args: Readonly<Record<string, unknown>>, signal: AbortSignal, queue?: WorkspaceMcpMessageQueue): Promise<unknown> {
+  const sessionId = requireId(args.sessionId, 'sessionId')
+  const limit = args.limit === undefined ? DEFAULT_HISTORY_LIMIT : requireInteger(args.limit, 1, MAX_HISTORY_LIMIT, 'limit')
+  const cursor = args.cursor === undefined ? undefined : requireInteger(args.cursor, 0, Number.MAX_SAFE_INTEGER, 'cursor')
+  const workspace = findSessionWorkspace(services, sessionId)
+  if (workspace === undefined) return unavailable('WORKSPACE_MCP_SESSION_UNAVAILABLE', 'The session is not available in a managed workspace.')
+  if (capability?.history === undefined) return unavailable('WORKSPACE_MCP_SESSION_HISTORY_UNAVAILABLE', 'The versioned DSH session-history capability is unavailable.')
+  signal.throwIfAborted()
+  return readSessionHistory(capability.history.bind(capability), {
+    sessionId, workspaceId: workspace.id, limit, ...(cursor === undefined ? {} : { cursor }),
+    ...(queue === undefined ? {} : { agentOf: (messageId: string) => queue.messageAgent(sessionId, workspace.id, messageId) }),
+  }, signal)
+}
+
+async function sessionSearch(services: CodingNsHostServices, capability: WorkspaceSessionControlAdapter | undefined, args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<unknown> {
+  const query = requireText(args.query, 'query', MAX_SEARCH_QUERY_LENGTH).trim()
+  if (query === '') throw new WorkspaceToolError('WORKSPACE_MCP_INVALID_INPUT', 'query must contain 1 to 256 characters.')
+  const limit = args.limit === undefined ? DEFAULT_SEARCH_LIMIT : requireInteger(args.limit, 1, MAX_SEARCH_LIMIT, 'limit')
+  const workspaceId = args.workspaceId === undefined ? undefined : requireId(args.workspaceId, 'workspaceId')
+  if (workspaceId !== undefined) requireWorkspace(services, workspaceId)
+  if (capability?.search === undefined) return unavailable('WORKSPACE_MCP_SESSION_SEARCH_UNAVAILABLE', 'The versioned DSH session-search capability is unavailable.')
+  signal.throwIfAborted()
+  return searchSessions(capability.search.bind(capability), {
+    query, limit, ...(workspaceId === undefined ? {} : { workspaceId }),
+    workspaceOf: (sessionId) => findSessionWorkspace(services, sessionId)?.id,
+  }, signal)
+}
+
+async function createSession(services: CodingNsHostServices, capability: WorkspaceSessionControlAdapter | undefined, args: Readonly<Record<string, unknown>>, signal: AbortSignal, adapters?: { readonly getAdapterRegistry?: () => WorkspaceMcpAdapterRegistry | undefined; readonly queue?: WorkspaceMcpMessageQueue }): Promise<unknown> {
   const workspaceId = requireId(args.workspaceId, 'workspaceId')
   requireWorkspace(services, workspaceId)
   const root = services.resolveManagedWorkspaceRoot?.(workspaceId)
@@ -264,6 +361,10 @@ async function createSession(services: CodingNsHostServices, capability: Workspa
   const adapterId = args.adapterId === undefined ? 'dsh' : requireAdapterId(args.adapterId)
   const modelId = args.modelId === undefined ? undefined : requireModelId(args.modelId)
   const prompt = args.prompt === undefined ? undefined : requireText(args.prompt, 'prompt', MAX_TEXT_LENGTH)
+  const queue = adapters?.queue
+  const agentId = optionalAgentId(args.agentId)
+  const priority = args.priority === undefined ? undefined : readPriority(args.priority)
+  if (queue === undefined && (agentId !== undefined || args.priority !== undefined)) return queueUnavailable()
   if (adapterId !== 'dsh' && prompt === undefined) return invalid('WORKSPACE_MCP_INITIAL_PROMPT_REQUIRED', 'External adapter sessions require an initial prompt.')
 
   if (capability === undefined) return unavailable('WORKSPACE_MCP_SESSION_CREATE_UNAVAILABLE', 'The versioned DSH workspace session-control capability is unavailable.')
@@ -319,6 +420,19 @@ async function createSession(services: CodingNsHostServices, capability: Workspa
     }
   }
 
+  if (agentId !== undefined || priority !== undefined) {
+    try { await queue!.bindSession(sessionId, workspaceId, agentId, priority) } catch {
+      return { ok: false, sessionId, workspaceId, error: { code: 'WORKSPACE_MCP_AGENT_BINDING_FAILED', message: 'The session was created but its Agent association could not be saved.' } }
+    }
+  }
+  if (prompt !== undefined && queue !== undefined) {
+    try {
+      const receipt = asRecord(await queue.submit({ sessionId, workspaceId, text: prompt, ...(priority === undefined ? {} : { priority }), ...(agentId === undefined ? {} : { agentId }) }, signal, true))!
+      return { ...receipt, sessionId, workspaceId, adapterId, ...(modelId === undefined ? {} : { modelId }), messageStatus: receipt.status, status: receipt.status === 'queued' ? 'queued' : receipt.accepted === true ? 'accepted' : receipt.status }
+    } catch (error) {
+      return { ok: false, sessionId, workspaceId, adapterId, error: error instanceof WorkspaceMcpHandlerError ? { code: error.code, message: error.message } : { code: 'WORKSPACE_MCP_INITIAL_PROMPT_FAILED', message: 'The session was created, but prompt submission could not be confirmed.' } }
+    }
+  }
   if (prompt !== undefined) {
     let accepted: unknown
     try {
@@ -335,16 +449,20 @@ async function createSession(services: CodingNsHostServices, capability: Workspa
       return { ok: false, sessionId, workspaceId, adapterId, ...(modelId === undefined ? {} : { modelId }), status: 'uncertain', error: { code: 'WORKSPACE_MCP_PROMPT_REJECTED', message: 'The session was created but the initial prompt was not accepted.' } }
     }
   }
-  return { sessionId, workspaceId, adapterId, ...(modelId === undefined ? {} : { modelId }), status: prompt === undefined ? 'created' : 'accepted' }
+  return { sessionId, workspaceId, adapterId, ...(modelId === undefined ? {} : { modelId }), ...(agentId === undefined ? {} : { agentId }), status: prompt === undefined ? 'created' : 'accepted' }
 }
 
-async function continueSession(services: CodingNsHostServices, capability: WorkspaceSessionControlAdapter | undefined, args: Readonly<Record<string, unknown>>, signal: AbortSignal): Promise<unknown> {
+async function continueSession(services: CodingNsHostServices, capability: WorkspaceSessionControlAdapter | undefined, args: Readonly<Record<string, unknown>>, signal: AbortSignal, queue?: WorkspaceMcpMessageQueue): Promise<unknown> {
   const sessionId = requireId(args.sessionId, 'sessionId')
   const message = requireText(args.message, 'message', MAX_TEXT_LENGTH)
+  const agentId = optionalAgentId(args.agentId)
+  const priority = args.priority === undefined ? undefined : readPriority(args.priority)
   const workspace = findSessionWorkspace(services, sessionId)
   if (workspace === undefined) return unavailable('WORKSPACE_MCP_SESSION_UNAVAILABLE', 'The session is not available in a managed workspace.')
   if (capability === undefined) return unavailable('WORKSPACE_MCP_SESSION_CONTINUE_UNAVAILABLE', 'The versioned DSH workspace session-control capability is unavailable.')
   signal.throwIfAborted()
+  if (queue !== undefined) return queue.submit({ sessionId, workspaceId: workspace.id, text: message, ...(priority === undefined ? {} : { priority }), ...(agentId === undefined ? {} : { agentId }) }, signal)
+  if (agentId !== undefined || args.priority !== undefined) return queueUnavailable()
   let response: unknown
   try {
     response = await capability.prompt({
@@ -358,6 +476,51 @@ async function continueSession(services: CodingNsHostServices, capability: Works
   }
   if (asRecord(response)?.accepted !== true) return unavailable('WORKSPACE_MCP_SESSION_CONTINUE_UNAVAILABLE', 'DSH did not accept the message.')
   return { accepted: true, sessionId, workspaceId: workspace.id }
+}
+
+export function workspaceMcpSessionWorkspaceId(services: CodingNsHostServices, sessionId: string): string | undefined {
+  return findSessionWorkspace(services, sessionId)?.id
+}
+
+function messageFields(): Record<string, unknown> {
+  return { sessionId: stringField('Existing session identifier.'), messageId: stringField('ID from the MCP message receipt.') }
+}
+
+function agentIdField(): Record<string, unknown> {
+  return { type: 'string', minLength: 1, maxLength: 256, pattern: '^[A-Za-z0-9][A-Za-z0-9._:-]*$', description: 'Optional external Agent identifier; not an authentication credential.' }
+}
+
+function priorityField(): Record<string, unknown> { return integerField(0, 100, 'Higher values go first; default 50, FIFO within a priority.') }
+
+function optionalAgentId(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string' || !isValidId(value)) throw new WorkspaceToolError('INVALID_AGENT_ID', 'agentId is invalid.')
+  return value
+}
+
+function readPriority(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 100) throw new WorkspaceToolError('INVALID_PRIORITY', 'priority must be an integer from 0 to 100.')
+  return value
+}
+
+function queueUnavailable() {
+  return unavailable('WORKSPACE_MCP_QUEUE_UNAVAILABLE', 'The Host needs DSH session control and session events to track messages.')
+}
+
+function queueTool(services: CodingNsHostServices, queue: WorkspaceMcpMessageQueue | undefined, name: string, args: Readonly<Record<string, unknown>>): unknown {
+  const sessionId = requireId(args.sessionId, 'sessionId')
+  const workspaceId = workspaceMcpSessionWorkspaceId(services, sessionId)
+  if (workspaceId === undefined) return unavailable('SESSION_NOT_FOUND', 'The session is not available in a managed workspace.')
+  if (queue === undefined) return queueUnavailable()
+  if (name === 'session_queue_peek') {
+    const limit = args.limit === undefined ? 10 : requireInteger(args.limit, 1, MAX_PAGE_SIZE, 'limit')
+    if (args.includeProcessing !== undefined && typeof args.includeProcessing !== 'boolean') return invalid('WORKSPACE_MCP_INVALID_INPUT', 'includeProcessing must be a boolean.')
+    return queue.peek(sessionId, workspaceId, limit, args.includeProcessing === true)
+  }
+  const messageId = requireId(args.messageId, 'messageId')
+  if (name === 'message_status') return queue.status(sessionId, workspaceId, messageId)
+  if (name === 'message_cancel') return queue.cancel(sessionId, workspaceId, messageId)
+  return queue.prioritize(sessionId, workspaceId, messageId, readPriority(args.priority))
 }
 
 function listPendingQuestions(services: CodingNsHostServices, capability: WorkspacePendingQuestionsAdapter | undefined, args: Readonly<Record<string, unknown>>): unknown {
@@ -567,6 +730,14 @@ function workspaceRows(services: CodingNsHostServices): readonly WorkspaceRecord
       archivedSessionIds,
     }]
   })
+}
+
+function requireWorkspaceRoot(services: CodingNsHostServices, args: Readonly<Record<string, unknown>>): string {
+  const workspaceId = requireId(args.workspaceId, 'workspaceId')
+  requireWorkspace(services, workspaceId)
+  const root = services.resolveManagedWorkspaceRoot?.(workspaceId)
+  if (typeof root !== 'string' || root.trim() === '') throw new WorkspaceToolError('WORKSPACE_MCP_WORKSPACE_UNAVAILABLE', 'The managed workspace is unavailable.')
+  return root
 }
 
 function requireWorkspace(services: CodingNsHostServices, workspaceId: string): WorkspaceRecord {
