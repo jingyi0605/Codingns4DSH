@@ -59,6 +59,7 @@ The CodingNS workbench brings the conversation, Agent picker and Git sidebar tog
 | **Workspace debug** | Save launch profiles, manage processes, check ports and access services | On |
 | **Git repository management** | Review changes, stage, commit, switch branches and browse history | On |
 | **File management enhancement** | Create, edit, rename, move, copy and delete files | Off |
+| **Workspace MCP and Webhooks** | Let local Agents queue session messages, inspect workspace files and Git, and receive session notifications. See the [integration guide](SKILL.md). | Off |
 | **PeerHost workbench** | Use other DSH Hosts' workspaces and sessions in your current workbench | Off |
 | **Global assistant (experimental)** | Chat by text or voice, follow project progress and customize your assistant | Off |
 

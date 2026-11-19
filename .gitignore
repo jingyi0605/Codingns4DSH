@@ -6,7 +6,8 @@ data
 .playwright-mcp
 # 本机 AI 协作约定，不进入版本库
 AGENTS.md
-docs/开发记录
+docs/开发记录/*
+!docs/开发记录/20261119-工作区MCP与OutcomeGo接入变更.md
 docs/生成报告
 docs/调查报告
 docs/配图
