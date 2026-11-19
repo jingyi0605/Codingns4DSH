@@ -30,6 +30,7 @@ const INPUT_SELECTOR = 'input, textarea, [contenteditable=""], [contenteditable=
 // 不是页面加载时的自动聚焦；收走它会让 DSH 的 onBlur 直接关掉弹层。
 const POPUP_SURFACE_SELECTOR = '[role="menu"],[role="listbox"],[role="dialog"],[role="group"],[aria-modal="true"]'
 const POPUP_ITEM_SELECTOR = '[role="menuitem"],[role="menuitemradio"],[role="menuitemcheckbox"],[role="option"]'
+const DIRECTORY_EDITOR_SCOPE_SELECTOR = '[class*="_editorScope"]'
 const NON_TEXT_INPUT_TYPES = new Set(['button', 'checkbox', 'color', 'file', 'hidden', 'image', 'radio', 'range', 'reset', 'submit'])
 const ACTIVATION_MAX_MS = 700
 const TAP_MAX_DISTANCE_PX = 12
@@ -186,6 +187,11 @@ function isEditable(element: InputElementLike): boolean {
 function inPopupSurface(input: InputElementLike): boolean {
   const surface = closest(input, POPUP_SURFACE_SELECTOR)
   if (surface === null || closest(surface, 'button, a') !== null) return false
+  // 编辑路径会在按钮点击后挂载输入框。目录列表用普通按钮，不能靠菜单项识别。
+  if (surface.getAttribute?.('role') === 'dialog'
+    && input.tagName?.toUpperCase() === 'INPUT'
+    && input.getAttribute?.('class')?.includes('_pathInput')
+    && closest(input, DIRECTORY_EDITOR_SCOPE_SELECTOR) !== null) return true
   return Boolean(surface.querySelector?.(POPUP_ITEM_SELECTOR))
 }
 

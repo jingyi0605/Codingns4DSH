@@ -37,6 +37,8 @@ function createHarness(width = 1366, agent = 'Mozilla/5.0 (Macintosh; Intel Mac 
     getAttribute(name: string): string | null { return this.attrs[name] ?? null }
     matches(selector: string): boolean {
       if (selector.startsWith('.')) return (this.attrs.class ?? '').split(' ').includes(selector.slice(1))
+      const substring = /^\[([^=\]]+)\*="([^"]*)"\]$/u.exec(selector)
+      if (substring) return this.attrs[substring[1]!]?.includes(substring[2]!) ?? false
       const attribute = /^\[([^=\]]+)(?:="([^"]*)")?\]$/u.exec(selector)
       if (attribute) return attribute[2] === undefined ? this.attrs[attribute[1]!] !== undefined : this.attrs[attribute[1]!] === attribute[2]
       return this.tagName.toLowerCase() === selector
@@ -216,6 +218,29 @@ test('原生 autofocus 立即失焦，迟到微任务不撤销之后真实点击
   await Promise.resolve()
   assert.equal(h.document.activeElement, input)
   assert.equal(input.blurCount, 1)
+})
+
+test('目录对话框的编辑路径按钮将焦点交给新挂载的路径输入框', (t) => {
+  const h = createHarness(360, 'Android', 1)
+  t.after(() => h.controller.dispose())
+  const dialog = new h.Element('DIV', { role: 'dialog' })
+  const editor = new h.Element('DIV', { class: '_3zXc5G_editorScope' }, dialog)
+  const edit = new h.Element('BUTTON', {}, editor)
+  h.tap(edit, 'click')
+
+  const path = new h.Element('INPUT', { class: '_3zXc5G_pathInput' }, editor)
+  path.focus()
+  assert.equal(h.document.activeElement, path)
+  h.original.call(path)
+  assert.equal(path.blurCount, 0)
+
+  for (const unrelated of [
+    new h.Element('INPUT', {}, editor),
+    new h.Element('INPUT', { class: '_3zXc5G_pathInput' }, dialog),
+  ]) {
+    unrelated.focus()
+    assert.equal(unrelated.focusCount, 0)
+  }
 })
 
 test('触摸轻微抖动保留点击许可，滚动、拖动及取消不会授权自动输入', (t) => {
