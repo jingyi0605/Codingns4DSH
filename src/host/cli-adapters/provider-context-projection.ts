@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { ANTIGRAVITY_CONTEXT_PROJECTION, ZCODE_CONTEXT_PROJECTION } from '../../shared/request-performance.js'
 import { fromCliProviderId } from '../../shared/cli-provider-route.js'
+import { EXTERNAL_AGENT_FALLBACK_CONTEXT_WINDOW } from './dsh-virtual-providers.js'
 
 const pressureSchema = z.object({
   contextWindow: z.number().int().positive().optional(),
@@ -12,14 +13,16 @@ type State = z.infer<typeof stateSchema>
 /** Replays both existing durable usage and live observations, never billing totals. */
 function createProviderContextProjection(key: string, adapterId: 'antigravity' | 'zcode') {
   return {
-    key, stateVersion: 1, stateSchema,
+    key, stateVersion: adapterId === 'antigravity' ? 2 : 1, stateSchema,
     init: (): State => ({}),
     apply(state: State, event: { type: string; data: any }): State {
       if (event.type === 'request/context') {
         if (fromCliProviderId(event.data.provider) !== adapterId) return {}
         const model = event.data.model
         if (typeof model === 'string' && model !== state.model) {
-          const parsed = pressureSchema.safeParse({ contextWindow: event.data.contextWindow })
+          const contextWindow = event.data.contextWindow
+          if (adapterId === 'antigravity' && contextWindow === EXTERNAL_AGENT_FALLBACK_CONTEXT_WINDOW) return { model }
+          const parsed = pressureSchema.safeParse({ contextWindow })
           return { model, ...(parsed.success ? parsed.data : {}) }
         }
         return state

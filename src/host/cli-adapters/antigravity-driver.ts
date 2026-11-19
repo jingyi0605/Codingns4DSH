@@ -695,14 +695,16 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     })
     if (event === null || event.type !== 'usage') return null
     const contextWindow = this.resolveContextWindow(input.modelId)
-    if (contextWindow === undefined || contextWindow <= 0) return event
-    // Only the last agent_response provides a defensible current-context size.
+    const contextTokens = turn.contextTokens
+    if (contextWindow === undefined || contextWindow <= 0) {
+      return contextTokens === undefined ? event : { ...event, contextTokens }
+    }
     return {
       ...event,
       contextWindow,
-      ...(turn.contextTokens === undefined ? {} : {
-        contextTokens: turn.contextTokens,
-        contextUsageRatio: Number(Math.min(1, turn.contextTokens / contextWindow).toFixed(6)),
+      ...(contextTokens === undefined ? {} : {
+        contextTokens,
+        contextUsageRatio: Number(Math.min(1, contextTokens / contextWindow).toFixed(6)),
       }),
     }
   }

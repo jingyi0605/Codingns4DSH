@@ -4,6 +4,8 @@ import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { AntigravityDriver } from '../data/build/dist/host/cli-adapters/antigravity-driver.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
+import { antigravityContextProjection } from '../data/build/dist/host/cli-adapters/provider-context-projection.js'
+import { createCodingNsNativeSessionBridge } from '../data/build/dist/host/native-session-bridge.js'
 import type { CodingNsNativeSessionBridge } from '../data/build/dist/host/native-session-bridge.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 import type { CodingNsAgentEvent } from '../src/shared/contracts/cli-adapter.js'
@@ -277,7 +279,7 @@ test('Antigravity 通过 stdin stream-json 输入一轮并转换标准事件', a
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'agy-provider-session' },
     { type: 'text-delta', text: '完成', messageId: 'assistant-antigravity-agy-session-0' },
-    { type: 'usage', inputTokens: 2, outputTokens: 1, cacheReadTokens: 0, uncachedInputTokens: 2, totalTokens: 3, cacheHitRate: 0 },
+    { type: 'usage', inputTokens: 2, outputTokens: 1, cacheReadTokens: 0, uncachedInputTokens: 2, totalTokens: 3, cacheHitRate: 0, contextTokens: 2 },
     { type: 'finish', reason: 'stop' },
   ])
   assert.deepEqual(calls[0], [
@@ -409,6 +411,49 @@ test('Antigravity Argon 用最后一次模型调用计算上下文占用', async
     assert.equal(usage.contextUsageRatio, 0.012398)
     assert.equal(usage.inputTokens, 14_000)
     assert.equal(usage.cacheReadTokens, 11_000)
+  } finally {
+    driver.dispose()
+  }
+})
+
+test('Antigravity Neon 将单次上下文占用独立于整轮用量落盘，未知窗口不计算百分比', async () => {
+  const modelId = 'gemini-4-neon'
+  const { driver } = scriptedDriver([[
+    ...Array.from({ length: 6 }, (_, index) => agentResponseUsage(index + 1, {
+      input_tokens: 2_000, output_tokens: 100, cache_read_tokens: 165_000,
+    })),
+    agentResponseUsage(7, { input_tokens: 2_276, output_tokens: 1_634, cache_read_tokens: 185_437 }),
+    resultEvent({ input_tokens: 14_276, output_tokens: 2_234, cache_read_tokens: 1_175_437 }),
+  ]], { modelId, resolveDefaultContextWindow: true })
+  const events: Array<{ type: string; seq: number; data: unknown }> = [
+    { type: 'turn/start', seq: 0, data: { turn: 1 } },
+    { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+    { type: 'request/context', seq: 2, data: { provider: 'codingns-cli-antigravity', model: modelId, contextWindow: 1_000_000 } },
+  ]
+  const session = {
+    snapshotEvents: () => [...events],
+    append(type: string, data: unknown) {
+      const event = { type, data, seq: events.length }
+      events.push(event)
+      return event
+    },
+  }
+  const nativeSessions = createCodingNsNativeSessionBridge({
+    get: (name: string) => name === 'sessions' ? { get: () => session, list: () => [session] } : undefined,
+  } as never)
+  const projector = new CodingNsDshMessageProjector({ adapterId: 'antigravity', sessionId: 'agy-session', modelId, nativeSessions })
+  try {
+    const chunks = await collect(driver, { modelId })
+    const usage = chunks.find(chunk => chunk.type === 'usage')
+    assert.equal(usage.inputTokens, 14_276)
+    assert.equal(usage.cacheReadTokens, 1_175_437)
+    assert.equal(usage.contextTokens, 187_713)
+    assert.equal(usage.contextWindow, undefined)
+    assert.equal(usage.contextUsageRatio, undefined)
+
+    for (const chunk of chunks) await projector.push(chunk)
+    const projection = antigravityContextProjection
+    assert.deepEqual(projection.wire.view(events.reduce(projection.apply, projection.init())), { pressureTokens: 187_713 })
   } finally {
     driver.dispose()
   }
