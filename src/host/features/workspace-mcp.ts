@@ -1,10 +1,11 @@
 import type { FeatureModule } from '../../shared/contracts/feature.js'
 import { debugWarn } from '../../shared/debug.js'
 import { CodingNsRpcError } from '../rpc-table.js'
-import { startWorkspaceMcpTransport } from '../workspace-mcp/transport.js'
+import { startWorkspaceMcpTransport, WORKSPACE_MCP_LARGE_RESPONSE_BYTES } from '../workspace-mcp/transport.js'
 import { FileWorkspaceMcpApiKeyStore, generateWorkspaceMcpApiKey } from '../workspace-mcp/api-key-store.js'
 import type { WorkspaceMcpApiKeyStore } from '../workspace-mcp/api-key-store.js'
-import { createWorkspaceMcpToolHandlers } from '../workspace-mcp/tools.js'
+import { WorkspaceMcpMessageQueue, MCP_MESSAGE_PREFIX } from '../workspace-mcp/message-queue-handler.js'
+import { createWorkspaceMcpToolHandlers, workspaceMcpSessionWorkspaceId } from '../workspace-mcp/tools.js'
 import type { WorkspaceMcpAdapterRegistry } from '../workspace-mcp/tools.js'
 import { getAdapterRegistry } from '../cli-adapters/registry-holder.js'
 import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
@@ -15,7 +16,7 @@ import type { WorkspaceSessionControlAdapter } from '../../dsh-capabilities/host
 import type { CodingNsHostServices } from './types.js'
 import { registerWorkspaceMcpLanRoute, synthLanResponse } from '../lan-access-dsh.js'
 import { randomBytes, randomUUID } from 'node:crypto'
-import { FileWorkspaceMcpWebhookStore, WorkspaceMcpWebhookStoreError } from '../workspace-mcp/webhook-store.js'
+import { FileWorkspaceMcpWebhookStore, WorkspaceMcpWebhookStoreError, WORKSPACE_MCP_QUEUE_WEBHOOK_EVENTS } from '../workspace-mcp/webhook-store.js'
 import type { WorkspaceMcpWebhookDestination, WorkspaceMcpWebhookEventType } from '../workspace-mcp/webhook-store.js'
 import { WorkspaceMcpWebhookDispatcher } from '../workspace-mcp/webhook-dispatcher.js'
 import type { WorkspaceMcpWebhookDispatcherOptions } from '../workspace-mcp/webhook-dispatcher.js'
@@ -28,6 +29,7 @@ export function createWorkspaceMcpHostFeature(options: {
   readonly apiKeyStore?: WorkspaceMcpApiKeyStore
   readonly webhookStore?: FileWorkspaceMcpWebhookStore
   readonly webhookDispatcherOptions?: WorkspaceMcpWebhookDispatcherOptions
+  readonly messageStorePath?: string
   readonly isOwner?: (peer: unknown) => boolean
 } = {}): FeatureModule<CodingNsHostServices> {
   return {
@@ -91,10 +93,16 @@ export function createWorkspaceMcpHostFeature(options: {
       const capabilityProfile = context.services.dshContext === undefined || context.services.dshVersion === undefined
         ? undefined
         : createDshCapabilityRegistry(context.services.dshVersion, 'host', context.services.dshContext).getProfile(context.services.dshContext)
+      const sessionControl = capabilityProfile?.capabilities.get('workspace.session-control')?.value as WorkspaceSessionControlAdapter | undefined
+      const workspaceOf = (sessionId: string) => workspaceMcpSessionWorkspaceId(context.services, sessionId)
+      const queue = sessionControl === undefined || context.services.nativeSessions?.supportsEvents !== true ? undefined : new WorkspaceMcpMessageQueue({
+        services: context.services, control: sessionControl, workspaceOf,
+        notice: (event) => webhookEvents?.publishQueueEvent(event),
+        ...(options.messageStorePath === undefined ? {} : { filePath: options.messageStorePath }),
+      })
       const toolset = createWorkspaceMcpToolHandlers(context.services, {
-        ...(capabilityProfile?.capabilities.get('workspace.session-control')?.value === undefined ? {} : {
-          sessionControl: capabilityProfile.capabilities.get('workspace.session-control')!.value as WorkspaceSessionControlAdapter,
-        }),
+        ...(sessionControl === undefined ? {} : { sessionControl }),
+        ...(queue === undefined ? {} : { queue }),
         ...(capabilityProfile?.capabilities.get('workspace.pending-questions')?.value === undefined ? {} : {
           pendingQuestions: capabilityProfile.capabilities.get('workspace.pending-questions')!.value as WorkspacePendingQuestionsAdapter,
         }),
@@ -142,6 +150,7 @@ export function createWorkspaceMcpHostFeature(options: {
             ...(capabilityProfile?.capabilities.get('workspace.pending-questions')?.value === undefined ? {} : {
               pendingQuestions: capabilityProfile.capabilities.get('workspace.pending-questions')!.value as WorkspacePendingQuestionsAdapter,
             }),
+            ...(queue === undefined ? {} : { agentContext: (sessionId: string, workspaceId: string, turn?: number) => queue.agentContext(sessionId, workspaceId, turn) }),
             onQueued: () => dispatcher.wake(),
           })
           if (currentGeneration !== webhookGeneration || webhooksStopped) {
@@ -166,6 +175,7 @@ export function createWorkspaceMcpHostFeature(options: {
         const questionChannel = typeof context.services.events?.on === 'function'
         const pendingQuestions = capabilityProfile?.capabilities.get('workspace.pending-questions')?.value !== undefined
         return {
+          ...Object.fromEntries(WORKSPACE_MCP_QUEUE_WEBHOOK_EVENTS.map((type) => [type, { available: queue !== undefined, reason: queue === undefined ? 'The MCP session queue is unavailable.' : null }])),
           'session.completed': { available: sessionEvents, reason: sessionEvents ? null : 'Native session events are unavailable.' },
           'session.failed': { available: sessionEvents, reason: sessionEvents ? null : 'Native session events are unavailable.' },
           'session.permission_requested': { available: sessionEvents, reason: sessionEvents ? null : 'Native session events are unavailable.' },
@@ -185,6 +195,7 @@ export function createWorkspaceMcpHostFeature(options: {
             await previous.revoke()
           }
           toolset.abortRequests()
+          queue?.setEnabled(false)
           if (currentGeneration !== generation) return
           try {
             storedKey = await apiKeyStore.read() ?? ''
@@ -197,17 +208,20 @@ export function createWorkspaceMcpHostFeature(options: {
           }
           if (currentGeneration !== generation) return
           if (!enabled()) {
+            queue?.setEnabled(false)
             reason = 'disabled'
             return
           }
           const key = apiKey()
           if (key === '') {
+            queue?.setEnabled(false)
             reason = 'api-key-not-configured'
             return
           }
           try {
             const next = await startWorkspaceMcpTransport({
               apiKey: key,
+              maxResponseBytes: WORKSPACE_MCP_LARGE_RESPONSE_BYTES,
               listTools: (signal) => toolset.listTools(signal),
               callTool: (name, args, signal) => toolset.callTool(name, args, signal),
               serverInfo: { name: 'codingns-workspace-mcp', version: '0.1.0' },
@@ -216,7 +230,11 @@ export function createWorkspaceMcpHostFeature(options: {
               await next.revoke()
               return
             }
-            transport = next
+            await webhookTail
+            if (currentGeneration === generation && enabled()) {
+              queue?.setEnabled(true)
+              transport = next
+            } else await next.revoke()
             reason = next.active ? null : 'api-key-not-configured'
           } catch (error) {
             if (currentGeneration === generation) {
@@ -235,6 +253,18 @@ export function createWorkspaceMcpHostFeature(options: {
       }
 
       context.resources.add(context.services.rpc.register('workspaceMcp', async (action, _payload, rpcContext) => {
+        if (action === 'message-origin') {
+          if (!isOwner(rpcContext)) throw new CodingNsRpcError('CODINGNS_RPC_FORBIDDEN', 'Only the Host owner can read message origins.')
+          const payload = asRecord(_payload)
+          const sessionId = payload?.sessionId
+          const messageId = payload?.messageId
+          if (typeof sessionId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/u.test(sessionId)
+            || typeof messageId !== 'string' || !messageId.startsWith(MCP_MESSAGE_PREFIX) || messageId.length !== MCP_MESSAGE_PREFIX.length + 36) return {}
+          const workspaceId = workspaceOf(sessionId)
+          if (workspaceId === undefined) return {}
+          const agentId = await queue?.messageAgent(sessionId, workspaceId, messageId)
+          return agentId === undefined ? {} : { agentId }
+        }
         if (action === 'generate-key') {
           const caller = rpcContext as { readonly peer?: unknown } | undefined
           const connection = (context.services.dshContext as unknown as { readonly connection?: unknown } | undefined)?.connection
@@ -361,9 +391,10 @@ export function createWorkspaceMcpHostFeature(options: {
         enabledSnapshot = nextEnabled
         reconcile()
       }))
-      reconcile()
       void reconcileWebhooks()
+      reconcile()
       context.resources.add(async () => {
+        queue?.setEnabled(false)
         webhooksStopped = true
         webhookGeneration += 1
         await webhookTail
@@ -375,6 +406,7 @@ export function createWorkspaceMcpHostFeature(options: {
         const current = transport
         transport = undefined
         if (current !== undefined) await current.revoke()
+        await queue?.close()
         await toolset.dispose()
       })
     },
@@ -382,7 +414,7 @@ export function createWorkspaceMcpHostFeature(options: {
 }
 
 const WEBHOOK_EVENT_TYPES = new Set<WorkspaceMcpWebhookEventType>([
-  'session.completed', 'session.failed', 'session.permission_requested', 'session.question_asked',
+  'session.completed', 'session.failed', 'session.permission_requested', 'session.question_asked', ...WORKSPACE_MCP_QUEUE_WEBHOOK_EVENTS,
 ])
 
 function readWebhookDestinationInput(

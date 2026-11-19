@@ -598,6 +598,47 @@ test('会话控制适配器只对同一个 live Agent 生效', async (t) => {
   await assert.rejects(adapter.prepareSession('session-missing', signal), /could not be prepared/u)
 })
 
+function contextWithController(extra: Record<string, unknown>) {
+  const base = createHostContext()
+  const controller = { ...(base.get('sessionController') as Record<string, unknown>), ...extra }
+  return { get: (name: string) => (name === 'sessionController' ? controller : base.get(name)) }
+}
+
+test('会话控制适配器把历史与搜索转发给 DSH，优先用 events，并且 DSH 没有对应方法时不暴露', async () => {
+  const seen: unknown[] = []
+  const signal = new AbortController().signal
+  const withBoth = tryCreateSessionControl(contextWithController({
+    events: async (request: unknown) => { seen.push(['events', request]); return { records: [], hasMore: false, cursor: 1 } },
+    page: async (request: unknown) => { seen.push(['page', request]); return { records: [], hasMore: false, cursor: 1 } },
+    search: async (request: unknown) => { seen.push(['search', request]); return { items: [], hasMore: false } },
+  }))
+  assert.ok(withBoth.ok)
+  await withBoth.adapter.history!({ sessionId: 'session-1', beforeSeq: 7, maxMessages: 5 }, signal)
+  await withBoth.adapter.history!({ sessionId: 'session-1', maxMessages: 3 }, signal)
+  await withBoth.adapter.search!('needle', signal)
+  assert.deepEqual(seen, [
+    ['events', { address: { kind: 'session', sessionId: 'session-1' }, beforeSeq: 7, maxMessages: 5 }],
+    ['events', { address: { kind: 'session', sessionId: 'session-1' }, maxMessages: 3 }],
+    ['search', { query: 'needle' }],
+  ])
+
+  const aborted = new AbortController()
+  aborted.abort()
+  assert.throws(() => withBoth.adapter.history!({ sessionId: 'session-1', maxMessages: 1 }, aborted.signal))
+  assert.throws(() => withBoth.adapter.search!('needle', aborted.signal))
+
+  const pageOnly = tryCreateSessionControl(contextWithController({ page: async (request: unknown) => { seen.push(['page', request]); return { records: [], hasMore: false, cursor: 1 } } }))
+  assert.ok(pageOnly.ok)
+  await pageOnly.adapter.history!({ sessionId: 'session-2', maxMessages: 2 }, signal)
+  assert.equal((seen.at(-1) as unknown[])[0], 'page')
+  assert.equal(pageOnly.adapter.search, undefined)
+
+  const neither = tryCreateSessionControl(createHostContext())
+  assert.ok(neither.ok)
+  assert.equal(neither.adapter.history, undefined)
+  assert.equal(neither.adapter.search, undefined)
+})
+
 // ---------------------------------------------------------------------------
 // Capability matrix wiring
 // ---------------------------------------------------------------------------

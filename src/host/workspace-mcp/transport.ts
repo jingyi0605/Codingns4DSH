@@ -48,7 +48,7 @@ const DEFAULT_MAX_CONCURRENT_REQUESTS = 16
 const DEFAULT_MAX_CONCURRENT_CALLS = 8
 const DEFAULT_MAX_WAIT_MS = 30_000
 const HARD_MAX_BODY_BYTES = 4 * 1024 * 1024
-const HARD_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+export const WORKSPACE_MCP_LARGE_RESPONSE_BYTES = 16 * 1024 * 1024
 const HARD_MAX_CONCURRENT_REQUESTS = 64
 const HARD_MAX_CONCURRENT_CALLS = 32
 const HARD_MAX_WAIT_MS = 60_000
@@ -80,7 +80,7 @@ export async function startWorkspaceMcpTransport(options: WorkspaceMcpTransportO
 
   const limits = {
     maxBodyBytes: boundedOption(options.maxBodyBytes, DEFAULT_MAX_BODY_BYTES, HARD_MAX_BODY_BYTES),
-    maxResponseBytes: boundedOption(options.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES, HARD_MAX_RESPONSE_BYTES, MIN_RESPONSE_BYTES),
+    maxResponseBytes: boundedOption(options.maxResponseBytes, DEFAULT_MAX_RESPONSE_BYTES, WORKSPACE_MCP_LARGE_RESPONSE_BYTES, MIN_RESPONSE_BYTES),
     maxConcurrentRequests: boundedOption(options.maxConcurrentRequests, DEFAULT_MAX_CONCURRENT_REQUESTS, HARD_MAX_CONCURRENT_REQUESTS),
     maxConcurrentCalls: boundedOption(options.maxConcurrentCalls, DEFAULT_MAX_CONCURRENT_CALLS, HARD_MAX_CONCURRENT_CALLS),
     maxWaitMs: boundedOption(options.maxWaitMs, DEFAULT_MAX_WAIT_MS, HARD_MAX_WAIT_MS),

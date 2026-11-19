@@ -6,6 +6,7 @@ import {
   createWorkspaceMcpWebhookPayload,
   serializeWorkspaceMcpWebhookPayload,
   type WorkspaceMcpWebhookEventData,
+  type WorkspaceMcpWebhookPayloadInput,
 } from './webhook-payload.js'
 import {
   FileWorkspaceMcpWebhookStore,
@@ -13,6 +14,8 @@ import {
   type WorkspaceMcpWebhookDestination,
   type WorkspaceMcpWebhookEventType,
 } from './webhook-store.js'
+
+import type { QueueNotice } from './message-queue-handler.js'
 
 const TEXT_BYTES = 64 * 1024
 const ERROR_BYTES = 1024
@@ -37,6 +40,7 @@ export interface WorkspaceMcpWebhookEventRuntime {
   readonly sessionList?: (signal: AbortSignal) => Promise<unknown>
   readonly diagnostics?: (diagnostic: WorkspaceMcpWebhookEventDiagnostic) => void
   readonly onQueued?: () => void
+  readonly agentContext?: (sessionId: string, workspaceId: string, turn?: number) => Promise<{ agentId?: string; messageId?: string }>
   readonly setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>
   readonly clearTimer?: (timer: ReturnType<typeof setTimeout>) => void
   readonly now?: () => number
@@ -44,6 +48,7 @@ export interface WorkspaceMcpWebhookEventRuntime {
 
 export interface WorkspaceMcpWebhookEventController {
   readonly capabilities: WorkspaceMcpWebhookEventCapabilities
+  publishQueueEvent(notice: QueueNotice): void
   dispose(): void
 }
 
@@ -54,6 +59,7 @@ export function attachWorkspaceMcpWebhookEvents(runtime: WorkspaceMcpWebhookEven
   const pendingTimers = new Set<ReturnType<typeof setTimeout>>()
   const disposers: Array<() => void> = []
   let disposed = false
+  let enqueueTail = Promise.resolve()
   const titles = new Map<string, string>()
   const lastAssistantText = new Map<string, string>()
   const sessionEvents = runtime.services.nativeSessions?.supportsEvents === true
@@ -77,6 +83,13 @@ export function attachWorkspaceMcpWebhookEvents(runtime: WorkspaceMcpWebhookEven
   void refreshSessionTitles()
 
   return {
+    publishQueueEvent(notice) {
+      const { sessionId, workspaceId, agentId, messageId, type, ...data } = notice
+      const occurrenceId = type === 'session.queue_changed' ? `queue:${messageId}:${randomUUID()}` : `message:${messageId}`
+      schedule(sessionId, { eventId: stableEventId(sessionId, type, occurrenceId), eventType: type,
+        occurredAt: new Date(now()).toISOString(), occurrenceId, data: { messageId, ...data },
+        context: { workspaceId, messageId, ...(agentId === undefined ? {} : { agentId }) } })
+    },
     capabilities: {
       sessionEvents,
       permissions: sessionEvents,
@@ -147,10 +160,11 @@ export function attachWorkspaceMcpWebhookEvents(runtime: WorkspaceMcpWebhookEven
       if (text !== undefined) lastAssistantText.set(sessionId, truncateUtf8(text, TEXT_BYTES))
       return
     }
+    const turn = typeof data.turn === 'number' ? data.turn : undefined
     if (type === 'approval/asked') {
       const approval = approvalData(data)
       if (approval === null) return
-      void enqueue(sessionId, event, 'session.permission_requested', `approval:${approval.requestId}`, approval)
+      enqueue(sessionId, turn, 'session.permission_requested', `approval:${approval.requestId}`, approval)
       return
     }
     if (type !== 'turn/end') return
@@ -158,13 +172,17 @@ export function attachWorkspaceMcpWebhookEvents(runtime: WorkspaceMcpWebhookEven
     if (reason?.kind === 'completed') {
       if (isParentTurnBlocked(sessionId)) return
       const lastMessage = lastAssistantText.get(sessionId)
-      void enqueue(sessionId, event, 'session.completed', `turn:${String(event.seq)}`, lastMessage === undefined ? {} : { lastMessage })
+      enqueue(sessionId, turn, 'session.completed', `turn:${String(event.seq)}`, lastMessage === undefined ? {} : { lastMessage })
     } else if (reason?.kind === 'error') {
       const error = asRecord(reason.error)
       if (typeof error?.code !== 'string' || typeof error.message !== 'string') return
-      void enqueue(sessionId, event, 'session.failed', `turn:${String(event.seq)}`, {
+      enqueue(sessionId, turn, 'session.failed', `turn:${String(event.seq)}`, {
         errorCode: error.code.slice(0, 128), errorMessage: truncateUtf8(error.message, ERROR_BYTES),
       })
+    } else if (runtime.agentContext !== undefined && (reason?.kind === 'aborted' || reason?.kind === 'interrupted')) {
+      enqueue(sessionId, turn, 'session.failed', `turn:${String(event.seq)}`, {
+        errorCode: 'SESSION_ABORTED', errorMessage: 'The session was interrupted.',
+      }, true)
     }
   }
 
@@ -197,35 +215,53 @@ export function attachWorkspaceMcpWebhookEvents(runtime: WorkspaceMcpWebhookEven
           occurrenceId: `question:${question.callId}`,
           data: questionData(question),
         }
-        await enqueueClassified(sessionId, event)
+        schedule(sessionId, event)
       }
       return
     }
     runtime.diagnostics?.({ code: 'question-snapshot-missing', sessionId })
   }
 
-  async function enqueue(
+  function enqueue(
     sessionId: string,
-    rawEvent: Record<string, unknown>,
+    turn: number | undefined,
     type: Exclude<WorkspaceMcpWebhookEventType, 'webhook.test'>,
     occurrenceId: string,
     data: WorkspaceMcpWebhookEventData,
-  ): Promise<void> {
-    await enqueueClassified(sessionId, {
+    agentOnly = false,
+  ): void {
+    schedule(sessionId, {
       eventId: stableEventId(sessionId, type, occurrenceId),
       eventType: type,
       occurredAt: new Date(now()).toISOString(),
       occurrenceId,
       data,
+      ...(turn === undefined ? {} : { turn }),
+      agentOnly,
     })
   }
 
-  async function enqueueClassified(sessionId: string, event: ClassifiedEvent): Promise<void> {
+  function schedule(sessionId: string, event: ClassifiedEvent): void {
+    const workspace = findWorkspace(runtime.services, sessionId)
+    const context = event.context === undefined && workspace !== undefined ? runtime.agentContext?.(sessionId, workspace.id, event.turn) : undefined
+    const publish = (correlation?: { agentId?: string; messageId?: string }): void => {
+      enqueueTail = enqueueTail.then(async () => {
+        if (!disposed) await enqueueClassified(sessionId, event, correlation)
+      }).catch(() => runtime.diagnostics?.({ code: 'store-failed', sessionId }))
+    }
+    if (context === undefined) publish()
+    else void context.then(publish, () => publish())
+  }
+
+  async function enqueueClassified(sessionId: string, event: ClassifiedEvent, correlation?: { agentId?: string; messageId?: string }): Promise<void> {
     const workspace = findWorkspace(runtime.services, sessionId)
     if (workspace === undefined) {
       runtime.diagnostics?.({ code: 'workspace-missing', sessionId })
       return
     }
+    if (event.context !== undefined && event.context.workspaceId !== workspace.id) return
+    const { agentId, messageId } = event.context ?? correlation ?? {}
+    if (event.agentOnly === true && agentId === undefined) return
     let snapshot: Awaited<ReturnType<FileWorkspaceMcpWebhookStore['snapshot']>>
     try { snapshot = await runtime.store.snapshot() } catch {
       runtime.diagnostics?.({ code: 'store-failed', sessionId })
@@ -242,6 +278,8 @@ export function attachWorkspaceMcpWebhookEvents(runtime: WorkspaceMcpWebhookEven
         workspace: { id: workspace.id, name: workspace.name },
         session: { id: sessionId, ...(titles.get(sessionId) === undefined ? {} : { title: titles.get(sessionId)! }) },
         includeLastMessage: destination.includeLastMessage,
+        ...(agentId === undefined ? {} : { agentId }),
+        ...(messageId === undefined ? {} : { messageId }),
       }
       const payload = createPayloadForEvent(payloadInput, event)
       const body = serializeWorkspaceMcpWebhookPayload(payload)
@@ -287,7 +325,10 @@ interface ClassifiedEvent {
   readonly eventType: Exclude<WorkspaceMcpWebhookEventType, 'webhook.test'>
   readonly occurredAt: string
   readonly occurrenceId: string
-  readonly data: WorkspaceMcpWebhookEventData
+  readonly data: WorkspaceMcpWebhookEventData | Record<string, unknown>
+  readonly turn?: number
+  readonly agentOnly?: boolean
+  readonly context?: { readonly workspaceId: string; readonly messageId: string; readonly agentId?: string }
 }
 
 function createPayloadForEvent(
@@ -310,6 +351,8 @@ function createPayloadForEvent(
       return createWorkspaceMcpWebhookPayload({ ...base, type: event.eventType, data: event.data as Extract<WorkspaceMcpWebhookEventData, { requestId: string }> })
     case 'session.question_asked':
       return createWorkspaceMcpWebhookPayload({ ...base, type: event.eventType, data: event.data as Extract<WorkspaceMcpWebhookEventData, { callId: string }> })
+    default:
+      return createWorkspaceMcpWebhookPayload({ ...base, type: event.eventType, data: event.data } as WorkspaceMcpWebhookPayloadInput)
   }
 }
 

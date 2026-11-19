@@ -51,7 +51,8 @@ function signal(): AbortSignal { return new AbortController().signal }
 
 test('exports a fixed documented catalog with expected tool names and closed schemas', () => {
   assert.deepEqual(WORKSPACE_MCP_TOOL_DEFINITIONS.map((tool) => tool.name), [
-    'workspace_list', 'session_list', 'session_create', 'session_continue', 'session_questions',
+    'workspace_list', 'workspace_file_list', 'workspace_file_read', 'workspace_git_status', 'workspace_git_log', 'workspace_git_diff',
+    'session_list', 'session_history', 'session_search', 'session_create', 'session_continue', 'message_status', 'message_cancel', 'message_prioritize', 'session_queue_peek', 'session_questions',
     'session_answer', 'session_request_permission', 'session_permission_status', 'terminal_list', 'terminal_read', 'terminal_write',
   ])
   for (const tool of WORKSPACE_MCP_TOOL_DEFINITIONS) {
