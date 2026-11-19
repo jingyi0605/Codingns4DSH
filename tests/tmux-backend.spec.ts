@@ -602,7 +602,10 @@ test('macOS：服务器未运行时通过 launchd 拉起，且先于直接 start
     assert.ok(plist.includes(`<string>${join(directory, 'tmux.conf')}</string>`))
     assert.match(plist, /<string>start-server<\/string>/u)
     assert.doesNotMatch(plist, /KeepAlive/u)
-    assert.equal(statSync(join(directory, `${label}.plist`)).mode & 0o777, 0o600)
+    // The backend simulates macOS, but Windows stat cannot report POSIX file permissions.
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(join(directory, `${label}.plist`)).mode & 0o777, 0o600)
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }

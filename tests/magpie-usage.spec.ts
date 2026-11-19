@@ -2673,12 +2673,13 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
       return { ok: true as const, value: input.offset === 0 ? firstPage : secondPage }
     },
   }
+  const translate = resolveCodingNsTranslator()
   const view = createHookRenderer(MagpieRouteRequests, {
     rpc: rpc as never,
     sessionId: 'agent-session-1',
     sessionName: null,
     agent: 'claude',
-    t: resolveCodingNsTranslator(),
+    t: translate,
     requestsDialogRef,
   })
   t.after(() => view.dispose())
@@ -2703,15 +2704,24 @@ test('路由卡片标题栏的查看请求按钮复用管理页请求视图并�
   const overlay = findTestElement(dialogTree, (element) => element.type === 'div' && element.props?.className === 'codingns4dsh-magpie-requests-overlay')
   assert.equal((overlay?.props?.style as { readonly zIndex?: number } | undefined)?.zIndex, 2147483000, 'the request modal must stay above the right sidebar')
   assert.equal((overlay as { readonly ref?: unknown } | null)?.ref, requestsDialogRef, 'the portaled overlay must be registered as inside the usage popover for outside-pointer dismissal')
-  const pageContent = renderRequestsPageContent(dialog)
+  const pageTree = renderRequestsPageTree(dialog)
+  const pageContent = JSON.stringify(pageTree)
   assert.match(pageContent, /请求模型/u, 'the reused management view should render its table headers')
   assert.match(pageContent, /Native DSH title/u, 'the request dialog should display the matched DSH session name')
   assert.match(pageContent, /实际模型/u)
   assert.match(pageContent, /报告费用/u)
   assert.match(pageContent, /输出速度/u)
   assert.match(pageContent, /首字耗时/u)
-  assert.match(pageContent, /4\.9M/u, 'the metric strip uses complete usage metrics instead of the loaded rows')
-  assert.match(pageContent, /150/u, 'the request count is not limited to the loaded page')
+  const statStrip = findTestElement(pageTree, (element) => Array.isArray(element.props?.stats))
+  const stats = statStrip?.props?.stats
+  assert.ok(Array.isArray(stats), 'the request page should render aggregate statistics')
+  const tokens = stats.find((stat) => stat.label === translate('magpie.statTokens'))
+  const compact = new Intl.NumberFormat(undefined, { notation: 'compact', maximumFractionDigits: 1 })
+  const { inputTokens, outputTokens, calls: totalCalls } = firstPage.aggregate
+  assert.equal(tokens?.value, compact.format(inputTokens + outputTokens), 'the token total uses all requests')
+  assert.equal(tokens?.detail, `${translate('magpie.metricInput')} ${compact.format(inputTokens)} · ${translate('magpie.metricOutput')} ${compact.format(outputTokens)}`)
+  const requests = stats.find((stat) => stat.label === translate('magpie.statCalls'))
+  assert.equal(requests?.value, new Intl.NumberFormat().format(totalCalls), 'the request count is not limited to the loaded page')
   assert.match(pageContent, /回合/u)
   assert.match(pageContent, /12/u)
   assert.match(pageContent, /步骤 34/u)
