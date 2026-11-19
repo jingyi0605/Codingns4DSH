@@ -521,6 +521,9 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
   const deepseekBalance = deepseek === undefined ? null : selectDeepseekBalance(deepseek)
   const providerBalanceRemaining = providerBalance === undefined ? null : balancePercent(providerBalance.remaining, providerBalance.total)
   const providerBalancePlan = providerBalance?.planName?.trim() || null
+  const activeGroup = usage.activeGroupId === undefined ? undefined : usage.groups?.find((group) => group.id === usage.activeGroupId)
+  const activeGroupLabel = activeGroup === undefined ? null : formatSubscriptionGroupLabel(activeGroup, t)
+  const triggerTitle = activeGroupLabel === null ? undefined : remaining === null ? activeGroupLabel : `${activeGroupLabel} · ${formatPercent(remaining)}%`
   const newApiHeadline = isNewApiProvider && providerBalance !== undefined ? formatNewApiHeadline(providerBalance) : null
   // 官方余额读取器可能没有可直连的 Provider Logo；此时统一回退到当前
   // 适配器注册的内置图标，ZCode 等 Agent 不再显示空 src 的破图。
@@ -589,6 +592,7 @@ function CommandCodeSubscriptionSlot(props: SubscriptionSlotProps): ReactElement
       className: 'codingns4dsh-subscription-trigger',
       onClick: () => setOpen((value) => !value),
       disabled: loading && usage === null,
+      ...(triggerTitle === undefined ? {} : { title: triggerTitle }),
       'aria-label': label,
       'aria-expanded': open,
       style: subscriptionTriggerStyle,
@@ -1356,7 +1360,10 @@ function SubscriptionPopover({ usage, providerName, t, nowMs, reset }: {
   const quotaGroups = usage.groups ?? []
   const windowSections = quotaGroups.length > 0
     ? quotaGroups.flatMap((group) => [
-        createElement('div', { key: `group:${group.id}`, style: quotaGroupTitleStyle }, formatSubscriptionGroupLabel(group, t)),
+        createElement('div', { key: `group:${group.id}`, style: quotaGroupHeadingStyle },
+          createElement('span', undefined, formatSubscriptionGroupLabel(group, t)),
+          usage.activeGroupId === group.id && createElement('span', { style: quotaGroupActiveBadgeStyle }, t('usage.quotaActiveAccount')),
+        ),
         ...group.windows.map((entry) => renderWindow(
           `group:${group.id}:${entry.kind}:${entry.label ?? ''}`,
           formatSubscriptionGroupWindowLabel(entry, t),
@@ -2207,6 +2214,8 @@ const barStyle = { height: 7, overflow: 'hidden' as const, borderRadius: 4, back
 const barFillStyle = { display: 'block', height: '100%', borderRadius: 4, background: dshThemeColor.accent, transition: 'width .2s ease' }
 const resetStyle = { color: dshThemeColor.labelTertiary, fontSize: uiFontSize(12) }
 const quotaGroupTitleStyle = { paddingTop: 12, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(12), fontWeight: 600, letterSpacing: '.02em' }
+const quotaGroupHeadingStyle = { ...quotaGroupTitleStyle, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }
+const quotaGroupActiveBadgeStyle = { flex: 'none', padding: '1px 6px', borderRadius: 999, background: dshThemeColor.surfaceSubtle, color: dshThemeColor.accent, fontSize: uiFontSize(10), fontWeight: 600, lineHeight: '14px' }
 const subscriptionPopoverStyle = { ...dshPopupSurfaceStyle, position: 'absolute' as const, zIndex: 1200, bottom: 'calc(100% + 8px)', left: 0, width: 'max-content', minWidth: 280, maxWidth: 'min(400px, calc(100vw - 24px))', maxHeight: 'min(70vh, 560px)', overflowY: 'auto' as const, boxSizing: 'border-box' as const, padding: 14, borderRadius: 12 }
 const magpiePopoverStyle = { ...subscriptionPopoverStyle, width: 400, minWidth: 0, maxWidth: 'min(400px, calc(100vw - 24px))', maxHeight: 'min(78vh, 640px)', padding: 12, borderRadius: 14 }
 const resetCreditsSectionStyle = { display: 'grid', gap: 6, marginTop: 10, padding: '10px 12px', border: `1px solid ${dshThemeColor.border}`, borderRadius: 10, background: dshThemeColor.surfaceSubtle }

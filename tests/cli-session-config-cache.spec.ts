@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { loadCliSessionConfig, rememberCliSessionConfig } from '../data/build/dist/client/cli-session-config-cache.js'
+import { loadCliSessionConfig, rememberCliSessionConfig, trackCliSessionConfigUpdate } from '../data/build/dist/client/cli-session-config-cache.js'
 
 test('会话配置并发读取合并为一次 RPC，并在短期内复用快照', async () => {
   let calls = 0
@@ -95,4 +95,25 @@ test('强制读取不会复用模型切换前的在途会话配置', async () =>
     providerId: 'magpie',
     modelId: 'auto/deepseek-v4.1-flash',
   })
+})
+
+test('强制读取会等待在途 session/set 完成后再请求 session/get', async () => {
+  let hostModel = 'claude-sonnet-5-5'
+  let releaseSet: (() => void) | undefined
+  const rpc = {
+    call: async (_channel: string, endpoint: string) => {
+      assert.equal(endpoint, 'cli/session/get')
+      return { ok: true as const, value: { adapterId: 'antigravity', modelId: hostModel } }
+    },
+  }
+  const pendingSet = new Promise<void>((resolve) => {
+    releaseSet = () => {
+      hostModel = 'gemini-4-hydrogen'
+      resolve()
+    }
+  })
+  trackCliSessionConfigUpdate(rpc, 'session-set-race', pendingSet)
+  const loaded = loadCliSessionConfig(rpc, 'session-set-race', { force: true })
+  releaseSet?.()
+  assert.deepEqual(await loaded, { adapterId: 'antigravity', modelId: 'gemini-4-hydrogen' })
 })

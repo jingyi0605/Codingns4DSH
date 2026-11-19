@@ -232,6 +232,7 @@ export class AntigravitySubscriptionService {
       secondary,
       monthly: null,
       groups,
+      activeGroupId: selected.id,
       rateLimitReachedType: rateLimited ? 'quota' : null,
       resetCredits: null,
       capturedAt: new Date(this.now()).toISOString(),
@@ -425,39 +426,89 @@ export function selectAntigravityQuotaGroup(
   groups: readonly AntigravityQuotaGroupDraft[],
   modelId: string | null,
 ): AntigravityQuotaGroupDraft | null {
-  const prefix = antigravityQuotaGroupPrefix(modelId)
-  const matched = groups.find((group) => antigravityQuotaGroupPrefixForDisplayName(group.displayName) === prefix)
-  return matched ?? groups[0] ?? null
+  return selectQuotaGroup(groups, modelId)
 }
 
 function selectAntigravityQuotaGroupIn(
   groups: readonly CliSubscriptionGroup[],
   modelId: string | null,
 ): CliSubscriptionGroup | null {
-  const prefix = antigravityQuotaGroupPrefix(modelId)
-  const expectedId = prefix === '3p-' ? 'third-party' : prefix === 'gemini-4-' ? 'gemini-4' : 'gemini'
-  const matched = groups.find((group) => group.id === expectedId)
-    ?? groups.find((group) => antigravityQuotaGroupPrefixForDisplayName(group.displayName) === prefix)
-  return matched ?? groups[0] ?? null
+  return selectQuotaGroup(groups, modelId)
+}
+
+function selectQuotaGroup<T extends { readonly id?: string; readonly displayName: string }>(
+  groups: readonly T[],
+  modelId: string | null,
+): T | null {
+  const bareModelId = bareAntigravityModelId(modelId)
+  const modelKey = slugifyQuotaName(bareModelId)
+  if (modelKey !== '') {
+    // Match model-specific pools (such as "Gemini 4 Argon") only for models
+    // belonging to that pool, so sibling models like Gemini 4 Hydrogen do not
+    // get routed into Argon's quota bucket.
+    const specific = groups.find((group) => isSpecificGroupMatch(group.displayName, modelKey))
+    if (specific !== undefined) return specific
+  }
+  const prefix = antigravityQuotaGroupPrefix(bareModelId)
+  if (prefix === '3p-') {
+    return groups.find((group) => (group.id ?? quotaGroupId(group.displayName)) === 'third-party')
+      ?? groups.find((group) => antigravityQuotaGroupPrefixForDisplayName(group.displayName) === '3p-')
+      ?? groups[0]
+      ?? null
+  }
+  if (prefix === 'gemini-4-') {
+    const genericGemini4 = groups.find((group) => isGenericGemini4Group(group.displayName))
+    if (genericGemini4 !== undefined) return genericGemini4
+  }
+  return groups.find((group) => (group.id ?? quotaGroupId(group.displayName)) === 'gemini')
+    ?? groups.find((group) => antigravityQuotaGroupPrefixForDisplayName(group.displayName) === 'gemini-')
+    ?? groups[0]
+    ?? null
+}
+
+function isSpecificGroupMatch(displayName: string, modelKey: string): boolean {
+  const slug = slugifyQuotaName(displayName)
+  if (slug === '' || isThirdPartyGroupName(displayName) || slug === 'gemini' || slug === 'gemini-models' || isGenericGemini4Group(displayName)) {
+    return false
+  }
+  return modelKey === slug || modelKey.startsWith(`${slug}-`)
+}
+
+function isGenericGemini4Group(displayName: string): boolean {
+  const slug = slugifyQuotaName(displayName)
+  return slug === 'gemini-4' || slug === 'gemini-4-models'
 }
 
 export function antigravityQuotaGroupPrefix(modelId: string | null): string {
-  const normalized = modelId?.trim().toLowerCase() ?? ''
-  if (/^(?:claude|gpt-oss)/u.test(normalized)) return '3p-'
+  const normalized = bareAntigravityModelId(modelId).toLowerCase()
+  if (/^(?:claude|gpt(?:-|$))/u.test(normalized)) return '3p-'
   if (/^gemini-4(?:-|$)/u.test(normalized)) return 'gemini-4-'
   return 'gemini-'
 }
 
+function bareAntigravityModelId(modelId: string | null): string {
+  const trimmed = modelId?.trim() ?? ''
+  const slash = trimmed.lastIndexOf('/')
+  return slash >= 0 ? trimmed.slice(slash + 1) : trimmed
+}
+
 function toContractGroups(drafts: readonly AntigravityQuotaGroupDraft[]): readonly CliSubscriptionGroup[] {
-  return drafts.map((draft) => ({
-    id: quotaGroupId(draft.displayName),
-    displayName: draft.displayName,
-    windows: draft.windows.map((window): CliSubscriptionGroupWindow => ({
-      kind: window.kind,
-      label: window.label,
-      window: toWindow(window.remainingFraction, window.resetsAt),
-    })),
-  }))
+  const usedIds = new Set<string>()
+  return drafts.map((draft) => {
+    const candidate = quotaGroupId(draft.displayName)
+    const slug = slugifyQuotaName(draft.displayName) || 'other'
+    const id = !usedIds.has(candidate) ? candidate : !usedIds.has(slug) ? slug : `${slug}-${usedIds.size}`
+    usedIds.add(id)
+    return {
+      id,
+      displayName: draft.displayName,
+      windows: draft.windows.map((window): CliSubscriptionGroupWindow => ({
+        kind: window.kind,
+        label: window.label,
+        window: toWindow(window.remainingFraction, window.resetsAt),
+      })),
+    }
+  })
 }
 
 /** Merge precise API windows with CLI-only groups and windows missing from the API summary. */
@@ -467,8 +518,8 @@ function mergeAntigravityQuotaGroups(
 ): readonly AntigravityQuotaGroupDraft[] {
   const merged = primary.map((group) => ({ ...group, windows: [...group.windows] }))
   for (const supplementalGroup of supplemental) {
-    const id = quotaGroupId(supplementalGroup.displayName)
-    const existing = merged.find((group) => quotaGroupId(group.displayName) === id)
+    const key = quotaGroupMergeKey(supplementalGroup.displayName)
+    const existing = merged.find((group) => quotaGroupMergeKey(group.displayName) === key)
     if (existing === undefined) {
       merged.push({ ...supplementalGroup, windows: [...supplementalGroup.windows] })
       continue
@@ -483,13 +534,24 @@ function mergeAntigravityQuotaGroups(
   return merged
 }
 
+function quotaGroupMergeKey(displayName: string): string {
+  if (isThirdPartyGroupName(displayName)) return 'third-party'
+  const slug = slugifyQuotaName(displayName)
+  if (slug === 'gemini' || slug === 'gemini-models') return 'gemini'
+  return slug || 'other'
+}
+
 /** 分组 id 供客户端本地化；未知分组回退到上游展示名。 */
 function quotaGroupId(displayName: string): string {
   if (isThirdPartyGroupName(displayName)) return 'third-party'
   const normalized = displayName.trim().toLowerCase()
   if (/\bgemini[\s-]*4\b/u.test(normalized)) return 'gemini-4'
-  if (normalized.includes('gemini')) return 'gemini'
-  return normalized.replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '') || 'other'
+  if (normalized === 'gemini' || normalized === 'gemini models') return 'gemini'
+  return slugifyQuotaName(normalized) || 'other'
+}
+
+function slugifyQuotaName(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/gu, '-').replace(/^-+|-+$/gu, '')
 }
 
 function antigravityQuotaGroupPrefixForDisplayName(displayName: string): string {
