@@ -54,36 +54,26 @@ function finishAfterUsage(events: Awaited<ReturnType<typeof collect>>) {
   return settlement[1]
 }
 
-test('AGY exposes its four native modes, defaults to plan, and does not claim interactive approval', () => {
-  assert.deepEqual(nativeApprovalModes('antigravity'), ['auto-review', 'read-only', 'accept-edits', 'full-access'])
+test('AGY offers manual approval and retains plan as the default', () => {
+  assert.deepEqual(nativeApprovalModes('antigravity'), ['manual', 'auto-review', 'read-only', 'accept-edits', 'full-access'])
   assert.equal(resolveNativeApprovalMode('antigravity', undefined), 'read-only')
   assert.equal(resolveNativeApprovalMode('antigravity', 'inherit'), 'read-only')
   const options = nativeApprovalCatalog('antigravity', t).options
-  assert.deepEqual(options.map(option => option.value), ['auto', 'read-only', 'accept-edits', 'danger-full-access'])
-  assert.equal(options[1]?.name, '规划')
-  assert.match(options[0]!.description, /沙箱/)
-  assert.match(options[2]!.description, /命令.*审批/)
-  assert.match(options[3]!.description, /agy/)
-  assert.equal(nativeApprovalModeForValue('antigravity', 'manual'), undefined)
+  assert.deepEqual(options.map(option => option.value), ['manual', 'auto', 'read-only', 'accept-edits', 'danger-full-access'])
+  assert.equal(options[2]?.name, '规划')
+  assert.match(options[1]!.description, /沙箱/)
+  assert.match(options[3]!.description, /审批的命令.*DSH/)
+  assert.match(options[4]!.description, /agy/)
+  assert.equal(nativeApprovalModeForValue('antigravity', 'manual'), 'manual')
 })
 
-test('AGY native permission choice reaches the actual CLI argv, independent of DSH inherited permissions', async () => {
-  for (const [mode, args] of [
-    ['auto-review', ['--mode', 'auto']], ['read-only', ['--mode', 'plan']],
-    ['accept-edits', ['--mode', 'accept-edits']], ['full-access', ['--dangerously-skip-permissions']],
-  ] as const) {
-    const { driver, calls } = fixture([result])
-    try {
-      const permission = resolveNativeApprovalPermission({ adapterId: 'antigravity', nativeApprovalMode: mode }, { sandboxMode: 'read-only', approvalPolicy: 'ask' })
-      await collect(driver, { permission })
-      const index = calls[0]!.indexOf(args[0])
-      assert.notEqual(index, -1, mode)
-      assert.deepEqual(calls[0]!.slice(index, index + args.length), args)
-      if (mode !== 'full-access') assert.equal(calls[0]!.includes('--dangerously-skip-permissions'), false)
-      if (mode === 'accept-edits') assert.equal(permission?.approvalPolicy, 'ask', 'shell approval remains required')
-      if (mode !== 'full-access') assert.notEqual(permission?.sandboxMode, 'danger-full-access')
-    } finally { driver.dispose() }
-  }
+test('AGY keeps headless execution for explicitly selected full access', async () => {
+  const { driver, calls } = fixture([result])
+  try {
+    const permission = resolveNativeApprovalPermission({ adapterId: 'antigravity', nativeApprovalMode: 'full-access' }, undefined)
+    await collect(driver, { permission })
+    assert.deepEqual(calls[0]?.slice(0, 5), ['--input-format', 'stream-json', '--output-format', 'stream-json', '--dangerously-skip-permissions'])
+  } finally { driver.dispose() }
 })
 
 test('AGY legacy defaults stay conservative and never inherit full access without a native choice', () => {
@@ -136,7 +126,7 @@ test('AGY terminal permission errors are actionable', async () => {
     const finish = finishAfterUsage(await collect(failed.driver))
     assert.equal(finish.reason, 'error')
     assert.equal(finish.failure.code, 'AGY_PERMISSION_DENIED')
-    assert.match(finish.failure.message, /agy \/permissions/)
+    assert.match(finish.failure.message, /人工审批.*\/permissions/)
   } finally { failed.driver.dispose() }
 })
 
@@ -146,18 +136,6 @@ test('AGY rejects a turn cancelled before startup', async () => {
     const controller = new AbortController(); controller.abort()
     await assert.rejects(() => collect(cancelled.driver, { signal: controller.signal }), /abort/iu)
   } finally { cancelled.driver.dispose() }
-})
-
-test('AGY auto-mode fallback is reported instead of silently running with default permissions', async () => {
-  const { driver, calls } = fixture([result], 'Warning: auto mode is not available because the terminal sandbox is unavailable; continuing in default mode\n')
-  try {
-    const permission = resolveNativeApprovalPermission({ adapterId: 'antigravity', nativeApprovalMode: 'auto-review' }, undefined)
-    const finish = (await collect(driver, { permission })).find(event => event.type === 'finish')
-    assert.equal(finish.reason, 'error')
-    assert.equal(finish.failure.code, 'AGY_AUTO_MODE_UNAVAILABLE')
-    assert.match(finish.failure.message, /沙箱/)
-    assert.equal(calls[0]!.includes('--dangerously-skip-permissions'), false)
-  } finally { driver.dispose() }
 })
 
 test('AGY ordinary tool errors and prose mentioning permissions do not become permission failures', async () => {
@@ -187,19 +165,19 @@ test('AGY saved modes survive cold reload without losing provider session identi
       assert.equal(cold.getSession('s').nativeApprovalMode, 'accept-edits')
       assert.equal(cold.setSession('s', { adapterId: 'antigravity', nativeApprovalMode: 'full-access' }).providerSessionId, 'existing')
       assert.equal(cold.setSession('new', { adapterId: 'antigravity' }).nativeApprovalMode, 'full-access')
-      assert.throws(() => cold.setSession('s', { adapterId: 'antigravity', nativeApprovalMode: 'manual' }), /Unsupported/)
+      assert.equal(cold.setSession('s', { adapterId: 'antigravity', nativeApprovalMode: 'manual' }).providerSessionId, 'existing')
+      assert.equal(cold.getSession('s').nativeApprovalMode, 'manual')
     } finally { await cold.dispose() }
   } finally { await registry.dispose() }
 })
 
-test('AGY denied tool terminates through the real Registry step boundary without starting another CLI process', async () => {
+test('AGY headless denial terminates through the Registry step boundary without replaying the prompt', async () => {
   const { driver, calls } = fixture([
     { event: 'step_update', step_update: { step_type: 'tool', step_index: 2, state: 'DONE', tool_name: 'run_command', tool_info: { error: { type: 'TOOL_ERROR', message: denial } } } }, result,
   ])
   const registry = new CodingNsCliAdapterRegistry([driver])
-  const config = { adapterId: 'antigravity', nativeApprovalMode: 'accept-edits' } as const
-  registry.setSession('agy-permissions', config)
-  const input = { adapterId: 'antigravity', sessionId: 'agy-permissions', messages: [], prompt: 'same user turn', splitToolSteps: true, permission: resolveNativeApprovalPermission(config, undefined)! }
+  registry.setSession('agy-permissions', { adapterId: 'antigravity' })
+  const input = { adapterId: 'antigravity', sessionId: 'agy-permissions', messages: [], prompt: 'same user turn', splitToolSteps: true }
   const events: any[] = []
   try {
     for (let step = 0; step < 3 && !events.some(event => event.type === 'finish'); step += 1) {
@@ -260,8 +238,9 @@ test('AGY actual native permission slot offers its modes and saves while a turn 
     const control = tree.props.children[0]
     assert.match(control.props.t('confirm.description'), /agy/)
     assert.equal(control.props.useProjection('permissions').currentValue, 'read-only')
-    assert.equal(control.props.usePermissionCatalog((state: any) => state).value.options.length, 4)
-    assert.equal(await control.props.select('manual'), false)
+    assert.equal(control.props.usePermissionCatalog((state: any) => state).value.options.length, 5)
+    assert.equal(await control.props.select('manual'), true)
+    assert.equal(selection.nativeApprovalMode, 'manual')
     assert.equal(await control.props.select('accept-edits'), true)
     assert.equal(selection.nativeApprovalMode, 'accept-edits')
     assert.equal(selection.providerSessionId, 'existing')

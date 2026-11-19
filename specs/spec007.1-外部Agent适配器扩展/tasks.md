@@ -304,11 +304,14 @@
   - 结果：共用官方 ACP 驱动，隔离 token 与用户配置环境，支持权限请求应答；模型刷新不创建 ACP 会话。
 - [x] 4.4 Antigravity
   - 状态：DONE
-  - 结果：复用 stream-json 事件归一化并增加 stdin NDJSON 输入；调用 `agy models` 动态加载模型并合并思考档位；不声明危险 headless 模式之外的权限能力。
+  - 初版结果：复用 stream-json 事件归一化并增加 stdin NDJSON 输入；调用 `agy models` 动态加载模型并合并思考档位。无头模式无法回传交互式审批。
   - 2026-11-18 上下文显示修复：原生 Gemini 4 Argon 的窗口为 1,048,576 token。上下文仪表使用最后一次模型调用的输入与缓存读取量，整轮用量继续累计各次调用。
   - 修复验证：通过源码加载器运行 AGY、原生会话桥接、会话计量和 ZCode 上下文测试，149 项通过、3 项跳过。回放中整轮用量超出窗口，仪表按最后一次调用显示 12%。类型、版本和能力检查通过。扩大到适配器测试时发现的 22 个失败均在基线 `a6ca6a1e` 复现。
   - Stage0 实机验证：Windows 上使用 DSH `0.2.2-rc.4` 和 AGY `1.5.11`。在验收工作区选择原生 `gemini-4-argon` 的低思考档位，发起一次要求读取两个测试文件的对话。两次读取均落盘，回合正常结束。Host 查得最新上下文占用为 9,905 / 1,048,576 token。Chrome 打开验收会话后显示上下文已用 1%，整轮用量标签显示 29.4K token。
   - Windows 路径回归（2026-11-18，PR #81 作者报告）：用 `tests/cli-adapters-antigravity-argv.spec.ts` 记录子进程收到的参数。文本回合、模型探测和图片 ACP 回合分别通过原生 `.exe`、`.cmd`、`.bat` 启动，九组均保留了带空格路径的参数边界。本次合并仅 macOS 验证、Windows 路径未验证。
+  - 2026-11-19 原生审批修复，状态为 `DONE`。依赖支持 `agy acp` 的 CLI，按需求 2、5、6 和设计 §3.3 复用 `antigravity-driver.ts` 与 `acp-cli-driver.ts`。DSH 的人工审批、规划、自动接受编辑和自动审查均走 ACP，并将需确认的工具交给 DSH 原生审批。默认仍是规划，完全访问的文本回合保留 stream-json。审批只回传本次允许或拒绝，取消会结束请求并释放子进程。结构化提问和发布不在本次范围。
+  - 源码验收覆盖审批菜单、真实 Registry 和消息投影、审批选项映射、取消、会话续接和缓存用量。AGY 及相关 ACP、原生审批测试共 215 项通过。类型、版本、能力和国际化检查通过。Windows 使用 agy `1.5.12` 在临时工作区通过真实进程执行 `Write-Output` 验收。批准得到输出，续接同一会话后拒绝未得到输出，取消以 `cancel` 结束。
+  - Stage0 验收通过。在 Windows 用独立目录 `~/.dsh-stage0-agy-approval/` 构建 Host、Web Client 和 H5，使用 DSH `0.2.2-rc.5` 和 agy `1.5.12`，监听 `127.0.0.1:17893`。Chrome 中从「规划」切换到「人工审批」。三次 `Set-Content` 都显示正确命令。「允许一次」写入预期内容，点击「拒绝」和调用 DSH `session/cancel` 均关闭审批卡且未创建文件。复跑入口为 `node ~/.dsh-stage0-agy-approval/acceptance.mjs`。同一目录保留 `acceptance.json`、三张审批截图和本机登录快捷方式 `Stage0-验收.url`，新浏览器登录验证返回 HTTP 200。
 - [x] 4.5 登记、图标、回归测试与文档
   - 状态：DONE
   - 结果：七个 adapter ID 已登记，新增 SVG 图标、驱动测试、README 能力表和开发记录。

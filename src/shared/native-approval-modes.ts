@@ -2,7 +2,7 @@ import type { CodingNsCliPermissionState, CodingNsCliSessionConfig, CodingNsNati
 
 const COMMON: readonly CodingNsNativeApprovalMode[] = ['manual', 'auto-review', 'read-only', 'full-access']
 const ZCODE: readonly CodingNsNativeApprovalMode[] = ['manual', 'auto-review', 'read-only', 'accept-edits', 'full-access']
-const ANTIGRAVITY: readonly CodingNsNativeApprovalMode[] = ['auto-review', 'read-only', 'accept-edits', 'full-access']
+const ANTIGRAVITY: readonly CodingNsNativeApprovalMode[] = ['manual', 'auto-review', 'read-only', 'accept-edits', 'full-access']
 
 export function nativeApprovalModes(adapterId: string): readonly CodingNsNativeApprovalMode[] {
   return adapterId === 'codex' ? COMMON : adapterId === 'zcode' ? ZCODE : adapterId === 'antigravity' ? ANTIGRAVITY : []
@@ -21,7 +21,7 @@ export function resolveNativeApprovalMode(adapterId: string, value: CodingNsNati
   return value !== undefined && modes.includes(value) ? value : adapterId === 'antigravity' ? 'read-only' : 'manual'
 }
 
-/** 原生模式决定本轮权限；AGY 缺省使用规划，不借用无法回传的 DSH 审批。 */
+/** 原生模式决定本轮权限；AGY 缺省使用规划。 */
 export function resolveNativeApprovalPermission(config: CodingNsCliSessionConfig, inherited: CodingNsCliPermissionState | undefined): CodingNsCliPermissionState | undefined {
   // An upgrade or model-only edit is not consent to replace an existing sandbox.
   if (config.adapterId !== 'antigravity' && (config.nativeApprovalMode === undefined || !nativeApprovalModes(config.adapterId).includes(config.nativeApprovalMode))) return inherited

@@ -66,6 +66,7 @@ export interface AcpCliDriverOptions {
   readonly readQuestionRequest?: (message: JsonRpcMessage) => AcpPendingQuestionRequest | null
   /** 在 DSH 已明确授权的范围内自动回应 ACP 权限请求；返回 undefined 继续交给原生审批面板。 */
   readonly decidePermission?: (message: JsonRpcMessage, input: CodingNsCliTurnInput) => 'allow' | 'reject' | undefined
+  readonly permissionOptions?: 'once'
   /** Provider 可在 Host 侧补齐 ACP 未携带的上下文窗口等用量字段。 */
   readonly enrichUsage?: (
     usage: Extract<CodingNsAgentEvent, { type: 'usage' }>,
@@ -115,8 +116,9 @@ interface AcpSession {
 
 interface AcpPermissionRequest {
   readonly rpcId: number | string
-  readonly allowOptionId: string
-  readonly rejectOptionId: string
+  readonly allowOptionId: string | undefined
+  readonly rejectOptionId: string | undefined
+  readonly signal?: AbortSignal | undefined
 }
 
 /**
@@ -147,6 +149,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
   private readonly probeReason: string
   private readonly readQuestionRequest: (message: JsonRpcMessage) => AcpPendingQuestionRequest | null
   private readonly decidePermission: AcpCliDriverOptions['decidePermission']
+  private readonly permissionOptions: AcpCliDriverOptions['permissionOptions']
   private readonly enrichUsage: AcpCliDriverOptions['enrichUsage']
   private readonly stepUsage: AcpCliDriverOptions['stepUsage']
   private cachedBinary: string | null = null
@@ -177,6 +180,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.probeReason = options.probeReason ?? 'Provider 未公开可安全读取的会话索引，未执行有副作用的探测'
     this.readQuestionRequest = options.readQuestionRequest ?? readStandardQuestionRequest
     this.decidePermission = options.decidePermission
+    this.permissionOptions = options.permissionOptions
     this.enrichUsage = options.enrichUsage
     this.stepUsage = options.stepUsage
   }
@@ -212,12 +216,8 @@ export class AcpCliDriver implements CodingNsCliDriver {
     const pending = session?.permissions.get(response.requestId)
     if (session === undefined || pending === undefined) throw new Error(`${this.descriptor.name} 权限请求不存在`)
     session.permissions.delete(response.requestId)
-    session.rpc.respond(pending.rpcId, {
-      outcome: {
-        outcome: 'selected',
-        optionId: response.approved ? pending.allowOptionId : pending.rejectOptionId,
-      },
-    })
+    const optionId = response.approved ? pending.allowOptionId : pending.rejectOptionId
+    session.rpc.respond(pending.rpcId, acpPermissionOutcome(pending.signal?.aborted ? undefined : optionId))
   }
 
   /** 回复 ACP 标准 `elicitation/create` 的 form 内容。 */
@@ -313,7 +313,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
           requestDone = false
           break
         }
-        const rawChunk = acpMessageToChunk(next.value, input.signal?.aborted ?? false, this.readQuestionRequest, session.autoResolvedPermissions)
+        const rawChunk = acpMessageToChunk(next.value, input.signal?.aborted ?? false, this.readQuestionRequest, session.autoResolvedPermissions, this.permissionOptions)
         const enrichedChunk = rawChunk?.type === 'usage' ? this.enrichUsage?.(rawChunk, input) ?? rawChunk : rawChunk
         const chunk = enrichedChunk === null ? null : decorateCodingNsSegmentEvent(enrichedChunk, input, segmentState, this.descriptor.id)
         if (chunk === null) continue
@@ -396,6 +396,12 @@ export class AcpCliDriver implements CodingNsCliDriver {
       // 进程内“有 prompt 在运行”的状态还会毒化后续所有回合。
       // 取消是通知，不等响应，避免已经卡死的请求继续阻塞清理。
       if (input.signal?.aborted || requestDone) {
+        if (this.permissionOptions === 'once') {
+          for (const pending of session.permissions.values()) {
+            try { session.rpc.respond(pending.rpcId, acpPermissionOutcome(undefined)) } catch { }
+          }
+          session.permissions.clear()
+        }
         try { session.rpc.notify('session/cancel', { sessionId: providerSessionId }) } catch { /* 进程可能已退出 */ }
       }
     }
@@ -517,24 +523,20 @@ export class AcpCliDriver implements CodingNsCliDriver {
         return new Promise<never>(() => undefined)
       }
       if (message.method === 'elicitation/create') return { action: 'cancel' }
-      const permission = readAcpPermissionRequest(message)
+      const permission = readAcpPermissionRequest(message, this.permissionOptions)
       if (permission === null || message.id === undefined || message.id === null) {
         return { outcome: { outcome: 'cancelled' } }
       }
       const decision = this.decidePermission?.(message, input)
-      if (decision !== undefined) {
+      if (decision !== undefined || (this.permissionOptions === 'once' && input.signal?.aborted)) {
         state.autoResolvedPermissions.add(permission.requestId)
-        return {
-          outcome: {
-            outcome: 'selected',
-            optionId: decision === 'allow' ? permission.allowOptionId : permission.rejectOptionId,
-          },
-        }
+        return acpPermissionOutcome(decision === 'allow' ? permission.allowOptionId : decision === 'reject' ? permission.rejectOptionId : undefined)
       }
       state.permissions.set(permission.requestId, {
         rpcId: message.id,
         allowOptionId: permission.allowOptionId,
         rejectOptionId: permission.rejectOptionId,
+        ...(this.permissionOptions === 'once' ? { signal: input.signal } : {}),
       })
       return new Promise<never>(() => undefined)
     })
@@ -579,6 +581,7 @@ function acpMessageToChunk(
   cancelled: boolean,
   readQuestionRequest: (message: JsonRpcMessage) => AcpPendingQuestionRequest | null,
   autoResolvedPermissions?: Set<string>,
+  permissionOptions?: AcpCliDriverOptions['permissionOptions'],
 ): CodingNsAgentEvent | null {
   const params = isRecord(message.params) ? message.params : message
   const update = isRecord(params.update) ? params.update : params
@@ -590,7 +593,7 @@ function acpMessageToChunk(
   const withMessageId = messageId === undefined ? {} : { messageId }
   const elicitation = readQuestionRequest(message)
   if (elicitation !== null) return { type: 'question-request', requestId: elicitation.requestId, questions: elicitation.questions }
-  const permission = readAcpPermissionRequest(message)
+  const permission = readAcpPermissionRequest(message, permissionOptions)
   if (permission !== null) {
     if (autoResolvedPermissions?.delete(permission.requestId) === true) return null
     return {
@@ -696,14 +699,14 @@ function subtractAcpUsage(usage: AcpUsageEvent, emitted: AcpEmittedUsage): AcpUs
 }
 
 /** 读取 ACP v1/v2 标准权限请求；未知扩展字段不会被当成权限。 */
-function readAcpPermissionRequest(message: JsonRpcMessage): {
+function readAcpPermissionRequest(message: JsonRpcMessage, permissionOptions?: AcpCliDriverOptions['permissionOptions']): {
   readonly requestId: string
   readonly kind: string
   readonly toolName?: string
   readonly callId?: string
   readonly detail?: string
-  readonly allowOptionId: string
-  readonly rejectOptionId: string
+  readonly allowOptionId: string | undefined
+  readonly rejectOptionId: string | undefined
 } | null {
   const method = typeof message.method === 'string' ? message.method.toLowerCase() : ''
   const params = isRecord(message.params) ? message.params : {}
@@ -715,7 +718,9 @@ function readAcpPermissionRequest(message: JsonRpcMessage): {
   const tool = isRecord(params.toolCall) ? params.toolCall : isRecord(params.tool_call) ? params.tool_call : {}
   const toolName = firstToolText(tool.title, tool.name, tool.toolName, params.toolName, params.tool_name)
   const callId = firstToolText(tool.toolCallId, tool.tool_call_id, tool.callId, tool.call_id, params.callId, params.call_id)
-  const detail = firstToolText(params.detail, params.reason, params.message, tool.detail)
+  const rawInput = isRecord(tool.rawInput) ? tool.rawInput : {}
+  const detail = firstToolText(params.detail, params.reason, params.message, tool.detail,
+    permissionOptions === 'once' ? firstToolText(rawInput.CommandLine, rawInput.command) : undefined)
   const kind = firstToolText(params.kind, params.permissionKind, tool.kind) ?? toolName ?? 'unknown'
   const options = Array.isArray(params.options) ? params.options : []
   const ids = options.flatMap((option) => {
@@ -730,9 +735,15 @@ function readAcpPermissionRequest(message: JsonRpcMessage): {
     ...(toolName === undefined ? {} : { toolName }),
     ...(callId === undefined ? {} : { callId }),
     ...(detail === undefined ? {} : { detail }),
-    allowOptionId: ids.find((option) => /allow|approve|accept/u.test(option.kind))?.id ?? ids[0]?.id ?? 'allow-once',
-    rejectOptionId: ids.find((option) => /reject|deny|decline|cancel/u.test(option.kind))?.id ?? ids[1]?.id ?? 'reject-once',
+    allowOptionId: permissionOptions === 'once' ? ids.find(option => option.kind === 'allow_once')?.id
+      : ids.find(option => /allow|approve|accept/u.test(option.kind))?.id ?? ids[0]?.id ?? 'allow-once',
+    rejectOptionId: permissionOptions === 'once' ? ids.find(option => option.kind === 'reject_once')?.id
+      : ids.find(option => /reject|deny|decline|cancel/u.test(option.kind))?.id ?? ids[1]?.id ?? 'reject-once',
   }
+}
+
+function acpPermissionOutcome(optionId: string | undefined) {
+  return { outcome: optionId === undefined ? { outcome: 'cancelled' } : { outcome: 'selected', optionId } }
 }
 
 function toolChunk(update: Record<string, any>, type: string): CodingNsAgentEvent | null {

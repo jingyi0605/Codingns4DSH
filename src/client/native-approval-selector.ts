@@ -9,7 +9,7 @@ export function canChangeNativeApproval(session: { readonly running?: boolean; r
 
 export function nativeApprovalHintKey(adapterId: string, mode: CodingNsNativeApprovalMode): string {
   if (adapterId === 'antigravity') {
-    return `nativeApproval.${{ 'auto-review': 'agyAutoHint', 'read-only': 'agyPlanHint', 'accept-edits': 'agyEditHint', 'full-access': 'agyFullHint', inherit: 'agyPlanHint', manual: 'agyPlanHint' }[mode]}`
+    return `nativeApproval.${{ 'auto-review': 'agyAutoHint', 'read-only': 'agyPlanHint', 'accept-edits': 'agyEditHint', 'full-access': 'agyFullHint', inherit: 'agyPlanHint', manual: 'agyManualHint' }[mode]}`
   }
   if (mode === 'auto-review') return adapterId === 'zcode' ? 'nativeApproval.zcodeHint' : 'nativeApproval.autoHint'
   return `nativeApproval.${{ inherit: 'inheritHint', manual: 'manualHint', 'read-only': 'readHint', 'accept-edits': 'editHint', 'full-access': 'fullHint' }[mode]}`
