@@ -8,7 +8,11 @@ export type WorkspaceMcpWebhookEventType =
   | 'session.failed'
   | 'session.permission_requested'
   | 'session.question_asked'
+  | WorkspaceMcpQueueWebhookEventType
   | 'webhook.test'
+
+export const WORKSPACE_MCP_QUEUE_WEBHOOK_EVENTS = ['session.message_queued', 'session.message_dequeued', 'session.queue_changed', 'session.agent_message_sent'] as const
+export type WorkspaceMcpQueueWebhookEventType = typeof WORKSPACE_MCP_QUEUE_WEBHOOK_EVENTS[number]
 
 export interface WorkspaceMcpWebhookDestination {
   readonly id: string
@@ -81,7 +85,7 @@ const MAX_PENDING_DELIVERIES = 1000
 const MAX_RECENT_DELIVERIES = 200
 const DELIVERY_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const EVENT_TYPES = new Set<WorkspaceMcpWebhookEventType>([
-  'session.completed', 'session.failed', 'session.permission_requested', 'session.question_asked', 'webhook.test',
+  'session.completed', 'session.failed', 'session.permission_requested', 'session.question_asked', ...WORKSPACE_MCP_QUEUE_WEBHOOK_EVENTS, 'webhook.test',
 ])
 
 /** Stores webhook secrets and durable deliveries in a private Host-only file. */
