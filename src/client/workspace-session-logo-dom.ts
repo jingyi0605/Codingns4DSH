@@ -18,6 +18,8 @@ export interface WorkspaceSessionLogoDomOptions {
   readonly MutationObserver?: typeof MutationObserver
   readonly adapterIdForSession?: (sessionId: string) => string | undefined
   readonly visualForAdapter?: (adapterId: string | undefined) => ProviderVisual
+  /** 某行当前按默认 DSH 显示时通知调用方；新建的外部 Agent 会话可能还没拿到绑定，需要补读。 */
+  readonly onUnconfirmedSession?: (sessionId: string) => void
   /** DSH 语言运行时；只影响未知 Agent 兜底展示名的语言。 */
   readonly locale?: CodingNsLocale
 }
@@ -50,7 +52,9 @@ export function startWorkspaceSessionLogoDom(
     for (const row of rows) {
       const sessionId = resolveDshSessionId(row)
       if (sessionId === undefined) continue
-      upsertSessionLogo(row, sessionId, visualForAdapter(adapterIdForSession(sessionId)), dom)
+      const adapterId = adapterIdForSession(sessionId)
+      upsertSessionLogo(row, sessionId, visualForAdapter(adapterId), dom)
+      if (adapterId === undefined || adapterId === 'dsh') options.onUnconfirmedSession?.(sessionId)
     }
   }
 

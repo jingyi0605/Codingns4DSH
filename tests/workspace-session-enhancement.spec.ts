@@ -260,6 +260,31 @@ test('DOM 注入覆盖分组、平铺、搜索、DSH 默认值、重复扫描和
   installProviderIcons({})
 })
 
+test('仍按默认 DSH 显示的会话行会通知补读，已确认外部 Agent 的不通知', async () => {
+  clearSessionAdapters()
+  const external = sessionRow('div', 'bound-external', false)
+  const fresh = sessionRow('div', 'fresh-session', false)
+  const dom = new FakeDocument([external.row, fresh.row])
+  publishSessionAdapter('bound-external', 'codex')
+  const noted = []
+
+  const controller = startWorkspaceSessionLogoDom({
+    document: dom,
+    onUnconfirmedSession: (sessionId) => noted.push(sessionId),
+  })
+  assert.deepEqual(noted, ['fresh-session'])
+  assert.equal(fresh.row.children[0].title, 'DeepSeek Harness')
+
+  // Host 补上绑定后，同一行的 Logo 应切换为正确的 Agent。
+  publishSessionAdapter('fresh-session', 'codex')
+  await nextTurn()
+  assert.equal(fresh.row.children[0].title, 'Codex')
+  assert.deepEqual(noted, ['fresh-session'])
+
+  controller.dispose()
+  clearSessionAdapters()
+})
+
 test('模块总开关释放资源，子开关实时启停并保留设置值', async () => {
   clearSessionAdapters()
   let value = {

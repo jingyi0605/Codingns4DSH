@@ -5,6 +5,7 @@ import {
   fetchSessionAdapters,
   replaceSessionAdapters,
 } from '../session-adapter-cache.js'
+import { createSessionAdapterRecheck } from '../session-adapter-recheck.js'
 import { readNativeWorkspaceListStore, readNativeWorkspaceSnapshot } from '../native-workspace-store.js'
 import { requestPeerHostAggregateRefresh } from '../peer-host-aggregate-refresh.js'
 import { startWorkspaceSessionLogoDom, type WorkspaceSessionLogoDomController } from '../workspace-session-logo-dom.js'
@@ -165,7 +166,22 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
     const enableLogo = (): void => {
       if (logoDom !== undefined) return
       const currentGeneration = ++generation
-      logoDom = startWorkspaceSessionLogoDom({ locale: context.services.locale })
+      // 新建的外部 Agent 会话常常比它的绑定早一步出现在列表里：这里对仍显示默认 DSH
+      // 的会话做有限次补读，Host 写入绑定后图标在几秒内就能切换到正确的 Agent。
+      const recheck = createSessionAdapterRecheck({
+        refresh: async () => {
+          const bindings = await fetchSessionAdapters(context.services.rpc)
+          if (generation !== currentGeneration || logoDom === undefined) return undefined
+          replaceSessionAdapters(bindings)
+          logoDom.refresh()
+          archiveDom?.refresh()
+          return new Set(bindings.map((binding) => binding.sessionId))
+        },
+      })
+      logoDom = startWorkspaceSessionLogoDom({
+        locale: context.services.locale,
+        onUnconfirmedSession: (sessionId) => recheck.note(sessionId),
+      })
       let refreshing = false
       let dirty = false
       const refreshAdapters = (): void => {
@@ -198,6 +214,7 @@ export const workspaceSessionEnhancementFeature: CodingNsClientFeatureModule = {
       globalThis.addEventListener?.('popstate', refreshAdapters)
       globalThis.addEventListener?.('focus', refreshAdapters)
       disposeAdapterRefresh = () => {
+        recheck.dispose()
         removeStore?.()
         globalThis.removeEventListener?.('popstate', refreshAdapters)
         globalThis.removeEventListener?.('focus', refreshAdapters)
