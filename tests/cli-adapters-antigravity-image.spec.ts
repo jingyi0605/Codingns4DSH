@@ -302,6 +302,33 @@ test('Antigravity does not select a permanent grant when ACP has no one-time app
   } finally { driver.dispose() }
 })
 
+test('Antigravity reports why DSH rejected a command when the session disables prompts', { timeout: 5_000 }, async () => {
+  const { driver, replies, killed } = acpDriver({ serverRequests: [commandApproval] })
+  const sessionId = 'agy-dsh-approval-disabled'
+  const registry = new CodingNsCliAdapterRegistry([driver], {})
+  const config = { adapterId: 'antigravity', nativeApprovalMode: 'manual' } as const
+  const permission = resolveNativeApprovalPermission(config, { approvalPolicy: 'never' })!
+  registry.setSession(sessionId, config)
+  let approvalCount = 0
+  const projector = new CodingNsDshMessageProjector({
+    adapterId: 'antigravity', sessionId, permission,
+    nativeSessions: { async requestApproval() { approvalCount += 1; return 'policy-rejected' } },
+    respondPermission: response => registry.respondPermission(sessionId, response),
+  })
+  try {
+    const chunks = []
+    for await (const event of registry.execute({ ...config, sessionId, messages: [], prompt: 'Test approval', permission })) {
+      chunks.push(...await projector.push(event))
+      if (projector.isFinished) break
+    }
+    assert.equal(approvalCount, 1)
+    assert.deepEqual(replies.get(91)?.result, { outcome: { outcome: 'selected', optionId: 'deny-this-command' } })
+    assert.match(JSON.stringify(chunks), /DSH 已自动拒绝 agy 的工具请求/u)
+    assert.deepEqual(chunks.filter(chunk => chunk.type === 'finish').map(chunk => (chunk.reason as { kind: string }).kind), ['error'])
+    assert.equal(killed(), 1)
+  } finally { registry.dispose() }
+})
+
 test('Antigravity stops before sending the prompt when ACP rejects auto mode', async () => {
   const { driver, requests } = acpDriver({ failures: { 'session/set_mode:': { code: -32602, message: 'Auto mode unavailable' } } })
   try {

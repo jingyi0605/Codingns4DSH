@@ -379,6 +379,10 @@ function NativeApprovalSlot(props: CliSlotProps & {
       },
     }),
     failed && createElement('span', { role: 'alert', title: t('nativeApproval.failed'), style: { color: dshThemeColor.labelPrimary, fontSize: uiFontSize(12) } }, t('nativeApproval.failed')),
+    selection.adapterId === 'antigravity' && createElement('span', {
+      role: 'group', 'aria-label': t('nativeApproval.dshPermission'), title: t('nativeApproval.agyDshHint'),
+      style: { display: 'inline-flex', alignItems: 'center', gap: 4 },
+    }, 'DSH', createElement(props.NativePermission, { ...props, key: 'dsh' })),
   )
 }
 

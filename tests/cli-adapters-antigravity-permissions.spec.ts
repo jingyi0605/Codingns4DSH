@@ -225,10 +225,14 @@ test('AGY actual native permission slot offers its modes and saves while a turn 
   const removeRoot = slots.register({ name: 'root', children: { 'conversation.input.left': { kind: 'list', scope: 'session' }, 'conversation.input.permission': { kind: 'single', scope: 'session' } } } as any, () => null)
   const removeNative = slots.register({ name: 'conversation.input.permission' } as any, () => null)
   let selection: any = { adapterId: 'antigravity', providerSessionId: 'existing' }
+  let nativePreset = 'danger-full-access'
+  const selectNative = async (value: string) => { nativePreset = value; return true }
   const rpc = { async call(_channel: string, endpoint: string, payload: any) { if (endpoint === 'cli/session/set') selection = { ...selection, ...payload }; return { ok: true, value: selection } } }
   const dispose = registerCliConversationSlots(slots as never, rpc as never, locale)
   const slot: any = slots.entries('conversation.input.permission').find(entry => entry.options.id === 'codingns4dsh-native-approval')!
-  const mounted = slot.component({ ...slot.inject('agy-permission-ui'), t: (key: string) => key, useSession: (select: any) => select({ sessionId: 'agy-permission-ui', running: true, queue: [] }) })
+  const mounted = slot.component({ ...slot.inject('agy-permission-ui'), t: (key: string) => key, select: selectNative,
+    useProjection: (key: string) => key === 'permissions' ? { currentValue: nativePreset } : undefined,
+    useSession: (select: any) => select({ sessionId: 'agy-permission-ui', running: true, queue: [] }) })
   const renderer = createHookRenderer(mounted.type, mounted.props, { checkHookOrder: true })
   try {
     renderer.render(); await new Promise(resolve => setImmediate(resolve))
@@ -240,6 +244,12 @@ test('AGY actual native permission slot offers its modes and saves while a turn 
     assert.equal(control.props.useProjection('permissions').currentValue, 'read-only')
     assert.equal(control.props.usePermissionCatalog((state: any) => state).value.options.length, 5)
     assert.equal(await control.props.select('manual'), true)
+    assert.equal(selection.nativeApprovalMode, 'manual')
+    assert.equal(nativePreset, 'danger-full-access')
+    const nativeControl = tree.props.children[2].props.children[1]
+    assert.equal(nativeControl.props.useProjection('permissions').currentValue, 'danger-full-access')
+    assert.equal(await nativeControl.props.select('workspace-write'), true)
+    assert.equal(nativePreset, 'workspace-write')
     assert.equal(selection.nativeApprovalMode, 'manual')
     assert.equal(await control.props.select('accept-edits'), true)
     assert.equal(selection.nativeApprovalMode, 'accept-edits')
