@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import { basename, join } from 'node:path'
 import type { CodingNsCliModelCatalog, CodingNsAgentEvent, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
-import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
+import { JsonRpcProcess, PiRpcResponseError, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog, isRecord, textValue, usageChunk } from './rpc-driver-utils.js'
 import { PI_CATALOG, isProviderDefaultModel } from './model-catalog.js'
 import { probeStoredSession, readFirstJsonRecord } from './session-probe.js'
@@ -17,6 +17,13 @@ import { piBridgeArgs, piBridgeEnvironment } from '../cli-bridge/injections.js'
 import { PiPerformanceTracker } from './pi-performance.js'
 
 const PI_ABORT_TIMEOUT_MS = 2_000
+const PI_PROMPT_STATE_TIMEOUT_MS = 1_000
+
+interface PiPromptResult {
+  readonly reason: 'stop' | 'cancel' | 'error'
+  readonly failure?: { message: string; code?: string }
+  readonly rejection?: PiRpcResponseError
+}
 
 export interface PiAgentDriverOptions {
   readonly binaries?: readonly string[]
@@ -135,7 +142,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
         message: promptWithAttachmentPaths(input.prompt, (input.attachments ?? []).filter((attachment) => attachment.kind === 'file'), input.translationLanguage),
         ...(images.length > 0 ? { images } : {}),
       }, input.signal, (message, receivedAt) => performance.observe(message, receivedAt))
-      let finishResult: { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }
+      let finishResult: PiPromptResult
       let latestUsage: Extract<CodingNsAgentEvent, { type: 'usage' }> | null = null
       const streamState: PiStreamState = { streamed: new Set() }
       while (true) {
@@ -168,7 +175,11 @@ export class PiAgentDriver implements CodingNsCliDriver {
           } else yield chunk
         }
       }
-      const statsUsage = input.signal?.aborted
+      const failure = finishResult.rejection === undefined
+        ? finishResult.failure
+        : await diagnosePiPromptRejection(rpc, finishResult.rejection, input.signal)
+      // A rejected prompt has no usage of its own. Keep its only probe read-only.
+      const statsUsage = input.signal?.aborted || finishResult.rejection !== undefined
         ? null
         : await readPiSessionStats(rpc, input.signal, session.modelContextWindow)
       const enrichedUsage = enrichPiUsage(latestUsage, statsUsage, session.modelContextWindow)
@@ -176,7 +187,7 @@ export class PiAgentDriver implements CodingNsCliDriver {
       if (finishResult.reason === 'cancel') {
         await this.interrupt(input.sessionId)
       }
-      yield { type: 'finish', reason: finishResult.reason, ...(finishResult.failure === undefined ? {} : { failure: finishResult.failure }) }
+      yield { type: 'finish', reason: finishResult.reason, ...(failure === undefined ? {} : { failure }) }
     } finally { /* 跨轮复用：仅 dispose() 才回收长期进程。 */ }
   }
 
@@ -281,12 +292,13 @@ async function* streamPiPrompt(
   prompt: Record<string, unknown>,
   signal: AbortSignal | undefined,
   observe?: (message: JsonRpcMessage, receivedAt: number) => import('../../shared/request-performance.js').RequestPerformance | undefined,
-): AsyncGenerator<{ message: JsonRpcMessage; performance?: import('../../shared/request-performance.js').RequestPerformance }, { reason: 'stop' | 'cancel' | 'error'; failure?: { message: string; code?: string } }, void> {
+): AsyncGenerator<{ message: JsonRpcMessage; performance?: import('../../shared/request-performance.js').RequestPerformance }, PiPromptResult, void> {
   const queue: Array<{ message: JsonRpcMessage; performance?: import('../../shared/request-performance.js').RequestPerformance }> = []
   let wake: (() => void) | undefined
   let promptSettled = false
   let terminalReason: 'stop' | 'cancel' | 'error' | null = null
   let failure: { message: string; code?: string } | undefined
+  let rejection: PiRpcResponseError | undefined
   const notify = (): void => { wake?.(); wake = undefined }
   const listener = (message: JsonRpcMessage): void => {
     if (terminalReason === 'cancel') return
@@ -323,7 +335,10 @@ async function* streamPiPrompt(
     (error: unknown) => {
       promptSettled = true
       terminalReason = signal?.aborted ? 'cancel' : 'error'
-      if (terminalReason === 'error') failure = errorMessageFromUnknown(error)
+      if (terminalReason === 'error') {
+        if (error instanceof PiRpcResponseError) rejection = error
+        else failure = errorMessageFromUnknown(error)
+      }
       notify()
     },
   )
@@ -336,12 +351,40 @@ async function* streamPiPrompt(
       }
       await new Promise<void>((resolve) => { wake = resolve })
     }
+    if (terminalReason === 'error' && rejection !== undefined) return { reason: 'error', rejection }
     return { reason: terminalReason, ...(failure === undefined ? {} : { failure }) }
   } finally {
     signal?.removeEventListener('abort', onAbort)
     removeListener()
     removeExitListener()
   }
+}
+
+async function diagnosePiPromptRejection(rpc: JsonRpcProcess, error: PiRpcResponseError, signal: AbortSignal | undefined): Promise<{ message: string }> {
+  if (signal?.aborted) return { message: error.message }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), PI_PROMPT_STATE_TIMEOUT_MS)
+  const timeout = controller.signal
+  let state = 'get_state=unavailable'
+  try {
+    const result = await rpc.request('get_state', {}, {
+      signal: signal === undefined ? timeout : AbortSignal.any([signal, timeout]),
+      cancelOnAbort: false,
+      killOnAbort: false,
+      wireFormat: 'pi',
+    })
+    if (isRecord(result)) {
+      const data = isRecord(result.data) ? result.data : result
+      const streaming = typeof data.isStreaming === 'boolean' ? data.isStreaming : 'unknown'
+      const compacting = typeof data.isCompacting === 'boolean' ? data.isCompacting : 'unknown'
+      state = `isStreaming=${streaming}, isCompacting=${compacting}`
+    }
+  } catch {
+    if (timeout.aborted && !signal?.aborted) state = 'get_state=timeout'
+  } finally {
+    clearTimeout(timer)
+  }
+  return { message: `${error.message} [Pi ${state}]` }
 }
 
 function piEventType(message: JsonRpcMessage): string {

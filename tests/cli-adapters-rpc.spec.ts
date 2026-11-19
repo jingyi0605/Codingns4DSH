@@ -2076,6 +2076,59 @@ test('Pi prompt 被拒绝时结束为 error', async () => {
   driver.dispose()
 })
 
+for (const stateReplies of [true, false]) {
+  test(`Pi 续轮被拒绝时保留错误，状态查询${stateReplies ? '有回应' : '超时'}且不发送 abort`, async () => {
+    const commands: string[] = []
+    let promptCount = 0
+    let spawnCount = 0
+    const driver = new PiAgentDriver({
+      binaries: ['fake-pi'],
+      spawnSync: (() => ({ status: 0, stdout: 'pi 1.5.2', stderr: '' })) as never,
+      spawn: (() => {
+        spawnCount++
+        const stdout = new PassThrough()
+        const stderr = new PassThrough()
+        const send = (value: unknown): void => { stdout.write(JSON.stringify(value) + '\n') }
+        const stdin = { write(raw: string): void {
+          const request = JSON.parse(raw) as { id: number; type: string }
+          commands.push(request.type)
+          const response = { id: request.id, type: 'response', command: request.type }
+          if (request.type === 'prompt') {
+            if (++promptCount === 1) {
+              send({ ...response, success: true })
+              send({ type: 'turn_end', message: { stopReason: 'error', errorMessage: 'Upstream response stream was interrupted' } })
+            } else {
+              send({ ...response, success: false, error: 'Agent is already processing.\nAuthorization: Bearer fake-auth; "api_key": "fake sensitive value"' })
+            }
+          } else if (request.type === 'get_state' && promptCount === 2) {
+            if (stateReplies) send({ ...response, success: true, data: { isStreaming: true, isCompacting: false, sessionFile: '/private/session.jsonl' } })
+          } else {
+            send({ ...response, success: true, data: {} })
+          }
+        } }
+        return { stdout, stderr, stdin, kill() { stdout.end(); stderr.end(); return true } }
+      }) as never,
+    })
+    const turn = async () => {
+      const chunks = []
+      for await (const chunk of driver.executeTurn({ sessionId: 'pi-error', messages: [], prompt: '你好' })) chunks.push(chunk)
+      return chunks.at(-1)
+    }
+    try {
+      assert.deepEqual(await turn(), { type: 'finish', reason: 'error', failure: { message: 'Upstream response stream was interrupted' } })
+      const state = stateReplies ? 'isStreaming=true, isCompacting=false' : 'get_state=timeout'
+      assert.deepEqual(await turn(), {
+        type: 'finish', reason: 'error',
+        failure: { message: `Agent is already processing. Authorization: [redacted]; "api_key": [redacted] [Pi ${state}]` },
+      })
+      assert.equal(spawnCount, 1)
+      assert.deepEqual(commands, ['get_state', 'prompt', 'get_session_stats', 'prompt', 'get_state'])
+    } finally {
+      driver.dispose()
+    }
+  })
+}
+
 test('Pi prompt 已接受但进程退出时结束为 error，并清理失效会话', async () => {
   let spawnCount = 0
   const driver = new PiAgentDriver({
