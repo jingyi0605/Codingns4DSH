@@ -4,6 +4,7 @@ import test from 'node:test'
 import { Children, isValidElement, type ReactElement, type ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { workspaceMcpFeature } from '../src/client/features/workspace-mcp.ts'
+import { WorkspaceMcpMessageOrigin } from '../src/client/session-translation-chat.js'
 import type { CodingNsClientServices, FeaturePanelProps } from '../src/client/features/types.js'
 import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import { DEFAULT_CODINGNS_SETTINGS } from '../src/shared/contracts/config.js'
@@ -56,6 +57,28 @@ test('Workspace MCP webhook panel lists safe destinations and shows the owner pr
   assert.match(html, /Host 会向你配置的地址发送会话摘要/u)
   assert.match(html, /需要开启 MCP 才能执行消息里的下一步/u)
   assert.match(html, /http:\/\/127\.0\.0\.1:8100\/…/u)
+})
+
+test('Agent message badge shows the exact Agent ID after clicking and clears on message change', async (t) => {
+  const calls: unknown[] = []
+  const services = { rpc: { async call(_channel: string, endpoint: string, args: { sessionId: string; messageId: string }) {
+    calls.push([endpoint, args])
+    return { ok: true, value: args.messageId === 'mcp-msg-1' ? { agentId: 'bot-a' } : {} }
+  } } } as unknown as CodingNsClientServices
+  const props = { services, messageId: 'mcp-msg-1', sessionId: 'sess', t: resolveCodingNsTranslator() }
+  const renderer = createHookRenderer(WorkspaceMcpMessageOrigin, props)
+  t.after(() => renderer.dispose())
+  assert.equal(renderer.render(), null)
+  await setImmediate()
+  const badge = renderer.render()!
+  assert.match(renderToStaticMarkup(badge), /发送自 Agent/u)
+  assert.doesNotMatch(renderToStaticMarkup(badge), /bot-a/u)
+  elements(badge).find((element) => element.type === 'button')!.props.onClick()
+  assert.match(renderToStaticMarkup(renderer.render()!), /bot-a/u)
+  assert.equal(renderer.render({ ...props, messageId: 'mcp-msg-2' }), null)
+  await setImmediate()
+  assert.equal(renderer.render(), null)
+  assert.deepEqual(calls[0], ['workspaceMcp/message-origin', { sessionId: 'sess', messageId: 'mcp-msg-1' }])
 })
 
 test('creating a destination displays its signing key once and refreshes the masked list', async (t) => {

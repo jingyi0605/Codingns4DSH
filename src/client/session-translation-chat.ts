@@ -30,6 +30,7 @@ import { startSerialPolling } from './serial-polling.js'
 import { clearOutputTranslationRetries, useOutputTranslation } from './session-translation-retry.js'
 import type { CodingNsClientServices } from './features/types.js'
 import type { CodingNsTranslator } from './locale.js'
+import { CODINGNS_RPC_CHANNEL } from '../shared/contracts/transport.js'
 import type { SessionTranslationInputRecord, SessionTranslationLanguage, SessionTranslationModel, SessionTranslationOutputKind, SessionTranslationRecord, SessionTranslationPendingInput, SessionTranslationRecoveryChoice } from '../shared/contracts/session-translation.js'
 import { readSessionTranslationDiagnostics, readSessionTranslationMetrics, resolveSessionTranslationOptions } from '../shared/contracts/session-translation.js'
 
@@ -489,6 +490,9 @@ function UserMessageNodeView(props: any): ReactElement | null {
       color: dshThemeColor.labelTertiary,
     },
   },
+  typeof data.source?.rpcId === 'string' && data.source.rpcId.startsWith('mcp-msg-') ? createElement(WorkspaceMcpMessageOrigin, {
+    key: data.source.rpcId, services: props.services, sessionId: props.sessionId, messageId: data.source.rpcId, t: props.translationT,
+  }) : null,
   typeof data.time === 'number' ? createElement('span', {
     style: { paddingRight: 12, color: dshThemeColor.labelTertiary, fontSize: 'var(--dsh-content-font-size-secondary, 13px)', whiteSpace: 'nowrap' },
   }, formatMessageTime(data.time)) : null,
@@ -502,6 +506,30 @@ function UserMessageNodeView(props: any): ReactElement | null {
   }),
   createElement(CopyAction, { text: parts.text, t: chatT }),
   ),
+  )
+}
+
+export function WorkspaceMcpMessageOrigin({ services, sessionId, messageId, t }: {
+  readonly services: CodingNsClientServices; readonly sessionId: string; readonly messageId: string; readonly t: CodingNsTranslator
+}): ReactElement | null {
+  const [origin, setOrigin] = useState<{ sessionId: string; messageId: string; agentId: string }>()
+  const [expanded, setExpanded] = useState(false)
+  useEffect(() => {
+    let current = true
+    setExpanded(false)
+    void services.rpc.call(CODINGNS_RPC_CHANNEL, 'workspaceMcp/message-origin', { sessionId, messageId }).then((result) => {
+      const agentId = result.ok ? asRecord(result.value)?.agentId : undefined
+      if (current && typeof agentId === 'string') setOrigin({ sessionId, messageId, agentId })
+    }).catch(() => undefined)
+    return () => { current = false }
+  }, [services.rpc, sessionId, messageId])
+  if (origin?.sessionId !== sessionId || origin.messageId !== messageId) return null
+  return createElement('span', { style: { display: 'inline-flex', alignItems: 'center', gap: 6 } },
+    createElement('button', {
+      type: 'button', 'aria-expanded': expanded, onClick: () => setExpanded((value) => !value),
+      style: { ...recoveryButtonStyle, padding: '2px 6px', fontSize: uiFontSize(11) },
+    }, t('workspaceMcp.messageOrigin')),
+    expanded ? createElement('span', { style: { overflowWrap: 'anywhere' } }, t('workspaceMcp.messageAgentId', { id: origin.agentId })) : null,
   )
 }
 
@@ -861,6 +889,25 @@ function resolveMarkdownImagePath(value: string): string | undefined {
 /**
  * 注册用户消息（含插话）与 AI 正文的翻译渲染器；DSH 的用户气泡内容仍由统一主题令牌控制。
  */
+export function registerWorkspaceMcpMessageOrigins(services: CodingNsClientServices): () => void {
+  const resolution = createDshCapabilityRegistry(services.dshVersion, 'client', services, { primitives: messagePrimitives })
+    .getProfile(services).capabilities.get('conversation.message-presentation')
+  const slots = services.slots as unknown as {
+    inject(key: string, callback: () => () => void): () => void
+    register(options: Record<string, unknown>, component: (props: any) => ReactElement | null): () => void
+  } | undefined
+  if (resolution?.status !== 'ready' || typeof slots?.inject !== 'function' || typeof slots.register !== 'function') return () => undefined
+  const presentation = resolution.value as MessagePresentation
+  const translationT = services.locale.bind('codingns')
+  return presentation.mount(() => {
+    const removers = ['user', 'steering'].map((key) => slots.inject('conversation.chat.node', () => slots.register({
+      name: 'conversation.chat.node', key, priority: -99, locale: 'chat',
+      inject: (sessionId: string) => ({ services, sessionId, translationT }),
+    }, (props) => UserMessageNodeView({ ...props, presentation }))))
+    return () => { for (const remove of removers.reverse()) remove() }
+  })
+}
+
 export function registerSessionTranslationChatUi(services: CodingNsClientServices, facts: DshCapabilityRuntimeFacts = { primitives: messagePrimitives }): () => void {
   const resolution = createDshCapabilityRegistry(services.dshVersion, 'client', services, facts).getProfile(services).capabilities.get('conversation.message-presentation')
   const slots = services.slots as unknown as {
