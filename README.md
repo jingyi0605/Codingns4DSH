@@ -82,7 +82,7 @@ Agent、终端和项目文件在运行 DSH 的电脑（Host）上处理；浏览
 | **Kimi CLI** | 权限确认、提问、插话、用量 | — |
 | **Gemini CLI** | 权限确认、提问、用量 | 支持原生权限确认与表单提问 |
 | **Pi Agent** | 插话、思考强度、用量 | 当前协议的 DSH 权限与提问回传尚未验证 |
-| **Codex** | 权限确认、提问、插话、用量 | 提问由 DSH 原生问题面板承载 |
+| **Codex** | 权限确认、提问、插话、用量 | 提问由 DSH 原生问题面板承载。macOS 上优先使用 PATH 中的 Codex CLI，也可回退到桌面应用内置 CLI。 |
 | **OpenCode** | Skill、权限确认、提问、用量 | 支持本地 CLI 或已有服务，以及原生技能调用 |
 | **Grok Build** | Skill、权限确认、提问、用量 | 支持原生技能目录与结构化提问 |
 | **MiniMax Code** | 权限确认、提问、用量 | 默认接入支持交互；显式思考档位的执行模式不支持交互回传。<br>上游贡献者：[chenjunyi000](https://github.com/chenjunyi000)<br>提交 PR [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6)、[#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |
