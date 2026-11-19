@@ -1,7 +1,5 @@
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import type { CodingNsAgentImageArtifact } from '../../shared/contracts/cli-adapter.js'
+import { firstAntigravityMessage as first, readAntigravityFields as fields, readAntigravitySessionDb } from './antigravity-session-db.js'
 
 export interface AntigravityToolDetailRequest {
   readonly providerSessionId: string
@@ -27,23 +25,15 @@ const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp
  */
 export function readAntigravityToolDetail(
   request: AntigravityToolDetailRequest,
-  conversationsRoot = join(homedir(), '.gemini', 'antigravity-cli', 'conversations'),
+  conversationsRoot?: string,
 ): AntigravityToolDetail | null {
-  if (!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/iu.test(request.providerSessionId)
-    || !Number.isSafeInteger(request.stepIndex) || request.stepIndex < 0) return null
-  let db: DatabaseSync | undefined
-  try {
-    db = new DatabaseSync(join(conversationsRoot, `${request.providerSessionId}.db`), { readOnly: true })
+  if (!Number.isSafeInteger(request.stepIndex) || request.stepIndex < 0) return null
+  return readAntigravitySessionDb(request.providerSessionId, conversationsRoot, db => {
     const row = db.prepare('SELECT step_payload FROM steps WHERE idx = ? AND step_type = 132 AND length(step_payload) <= ?')
       .get(request.stepIndex, MAX_PAYLOAD_BYTES)
     if (!(row?.step_payload instanceof Uint8Array)) return null
     return decodeToolDetail(row.step_payload, request)
-  } catch {
-    // 此补充来源不能中断正在运行的 Provider，也不能将原始数据库内容写入日志。
-    return null
-  } finally {
-    db?.close()
-  }
+  })
 }
 
 function decodeToolDetail(bytes: Uint8Array, request: AntigravityToolDetailRequest): AntigravityToolDetail | null {
@@ -63,10 +53,10 @@ function decodeToolDetail(bytes: Uint8Array, request: AntigravityToolDetailReque
   const failure = fields(first(step, 31))
   const error = text(failure, 2) || text(failure, 3)
   const images: CodingNsAgentImageArtifact[] = []
-  for (const bytes of result.get(4) ?? []) {
+  for (const bytes of result.messages.get(4) ?? []) {
     const image = fields(bytes)
     const mediaType = text(image, 1)
-    const data = image.get(2)?.[0]
+    const data = image.messages.get(2)?.[0]
     if (mediaType === undefined || !IMAGE_TYPES.has(mediaType) || data === undefined || data.length === 0) continue
     images.push({ type: 'image-artifact', data: Buffer.from(data).toString('base64'), mediaType: mediaType as NonNullable<CodingNsAgentImageArtifact['mediaType']> })
   }
@@ -78,49 +68,7 @@ function decodeToolDetail(bytes: Uint8Array, request: AntigravityToolDetailReque
   }
 }
 
-/** 只读取已确认的 length-delimited 字段；未知 protobuf 字段跳过，不猜测内容类型。 */
-function fields(bytes: Uint8Array): Map<number, Uint8Array[]> {
-  const result = new Map<number, Uint8Array[]>()
-  let offset = 0
-  const varint = (): number => {
-    let value = 0
-    for (let shift = 0; shift < 70; shift += 7) {
-      const byte = bytes[offset++]
-      if (byte === undefined) throw new Error('Truncated Antigravity protobuf')
-      value += (byte & 127) * 2 ** shift
-      if (byte < 128) return value
-    }
-    throw new Error('Invalid Antigravity protobuf varint')
-  }
-  while (offset < bytes.length) {
-    const tag = varint()
-    const index = Math.floor(tag / 8)
-    if (!Number.isSafeInteger(tag) || index === 0) throw new Error('Invalid Antigravity protobuf tag')
-    switch (tag % 8) {
-      case 0: varint(); break
-      case 1: offset += 8; break
-      case 5: offset += 4; break
-      case 2: {
-        const length = varint()
-        if (!Number.isSafeInteger(length) || length > bytes.length - offset) throw new Error('Truncated Antigravity protobuf field')
-        const values = result.get(index) ?? []
-        values.push(bytes.subarray(offset, offset + length))
-        result.set(index, values)
-        offset += length
-        break
-      }
-      default: throw new Error('Unsupported Antigravity protobuf wire type')
-    }
-    if (offset > bytes.length) throw new Error('Truncated Antigravity protobuf field')
-  }
-  return result
-}
-
-function first(value: Map<number, Uint8Array[]>, index: number): Uint8Array {
-  return value.get(index)?.[0] ?? new Uint8Array()
-}
-
-function text(value: Map<number, Uint8Array[]>, index: number): string | undefined {
-  const bytes = value.get(index)?.[0]
+function text(value: ReturnType<typeof fields>, index: number): string | undefined {
+  const bytes = value.messages.get(index)?.[0]
   return bytes === undefined ? undefined : new TextDecoder('utf-8', { fatal: true }).decode(bytes)
 }

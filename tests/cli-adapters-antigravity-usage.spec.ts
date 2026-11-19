@@ -140,6 +140,9 @@ test('Antigravity CLI 额度兜底和分组补全禁用自动更新', async () =
 test('Antigravity 上下文窗口按模型 id 与 AGY 设置里的展示名解析', () => {
   assert.equal(knownAntigravityContextWindow('gemini-4-argon'), 1_048_576)
   assert.equal(knownAntigravityContextWindow('gemini-4-argon-high'), 1_048_576)
+  assert.equal(knownAntigravityContextWindow('gemini-4-neon'), 1_048_576)
+  assert.equal(knownAntigravityContextWindow('gemini-4-neon-xhigh'), 1_048_576)
+  assert.equal(knownAntigravityContextWindow('magpie/tlp/gemini-4-neon'), undefined)
   assert.equal(knownAntigravityContextWindow('magpie/tlp/gemini-4-argon'), undefined)
   assert.equal(knownAntigravityContextWindow('gemini-3.8-flash'), 1_048_576)
   assert.equal(knownAntigravityContextWindow('gemini-3.1-pro'), 1_048_576)
@@ -159,6 +162,8 @@ test('Antigravity provider-default 按 AGY 设置文件里的模型取窗口', (
   const read = (label: string | null) => () => JSON.stringify(label === null ? {} : { model: label })
   assert.equal(knownAntigravityContextWindow(undefined, { readFile: read('Gemini 3.8 Flash (High)') }), 1_048_576)
   assert.equal(knownAntigravityContextWindow('provider-default', { readFile: read('Claude Sonnet 4.6 (Thinking)') }), 250_000)
+  assert.equal(knownAntigravityContextWindow('provider-default', { readFile: read('Gemini 4 Neon (High)') }), 1_048_576)
+  assert.equal(knownAntigravityContextWindow('provider-default', { readFile: read('Unknown Model') }), undefined)
   assert.equal(knownAntigravityContextWindow(undefined, { readFile: () => { throw new Error('ENOENT') } }), 1_048_576)
 })
 
