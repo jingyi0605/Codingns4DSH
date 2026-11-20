@@ -1,10 +1,11 @@
 import { spawn, spawnSync, type SpawnOptions } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { dirname } from 'node:path'
-import type { CodingNsAgentEvent, CodingNsAgentToolEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsAgentEvent, CodingNsAgentPermissionResponse, CodingNsAgentQuestionResponse, CodingNsAgentToolEvent, CodingNsCliAdapterDescriptor, CodingNsCliModelCatalog, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver } from './driver.js'
-import { AcpCliDriver } from './acp-cli-driver.js'
-import { JsonRpcRequestError, type JsonRpcProcess } from './json-rpc-process.js'
+import { AcpCliDriver, type AcpPendingQuestionRequest } from './acp-cli-driver.js'
+import { acpElicitationResponse, readAcpElicitationRequest } from './acp-elicitation.js'
+import { JsonRpcRequestError, type JsonRpcMessage, type JsonRpcProcess } from './json-rpc-process.js'
 import { StandardStreamDriver, emptyCatalog, genericEventChunks } from './standard-stream-driver.js'
 import { ANTIGRAVITY_CATALOG, antigravitySupportsEffort, isProviderDefaultModel, knownAntigravityContextWindow, parseAntigravityModels, resolveAntigravityEffort, resolveAntigravityModelId } from './model-catalog.js'
 import { promptWithAttachmentPaths } from './attachment-utils.js'
@@ -132,11 +133,6 @@ export interface AntigravityDriverOptions {
   readonly resolveEffort?: () => string | null
 }
 
-/**
- * Antigravity 的 stream-json print 模式：输入从 stdin 以 NDJSON 写入，输出仍是
- * 逐行 JSON。公开 CLI 没有 Host 回传 approval/question 的 wire 事件，因此不声明
- * permission/questions；使用 CLI 已公开的 plan、auto、accept-edits 和全放行模式。
- */
 export class AntigravityDriver extends StandardStreamDriver implements CodingNsCliDriver {
   private readonly observedText = new WeakMap<object, string>()
   private readonly diagnostics = new WeakMap<object, string>()
@@ -155,19 +151,17 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   private readonly magpieCommand: () => string | null
   private readonly autoUpdater: Pick<AntigravityAutoUpdater, 'check' | 'dispose'>
   private readonly resolveEffort: () => string | null
-  /** 只在带图片附件的回合使用；stream-json 输入只接受 text 内容块，无法传图。 */
   private readonly acp: AcpCliDriver
   private readonly readToolDetail: (request: AntigravityToolDetailRequest) => AntigravityToolDetail | null
 
   readonly warmModelCatalog = true
-  /** AGY stream-json 会把工具和后续正文放在同一条可暂停事件流中。 */
   readonly supportsToolStepSplitting = true
 
   readonly descriptor: Omit<CodingNsCliAdapterDescriptor, 'installed' | 'enabled' | 'version' | 'command'> = {
     id: 'antigravity',
     name: 'Antigravity',
     protocol: 'stream-json',
-    capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning'],
+    capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'permission', 'questions'],
   }
 
   constructor(options: AntigravityDriverOptions = {}) {
@@ -175,7 +169,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       id: 'antigravity',
       name: 'Antigravity',
       protocol: 'stream-json',
-      capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning'],
+      capabilities: ['models', 'stream', 'resume', 'interrupt', 'tool-events', 'reasoning', 'permission', 'questions'],
     }, {
       binaries: options.binaries ?? ['agy'],
       versionArgs: ['--version'],
@@ -200,11 +194,15 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       // 模型和思考档位走 ACP 的 config option，不用 session/set_model。
       runtimeModelSelection: false,
       configureSession: (rpc, sessionId, input, openedSession) => this.configureAcpSession(rpc, sessionId, input, openedSession),
-      capabilities: ['stream', 'resume', 'interrupt', 'tool-events'],
-      // 与 stream-json 无头模式一致：Agy 没有声明权限和提问能力，不能把请求挂给 DSH 等待。
-      readQuestionRequest: () => null,
-      decidePermission: () => 'reject',
+      capabilities: ['stream', 'resume', 'interrupt', 'tool-events', 'permission', 'questions'],
+      permissionOptions: 'once',
+      readQuestionRequest: antigravityQuestionRequest,
+      decidePermission: (_message, input) => input.permission?.nativeApprovalMode === undefined ? 'reject' : undefined,
       enrichUsage: (usage, input) => {
+        if (usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined) {
+          const normalized = usageChunk({ ...usage, uncachedInputTokens: usage.inputTokens })
+          if (normalized?.type === 'usage') usage = normalized
+        }
         if (usage.contextWindow !== undefined) return usage
         const contextWindow = input.modelContextWindow ?? this.resolveContextWindow(input.modelId)
         return contextWindow === undefined ? usage : { ...usage, contextWindow }
@@ -256,8 +254,9 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
         runtimeEnv: { ...magpie.env, ...(proxy === null ? {} : { GOOGLE_GEMINI_BASE_URL: proxy.baseUrl }), ...input.runtimeEnv },
         ...(magpie.settings === undefined ? {} : { magpieSettings: magpie.settings }),
       }
-      if (prepared.attachments?.some((attachment) => attachment.kind === 'image')) {
-        yield* this.executeImageTurn(prepared)
+      const nativeMode = prepared.permission?.nativeApprovalMode
+      if (nativeMode !== undefined || prepared.attachments?.some(attachment => attachment.kind === 'image')) {
+        yield* this.executeAcpTurn(prepared)
         return
       }
       const scope = { id: randomUUID(), settledSteps: new Set<number>(), pendingInputs: new Map<number, CodingNsAgentToolEvent>() }
@@ -284,15 +283,17 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     }
   }
 
-  /**
-   * 带图片的回合改走 `agy acp`：stream-json 输入只接受 text 内容块，图片只能以
-   * `@路径` 交给模型自己的 read_file，而 read_file 对图片只会把字节存档、不会送进
-   * 模型上下文，模型实际看不到图片。ACP 的 prompt 支持内联 image 块。
-   *
-   * 两种通道共用同一个 Agy 会话库：stream-json 的 conversation_id 可被 ACP
-   * session/load 恢复，ACP 的会话 ID 也可被 `--conversation` 继续。
-   */
-  private async *executeImageTurn(input: AntigravityTurnInput): AsyncGenerator<CodingNsAgentEvent> {
+  respondPermission(sessionId: string, response: CodingNsAgentPermissionResponse): void {
+    this.acp.respondPermission(sessionId, response)
+  }
+
+  respondQuestion(sessionId: string, response: CodingNsAgentQuestionResponse): void {
+    this.acp.respondQuestion(sessionId, response)
+  }
+
+  private async *executeAcpTurn(input: AntigravityTurnInput): AsyncGenerator<CodingNsAgentEvent> {
+    const { command } = this.resolvedBinary === null ? await this.detect() : { command: this.resolvedBinary }
+    if (command !== null) this.autoUpdater.check(command, this.resolvedEnvironment ?? commandEnvironment(command))
     const attachments = input.attachments ?? []
     // 图片内联；普通文件保持与 stream-json 相同的 @路径 引用，避免改变文件读取行为。
     const prompt = promptWithAttachmentPaths(input.prompt, attachments.filter((attachment) => attachment.kind !== 'image'), input.translationLanguage)
@@ -303,7 +304,26 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       acpAddDirectories: [...new Set(attachments.filter((attachment) => attachment.kind !== 'image').map((attachment) => dirname(attachment.path)))],
     }
     try {
-      yield* this.acp.executeTurn(acpInput)
+      let providerSessionId = acpInput.providerSessionId
+      for await (const event of this.acp.executeTurn(acpInput)) {
+        if (event.type === 'session-binding') {
+          providerSessionId = event.providerSessionId
+          this.validateProviderSessionBinding(acpInput, providerSessionId)
+        }
+        if (event.type === 'tool-event' && providerSessionId && event.callId && (event.status === 'completed' || event.status === 'failed')) {
+          const detail = this.readToolDetail({ providerSessionId, callId: event.callId, toolName: event.toolName })
+          if (detail !== null) {
+            yield {
+              ...event,
+              ...(detail.output ? { output: detail.output, outputMode: 'snapshot' as const } : {}),
+              ...(detail.images ? { outputImages: detail.images } : {}),
+              ...(detail.error ? { status: 'failed' as const, error: detail.error } : {}),
+            }
+            continue
+          }
+        }
+        yield event
+      }
     } finally {
       // Agy ACP 进程带完整 Language Server，只为这一回合借用，不留常驻进程。
       this.acp.closeSession(input.sessionId)
@@ -342,7 +362,13 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       await rpc.request('session/set_config_option', { sessionId, configId: 'thought_level', value: effort }, { signal: input.signal, killOnAbort: false })
     }
     const mode = antigravityPermissionMode(input.permission)
-    if (mode !== null) await rpc.request('session/set_mode', { sessionId, modeId: mode }, { signal: input.signal, killOnAbort: false })
+    if (mode === null) return
+    try {
+      await rpc.request('session/set_mode', { sessionId, modeId: mode }, { signal: input.signal, killOnAbort: false })
+    } catch (error) {
+      if (mode !== 'auto' || !(error instanceof JsonRpcRequestError)) throw error
+      throw Object.assign(new Error(`Antigravity 无法启用自动审查。请检查 agy 版本、账号和终端沙箱，或选择“人工审批”。${error.message}`, { cause: error }), { code: 'AGY_AUTO_MODE_UNAVAILABLE' })
+    }
   }
 
   private async readMagpieEnvironment(signal: AbortSignal): Promise<{
@@ -509,21 +535,16 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       if (isAntigravityPermissionDenial(chunk.error)) deniedReason ??= chunk.error
     }
     const diagnostic = this.diagnostics.get(input) ?? ''
-    const autoUnavailable = input.permission?.nativeApprovalMode === 'auto-review'
-      && /auto(?: mode)?[^\r\n]*(?:unavailable|not available|not supported|unsupported|default mode)/iu.test(diagnostic)
     if (deniedReason === undefined) {
       deniedReason = diagnostic.split(/\r?\n/u).find(isAntigravityPermissionDenial)
     }
     if (deniedReason === undefined && !resultSucceeded && typeof result?.error === 'string' && isAntigravityPermissionDenial(result.error)) {
       deniedReason = result.error
     }
-    if (!cancelled && (autoUnavailable || deniedReason !== undefined)) {
-      const failure = autoUnavailable ? {
-        code: 'AGY_AUTO_MODE_UNAVAILABLE',
-        message: 'Antigravity 自动审查不可用：agy auto 模式要求支持的 CLI 版本、个人账号及可用的终端沙箱。请检查 agy 环境，或选择其他执行模式；需要确认的命令可在 agy /permissions 中预先允许。',
-      } : {
+    if (!cancelled && deniedReason !== undefined) {
+      const failure = {
         code: 'AGY_PERMISSION_DENIED',
-        message: `Antigravity 工具审批未通过。agy 无头模式无法把审批请求回传 DSH；请在 agy /permissions 中预先允许所需操作，或在可信任务中手动选择“完全访问”后重新发送消息。原始原因：${deniedReason!.slice(0, 1200)}`,
+        message: `Antigravity 工具审批未通过。agy 无头模式无法把审批请求回传 DSH。请在 DSH 会话中选择“人工审批”，或在交互式 agy 的 /permissions 中检查权限规则。原始原因：${deniedReason.slice(0, 1200)}`,
       }
       chunks = chunks.filter(chunk => chunk.type !== 'finish' && (result === null || chunk.type !== 'text-delta'))
       if (result === null) {
@@ -757,18 +778,33 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   }
 }
 
-/**
- * Antigravity 没有公开的 permission-request/response wire。显式模式优先；
- * 旧调用方保持原映射，未知状态进入 plan。全放行仍要求 danger-full-access
- * 和 never 同时成立，auto 不可用时不得静默切换至全放行。
- */
+function antigravityQuestionRequest(message: JsonRpcMessage): AcpPendingQuestionRequest | null {
+  const form = readAcpElicitationRequest(message)
+  if (!form) return null
+  const customKeys = new Set(form.questions.filter(question => form.bindings.some(binding => binding.propertyKey === `${question.id}_other`)).map(question => question.id))
+  return {
+    requestId: form.requestId, rpcId: form.rpcId,
+    questions: form.questions.filter(question => !question.id.endsWith('_other') || !customKeys.has(question.id.slice(0, -6)))
+      .map(question => ({ ...question, question: question.header ?? question.question })),
+    respond(response) {
+      const answers = response.answers.flatMap(answer => {
+        if (!customKeys.has(answer.id) || !answer.custom?.trim()) return [answer]
+        return [{ id: answer.id, selected: answer.selected }, { id: `${answer.id}_other`, selected: [answer.custom.trim()] }]
+      })
+      const result = acpElicitationResponse(form, { ...response, answers })
+      return Object.keys(result.content).length ? result : { action: 'cancel' }
+    },
+  }
+}
+
 function antigravityPermissionArgs(permission: CodingNsCliTurnInput['permission']): readonly string[] {
   const mode = antigravityPermissionMode(permission)
   return mode === null ? ['--dangerously-skip-permissions'] : ['--mode', mode]
 }
 
 /** 权限模式；返回 null 表示全放行（stream-json 与 ACP 都用 --dangerously-skip-permissions，而不是模式）。 */
-function antigravityPermissionMode(permission: CodingNsCliTurnInput['permission']): 'plan' | 'auto' | 'accept-edits' | null {
+function antigravityPermissionMode(permission: CodingNsCliTurnInput['permission']): 'default' | 'plan' | 'auto' | 'accept-edits' | null {
+  if (permission?.nativeApprovalMode === 'manual') return 'default'
   if (permission?.nativeApprovalMode === 'read-only') return 'plan'
   if (permission?.nativeApprovalMode === 'auto-review') return 'auto'
   if (permission?.nativeApprovalMode === 'accept-edits') return 'accept-edits'

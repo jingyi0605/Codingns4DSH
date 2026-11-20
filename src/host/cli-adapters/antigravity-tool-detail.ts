@@ -3,7 +3,8 @@ import { firstAntigravityMessage as first, readAntigravityFields as fields, read
 
 export interface AntigravityToolDetailRequest {
   readonly providerSessionId: string
-  readonly stepIndex: number
+  readonly stepIndex?: number
+  readonly callId?: string
   readonly toolName: string
   readonly parameters?: Record<string, unknown>
 }
@@ -20,17 +21,19 @@ const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp
 
 /**
  * AGY 1.5.9 的 stream-json 只发路径/摘要，原生 SQLite 才保存实际调用参数及结果。
- * 只按本轮协议给出的 conversation + step_index 定位 tool step；不扫描其他会话，
+ * 在本轮的 conversation 中按 step_index 或调用编号定位 tool step；不扫描其他会话，
  * 不打开工具参数中的路径，不回写数据库。格式未知、锁定或缺失时保留 wire 信息。
  */
 export function readAntigravityToolDetail(
   request: AntigravityToolDetailRequest,
   conversationsRoot?: string,
 ): AntigravityToolDetail | null {
-  if (!Number.isSafeInteger(request.stepIndex) || request.stepIndex < 0) return null
+  const { stepIndex, callId } = request
+  if (stepIndex === undefined ? !callId : !Number.isSafeInteger(stepIndex) || stepIndex < 0) return null
   return readAntigravitySessionDb(request.providerSessionId, conversationsRoot, db => {
-    const row = db.prepare('SELECT step_payload FROM steps WHERE idx = ? AND step_type = 132 AND length(step_payload) <= ?')
-      .get(request.stepIndex, MAX_PAYLOAD_BYTES)
+    const row = stepIndex !== undefined
+      ? db.prepare('SELECT step_payload FROM steps WHERE idx = ? AND step_type = 132 AND length(step_payload) <= ?').get(stepIndex, MAX_PAYLOAD_BYTES)
+      : db.prepare('SELECT step_payload FROM steps WHERE step_type = 132 AND instr(metadata, ?) > 0 AND length(step_payload) <= ? ORDER BY idx DESC LIMIT 1').get(Buffer.from(callId!), MAX_PAYLOAD_BYTES)
     if (!(row?.step_payload instanceof Uint8Array)) return null
     return decodeToolDetail(row.step_payload, request)
   })
@@ -41,6 +44,7 @@ function decodeToolDetail(bytes: Uint8Array, request: AntigravityToolDetailReque
   // tool_execution=140, tool_execution.result=2, result.text=1, result.images=4。
   const step = fields(bytes)
   const call = fields(first(fields(first(step, 5)), 4))
+  if (request.callId !== undefined && text(call, 1) !== request.callId) return null
   if (text(call, 2) !== request.toolName) return null
   const value: unknown = JSON.parse(text(call, 3) ?? 'null')
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return null

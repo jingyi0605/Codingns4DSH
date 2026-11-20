@@ -1087,6 +1087,28 @@ test('原生会话桥接通过 DSH approval 和 userQuestions 服务完成交互
   assert.deepEqual(questionRequests, [{ agent, questions: [{ id: 'language', question: '选择语言' }] }])
 })
 
+test('原生会话桥接保留 DSH 审批审计并区分自动拒绝和人工拒绝', async () => {
+  const session = { id: 'approval-policy-session' }
+  const agent = { id: session.id, session }
+  let policy = 'never'
+  let requestCount = 0
+  const bridge = createCodingNsNativeSessionBridge({
+    get(name: string) {
+      if (name === 'agents') return { get: () => agent }
+      if (name === 'approval') return {
+        effectivePolicy(seen: unknown) { assert.equal(seen, session); return policy },
+        async request() { requestCount += 1; return 'rejected' },
+      }
+      return undefined
+    },
+  } as never)
+  const request = { requestId: 'permission', toolName: 'run_command' }
+  assert.equal(await bridge.requestApproval?.(session.id, request), 'policy-rejected')
+  policy = 'ask'
+  assert.equal(await bridge.requestApproval?.(session.id, request), 'rejected')
+  assert.equal(requestCount, 2)
+})
+
 test('原生会话桥接使用 Agent.inject 把外部工具推进下一个合法 step', () => {
   const messages: unknown[] = []
   const agent = { id: 'step-session', inject(message: unknown) { messages.push(message) } }

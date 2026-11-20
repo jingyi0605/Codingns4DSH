@@ -286,8 +286,8 @@ test('Antigravity 通过 stdin stream-json 输入一轮并转换标准事件', a
     '--mode', 'plan', '--add-dir', process.cwd(),
   ])
   assert.deepEqual(JSON.parse(inputs[0] ?? '{}'), { event: 'user', message: { content: '你好' } })
-  assert.equal(driver.descriptor.capabilities?.includes('permission'), false)
-  assert.equal(driver.descriptor.capabilities?.includes('questions'), false)
+  assert.equal(driver.descriptor.capabilities?.includes('permission'), true)
+  assert.equal(driver.descriptor.capabilities?.includes('questions'), true)
   driver.dispose()
 })
 

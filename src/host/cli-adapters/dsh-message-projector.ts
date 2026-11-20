@@ -6,7 +6,7 @@ import type {
   CodingNsAgentPermissionResponse,
   CodingNsCliPermissionState,
 } from '../../shared/contracts/cli-adapter.js'
-import type { CodingNsNativeImageAttachmentRef, CodingNsNativeSessionBridge, CodingNsNativeUsageSample } from '../native-session-bridge.js'
+import type { CodingNsNativeApprovalOutcome, CodingNsNativeImageAttachmentRef, CodingNsNativeSessionBridge, CodingNsNativeUsageSample } from '../native-session-bridge.js'
 import { CodingNsDshToolHistoryProjector } from './dsh-tool-history.js'
 import {
   CodingNsAgentEventNormalizer,
@@ -227,8 +227,7 @@ export class CodingNsDshMessageProjector {
       case 'image-artifact':
         return this.externalImageChunk(event)
       case 'permission-request':
-        await this.requestPermission(event)
-        return []
+        return this.requestPermission(event)
       case 'question-request':
         await this.requestQuestions(event)
         return []
@@ -442,7 +441,7 @@ export class CodingNsDshMessageProjector {
     ]
   }
 
-  private async requestPermission(event: Extract<CodingNsAgentEvent, { type: 'permission-request' }>): Promise<void> {
+  private async requestPermission(event: Extract<CodingNsAgentEvent, { type: 'permission-request' }>): Promise<readonly CodingNsDshStreamChunk[]> {
     const responder = this.options.respondPermission
     if (responder === undefined) throw new Error('外部 Agent 发送了权限请求，但适配器没有权限回复接口')
     let detail = event.detail
@@ -463,6 +462,10 @@ export class CodingNsDshMessageProjector {
     const approved = outcome === 'allowed-once'
     const reason = approvalReason(outcome, this.options.permission)
     await responder({ requestId: event.requestId, approved, ...(reason === undefined ? {} : { reason }) })
+    if (outcome === 'policy-rejected' && this.options.adapterId === 'antigravity') {
+      return this.fail('DSH 已自动拒绝 agy 的工具请求。请在输入框旁选择 agy 模式后重试。', this.options.signal?.aborted)
+    }
+    return []
   }
 
   private async requestQuestions(event: Extract<CodingNsAgentEvent, { type: 'question-request' }>): Promise<void> {
@@ -536,14 +539,13 @@ function toDshFinishReason(reason: 'stop' | 'cancel' | 'error', failureMessage?:
 }
 
 function approvalReason(
-  outcome: 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable',
+  outcome: CodingNsNativeApprovalOutcome,
   permission?: CodingNsCliPermissionState,
 ): string | undefined {
-  if (outcome === 'rejected') {
-    return permission?.approvalPolicy === 'never'
-      ? '当前审批策略为 never，权限请求被策略自动拒绝，未弹出权限面板'
-      : '用户拒绝了权限请求'
+  if (outcome === 'policy-rejected' || (outcome === 'rejected' && permission?.approvalPolicy === 'never')) {
+    return '当前审批策略为 never，权限请求被策略自动拒绝，未弹出权限面板'
   }
+  if (outcome === 'rejected') return '用户拒绝了权限请求'
   if (outcome === 'cancelled') return '权限请求已取消'
   if (outcome === 'unavailable') return 'DSH 原生权限组件不可用'
   return undefined

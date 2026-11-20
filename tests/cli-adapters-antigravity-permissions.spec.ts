@@ -54,42 +54,21 @@ function finishAfterUsage(events: Awaited<ReturnType<typeof collect>>) {
   return settlement[1]
 }
 
-test('AGY exposes its four native modes, defaults to plan, and does not claim interactive approval', () => {
-  assert.deepEqual(nativeApprovalModes('antigravity'), ['auto-review', 'read-only', 'accept-edits', 'full-access'])
-  assert.equal(resolveNativeApprovalMode('antigravity', undefined), 'read-only')
-  assert.equal(resolveNativeApprovalMode('antigravity', 'inherit'), 'read-only')
+test('AGY menu matches the native ACP modes', () => {
+  assert.deepEqual(nativeApprovalModes('antigravity'), ['manual', 'accept-edits', 'read-only', 'full-access'])
+  assert.equal(resolveNativeApprovalMode('antigravity', undefined), 'manual')
+  assert.equal(resolveNativeApprovalMode('antigravity', 'inherit'), 'manual')
   const options = nativeApprovalCatalog('antigravity', t).options
-  assert.deepEqual(options.map(option => option.value), ['auto', 'read-only', 'accept-edits', 'danger-full-access'])
-  assert.equal(options[1]?.name, '规划')
-  assert.match(options[0]!.description, /沙箱/)
-  assert.match(options[2]!.description, /命令.*审批/)
-  assert.match(options[3]!.description, /agy/)
-  assert.equal(nativeApprovalModeForValue('antigravity', 'manual'), undefined)
+  assert.deepEqual(options.map(option => option.value), ['default', 'accept-edits', 'plan', 'danger-full-access'])
+  assert.equal(options[2]?.name, '规划')
+  assert.match(options[1]!.description, /审批的命令.*DSH/)
+  assert.equal(nativeApprovalModeForValue('antigravity', 'default'), 'manual')
 })
 
-test('AGY native permission choice reaches the actual CLI argv, independent of DSH inherited permissions', async () => {
-  for (const [mode, args] of [
-    ['auto-review', ['--mode', 'auto']], ['read-only', ['--mode', 'plan']],
-    ['accept-edits', ['--mode', 'accept-edits']], ['full-access', ['--dangerously-skip-permissions']],
-  ] as const) {
-    const { driver, calls } = fixture([result])
-    try {
-      const permission = resolveNativeApprovalPermission({ adapterId: 'antigravity', nativeApprovalMode: mode }, { sandboxMode: 'read-only', approvalPolicy: 'ask' })
-      await collect(driver, { permission })
-      const index = calls[0]!.indexOf(args[0])
-      assert.notEqual(index, -1, mode)
-      assert.deepEqual(calls[0]!.slice(index, index + args.length), args)
-      if (mode !== 'full-access') assert.equal(calls[0]!.includes('--dangerously-skip-permissions'), false)
-      if (mode === 'accept-edits') assert.equal(permission?.approvalPolicy, 'ask', 'shell approval remains required')
-      if (mode !== 'full-access') assert.notEqual(permission?.sandboxMode, 'danger-full-access')
-    } finally { driver.dispose() }
+test('Unsupported legacy modes resolve to the agy default', () => {
+  for (const nativeApprovalMode of ['inherit', 'auto-review'] as const) {
+    assert.deepEqual(resolveNativeApprovalPermission({ adapterId: 'antigravity', nativeApprovalMode }, { sandboxMode: 'danger-full-access', approvalPolicy: 'never' }), { nativeApprovalMode: 'manual', approvalPolicy: 'ask' })
   }
-})
-
-test('AGY legacy defaults stay conservative and never inherit full access without a native choice', () => {
-  const permission = resolveNativeApprovalPermission({ adapterId: 'antigravity' }, { sandboxMode: 'danger-full-access', approvalPolicy: 'never' })
-  assert.equal(permission?.nativeApprovalMode, 'read-only')
-  assert.notEqual(permission?.sandboxMode, 'danger-full-access')
 })
 
 test('AGY SUCCESS keeps the new response when only the result carries a stale permission denial', async () => {
@@ -136,7 +115,7 @@ test('AGY terminal permission errors are actionable', async () => {
     const finish = finishAfterUsage(await collect(failed.driver))
     assert.equal(finish.reason, 'error')
     assert.equal(finish.failure.code, 'AGY_PERMISSION_DENIED')
-    assert.match(finish.failure.message, /agy \/permissions/)
+    assert.match(finish.failure.message, /人工审批.*\/permissions/)
   } finally { failed.driver.dispose() }
 })
 
@@ -146,18 +125,6 @@ test('AGY rejects a turn cancelled before startup', async () => {
     const controller = new AbortController(); controller.abort()
     await assert.rejects(() => collect(cancelled.driver, { signal: controller.signal }), /abort/iu)
   } finally { cancelled.driver.dispose() }
-})
-
-test('AGY auto-mode fallback is reported instead of silently running with default permissions', async () => {
-  const { driver, calls } = fixture([result], 'Warning: auto mode is not available because the terminal sandbox is unavailable; continuing in default mode\n')
-  try {
-    const permission = resolveNativeApprovalPermission({ adapterId: 'antigravity', nativeApprovalMode: 'auto-review' }, undefined)
-    const finish = (await collect(driver, { permission })).find(event => event.type === 'finish')
-    assert.equal(finish.reason, 'error')
-    assert.equal(finish.failure.code, 'AGY_AUTO_MODE_UNAVAILABLE')
-    assert.match(finish.failure.message, /沙箱/)
-    assert.equal(calls[0]!.includes('--dangerously-skip-permissions'), false)
-  } finally { driver.dispose() }
 })
 
 test('AGY ordinary tool errors and prose mentioning permissions do not become permission failures', async () => {
@@ -185,21 +152,25 @@ test('AGY saved modes survive cold reload without losing provider session identi
     const cold = makeRegistry(coldStore)
     try {
       assert.equal(cold.getSession('s').nativeApprovalMode, 'accept-edits')
+      cold.setSession('old', { adapterId: 'antigravity', nativeApprovalMode: 'read-only' })
       assert.equal(cold.setSession('s', { adapterId: 'antigravity', nativeApprovalMode: 'full-access' }).providerSessionId, 'existing')
-      assert.equal(cold.setSession('new', { adapterId: 'antigravity' }).nativeApprovalMode, 'full-access')
-      assert.throws(() => cold.setSession('s', { adapterId: 'antigravity', nativeApprovalMode: 'manual' }), /Unsupported/)
+      cold.setSession('old', { adapterId: 'antigravity', modelId: 'another-model', nativeApprovalMode: 'read-only' })
+      const inherited = cold.setSession('new', { adapterId: 'antigravity' })
+      assert.equal(inherited.nativeApprovalMode, 'full-access')
+      assert.deepEqual(resolveNativeApprovalPermission(inherited, undefined), { nativeApprovalMode: 'full-access', approvalPolicy: 'never', sandboxMode: 'danger-full-access' })
+      assert.equal(cold.setSession('s', { adapterId: 'antigravity', nativeApprovalMode: 'manual' }).providerSessionId, 'existing')
+      assert.equal(cold.getSession('s').nativeApprovalMode, 'manual')
     } finally { await cold.dispose() }
   } finally { await registry.dispose() }
 })
 
-test('AGY denied tool terminates through the real Registry step boundary without starting another CLI process', async () => {
+test('AGY headless denial terminates through the Registry step boundary without replaying the prompt', async () => {
   const { driver, calls } = fixture([
     { event: 'step_update', step_update: { step_type: 'tool', step_index: 2, state: 'DONE', tool_name: 'run_command', tool_info: { error: { type: 'TOOL_ERROR', message: denial } } } }, result,
   ])
   const registry = new CodingNsCliAdapterRegistry([driver])
-  const config = { adapterId: 'antigravity', nativeApprovalMode: 'accept-edits' } as const
-  registry.setSession('agy-permissions', config)
-  const input = { adapterId: 'antigravity', sessionId: 'agy-permissions', messages: [], prompt: 'same user turn', splitToolSteps: true, permission: resolveNativeApprovalPermission(config, undefined)! }
+  registry.setSession('agy-permissions', { adapterId: 'antigravity' })
+  const input = { adapterId: 'antigravity', sessionId: 'agy-permissions', messages: [], prompt: 'same user turn', splitToolSteps: true }
   const events: any[] = []
   try {
     for (let step = 0; step < 3 && !events.some(event => event.type === 'finish'); step += 1) {
@@ -231,39 +202,47 @@ test('AGY changing permission during a turn preserves the running snapshot and a
   const running = drain(registry.execute(input))
   try {
     await started
-    registry.setSession('running-agy', { adapterId: 'antigravity', nativeApprovalMode: 'full-access' })
+    registry.setSession('running-agy', { adapterId: 'antigravity', nativeApprovalMode: 'read-only' })
     release(); await running
     assert.deepEqual(received[0], initial)
-    assert.equal(registry.getSession('running-agy').nativeApprovalMode, 'full-access')
+    assert.equal(registry.getSession('running-agy').nativeApprovalMode, 'read-only')
     const next = resolveNativeApprovalPermission(registry.getSession('running-agy'), undefined)!
     await drain(registry.execute({ ...input, prompt: 'next', permission: next }))
-    assert.equal(received[1].nativeApprovalMode, 'full-access')
+    assert.equal(received[1].nativeApprovalMode, 'read-only')
   } finally { release(); await running; await registry.dispose() }
 })
 
-test('AGY actual native permission slot offers its modes and saves while a turn is active', async () => {
+test('AGY single native permission slot connects DSH approval when selecting a mode', async () => {
   const locale = { bind: () => resolveCodingNsTranslator(), getSnapshot: () => ({ revision: 0 }), subscribe: () => () => {}, register: () => () => {} } as never
   const slots = createPresentationSlots()
   const removeRoot = slots.register({ name: 'root', children: { 'conversation.input.left': { kind: 'list', scope: 'session' }, 'conversation.input.permission': { kind: 'single', scope: 'session' } } } as any, () => null)
   const removeNative = slots.register({ name: 'conversation.input.permission' } as any, () => null)
   let selection: any = { adapterId: 'antigravity', providerSessionId: 'existing' }
+  let nativePreset = 'danger-full-access'
+  const selectNative = async (value: string) => { nativePreset = value; return true }
   const rpc = { async call(_channel: string, endpoint: string, payload: any) { if (endpoint === 'cli/session/set') selection = { ...selection, ...payload }; return { ok: true, value: selection } } }
   const dispose = registerCliConversationSlots(slots as never, rpc as never, locale)
   const slot: any = slots.entries('conversation.input.permission').find(entry => entry.options.id === 'codingns4dsh-native-approval')!
-  const mounted = slot.component({ ...slot.inject('agy-permission-ui'), t: (key: string) => key, useSession: (select: any) => select({ sessionId: 'agy-permission-ui', running: true, queue: [] }) })
+  const mounted = slot.component({ ...slot.inject('agy-permission-ui'), t: (key: string) => key, select: selectNative,
+    useProjection: (key: string) => key === 'permissions' ? { currentValue: nativePreset } : undefined,
+    useSession: (select: any) => select({ sessionId: 'agy-permission-ui', running: false, queue: [] }) })
   const renderer = createHookRenderer(mounted.type, mounted.props, { checkHookOrder: true })
   try {
     renderer.render(); await new Promise(resolve => setImmediate(resolve))
     const tree: any = renderer.render()
     assert.equal(tree.props['data-codingns-approval'], 'override')
-    assert.equal(tree.props['data-codingns-approval-applies'], 'next-turn')
+    assert.equal(tree.props.children.filter(Boolean).length, 1)
     const control = tree.props.children[0]
     assert.match(control.props.t('confirm.description'), /agy/)
-    assert.equal(control.props.useProjection('permissions').currentValue, 'read-only')
     assert.equal(control.props.usePermissionCatalog((state: any) => state).value.options.length, 4)
-    assert.equal(await control.props.select('manual'), false)
+    assert.equal(control.props.useProjection('permissions').currentValue, 'default')
+    assert.equal(await control.props.select('default'), true)
+    assert.equal(selection.nativeApprovalMode, 'manual')
+    assert.equal(nativePreset, 'danger-full-access')
+    assert.equal(selection.nativeApprovalMode, 'manual')
     assert.equal(await control.props.select('accept-edits'), true)
     assert.equal(selection.nativeApprovalMode, 'accept-edits')
+    assert.equal(await control.props.select('inherit'), false)
     assert.equal(selection.providerSessionId, 'existing')
   } finally { renderer.dispose(); dispose(); removeNative(); removeRoot() }
 })

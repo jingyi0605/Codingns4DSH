@@ -2,7 +2,7 @@ import type { CodingNsCliPermissionState, CodingNsCliSessionConfig, CodingNsNati
 
 const COMMON: readonly CodingNsNativeApprovalMode[] = ['manual', 'auto-review', 'read-only', 'full-access']
 const ZCODE: readonly CodingNsNativeApprovalMode[] = ['manual', 'auto-review', 'read-only', 'accept-edits', 'full-access']
-const ANTIGRAVITY: readonly CodingNsNativeApprovalMode[] = ['auto-review', 'read-only', 'accept-edits', 'full-access']
+const ANTIGRAVITY: readonly CodingNsNativeApprovalMode[] = ['manual', 'accept-edits', 'read-only', 'full-access']
 
 export function nativeApprovalModes(adapterId: string): readonly CodingNsNativeApprovalMode[] {
   return adapterId === 'codex' ? COMMON : adapterId === 'zcode' ? ZCODE : adapterId === 'antigravity' ? ANTIGRAVITY : []
@@ -10,18 +10,15 @@ export function nativeApprovalModes(adapterId: string): readonly CodingNsNativeA
 
 export function isNativeApprovalMode(adapterId: string, value: unknown): value is CodingNsNativeApprovalMode {
   const modes = nativeApprovalModes(adapterId)
-  // Accept the legacy stored value so older preferences remain readable; it is
-  // not offered in the menu; old sessions retain their existing DSH permissions.
   return typeof value === 'string' && modes.length > 0 && (value === 'inherit' || modes.includes(value as CodingNsNativeApprovalMode))
 }
 
 export function resolveNativeApprovalMode(adapterId: string, value: CodingNsNativeApprovalMode | undefined): CodingNsNativeApprovalMode | undefined {
   const modes = nativeApprovalModes(adapterId)
   if (modes.length === 0) return undefined
-  return value !== undefined && modes.includes(value) ? value : adapterId === 'antigravity' ? 'read-only' : 'manual'
+  return value !== undefined && modes.includes(value) ? value : 'manual'
 }
 
-/** 原生模式决定本轮权限；AGY 缺省使用规划，不借用无法回传的 DSH 审批。 */
 export function resolveNativeApprovalPermission(config: CodingNsCliSessionConfig, inherited: CodingNsCliPermissionState | undefined): CodingNsCliPermissionState | undefined {
   // An upgrade or model-only edit is not consent to replace an existing sandbox.
   if (config.adapterId !== 'antigravity' && (config.nativeApprovalMode === undefined || !nativeApprovalModes(config.adapterId).includes(config.nativeApprovalMode))) return inherited

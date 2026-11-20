@@ -77,7 +77,7 @@ export interface CodingNsNativeExternalToolEvent {
   readonly adapterId?: string
 }
 
-export type CodingNsNativeApprovalOutcome = 'allowed-once' | 'rejected' | 'cancelled' | 'unavailable'
+export type CodingNsNativeApprovalOutcome = 'allowed-once' | 'rejected' | 'policy-rejected' | 'cancelled' | 'unavailable'
 
 /** 公共消息投影层交给 DSH 原生权限服务的请求。 */
 export interface CodingNsNativeApprovalRequest {
@@ -781,6 +781,10 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
       const agent = nativeAgent(ctx, sessionId)
       const approval = nativeApproval(ctx)
       if (agent === null || approval === null) return 'unavailable'
+      let policyBlocksApproval = false
+      if (isRecord(agent) && agent.session !== undefined) {
+        try { policyBlocksApproval = approval.effectivePolicy?.(agent.session) === 'never' } catch { }
+      }
       try {
         const outcome = await approval.request({
           agent,
@@ -789,6 +793,7 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
           ...(request.reason ? { reason: request.reason } : {}),
           ...(request.signal === undefined ? {} : { signal: request.signal }),
         })
+        if (outcome === 'rejected' && policyBlocksApproval) return 'policy-rejected'
         return isApprovalOutcome(outcome) ? outcome : 'unavailable'
       } catch {
         return request.signal?.aborted ? 'cancelled' : 'unavailable'
@@ -907,6 +912,7 @@ interface NativeAgentRegistry {
 
 interface NativeApprovalService {
   request(request: Record<string, unknown>): Promise<unknown>
+  effectivePolicy?(session: unknown): unknown
 }
 
 interface NativeUserQuestionService {
@@ -1215,7 +1221,7 @@ function nativeUserQuestions(ctx: Context): NativeUserQuestionService | null {
   return isRecord(value) && typeof value.ask === 'function' ? value as unknown as NativeUserQuestionService : null
 }
 
-function isApprovalOutcome(value: unknown): value is CodingNsNativeApprovalOutcome {
+function isApprovalOutcome(value: unknown): value is Exclude<CodingNsNativeApprovalOutcome, 'policy-rejected'> {
   return value === 'allowed-once' || value === 'rejected' || value === 'cancelled' || value === 'unavailable'
 }
 
