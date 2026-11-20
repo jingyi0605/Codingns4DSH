@@ -80,7 +80,7 @@ The table highlights selected capabilities; availability depends on the Agent an
 | **Kimi CLI** | Approvals, questions, steering, usage | — |
 | **Gemini CLI** | Approvals, questions, usage | Supports native approvals and form questions |
 | **Pi Agent** | Steering, thinking controls, usage | DSH approval and question responses remain unverified in the current protocol |
-| **Codex** | Approvals, questions, steering, usage | Questions appear in DSH's native question panel |
+| **Codex** | Approvals, questions, steering, usage | Questions appear in DSH's native question panel On macOS, the plugin prefers the CLI on PATH and can fall back to the desktop app’s bundled CLI. |
 | **OpenCode** | Skills, approvals, questions, usage | Supports a local CLI or existing server, plus native skills |
 | **Grok Build** | Skills, approvals, questions, usage | Supports native skill discovery and structured questions |
 | **MiniMax Code** | Approvals, questions, usage | Default integration supports interaction; explicit-effort execution does not return interactive responses.<br>Upstream contributor: [chenjunyi000](https://github.com/chenjunyi000)<br>PRs [#6](https://github.com/jingyi0605/Codingns4DSH/pull/6), [#7](https://github.com/jingyi0605/Codingns4DSH/pull/7) |

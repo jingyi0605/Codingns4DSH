@@ -537,5 +537,10 @@ export type CodingNsAgentEvent =
       readonly error?: string
     }
 
+export interface AntigravityContextDetails {
+  readonly compactionThreshold: number | null
+  readonly breakdown: Partial<Record<'systemTokens' | 'toolsTokens' | 'messageTokens', number>>
+}
+
 /** Shared by native drivers and the command adapter. */
 export const NATIVE_COMPACTION_TIMEOUT_CODE = 'CODINGNS_COMPACTION_TIMEOUT'

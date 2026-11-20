@@ -311,7 +311,7 @@ test('终端输入会过滤设备识别回显并支持鼠标与触摸历史滚�
   assert.match(source, /const nextVelocity = clampNumber/u)
   assert.match(source, /松手时沿上一次手势方向继续滚动/u)
   assert.match(source, /Math\.abs\(deltaY\) <= Math\.abs\(deltaX\)/u)
-  const wheelSource = source.match(/const wheel = \(event: WheelEvent\): boolean => \{[\s\S]*?\n\s*\}\n\s*terminal\.attachCustomWheelEventHandler\(wheel\)/u)?.[0]
+  const wheelSource = source.match(/const wheel = \(event: WheelEvent\): boolean => \{[\s\S]*?\r?\n\s*\}\r?\n\s*terminal\.attachCustomWheelEventHandler\(wheel\)/u)?.[0]
   assert.ok(wheelSource, '未找到终端滚轮处理器')
   assert.match(wheelSource, /terminal\.buffer\.active\.baseY > 0/u)
   assert.match(wheelSource, /return true/u)

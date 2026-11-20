@@ -140,6 +140,9 @@ test('Antigravity CLI 额度兜底和分组补全禁用自动更新', async () =
 test('Antigravity 上下文窗口按模型 id 与 AGY 设置里的展示名解析', () => {
   assert.equal(knownAntigravityContextWindow('gemini-4-argon'), 1_048_576)
   assert.equal(knownAntigravityContextWindow('gemini-4-argon-high'), 1_048_576)
+  assert.equal(knownAntigravityContextWindow('gemini-4-neon'), 1_048_576)
+  assert.equal(knownAntigravityContextWindow('gemini-4-neon-xhigh'), 1_048_576)
+  assert.equal(knownAntigravityContextWindow('magpie/tlp/gemini-4-neon'), undefined)
   assert.equal(knownAntigravityContextWindow('magpie/tlp/gemini-4-argon'), undefined)
   assert.equal(knownAntigravityContextWindow('gemini-3.8-flash'), 1_048_576)
   assert.equal(knownAntigravityContextWindow('gemini-3.1-pro'), 1_048_576)
@@ -159,6 +162,8 @@ test('Antigravity provider-default 按 AGY 设置文件里的模型取窗口', (
   const read = (label: string | null) => () => JSON.stringify(label === null ? {} : { model: label })
   assert.equal(knownAntigravityContextWindow(undefined, { readFile: read('Gemini 3.8 Flash (High)') }), 1_048_576)
   assert.equal(knownAntigravityContextWindow('provider-default', { readFile: read('Claude Sonnet 4.6 (Thinking)') }), 250_000)
+  assert.equal(knownAntigravityContextWindow('provider-default', { readFile: read('Gemini 4 Neon (High)') }), 1_048_576)
+  assert.equal(knownAntigravityContextWindow('provider-default', { readFile: read('Unknown Model') }), undefined)
   assert.equal(knownAntigravityContextWindow(undefined, { readFile: () => { throw new Error('ENOENT') } }), 1_048_576)
 })
 
@@ -454,4 +459,45 @@ test('ProviderSubscriptionService 按 AGY 当前设置或会话显式模型选�
   assert.equal(await weeklyRemaining('gemini-4-argon-medium'), 10)
   writeFileSync(settingsPath, JSON.stringify({ model: 'Unknown Model' }))
   assert.equal(await weeklyRemaining('provider-default'), 85)
+})
+
+test('Antigravity Gemini 4 Hydrogen 不应错配到 Gemini 4 Argon，并保留唯一分组 id', async () => {
+  const usageText = [
+    'Gemini Models\tWeekly Limit Remaining\t97%\t2026-11-25T10:09:21Z',
+    'Gemini Models\tFive Hour Limit Remaining\t93%\t2026-11-18T15:09:21Z',
+    'Claude and GPT models\tWeekly Limit Remaining\t100%\t2026-11-25T14:42:28Z',
+    'Claude and GPT models\tFive Hour Limit Remaining\t100%\t2026-11-18T19:42:28Z',
+    'Gemini 4 Argon\tGemini 4 Argon Weekly Limit\t100%\t2026-11-25T14:42:28Z',
+    '',
+  ].join('\n')
+  const service = new AntigravitySubscriptionService({
+    platform: 'win32',
+    readFile: () => { throw new Error('no legacy credential') },
+    resolveCommand: () => 'fake-agy',
+    spawn: stubUsageSpawn(usageText),
+  })
+
+  const hydrogen = await service.read({ modelId: 'gemini-4-hydrogen-high' })
+  assert.equal(hydrogen?.activeGroupId, 'gemini')
+  assert.equal(hydrogen?.primary?.remainingPercent, 93)
+  assert.equal(hydrogen?.secondary?.remainingPercent, 97)
+
+  const argon = await service.read({ modelId: 'gemini-4-argon-high' })
+  assert.equal(argon?.activeGroupId, 'gemini-4')
+  assert.equal(argon?.primary, null)
+  assert.equal(argon?.secondary?.remainingPercent, 100)
+
+  const gpt = await service.read({ modelId: 'gpt-oss-120b-medium' })
+  assert.equal(gpt?.activeGroupId, 'third-party')
+  assert.equal(gpt?.primary?.remainingPercent, 100)
+
+  const withHydrogenPool = await new AntigravitySubscriptionService({
+    platform: 'win32',
+    readFile: () => { throw new Error('no legacy credential') },
+    resolveCommand: () => 'fake-agy',
+    spawn: stubUsageSpawn(usageText + 'Gemini 4 Hydrogen\tGemini 4 Hydrogen Weekly Limit\t64%\t2026-11-25T14:42:28Z\n'),
+  }).read({ modelId: 'gemini-4-hydrogen-high' })
+  assert.equal(new Set(withHydrogenPool?.groups?.map(g => g.id)).size, withHydrogenPool?.groups?.length)
+  assert.equal(withHydrogenPool?.activeGroupId, 'gemini-4-hydrogen')
+  assert.equal(withHydrogenPool?.secondary?.remainingPercent, 64)
 })

@@ -7,6 +7,8 @@ import { createDshCapabilityRegistry } from '../src/dsh-capabilities/routes.js'
 import { createSessionPerformanceAdapter } from '../src/dsh-capabilities/host/session-performance-adapter.js'
 import { createSessionPerformancePresentation } from '../src/dsh-capabilities/client/session-performance-adapter.js'
 import { MagpieContextMeter } from '../src/client/magpie-context-meter.js'
+import { AntigravityContextMeter } from '../src/client/antigravity-context-meter.js'
+import { resolveCodingNsTranslator } from '../src/client/locale.js'
 import { CODEX_PERFORMANCE_PROJECTION } from '../src/shared/codex-performance.js'
 import { ANTIGRAVITY_CONTEXT_PROJECTION, CLAUDE_PERFORMANCE_PROJECTION, GROK_CONTEXT_PROJECTION, GROK_PERFORMANCE_PROJECTION, PI_PERFORMANCE_PROJECTION } from '../src/shared/request-performance.js'
 import { createPresentationSlots } from './fixtures/presentation-slots.ts'
@@ -190,7 +192,7 @@ test('Grok context uses provider occupancy while preserving the native composer 
 
 test('Antigravity composer displays the last model call when total billed input exceeds the window', () => {
   const projection = antigravityContextProjection
-  const route = (provider: string, model: string) => ({ type: 'request/context', data: { provider, model, contextWindow: 1_048_576 } })
+  const route = (provider: string, model: string, contextWindow = 1_048_576) => ({ type: 'request/context', data: { provider, model, contextWindow } })
   const sample = (usage: object) => ({ type: 'assistant/attempt', data: { stream: [{ type: 'chunk', chunk: { type: 'usage', usage } }] } })
   const nativePressure = { pressureTokens: 1_080_000, contextWindow: 1_048_576 }
   const billed = { inputTokens: 180_000, cacheReadTokens: 900_000, outputTokens: 500 }
@@ -199,26 +201,65 @@ test('Antigravity composer displays the last model call when total billed input 
   const Native = (props: any) => {
     const pressure = props.useProjection('contextPressure')
     const breakdown = props.useProjection('contextBreakdown')
-    const percent = pressure?.pressureTokens === undefined ? undefined : Math.min(100, Math.round(pressure.pressureTokens / pressure.contextWindow * 100))
+    const percent = pressure?.pressureTokens === undefined || pressure.contextWindow === undefined
+      ? undefined : Math.min(100, Math.round(pressure.pressureTokens / pressure.contextWindow * 100))
     return createElement('span', undefined, JSON.stringify({ percent, breakdown }))
   }
   slots.register({ name: 'conversation.composer.bar', children: { 'conversation.composer.dock': { kind: 'list', scope: 'session' } } }, Native as never)
   let adapter = 'antigravity'
-  let state = projection.apply(projection.init(), route('codingns-cli-antigravity', 'gemini-4-argon'))
-  const dispose = createSessionPerformancePresentation({ slots }).install(() => adapter, createElement, { useMemo, useSyncExternalStore })
+  let state = projection.apply(projection.init(), route('codingns-cli-antigravity', 'unknown-model', 1_000_000))
+  let magpieSnapshot: any = null
+  const locale = {
+    bind: () => resolveCodingNsTranslator(), getSnapshot: () => ({ active: 'zh', locales: [], revision: 0 }),
+    subscribe: () => () => undefined, register: () => () => undefined,
+  }
+  const dispose = createSessionPerformancePresentation({ slots }).install(() => adapter, createElement, { useMemo, useSyncExternalStore }, {
+    antigravityContext: props => createElement(AntigravityContextMeter, { ...props, locale }),
+    magpieContext: { component: () => null, rpc: {}, useSnapshot: () => magpieSnapshot },
+  })
   try {
     const Composer = slots.entries('conversation.composer.bar')[0]!.component as any
-    const render = () => renderToStaticMarkup(createElement(Composer, {
+    const Dock = slots.entries('codingns.grok-context.conversation.composer.dock')
+      .find(entry => entry.options.id === 'codingns-antigravity-context')!.component
+    const props = {
       sessionId: 'antigravity-session',
       useProjection: (key: string) => key === ANTIGRAVITY_CONTEXT_PROJECTION ? projection.wire.view(state)
         : key === 'contextPressure' ? nativePressure : { systemTokens: 500 },
-    }))
+    }
+    const render = () => renderToStaticMarkup(createElement(Composer, props))
+    const renderDock = () => renderToStaticMarkup(createElement(Dock, props))
+    state = projection.apply(state, sample({ inputTokens: 588_044, cacheReadTokens: 3_293_145 }))
+    assert.deepEqual(projection.wire.view(state), {})
+    assert.doesNotMatch(render(), /percent/)
+    assert.match(renderDock(), /<button[^>]*>上下文<\/button>/u)
+    state = projection.apply(state, sample({ ...billed, contextTokens: 187_713 }))
+    assert.deepEqual(projection.wire.view(state), { pressureTokens: 187_713 })
+    assert.doesNotMatch(render(), /percent/)
+    assert.match(renderDock(), /<button/u)
+    magpieSnapshot = { usedTokens: 20_000, contextWindow: 500_000 }
+    assert.match(render(), /percent&quot;:4/)
+    assert.equal(renderDock(), '')
+    magpieSnapshot = null
+    state = projection.apply(state, sample({ ...billed, contextWindow: 1_000_000, contextTokens: 187_713 }))
+    assert.match(render(), /percent&quot;:19/)
+    assert.match(renderDock(), /data-codingns-antigravity-compaction-anchor/u)
+    assert.doesNotMatch(renderDock(), /<button/u)
+    state = projection.apply(state, route('codingns-cli-antigravity', 'gemini-4-neon', 1_000_000))
+    assert.doesNotMatch(render(), /percent/)
+    state = projection.apply(state, sample({ ...billed, contextTokens: 187_713 }))
+    assert.deepEqual(projection.wire.view(state), { pressureTokens: 187_713, contextWindow: 1_048_576 })
+    assert.match(render(), /percent&quot;:18/)
+    assert.match(renderDock(), /data-codingns-antigravity-compaction-anchor/u)
+    assert.doesNotMatch(renderDock(), /<button/u)
+    state = projection.apply(state, route('codingns-cli-antigravity', 'gemini-4-argon'))
     state = projection.apply(state, sample(billed))
     assert.doesNotMatch(render(), /percent/)
     state = projection.apply(state, sample({ ...billed, contextWindow: 1_048_576, contextTokens: 130_000 }))
     state = projection.apply(state, sample(billed))
     assert.deepEqual(projection.wire.view(state), { pressureTokens: 130_000, contextWindow: 1_048_576 })
     assert.match(render(), /percent&quot;:12/)
+    assert.match(renderDock(), /data-codingns-antigravity-compaction-anchor/u)
+    assert.doesNotMatch(renderDock(), /<button/u)
     assert.doesNotMatch(render(), /systemTokens/)
     state = projection.apply(state, route('codingns-cli-antigravity', 'gemini-4-hydrogen'))
     assert.doesNotMatch(render(), /percent/)
@@ -228,9 +269,11 @@ test('Antigravity composer displays the last model call when total billed input 
     adapter = 'dsh'
     assert.match(render(), /percent&quot;:100/)
     assert.match(render(), /systemTokens/)
+    assert.equal(renderDock(), '')
   } finally {
     dispose()
   }
+  assert.equal(slots.entries('conversation.composer.dock').some(entry => entry.options.id === 'codingns-antigravity-context'), false)
 })
 
 test('Magpie context keeps the native meter and projects Magpie pressure without a duplicate trigger', () => {

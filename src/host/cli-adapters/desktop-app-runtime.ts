@@ -23,6 +23,26 @@ export interface CodingNsDesktopAppRuntime {
   readonly env: Readonly<Record<string, string>>
 }
 
+/** Prefer the user's CLI, then fall back to known macOS app bundle layouts. */
+export function codexCliCandidates(
+  platform: NodeJS.Platform = process.platform,
+  home: string = homedir(),
+): readonly string[] {
+  if (platform !== 'darwin') return ['codex']
+  const candidates = ['codex']
+  for (const directory of ['/Applications', join(home, 'Applications')]) {
+    for (const app of ['Codex.app', 'ChatGPT.app']) {
+      const resources = join(directory, app, 'Contents', 'Resources')
+      candidates.push(
+        join(resources, 'codex-cli', 'bin', 'codex'),
+        join(resources, 'codex-cli', 'CodexCLI.app', 'Contents', 'MacOS', 'codex'),
+        join(resources, 'codex'),
+      )
+    }
+  }
+  return candidates
+}
+
 const ZCODE_ENTRY_SEGMENTS = ['resources', 'glm', 'zcode.cjs'] as const
 const PROVIDER_CONFIG_SEGMENT = ['provider', 'zcode-builtin.json'] as const
 

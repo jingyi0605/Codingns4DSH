@@ -16,6 +16,12 @@ export interface SessionPerformancePresentation {
 
 /** Client-only context UI supplied at the runtime boundary to keep Host bundles React-free. */
 export interface SessionPerformancePresentationOptions {
+  readonly antigravityContext?: ComponentType<{
+    readonly sessionId: string
+    readonly native: boolean
+    readonly pressureTokens?: number
+    readonly contextWindow?: number
+  }>
   readonly magpieContext?: {
     readonly component: ComponentType<any>
     readonly rpc: unknown
@@ -88,7 +94,22 @@ function installGrokContextPresentation(
 ): () => void {
   const magpieContext = options?.magpieContext
   const removeMagpieMeter = magpieContext === undefined ? () => undefined : installMagpieContextDock(slots, magpieContext, element)
+  let removeAntigravityMeter = () => {}
   try {
+    const AntigravityMeter = options?.antigravityContext
+    if (AntigravityMeter !== undefined) {
+      removeAntigravityMeter = slots.inject('conversation.composer.dock', () => slots.register({
+        name: 'conversation.composer.dock', id: 'codingns-antigravity-context', order: -10,
+      }, function AntigravityContextDock(props) {
+        const adapter = useAdapter(props.sessionId)
+        const pressure = props.useProjection(ANTIGRAVITY_CONTEXT_PROJECTION)
+        const magpieSnapshot = magpieContext?.useSnapshot?.(magpieContext.rpc, props.sessionId) ?? null
+        const legacyMagpieReady = magpieContext?.useReady?.(magpieContext.rpc, props.sessionId) === true
+        if (adapter !== 'antigravity' || magpieSnapshot !== null || legacyMagpieReady) return null
+        const native = pressure?.contextWindow !== undefined && pressure.pressureTokens !== undefined
+        return element(AntigravityMeter, { key: props.sessionId, sessionId: props.sessionId, native, ...pressure })
+      }))
+    }
     const removeComposer = installComposerPresentation(owner, slots, Native => function ComposerWithGrokContext(props) {
     const adapter = useAdapter(props.sessionId ?? '')
     const magpieSnapshot = magpieContext?.useSnapshot?.(magpieContext.rpc, props.sessionId) ?? null
@@ -115,8 +136,9 @@ function installGrokContextPresentation(
       },
     })
     }, element, hooks)
-    return () => { removeComposer(); removeMagpieMeter() }
+    return () => { removeComposer(); removeAntigravityMeter(); removeMagpieMeter() }
   } catch (error) {
+    removeAntigravityMeter()
     removeMagpieMeter()
     throw error
   }

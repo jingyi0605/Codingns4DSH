@@ -4,7 +4,8 @@ import test from 'node:test'
 import { PassThrough } from 'node:stream'
 import { AntigravityDriver } from '../data/build/dist/host/cli-adapters/antigravity-driver.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
-import type { CodingNsNativeSessionBridge } from '../data/build/dist/host/native-session-bridge.js'
+import { antigravityContextProjection } from '../data/build/dist/host/cli-adapters/provider-context-projection.js'
+import { createCodingNsNativeSessionBridge, type CodingNsNativeSessionBridge } from '../data/build/dist/host/native-session-bridge.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 import type { CodingNsAgentEvent } from '../src/shared/contracts/cli-adapter.js'
 
@@ -277,7 +278,7 @@ test('Antigravity 通过 stdin stream-json 输入一轮并转换标准事件', a
   assert.deepEqual(chunks, [
     { type: 'session-binding', providerSessionId: 'agy-provider-session' },
     { type: 'text-delta', text: '完成', messageId: 'assistant-antigravity-agy-session-0' },
-    { type: 'usage', inputTokens: 2, outputTokens: 1, cacheReadTokens: 0, uncachedInputTokens: 2, totalTokens: 3, cacheHitRate: 0 },
+    { type: 'usage', inputTokens: 2, outputTokens: 1, cacheReadTokens: 0, uncachedInputTokens: 2, totalTokens: 3, cacheHitRate: 0, contextTokens: 2 },
     { type: 'finish', reason: 'stop' },
   ])
   assert.deepEqual(calls[0], [
@@ -409,6 +410,54 @@ test('Antigravity Argon 用最后一次模型调用计算上下文占用', async
     assert.equal(usage.contextUsageRatio, 0.012398)
     assert.equal(usage.inputTokens, 14_000)
     assert.equal(usage.cacheReadTokens, 11_000)
+  } finally {
+    driver.dispose()
+  }
+})
+
+test('Antigravity 用可信模型容量与最后一次调用的占用计算百分比', async () => {
+  const { driver } = scriptedDriver([[
+    agentResponseUsage(1, { input_tokens: 12_000, output_tokens: 600, cache_read_tokens: 990_000 }),
+    agentResponseUsage(2, { input_tokens: 2_276, output_tokens: 1_634, cache_read_tokens: 185_437 }),
+    resultEvent({ input_tokens: 14_276, output_tokens: 2_234, cache_read_tokens: 1_175_437 }),
+  ]], { resolveDefaultContextWindow: true })
+  try {
+    for (const [modelId, modelContextWindow, expectedWindow, expectedRatio] of [
+      ['gemini-4-neon', undefined, 1_048_576, 0.179017],
+      ['unknown-model', undefined, undefined, undefined],
+      ['magpie/tlp/gemini-4-neon', 1_000_000, 1_000_000, 0.187713],
+    ] as const) {
+      const chunks = await collect(driver, { modelId, modelContextWindow })
+      const usage = chunks.find(chunk => chunk.type === 'usage')
+      assert.equal(usage.inputTokens, 14_276)
+      assert.equal(usage.cacheReadTokens, 1_175_437)
+      assert.equal(usage.contextTokens, 187_713)
+      assert.equal(usage.contextWindow, expectedWindow)
+      assert.equal(usage.contextUsageRatio, expectedRatio)
+
+      const events = [
+        { type: 'turn/start', seq: 0, data: { turn: 1 } },
+        { type: 'step/start', seq: 1, data: { turn: 1, step: 1 } },
+        { type: 'request/context', seq: 2, data: { provider: 'codingns-cli-antigravity', model: modelId, contextWindow: 1_000_000 } },
+      ]
+      const session = {
+        snapshotEvents: () => [...events],
+        append(type: string, data: (typeof events)[number]['data']) {
+          const event = { type, data, seq: events.length }
+          events.push(event)
+          return event
+        },
+      }
+      const nativeSessions = createCodingNsNativeSessionBridge({
+        get: (name: string) => name === 'sessions' ? { get: () => session, list: () => [session] } : undefined,
+      } as never)
+      const projector = new CodingNsDshMessageProjector({ adapterId: 'antigravity', sessionId: 'agy-session', modelId, nativeSessions })
+      for (const chunk of chunks) await projector.push(chunk)
+      const projection = antigravityContextProjection
+      assert.deepEqual(projection.wire.view(events.reduce(projection.apply, projection.init())), {
+        pressureTokens: 187_713, ...(expectedWindow === undefined ? {} : { contextWindow: expectedWindow }),
+      })
+    }
   } finally {
     driver.dispose()
   }

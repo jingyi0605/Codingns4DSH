@@ -3,7 +3,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { spawn, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import type { CliSubscriptionCredits, CliSubscriptionProvider, CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekBalance, DeepseekUsage, Sub2ApiDailyUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../../shared/contracts/subscription.js'
+import type { CliSubscriptionCredits, CliSubscriptionGroup, CliSubscriptionGroupWindow, CliSubscriptionProvider, CliSubscriptionQuotaWindowKind, CliSubscriptionResetOutcome, CliSubscriptionResetResult, CliSubscriptionUsage, CliSubscriptionWindow, DeepseekBalance, DeepseekUsage, Sub2ApiDailyUsage, Sub2ApiModelUsage, Sub2ApiUsage, Sub2ApiUsagePoint } from '../../shared/contracts/subscription.js'
 import { identifyModelProvider, MODEL_PROVIDER_DEFINITIONS, normalizeProviderBaseUrl, thirdPartyProvider, type ProviderDefinition } from './provider-registry.js'
 import { OfficialProviderSubscriptionService, type OfficialProviderSubscriptionOptions } from './official-provider-subscription.js'
 import { ZcodeSubscriptionService, type ZcodeSubscriptionOptions } from './zcode-subscription.js'
@@ -78,7 +78,7 @@ export class ProviderSubscriptionService {
     // 否则自定义上游只要能返回余额，就会在官方读取器执行前截获结果。
     if (adapterId === 'grok') return this.readGrokFirst(providerId)
     if (adapterId === 'codex' || adapterId === 'claude-code' || adapterId === 'opencode' || adapterId === 'command-code' || adapterId === 'codebuddy' || adapterId === 'workbuddy') {
-      return this.readSub2ApiFirst(adapterId, providerId)
+      return this.readSub2ApiFirst(adapterId, providerId, modelId)
     }
     switch (adapterId) {
       case 'kimi': return this.kimi.read().then((usage) => usage === null ? null : withProvider(usage, identifyModelProvider({ name: 'kimi-coding' }), ''))
@@ -117,11 +117,11 @@ export class ProviderSubscriptionService {
     return official === null || matchedProvider === undefined ? official : withProvider(official, matchedProvider, configuredSource?.baseUrl)
   }
 
-  private async readSub2ApiFirst(adapterId: string, providerId?: string): Promise<CliSubscriptionUsage | null> {
+  private async readSub2ApiFirst(adapterId: string, providerId?: string, modelId?: string): Promise<CliSubscriptionUsage | null> {
     // 统一分类后只调用一个读取器；已分类来源临时失败时不切换协议。
     const customUpstream = await this.readCustomUpstream(adapterId, providerId)
     if (customUpstream !== null) return customUpstream.usage
-    if (adapterId === 'codex') return this.codex.read().then((usage) => usage === null ? null : withProvider(usage, identifyModelProvider({ name: 'openai-codex' }), ''))
+    if (adapterId === 'codex') return this.codex.read(modelId).then((usage) => usage === null ? null : withProvider(usage, identifyModelProvider({ name: 'openai-codex' }), ''))
     if (adapterId === 'claude-code') return this.claudeCode.read().then((usage) => usage === null ? null : withProvider(usage, identifyModelProvider({ name: 'anthropic' }), ''))
     if (adapterId === 'grok') return this.grok.read().then((usage) => usage === null ? null : withProvider(usage, identifyModelProvider({ name: 'xai' }), ''))
     if (adapterId === 'command-code') return this.commandCode?.read() ?? null
@@ -465,7 +465,7 @@ export class CodexSubscriptionService implements SubscriptionReader {
     this.homeDirectory = options.homeDirectory ?? (process.env.CODEX_HOME ?? join(homedir(), '.codex'))
   }
 
-  async read(): Promise<CliSubscriptionUsage | null> {
+  async read(modelId?: string): Promise<CliSubscriptionUsage | null> {
     if (hasThirdPartyCodexConfig(this.homeDirectory)) return null
     try {
       this.command ??= (await detectBinary({ binaries: this.binaries, spawnSync: this.runSpawnSync })).command
@@ -477,7 +477,7 @@ export class CodexSubscriptionService implements SubscriptionReader {
         await rpc.request('initialize', { clientInfo: { name: 'codingns4dsh', version: '0.1.1' }, capabilities: {} }, { signal: controller.signal })
         rpc.notify('initialized', {})
         const result = await rpc.request('account/rateLimits/read', {}, { signal: controller.signal })
-        return normalizeCodexSnapshot(result)
+        return normalizeCodexSnapshot(result, modelId)
       } finally {
         clearTimeout(timer)
         rpc.dispose()
@@ -967,24 +967,113 @@ function scanGrokProtobuf(bytes: Uint8Array, depth: number, path: readonly numbe
   return nextOrder
 }
 
-function normalizeCodexSnapshot(value: unknown): CliSubscriptionUsage | null {
+interface CodexBucketEntry {
+  readonly id: string
+  readonly displayName: string
+  readonly limitId: string
+  readonly normalModelSlug: string | null
+  readonly source: Record<string, any>
+  readonly primary: CliSubscriptionWindow | null
+  readonly secondary: CliSubscriptionWindow | null
+}
+
+function normalizeCodexSnapshot(value: unknown, modelId?: string): CliSubscriptionUsage | null {
   const root = recordValue(value)
-  const source = recordValue(root?.rateLimits ?? root?.rate_limits) ?? root
+  const buckets = recordValue(root?.rateLimitsByLimitId ?? root?.rate_limits_by_limit_id)
+  const entries = readCodexBucketEntries(buckets)
+  const matched = entries.length > 0 ? selectCodexBucket(entries, modelId) : null
+  const fallbackSource = recordValue(buckets?.codex) ?? recordValue(root?.rateLimits ?? root?.rate_limits) ?? root
+  const source = matched?.source ?? fallbackSource
   if (source === null) return null
-  const primary = normalizeRateWindow(source.primary)
-  const secondary = normalizeRateWindow(source.secondary)
+  const primary = matched?.primary ?? normalizeRateWindow(source.primary)
+  const secondary = matched?.secondary ?? normalizeRateWindow(source.secondary)
   if (primary === null && secondary === null) return null
+  const groups = entries.length > 1 ? entries.map(toCodexContractGroup) : undefined
+  const activeGroupId = matched?.id ?? entries[0]?.id
   return {
     authenticated: true,
     planType: textValue(source.planType ?? source.plan_type),
     primary,
     secondary,
     monthly: null,
+    ...(groups === undefined || activeGroupId === undefined ? {} : { groups, activeGroupId }),
     rateLimitReachedType: textValue(source.rateLimitReachedType ?? source.rate_limit_reached_type),
     resetCredits: normalizeCodexResetCredits(root?.rateLimitResetCredits ?? root?.rate_limit_reset_credits),
     credits: normalizeCodexCredits(source.credits),
     capturedAt: new Date().toISOString(),
   }
+}
+
+function readCodexBucketEntries(buckets: Record<string, any> | null): readonly CodexBucketEntry[] {
+  if (buckets === null) return []
+  const usedIds = new Set<string>()
+  const entries: CodexBucketEntry[] = []
+  for (const [key, raw] of Object.entries(buckets)) {
+    const source = recordValue(raw)
+    if (source === null) continue
+    const primary = normalizeRateWindow(source.primary)
+    const secondary = normalizeRateWindow(source.secondary)
+    if (primary === null && secondary === null) continue
+    const limitId = textValue(source.limitId ?? source.limit_id) ?? key
+    const normalModelSlug = textValue(source.normalModelSlug ?? source.normal_model_slug)
+    const limitName = textValue(source.limitName ?? source.limit_name)
+    const baseId = limitId === 'codex' ? 'codex' : codexBucketSlug(limitId) || 'other'
+    const id = !usedIds.has(baseId) ? baseId : `${baseId}-${usedIds.size}`
+    usedIds.add(id)
+    entries.push({
+      id,
+      displayName: limitName ?? normalModelSlug ?? (limitId === 'codex' ? 'Codex' : limitId),
+      limitId,
+      normalModelSlug,
+      source,
+      primary,
+      secondary,
+    })
+  }
+  return entries
+}
+
+function selectCodexBucket(entries: readonly CodexBucketEntry[], modelId: string | undefined): CodexBucketEntry {
+  const rawModel = modelId?.trim() ?? ''
+  const slash = rawModel.lastIndexOf('/')
+  const bare = (slash >= 0 ? rawModel.slice(slash + 1) : rawModel).toLowerCase()
+  const modelSlug = bare === '' || bare === 'provider-default' ? '' : codexBucketSlug(bare)
+  if (modelSlug !== '') {
+    const matched = entries.find((entry) => {
+      const slug = entry.normalModelSlug === null ? '' : codexBucketSlug(entry.normalModelSlug)
+      if (slug !== '' && (modelSlug === slug || modelSlug.startsWith(`${slug}-`))) return true
+      if (entry.limitId !== 'codex') {
+        const limitSlug = codexBucketSlug(entry.limitId)
+        const nameSlug = codexBucketSlug(entry.displayName)
+        if ((limitSlug !== '' && modelSlug === limitSlug) || (nameSlug !== '' && modelSlug === nameSlug)) return true
+      }
+      return false
+    })
+    if (matched !== undefined) return matched
+  }
+  return entries.find((entry) => entry.limitId === 'codex' || entry.id === 'codex') ?? entries[0]!
+}
+
+function toCodexContractGroup(entry: CodexBucketEntry): CliSubscriptionGroup {
+  const windows: CliSubscriptionGroupWindow[] = []
+  if (entry.primary !== null) {
+    windows.push({ kind: codexWindowKind(entry.primary.windowDurationMins, 'five-hour'), label: null, window: entry.primary })
+  }
+  if (entry.secondary !== null) {
+    windows.push({ kind: codexWindowKind(entry.secondary.windowDurationMins, 'weekly'), label: null, window: entry.secondary })
+  }
+  return { id: entry.id, displayName: entry.displayName, windows }
+}
+
+function codexWindowKind(durationMins: number | null, fallback: CliSubscriptionQuotaWindowKind): CliSubscriptionQuotaWindowKind {
+  if (durationMins === 300) return 'five-hour'
+  if (durationMins === 10080) return 'weekly'
+  if (durationMins === 43200) return 'monthly'
+  return fallback
+}
+
+function codexBucketSlug(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9.]+/gu, '-').replace(/^-+|-+$/gu, '')
 }
 
 /** Codex 重置券摘要；availableCount 权威，明细行可能被上游截断。 */

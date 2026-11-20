@@ -22,6 +22,7 @@ import { fetchSessionAdapters, replaceSessionAdapters, sessionAdapterId, subscri
 import { createDshCapabilityRegistry } from '../../dsh-capabilities/routes.js'
 import type { SessionPerformancePresentation } from '../../dsh-capabilities/client/session-performance-adapter.js'
 import { MagpieContextMeter } from '../magpie-context-meter.js'
+import { AntigravityContextMeter } from '../antigravity-context-meter.js'
 import { useMagpieContext } from '../magpie-context-store.js'
 import { providerIconUrl } from '../provider-icons.js'
 import { notifyAdapterCatalogChanged, subscribeAdapterCatalogChanged, watchAdapterCatalog } from '../adapter-catalog-watch.js'
@@ -111,7 +112,7 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
     requires: [{ capability: 'session.external-performance', required: false, fallback: 'degrade' }],
     ui: {
       label: 'External Agent integration',
-      description: 'View installed external Agents, versions, command paths, available models, and enable them independently. External Agent context panels keep only the occupancy percentage and totals.',
+      description: 'View installed external Agents, versions, command paths, available models, and enable them independently.',
       labelKey: 'feature.cliAdapters.label',
       descriptionKey: 'feature.cliAdapters.description',
       order: 30,
@@ -137,6 +138,7 @@ export const cliAdaptersFeature: CodingNsClientFeatureModule = {
       if (performance !== undefined) context.resources.add(performance.install(
         sessionId => useSyncExternalStore(subscribeSessionAdapters,
           () => sessionAdapterId(sessionId), () => sessionAdapterId(sessionId)), createElement, { useMemo, useSyncExternalStore }, {
+          antigravityContext: props => createElement(AntigravityContextMeter, { ...props, locale: context.services.locale, rpc: context.services.rpc }),
           magpieContext: {
             component: MagpieContextMeter,
             rpc: context.services.rpc,
