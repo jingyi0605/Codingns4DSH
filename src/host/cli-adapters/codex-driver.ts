@@ -14,6 +14,7 @@ import { isQuestionEvent, questionAnswersRecord, readAgentQuestions } from './in
 import { codexBridgeArgs, codexBridgeDeveloperInstructions, codexComputerUseLaunchSettings, teamBridgeToken, type CodexComputerUseMode, type CodexComputerUseServerConfig } from '../cli-bridge/injections.js'
 import { CodexFileCitationNormalizer } from './codex-file-citations.js'
 import { CodexPerformanceTracker } from './codex-performance.js'
+import { codexCliCandidates } from './desktop-app-runtime.js'
 
 export interface CodexAppServerDriverOptions {
   readonly now?: () => number
@@ -207,7 +208,7 @@ export class CodexAppServerDriver implements CodingNsCliDriver {
   private readonly startingSessions = new Map<string, Promise<CodexSession>>()
 
   constructor(options: CodexAppServerDriverOptions = {}) {
-    this.binaries = options.binaries ?? ['codex']
+    this.binaries = options.binaries ?? codexCliCandidates()
     this.runSpawnSync = options.spawnSync ?? spawnSync
     this.runSpawn = options.spawn ?? spawn
     this.now = options.now ?? Date.now
