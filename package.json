@@ -22,6 +22,10 @@
       "types": "./data/build/dist/host/index.d.ts",
       "default": "./data/build/dist/host/index.js"
     },
+    "./directory-picker-pin": {
+      "types": "./data/build/dist/host/directory-picker-browse-pin.d.ts",
+      "default": "./data/build/dist/host/directory-picker-browse-pin.js"
+    },
     "./typert": {
       "types": "./data/build/dist/typert.host.d.ts",
       "default": "./data/build/dist/typert.host.js"
