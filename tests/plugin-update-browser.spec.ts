@@ -22,7 +22,7 @@ test('isolated settings browser exercises real HTTP authorization, confirmation,
   await build({ config: false, entry: ['tests/fixtures/plugin-update-panel.ts'], outDir, platform: 'browser', format: 'iife',
     dts: false, sourcemap: false, clean: true, define: { 'process.env.NODE_ENV': '"production"' },
     deps: { alwaysBundle: () => true, onlyBundle: false }, css: { inject: false } })
-  const version = '0.2.2-rc.10'
+  const version = '0.2.2-rc.11'
   const longVersion = `0.2.4-rc.${'a'.repeat(80)}`
   const incompatible = '0.2.3-rc.1'
   const commit = 'a'.repeat(40)

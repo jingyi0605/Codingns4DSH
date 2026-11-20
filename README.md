@@ -11,7 +11,7 @@
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.2-rc.9`** · DSH 最低版本 **`0.2.1-alpha.2`**（已验证 `0.2.2-rc.5`；更新版本仅告警，不阻止安装或运行）· Node **`>= 24.9`** · macOS / Linux / Windows
+**当前版本 `@jingyi0605/codingns4dsh@0.2.2-rc.10`** · DSH 最低版本 **`0.2.1-alpha.2`**（已验证 `0.2.2-rc.5`；更新版本仅告警，不阻止安装或运行）· Node **`>= 24.9`** · macOS / Linux / Windows
 
 本次 DSH 验证范围为 macOS Stage0 Web 的原生会话、拒答计费、Webhook、投影回放及设置，以及真实 Codex / Claude CLI 配合本地模型协议夹具的生命周期。Desktop、Windows/Linux 实机、公网 Relay 和真实模型服务尚未验证；详见 [验收记录](docs/开发记录/20261118-DSH-rc4兼容升级与Stage0验收.md)。
 
@@ -257,7 +257,7 @@ DSH 原生会话的翻译默认关闭，可在会话模型选择菜单中开启�
 ### 使用内置 Web 配置
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.2-rc.9
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.2-rc.10
 dsh web
 ```
 
@@ -267,7 +267,7 @@ dsh web
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.2-rc.9
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.2-rc.10
 dsh codingns
 ```
 

@@ -11,7 +11,7 @@
 
 [简体中文](README.md) · **English**
 
-**Current release `@jingyi0605/codingns4dsh@0.2.2-rc.9`** · DSH minimum **`0.2.1-alpha.2`** (tested with `0.2.2-rc.4`; newer versions warn but do not block installation or operation) · Node **`>= 24.9`** · macOS / Linux / Windows
+**Current release `@jingyi0605/codingns4dsh@0.2.2-rc.10`** · DSH minimum **`0.2.1-alpha.2`** (tested with `0.2.2-rc.4`; newer versions warn but do not block installation or operation) · Node **`>= 24.9`** · macOS / Linux / Windows
 
 DSH verification covers macOS Stage0 Web native sessions, refusal accounting, Webhooks, projection replay and settings, plus installed Codex / Claude CLI lifecycles against local model protocol fixtures. Desktop, Windows/Linux machines, public Relay and live model services remain unverified. See the [acceptance record](docs/开发记录/20261118-DSH-rc4兼容升级与Stage0验收.md).
 
@@ -238,7 +238,7 @@ The account menu shows login status, access method, connection latency and Host 
 ### Use the Built-in Web Profile
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.2-rc.9
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.2-rc.10
 dsh web
 ```
 
@@ -248,7 +248,7 @@ Create a separate environment from the built-in Web profile:
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.2-rc.9
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.2-rc.10
 dsh codingns
 ```
 
