@@ -8,6 +8,7 @@ import {
   TMUX_SERVER_SOCKET_NAME,
   TmuxTerminalBackend,
   launchdLabel,
+  launchdPlist,
   tmuxSessionName,
 } from '../data/build/dist/host/terminal/backends/tmux-backend.js'
 
@@ -599,10 +600,15 @@ test('macOS：服务器未运行时通过 launchd 拉起，且先于直接 start
     assert.ok(bootstrap < tmuxCommandIndex(runner.calls, 'set-option'))
     assert.ok(tmuxCommandIndex(runner.calls, 'set-option') < tmuxCommandIndex(runner.calls, 'new-session'))
     const plist = readFileSync(join(directory, `${label}.plist`), 'utf8')
-    assert.match(plist, /<key>AbandonProcessGroup<\/key><true\/>/u)
-    assert.ok(plist.includes(`<string>${socket}</string>`))
-    assert.ok(plist.includes(`<string>${join(directory, 'tmux.conf')}</string>`))
-    assert.match(plist, /<string>start-server<\/string>/u)
+    // 必须由苹果自带的 osascript 作为 job 的第一个可执行文件，tmux 以前台模式运行；
+    // 直接让 launchd 跑 tmux 会让里面的第三方程序失去局域网访问。
+    assert.match(plist, /<array><string>\/usr\/bin\/osascript<\/string><string>-e<\/string>/u)
+    assert.match(plist, /do shell script/u)
+    assert.match(plist, / '-D' /u, 'tmux 必须前台运行，osascript 才会一直作为责任进程存活')
+    assert.ok(plist.includes(socket))
+    assert.ok(plist.includes(join(directory, 'tmux.conf')))
+    assert.doesNotMatch(plist, /start-server/u)
+    assert.doesNotMatch(plist, /AbandonProcessGroup/u)
     assert.doesNotMatch(plist, /KeepAlive/u)
     // The backend simulates macOS, but Windows stat cannot report POSIX file permissions.
     if (process.platform !== 'win32') {
@@ -611,6 +617,28 @@ test('macOS：服务器未运行时通过 launchd 拉起，且先于直接 start
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('launchd plist 对路径中的引号、空格和 XML 特殊字符做转义', () => {
+  const server = {
+    directory: '/tmp/a b',
+    socket: '/tmp/a b/it\'s "x" & <y>.sock',
+    config: '/tmp/a b/tmux.conf',
+    exitDirectory: '/tmp/a b/exit',
+  }
+  const plist = launchdPlist('local.test', '/opt/homebrew/bin/tmux', server)
+  assert.doesNotMatch(plist, /<y>|& /u, 'XML 特殊字符必须转义')
+  // 还原 XML 与 AppleScript 两层转义后，得到的应是可执行的 shell 命令。
+  const script = /<string>(do shell script .*)<\/string><\/array>/u.exec(plist)?.[1]
+  assert.ok(script)
+  const unxml = script.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
+  const literal = /^do shell script "(.*)"$/u.exec(unxml)?.[1]
+  assert.ok(literal)
+  const shell = literal.replaceAll('\\"', '"').replaceAll('\\\\', '\\')
+  assert.equal(
+    shell,
+    `exec '/opt/homebrew/bin/tmux' '-D' '-S' '/tmp/a b/it'\\''s "x" & <y>.sock' '-f' '/tmp/a b/tmux.conf' >/dev/null 2>&1`,
+  )
 })
 
 test('macOS：服务器已在运行时不碰 launchd，也不重写 plist', async () => {
