@@ -449,11 +449,15 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
   }
 
   /**
-   * macOS：让 launchd 而不是 Desktop 进程成为 tmux 服务器的启动者。
+   * macOS：让 launchd 拉起 tmux 服务器，并且必须经由 osascript 包装（见 `launchdPlist`）。
    *
-   * macOS 的“本地网络”权限按启动者（责任进程）判定。服务器由 Desktop 直接拉起时，
-   * Desktop 彻底退出后服务器和里面的 Shell 失去有效归属，再访问局域网地址会被拒绝。
-   * 交给 launchd 后，服务器的归属不再随 Desktop 的启动和退出变化。
+   * macOS 的“本地网络”权限按责任进程判定，责任进程在进程创建时就固定了。
+   * - 由 Desktop 直接拉起：责任进程是 Desktop 当次的进程，Desktop 彻底退出后服务器和里面
+   *   的 Shell 失去归属，第三方程序再连局域网会被拒绝。
+   * - 由 launchd 直接拉起 tmux：tmux 自己是责任进程，但它是没有应用标识的第三方二进制，
+   *   同样被拒，而且不会弹授权框。
+   * - 由 launchd 经 osascript 拉起：责任进程是苹果自带的 osascript，被豁免，且不随
+   *   Desktop 的启动和退出变化。
    *
    * 服务器已经存活时什么都不做，沿用现有 socket、配置和会话。任何一步失败都返回，
    * 由调用方按旧方式直接拉起，终端不会因此不可用。
@@ -512,10 +516,16 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
     const serverPid = Number.parseInt(pidResult.stdout.trim(), 10)
     let xpcServiceName: string | null = null
     let responsibleBundle: string | null = null
+    let parentCommand: string | null = null
     if (Number.isSafeInteger(serverPid) && serverPid > 0) {
       const env = await this.runner.run('ps', ['-E', '-p', String(serverPid), '-o', 'command='])
       xpcServiceName = /(?:^|\s)XPC_SERVICE_NAME=(\S+)/u.exec(env.stdout)?.[1] ?? null
       responsibleBundle = /(?:^|\s)__CFBundleIdentifier=(\S+)/u.exec(env.stdout)?.[1] ?? null
+      // 经 osascript 拉起时父进程应是 /usr/bin/osascript；直接拉起时父进程是 1（守护化后）。
+      const parentPid = Number.parseInt((await this.runner.run('ps', ['-o', 'ppid=', '-p', String(serverPid)])).stdout.trim(), 10)
+      if (Number.isSafeInteger(parentPid) && parentPid > 0) {
+        parentCommand = (await this.runner.run('ps', ['-o', 'command=', '-p', String(parentPid)])).stdout.trim().slice(0, 80) || null
+      }
     }
     const label = launchdLabel(this.server.socket)
     this.recordLaunchEvent('server-ready', {
@@ -523,6 +533,7 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
       serverPid: Number.isSafeInteger(serverPid) ? serverPid : null,
       xpcServiceName,
       responsibleBundle,
+      parentCommand,
       launcher: xpcServiceName === label ? 'launchd' : xpcServiceName === null ? 'unknown' : 'host-direct',
     })
   }
@@ -611,11 +622,22 @@ function xmlEscape(value: string): string {
 }
 
 /**
- * `start-server` 会 fork 出守护进程后立刻退出，`AbandonProcessGroup` 让 launchd
- * 不去清理这个守护进程；不设 KeepAlive，服务器退出后由下一次 create 重新拉起。
+ * launchd job 的启动命令：`/usr/bin/osascript` 用 `do shell script` 在前台运行 `tmux -D`。
+ *
+ * 为什么不能直接让 launchd 跑 `tmux start-server`：macOS 的“本地网络”隐私按责任进程
+ * 判定，苹果自带的二进制豁免，第三方二进制需要授权。launchd 直接拉起的 tmux 是没有
+ * 应用标识的第三方进程，系统不会弹授权框，里面的 node/bun 等连局域网会被静默拒绝
+ * （EHOSTUNREACH / ECONNREFUSED），`nc`/`ssh`/`ping` 这类苹果自带工具则不受影响。
+ *
+ * 让 osascript（苹果自带）做第一个可执行文件，它的子进程以它为责任进程而被豁免。
+ * `tmux -D` 让服务器留在前台、不 fork，osascript 才会一直活着作为责任进程；服务器退出
+ * 后 job 随之结束。已在 macOS 27.2 上验证；`/bin/sh -c exec` 之类的包装无效。
+ * 不设 KeepAlive：服务器退出后由下一次 create 重新拉起。
  */
 export function launchdPlist(label: string, tmuxPath: string, server: TmuxServerPaths): string {
-  const args = [tmuxPath, '-S', server.socket, '-f', server.config, 'start-server']
+  const shellCommand = `exec ${[tmuxPath, '-D', '-S', server.socket, '-f', server.config].map(shellQuote).join(' ')} >/dev/null 2>&1`
+  const script = `do shell script "${shellCommand.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
+  const args = ['/usr/bin/osascript', '-e', script]
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
@@ -623,7 +645,6 @@ export function launchdPlist(label: string, tmuxPath: string, server: TmuxServer
     `<key>Label</key><string>${xmlEscape(label)}</string>`,
     `<key>ProgramArguments</key><array>${args.map((arg) => `<string>${xmlEscape(arg)}</string>`).join('')}</array>`,
     '<key>RunAtLoad</key><true/>',
-    '<key>AbandonProcessGroup</key><true/>',
     '</dict></plist>',
     '',
   ].join('\n')
