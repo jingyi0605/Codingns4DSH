@@ -33,7 +33,7 @@ import { dshPopupSurfaceStyle, dshThemeColor } from './theme.js'
 import type { SlotRegistry } from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
-import { loadCliSessionConfig, rememberCliSessionConfig } from './cli-session-config-cache.js'
+import { loadCliSessionConfig, rememberCliSessionConfig, trackCliSessionConfigUpdate } from './cli-session-config-cache.js'
 import { uiFontSize } from './font-scale.js'
 import { DSH_NATIVE_SESSION_ADAPTER_ID, supportsSessionTranslation } from '../shared/contracts/session-translation.js'
 import { readNativeTranslationDefault, subscribeNativeTranslationDefault } from './native-translation-default.js'
@@ -253,12 +253,10 @@ function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [S
   const update = (next: SelectionState): Promise<boolean> => {
     if (sessionId === undefined || sessionId.trim() === '') return Promise.resolve(false)
     const previous = selections.get(sessionId) ?? selection
-    publishSelection(sessionId, next)
     const revision = (selectionRevisions.get(sessionId) ?? 0) + 1
     selectionRevisions.set(sessionId, revision)
     const promise = callCliRpc<CodingNsCliSessionConfig>(rpc, 'session/set', { sessionId, ...next })
-    selectionUpdates.set(sessionId, { revision, promise })
-    return promise
+    const settled = promise
       .then((normalized) => {
         rememberCliSessionConfig(rpc, sessionId, normalized)
         if (selectionUpdates.get(sessionId)?.revision === revision) publishSelection(sessionId, normalized)
@@ -271,6 +269,10 @@ function useSelection(sessionId: string | undefined, rpc: CodingNsRpcClient): [S
       .finally(() => {
         if (selectionUpdates.get(sessionId)?.revision === revision) selectionUpdates.delete(sessionId)
       })
+    selectionUpdates.set(sessionId, { revision, promise })
+    trackCliSessionConfigUpdate(rpc, sessionId, promise)
+    publishSelection(sessionId, next)
+    return settled
   }
   return [selection, update]
 }

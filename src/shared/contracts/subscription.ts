@@ -63,6 +63,8 @@ export interface CliSubscriptionUsage {
   readonly monthly: CliSubscriptionWindow | null
   /** 按模型分组的多窗口额度；读取器只能给出单窗口时保持 undefined。 */
   readonly groups?: readonly CliSubscriptionGroup[]
+  /** 多分组额度中当前会话模型对应的分组 id。 */
+  readonly activeGroupId?: string
   readonly rateLimitReachedType: string | null
   /** 官方 Codex 的可囤积重置券；明细行的 expiresAt 为 Unix 秒。读取器不支持时为 null。 */
   readonly resetCredits: null | {

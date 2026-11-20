@@ -18,6 +18,7 @@ export interface LoadCliSessionConfigOptions {
 }
 
 const caches = new WeakMap<CodingNsRpcClient, Map<string, CacheEntry | Pending>>()
+const pendingUpdates = new WeakMap<CodingNsRpcClient, Map<string, Promise<void>>>()
 
 /**
  * 读取会话当前 Agent/模型配置。
@@ -33,6 +34,26 @@ export function loadCliSessionConfig(
 ): Promise<CodingNsCliSessionConfig> {
   const normalized = sessionId.trim()
   if (normalized === '') return Promise.resolve({ adapterId: 'dsh' })
+  if (updateMapFor(rpc).has(normalized)) {
+    return awaitPendingUpdates(rpc, normalized).then(() => loadCliSessionConfigImmediate(rpc, normalized, options))
+  }
+  return loadCliSessionConfigImmediate(rpc, normalized, options)
+}
+
+async function awaitPendingUpdates(rpc: CodingNsRpcClient, normalized: string): Promise<void> {
+  const map = updateMapFor(rpc)
+  while (true) {
+    const pending = map.get(normalized)
+    if (pending === undefined) return
+    await pending
+  }
+}
+
+function loadCliSessionConfigImmediate(
+  rpc: CodingNsRpcClient,
+  normalized: string,
+  options: LoadCliSessionConfigOptions,
+): Promise<CodingNsCliSessionConfig> {
   const cache = cacheFor(rpc)
   const existing = cache.get(normalized)
   // A forced read follows a model/provider change. Joining an older in-flight
@@ -61,11 +82,35 @@ export function loadCliSessionConfig(
   return request
 }
 
+/** 登记在途的 session/set，避免强制读取抢先读到切换前的旧模型。 */
+export function trackCliSessionConfigUpdate(
+  rpc: CodingNsRpcClient,
+  sessionId: string,
+  promise: Promise<unknown>,
+): void {
+  const normalized = sessionId.trim()
+  if (normalized === '') return
+  const map = updateMapFor(rpc)
+  const tracked: Promise<void> = promise.then(() => undefined, () => undefined).finally(() => {
+    if (map.get(normalized) === tracked) map.delete(normalized)
+  })
+  map.set(normalized, tracked)
+}
+
 /** 用户刚写入 Agent/模型后立即更新共享快照。 */
 export function rememberCliSessionConfig(rpc: CodingNsRpcClient, sessionId: string, value: CodingNsCliSessionConfig): void {
   const normalized = sessionId.trim()
   if (normalized === '') return
   cacheFor(rpc).set(normalized, { value, loadedAt: Date.now() })
+}
+
+function updateMapFor(rpc: CodingNsRpcClient): Map<string, Promise<void>> {
+  let map = pendingUpdates.get(rpc)
+  if (map === undefined) {
+    map = new Map()
+    pendingUpdates.set(rpc, map)
+  }
+  return map
 }
 
 function cacheFor(rpc: CodingNsRpcClient): Map<string, CacheEntry | Pending> {

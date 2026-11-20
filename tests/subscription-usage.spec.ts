@@ -375,3 +375,47 @@ test('用量结果只在刷新间隔内复用', () => {
   assert.equal(isSubscriptionUsageFresh(now + 1_000, now, 5), false)
   assert.equal(isSubscriptionUsageFresh(Number.NaN, now, 5), false)
 })
+
+test('Codex 多额度桶优先读取 codex 并在指定模型时切换到对应槽位', async () => {
+  await withoutOpenAiBaseUrl(async () => {
+    const payload = {
+      rateLimits: {
+        limitId: 'codex',
+        limitName: null,
+        normalModelSlug: null,
+        planType: 'pro',
+        primary: { usedPercent: 20, windowDurationMins: 300 },
+        secondary: { usedPercent: 40, windowDurationMins: 10080 },
+      },
+      rateLimitsByLimitId: {
+        codex: {
+          limitId: 'codex',
+          limitName: null,
+          normalModelSlug: null,
+          planType: 'pro',
+          primary: { usedPercent: 20, windowDurationMins: 300 },
+          secondary: { usedPercent: 40, windowDurationMins: 10080 },
+        },
+        codex_spark: {
+          limitId: 'codex_spark',
+          limitName: 'GPT-5.3-Codex-Spark',
+          normalModelSlug: 'gpt-5.3-codex-spark',
+          planType: 'pro',
+          primary: { usedPercent: 5, windowDurationMins: 300 },
+          secondary: { usedPercent: 10, windowDurationMins: 10080 },
+        },
+      },
+    }
+    const service = createCodexService(request => request.method === 'account/rateLimits/read' ? payload : {})
+    const defaultUsage = await service.read('gpt-6.2-sol')
+    assert.equal(defaultUsage?.activeGroupId, 'codex')
+    assert.equal(defaultUsage?.primary?.remainingPercent, 80)
+    assert.equal(defaultUsage?.groups?.length, 2)
+
+    const sparkUsage = await service.read('gpt-5.3-codex-spark')
+    assert.equal(sparkUsage?.activeGroupId, 'codex-spark')
+    assert.equal(sparkUsage?.primary?.remainingPercent, 95)
+    assert.equal(sparkUsage?.secondary?.remainingPercent, 90)
+    assert.equal(sparkUsage?.groups?.find(group => group.id === 'codex-spark')?.displayName, 'GPT-5.3-Codex-Spark')
+  })
+})
