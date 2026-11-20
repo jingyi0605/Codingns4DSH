@@ -2,6 +2,7 @@ node_modules/
 dist/
 .pnpm-store/
 *.tsbuildinfo
+.agent-temp
 data
 .playwright-mcp
 # 本机 AI 协作约定，不进入版本库
