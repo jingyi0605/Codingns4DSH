@@ -112,7 +112,11 @@ test('bundle patch and example profile use DSH native shapes', async () => {
   assert.match(patch, /id:\s*terminal-controller[\s\S]*?name:\s*'@deepseek-ai\/dsh-api-terminal-controller'[\s\S]*?disabled:\s*true/u)
   assert.match(patch, /id:\s*ui-sidebar-terminal[\s\S]*?name:\s*'@deepseek-ai\/dsh-client-ui-sidebar-terminal'[\s\S]*?disabled:\s*true/u)
   assert.match(patch, /id:\s*directory-picker[\s\S]*?name:\s*'@deepseek-ai\/dsh-host-directory-picker-auto'[\s\S]*?disabled:\s*true/u)
-  assert.match(patch, /id:\s*directory-picker-browse[\s\S]*?name:\s*'@deepseek-ai\/dsh-host-directory-picker-browse'/u)
+  // The Host half is the plugin's own entry, which frees `directoryPicker` before mounting the official browse backend.
+  const pinRow = /id:\s*directory-picker-browse\s*\n\s*name:\s*'([^']+)'/u.exec(patch)
+  assert.equal(pinRow?.[1], `${manifest.name}/directory-picker-pin`)
+  assert.equal(manifest.exports['./directory-picker-pin'].default, './data/build/dist/host/directory-picker-browse-pin.js')
+  assert.doesNotMatch(patch, /name:\s*'@deepseek-ai\/dsh-host-directory-picker-browse'/u, 'Official browse backend must only be mounted through the pin entry')
   assert.match(patch, /id:\s*ui-directory-picker-browse[\s\S]*?name:\s*'@deepseek-ai\/dsh-client-ui-directory-picker-browse'/u)
   assert.doesNotMatch(patch, /dsh-(?:host|client-ui)-directory-picker-native/u, 'Bundle patch must keep the workspace chooser in the web modal')
   assert.doesNotMatch(patch, /dsh-realtime-voice|dsh-multi-model-provider/u, '可选模型 Bundle 不得由补丁重复插入')
