@@ -49,7 +49,7 @@ test('Agent 单个与全部重新检测贯通客户端、RPC 分发和真实注�
   })
 })
 
-test('Agent 重新检测在旧 Fetch 入口也注册精确路由', () => {
+test('Agent 重新检测和 AGY 上下文详情在旧 Fetch 入口也注册精确路由', () => {
   const routes: string[] = []
   let dispose: (() => void) | undefined
   registerCodingNsRpc({
@@ -59,6 +59,7 @@ test('Agent 重新检测在旧 Fetch 入口也注册精确路由', () => {
   } as never, new CodingNsRpcTable())
   try {
     assert.ok(routes.includes('/api/codingns/cli/catalog/refresh'))
+    assert.ok(routes.includes('/api/codingns/cli/session/antigravity-context'))
   } finally { dispose?.() }
 })
 

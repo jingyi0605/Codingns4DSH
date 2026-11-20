@@ -3,8 +3,9 @@ import { ZcodeSubagentService } from './zcode-subagent-service.js'
 import { readExternalTurn } from './background-turn.js'
 import { installBackgroundTurnDelivery } from './background-turn-delivery.js'
 import { antigravityContextProjection, zcodeContextProjection } from './provider-context-projection.js'
+import { readAntigravityContextDetails } from './antigravity-session-db.js'
 import type { FeatureModule, FeatureResourceScope } from '../../shared/contracts/feature.js'
-import type { CodingNsCliApprovalPolicy, CodingNsCliAttachment, CodingNsCliMessage, CodingNsCliModelCatalog, CodingNsCliPermissionState, CodingNsCliSandboxMode, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
+import type { CodingNsCliAdapterId, CodingNsCliApprovalPolicy, CodingNsCliAttachment, CodingNsCliMessage, CodingNsCliModelCatalog, CodingNsCliPermissionState, CodingNsCliSandboxMode, CodingNsCliSessionConfig } from '../../shared/contracts/cli-adapter.js'
 import { CommandCodeDriver } from './command-code-driver.js'
 import { ClaudeCodeDriver } from './claude-driver.js'
 import { GeminiCliDriver } from './gemini-driver.js'
@@ -305,15 +306,15 @@ export function createCliAdaptersFeature(options: {
         setAdapterRegistry(undefined)
       })
       registry.applyEnabledSettings(context.services.settings?.get().agentAdapters)
+      const readMagpieContextWindow = async (adapterId: CodingNsCliAdapterId, modelId: string, signal?: AbortSignal): Promise<number | undefined> => {
+        if (typeof magpieUsage.readModelMetadata !== 'function') return undefined
+        const budget = AbortSignal.timeout(2_000)
+        const confirmed = await magpieUsage.readModelMetadata(adapterId, modelId, signal ? AbortSignal.any([signal, budget]) : budget).catch(() => null)
+        return confirmed?.contextWindow
+      }
       const virtualProviders = createDshVirtualProviderRegistration(context.services.dshContext, async (adapterId, modelId, signal) => {
-        // Exact Magpie metadata wins; the static tables only cover Agents it does not expose.
-        // DSH resolves model info before every model switch and step, so a cold Magpie CLI
-        // lookup must not block it: after the budget we fall back to the static tables.
-        if (typeof magpieUsage.readModelMetadata === 'function') {
-          const budget = AbortSignal.timeout(2_000)
-          const confirmed = await magpieUsage.readModelMetadata(adapterId, modelId, signal ? AbortSignal.any([signal, budget]) : budget).catch(() => null)
-          if (confirmed?.contextWindow !== undefined) return confirmed.contextWindow
-        }
+        const confirmed = await readMagpieContextWindow(adapterId, modelId, signal)
+        if (confirmed !== undefined) return confirmed
         return adapterId === 'codex' ? knownCodexContextWindow(modelId)
           : adapterId === 'command-code' ? knownCommandCodeContextWindow(modelId)
           : adapterId === 'antigravity' ? knownAntigravityContextWindow(modelId)
@@ -474,6 +475,14 @@ export function createCliAdaptersFeature(options: {
               sessionStore.migrateLegacySessions(collectMigrationChain(nativeSessions, session))
             }
             return registry.getSession(sessionId)
+          }
+          case 'session/antigravity-compaction':
+          case 'session/antigravity-context': {
+            const session = registry.getSession(readSessionId(payload))
+            const details = session.adapterId === 'antigravity' && session.providerSessionId !== undefined
+              ? readAntigravityContextDetails(session.providerSessionId)
+              : null
+            return action === 'session/antigravity-compaction' ? details?.compactionThreshold ?? null : details
           }
           case 'session/set': {
             const sessionId = readSessionId(payload)
@@ -884,13 +893,16 @@ export function createCliAdaptersFeature(options: {
           // 权限状态必须与 DSH 会话当前生效值同源。驱动不能自行假设“完全权限”，
           // 也不能把缺省当成“已确认无限制”：解析失败时留空，由驱动沿用保守默认。
           const permission = resolveNativeApprovalPermission(config, resolveSessionPermission(context.services.dshContext, sessionId))
-          let magpieCodexContextWindow: number | undefined
+          let modelContextWindow: number | undefined
           if (config.adapterId === 'codex' && config.modelId !== undefined && typeof magpieUsage.readModelMetadata === 'function') {
             try {
-              magpieCodexContextWindow = (await magpieUsage.readModelMetadata('codex', config.modelId, requestSignal))?.contextWindow
+              modelContextWindow = (await magpieUsage.readModelMetadata('codex', config.modelId, requestSignal))?.contextWindow
             } catch (error) {
               if (!requestSignal.aborted) throw error
             }
+          }
+          if (config.adapterId === 'antigravity' && config.modelId?.includes('/') === true) {
+            modelContextWindow = await readMagpieContextWindow('antigravity', config.modelId, requestSignal)
           }
           // 只有 Provider 驱动明确声明可以维护连续事件流，才把工具边界映射为 DSH step。
           // Command Code、Codex 自己维护 assistant 消息边界；OpenCode 由 Registry
@@ -912,7 +924,7 @@ export function createCliAdaptersFeature(options: {
               ? {}
               : { runtimeEnv: { ...(runtimeEnv ?? {}), ...(credentialResolution?.runtimeEnv ?? {}) } }),
             ...(config.modelId ? { modelId: config.modelId } : {}),
-            ...(magpieCodexContextWindow === undefined ? {} : { modelContextWindow: magpieCodexContextWindow }),
+            ...(modelContextWindow === undefined ? {} : { modelContextWindow }),
             ...(config.effortId ? { effortId: config.effortId } : {}),
             ...(config.serviceTierId ? { serviceTierId: config.serviceTierId } : {}),
             ...(config.translationEnabled === undefined ? {} : { translationEnabled: config.translationEnabled }),

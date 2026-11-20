@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict'
 import { setImmediate } from 'node:timers/promises'
 import test from 'node:test'
+import type { TestContext } from 'node:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { useState } from 'react'
 import type { ReactElement, ReactPortal } from 'react'
 import { MagpieContextMeter } from '../src/client/magpie-context-meter.js'
+import { AntigravityContextMeter } from '../src/client/antigravity-context-meter.js'
 import { getMagpieContextStore } from '../src/client/magpie-context-store.js'
-import type { CodingNsLocale } from '../src/client/locale.js'
+import { resolveCodingNsTranslator, type CodingNsLocale } from '../src/client/locale.js'
 import { en, zh } from '../src/client/locales/magpie.js'
 import type { MagpieContextSession } from '../src/shared/contracts/magpie-management.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
@@ -15,6 +17,8 @@ class ContextElement extends EventTarget {
   readonly nodeType = 1
   readonly children: ContextElement[] = []
   readonly attributes = new Map<string, string>()
+  readonly styleValues = new Map<string, string>()
+  readonly style = { getPropertyValue: (name: string) => this.styleValues.get(name) ?? '' }
   parentElement: ContextElement | null = null
   readonly selector: string
 
@@ -28,8 +32,12 @@ class ContextElement extends EventTarget {
     return this.selector === selector ? this : this.parentElement?.closest(selector) ?? null
   }
   querySelectorAll(selector: string): ContextElement[] {
-    return this.children.flatMap(child => [...(child.selector === selector ? [child] : []), ...child.querySelectorAll(selector)])
+    return this.children.flatMap(child => {
+      const matches = selector === '[style]' ? child.styleValues.size > 0 : child.selector === selector
+      return [...(matches ? [child] : []), ...child.querySelectorAll(selector)]
+    })
   }
+  querySelector(selector: string): ContextElement | null { return this.querySelectorAll(selector)[0] ?? null }
   setAttribute(name: string, value: string): void { this.attributes.set(name, value) }
   removeAttribute(name: string): void { this.attributes.delete(name) }
   getAttribute(name: string): string | null { return this.attributes.get(name) ?? null }
@@ -69,9 +77,9 @@ function contextValue(): MagpieContextSession {
   }
 }
 
-function nativeContext(dock: ContextElement): ContextElement {
-  const root = new ContextElement('.JObwrW_root')
-  const trigger = new ContextElement('button.JObwrW_trigger')
+function nativeContext(dock: ContextElement, classPrefix = 'JObwrW'): ContextElement {
+  const root = new ContextElement(`.${classPrefix}_root`)
+  const trigger = new ContextElement(`button.${classPrefix}_trigger`)
   trigger.setAttribute('aria-expanded', 'false')
   root.append(trigger)
   dock.append(root)
@@ -119,6 +127,114 @@ function contextLocale(language: 'en' | 'zh'): CodingNsLocale {
     subscribe: () => () => undefined,
     register: () => () => undefined,
   }
+}
+
+test('the Antigravity context button opens the observed tokens without inventing a capacity', t => {
+  const { body, doc, restore } = setupDom()
+  const locale = { ...contextLocale('zh'), bind: () => resolveCodingNsTranslator() }
+  const component = AntigravityContextMeter({ locale, pressureTokens: 187_713 }) as ReactElement<any, any>
+  const view = createHookRenderer(component.type, component.props)
+  t.after(() => { view.dispose(); restore() })
+  const trigger = view.render().props.children[0]
+  assert.equal(trigger.props['aria-expanded'], false)
+  trigger.props.onClick({ currentTarget: { getBoundingClientRect: () => ({ right: 950, top: 800 }) } })
+  const [openedTrigger, portal] = view.render().props.children
+  assert.equal(openedTrigger.props['aria-expanded'], true)
+  assert.equal(portal.containerInfo, body)
+  const markup = renderToStaticMarkup(portal.children)
+  assert.ok(markup.includes((187_713).toLocaleString()))
+  assert.match(markup, /上下文容量未知/u)
+  assert.doesNotMatch(markup, /%|1,000,000/u)
+  doc.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' }))
+  assert.equal(view.render().props.children[0].props['aria-expanded'], false)
+})
+
+test('Antigravity shows context details in the Desktop rc.5 panel over the Fetch route', t =>
+  assertAntigravityNativePanel(t, 'A6Bq1a', true))
+test('Antigravity shows context details in the Stage0 rc.5 panel over the native channel', t =>
+  assertAntigravityNativePanel(t, 'JObwrW', false))
+
+async function assertAntigravityNativePanel(t: TestContext, classPrefix: string, fetchFallback: boolean) {
+  const { body, dock, anchor, restore } = setupDom()
+  nativeContext(dock, classPrefix).parentElement!.styleValues.set('anchor-name', '--dsh-context-current')
+  const otherDock = new ContextElement('[data-composer-dock]')
+  body.append(otherDock)
+  nativeContext(otherDock, classPrefix).parentElement!.styleValues.set('anchor-name', '--dsh-context-other')
+  const otherPanel = new ContextElement()
+  otherPanel.setAttribute('role', 'dialog')
+  otherPanel.styleValues.set('position-anchor', '--dsh-context-other')
+  body.append(otherPanel)
+  const modelAnchor = new ContextElement()
+  modelAnchor.styleValues.set('anchor-name', '--dsh-model-anchor')
+  dock.append(modelAnchor)
+  const modelDialog = new ContextElement()
+  modelDialog.setAttribute('role', 'dialog')
+  modelDialog.styleValues.set('position-anchor', '--dsh-model-anchor')
+  body.append(modelDialog)
+  const locale = { ...contextLocale('zh'), bind: () => resolveCodingNsTranslator() }
+  const requests: Array<{ channel: string; endpoint: string; payload: unknown }> = []
+  let breakdown: Partial<Record<'systemTokens' | 'toolsTokens' | 'messageTokens', number>> = {
+    systemTokens: 3_670, toolsTokens: 6_959, messageTokens: 1_825,
+  }
+  const rpc = { async call(channel: string, endpoint: string, payload: unknown) {
+    requests.push({ channel, endpoint, payload })
+    if (fetchFallback && channel === '/codingns') throw new Error('HTTP 404')
+    return { ok: true as const, value: { compactionThreshold: 512_000, breakdown } }
+  } }
+  const component = AntigravityContextMeter({
+    locale, native: true, sessionId: 'agy-session', rpc, pressureTokens: 128_000, contextWindow: 1_048_576,
+  }) as ReactElement<any, any>
+  const view = createHookRenderer(() => {
+    const output = component.type(component.props)
+    ;(output as { ref: { current: ContextElement } }).ref.current = anchor
+    return output
+  }, {})
+  t.after(() => { view.dispose(); restore() })
+  assert.equal(view.render().props.children, null)
+  assert.equal(requests.length, 0)
+  const panel = new ContextElement(`.${classPrefix}_panel`)
+  panel.setAttribute('role', 'dialog')
+  panel.styleValues.set('position-anchor', '--dsh-context-current')
+  body.append(panel)
+  ContextObserver.instances[0]!.flush()
+  const portal = view.render().props.children as ReactPortal
+  assert.equal(portal.containerInfo, panel)
+  const summary = portal.children as ReactElement<any, any>
+  const summaryView = createHookRenderer(summary.type, summary.props)
+  t.after(() => summaryView.dispose())
+  const [style, capacity, row] = summaryView.render().props.children
+  assert.match(style.props.children, /\[role="dialog"\]:has\(> \[data-codingns-antigravity-summary\]\) > div:nth-child\(-n \+ 2\)/u)
+  const capacityMarkup = renderToStaticMarkup(capacity)
+  assert.match(capacityMarkup, /上下文已用<strong[^>]*> 12%<\/strong><\/span><strong[^>]*>~128K \/ 1M<\/strong>/u)
+  assert.match(capacityMarkup, /aria-valuemax="1048576" aria-valuenow="128000"/u)
+  const threshold = createHookRenderer(row.type, row.props)
+  t.after(() => threshold.dispose())
+  assert.equal(threshold.render(), null)
+  await setImmediate()
+  assert.deepEqual(requests, [
+    { channel: '/codingns', endpoint: 'cli/session/antigravity-context', payload: { sessionId: 'agy-session' } },
+    ...(fetchFallback ? [{ channel: '/api', endpoint: 'codingns/cli/session/antigravity-context', payload: { sessionId: 'agy-session' } }] : []),
+  ])
+  const markup = renderToStaticMarkup(threshold.render())
+  assert.match(markup, /自动压缩<strong[^>]*> 25%<\/strong><\/span><strong[^>]*>~128K \/ 512K<\/strong>/u)
+  assert.ok(markup.includes(`title="${(128_000).toLocaleString()} / ${(512_000).toLocaleString()}"`))
+  assert.match(markup, /role="progressbar"[^>]*aria-valuemax="512000" aria-valuenow="128000"/u)
+  assert.match(markup, /width:25%/u)
+  assert.match(markup, /AGY 上下文构成估算/u)
+  assert.match(markup, /系统提示词<\/dt><dd[^>]*>~3\.7K<\/dd>/u)
+  assert.match(markup, /工具定义<\/dt><dd[^>]*>~7K<\/dd>/u)
+  assert.match(markup, /对话消息<\/dt><dd[^>]*>~1\.8K<\/dd>/u)
+  breakdown = {}
+  const overThreshold = renderToStaticMarkup(threshold.render({ ...row.props, pressureTokens: 540_000 }))
+  assert.match(overThreshold, /aria-valuemax="512000" aria-valuenow="512000"/u)
+  assert.match(overThreshold, /width:100%/u)
+  await setImmediate()
+  const missing = renderToStaticMarkup(threshold.render())
+  assert.match(missing, /暂无 AGY 上下文构成数据/u)
+  assert.doesNotMatch(missing, /系统提示词|工具定义|对话消息/u)
+  panel.remove()
+  ContextObserver.instances[0]!.flush()
+  assert.equal(view.render().props.children, null)
 }
 
 test('the native context button opens Magpie through the slot outlet wrapper and refreshes in place', async t => {

@@ -206,7 +206,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       decidePermission: () => 'reject',
       enrichUsage: (usage, input) => {
         if (usage.contextWindow !== undefined) return usage
-        const contextWindow = this.resolveContextWindow(input.modelId)
+        const contextWindow = input.modelContextWindow ?? this.resolveContextWindow(input.modelId)
         return contextWindow === undefined ? usage : { ...usage, contextWindow }
       },
     })
@@ -694,15 +694,17 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       total_tokens: turn.usage.total_tokens,
     })
     if (event === null || event.type !== 'usage') return null
-    const contextWindow = this.resolveContextWindow(input.modelId)
-    if (contextWindow === undefined || contextWindow <= 0) return event
-    // Only the last agent_response provides a defensible current-context size.
+    const contextWindow = input.modelContextWindow ?? this.resolveContextWindow(input.modelId)
+    const contextTokens = turn.contextTokens
+    if (contextWindow === undefined || contextWindow <= 0) {
+      return contextTokens === undefined ? event : { ...event, contextTokens }
+    }
     return {
       ...event,
       contextWindow,
-      ...(turn.contextTokens === undefined ? {} : {
-        contextTokens: turn.contextTokens,
-        contextUsageRatio: Number(Math.min(1, turn.contextTokens / contextWindow).toFixed(6)),
+      ...(contextTokens === undefined ? {} : {
+        contextTokens,
+        contextUsageRatio: Number(Math.min(1, contextTokens / contextWindow).toFixed(6)),
       }),
     }
   }

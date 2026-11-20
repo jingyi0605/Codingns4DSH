@@ -7,6 +7,7 @@ import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import { AntigravityDriver } from '../data/build/dist/host/cli-adapters/antigravity-driver.js'
 import { readAntigravityToolDetail } from '../data/build/dist/host/cli-adapters/antigravity-tool-detail.js'
+import { readAntigravityContextDetails } from '../data/build/dist/host/cli-adapters/antigravity-session-db.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import type { CodingNsNativeSessionBridge } from '../src/host/native-session-bridge.js'
 
@@ -45,6 +46,31 @@ function database(t: { after(callback: () => void): void }) {
   t.after(() => { db.close(); rmSync(root, { recursive: true, force: true }) })
   return { root, path, db, insert: (index: number, payload: Buffer) => db.prepare('INSERT INTO steps VALUES (?, 132, ?)').run(index, payload) }
 }
+
+test('Antigravity reads the latest compaction threshold and estimated context groups', t => {
+  const { root, path, db } = database(t)
+  assert.equal(readAntigravityContextDetails(providerSessionId, root), null)
+  db.exec('CREATE TABLE gen_metadata (idx INTEGER PRIMARY KEY, data BLOB)')
+  const insert = db.prepare('INSERT INTO gen_metadata VALUES (?, ?)')
+  const group = (type: number, tokens: number) => field(1, Buffer.concat([field(2, type), field(4, tokens)]))
+  const metadata = (threshold: number, groups: Buffer[] = []) => field(1, field(9, field(10, Buffer.concat([
+    field(1, 14_262), field(4, threshold), field(3, Buffer.concat(groups)),
+  ]))))
+  insert.run(0, metadata(256_000))
+  insert.run(1, Buffer.concat([field(4, 1_048_576), metadata(512_000, [
+    group(1, 3_670), group(2, 6_959), group(4, 200), group(5, 1_119), group(6, 689), group(7, 1_825),
+  ])]))
+  const before = readFileSync(path)
+  assert.deepEqual(readAntigravityContextDetails(providerSessionId, root), {
+    compactionThreshold: 512_000, breakdown: { systemTokens: 3_670, toolsTokens: 7_159, messageTokens: 1_825 },
+  })
+  assert.deepEqual(readFileSync(path), before)
+  insert.run(2, metadata(640_000))
+  assert.deepEqual(readAntigravityContextDetails(providerSessionId, root), { compactionThreshold: 640_000, breakdown: {} })
+  insert.run(3, Buffer.from([10, 100]))
+  assert.equal(readAntigravityContextDetails(providerSessionId, root), null)
+  assert.equal(readAntigravityContextDetails('../other', root), null)
+})
 
 function scriptedDriver(root: string, steps: readonly Record<string, unknown>[], options: {
   readonly readToolDetail?: NonNullable<ConstructorParameters<typeof AntigravityDriver>[0]>['readToolDetail']
