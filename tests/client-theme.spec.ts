@@ -227,7 +227,7 @@ test('订阅弹层展示账号名并按会话模型区分配额组', async () =>
   // Antigravity 的 Gemini 与 Claude/GPT 是两个独立配额组：读取键与请求都必须带模型
   assert.match(source, /const cacheKey = JSON\.stringify\(\[adapterId, selection\.providerId \?\? '', selection\.modelId \?\? '', sessionId, selection\.providerSessionId \?\? ''\]\)/u)
   assert.match(source, /callCliRpc<unknown>\(props\.rpc, 'subscription', payload/u)
-  assert.match(source, /sessionId,\n\s+adapterId,/u)
+  assert.match(source, /sessionId,\r?\n\s+adapterId,/u)
   assert.match(source, /\.\.\.\(selection\.modelId \? \{ modelId: selection\.modelId \} : \{\}\)/u)
 })
 

@@ -107,7 +107,7 @@ test('user abort does not emit failure and approval event carries its native req
     f.emit({ type: 'turn/end', seq: 3, time: Date.parse(timestamp), data: { turn: 1, reason: { kind: 'aborted', reason: { kind: 'user' } } } })
     f.emit({ type: 'approval/asked', seq: 4, time: Date.parse(timestamp), data: { id: 'approval-4', toolName: 'exec', reason: 'Run command', callId: 'call-1' } })
     f.emit({ type: 'turn/end', seq: 5, time: Date.parse(timestamp), data: { turn: 2, reason: { kind: 'error', error: { code: 'PROVIDER_ERROR', message: 'Request failed.' } } } })
-    for (let i = 0; i < 100 && f.queuedCount() < 2; i += 1) await new Promise((resolve) => setImmediate(resolve))
+    await waitFor(() => f.queuedCount() >= 2)
     const rows = (await f.store.snapshot()).deliveries
     assert.equal(rows.length, 2)
     const approval = rows.find((row) => row.eventType === 'session.permission_requested')!
