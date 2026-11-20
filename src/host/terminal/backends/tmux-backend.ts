@@ -1,7 +1,7 @@
 import { runAsyncCommand } from '../../cli-adapters/process-utils.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { accessSync, constants, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { accessSync, appendFileSync, constants, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { spawn as spawnPty, type IPty } from '@lydell/node-pty'
@@ -59,6 +59,16 @@ interface TmuxServerPaths {
 
 /** 插件私有 socket 名，避免与用户自己的 tmux 以及其它 DSH Profile 共用默认 socket。 */
 export const TMUX_SERVER_SOCKET_NAME = 'codingns4dsh'
+
+/**
+ * tmux 服务器每次启动、被重新拉起时追加一行 JSON，记录这台服务器是谁起的。
+ * 排查“DSH 重启后终端无法联网”时看这个文件，不依赖 Host 的调试开关。
+ */
+const LAUNCH_LOG_NAME = 'launch.log'
+const LAUNCH_LOG_MAX_BYTES = 256 * 1024
+
+/** `startServerViaLaunchd` 的结局；除 `launchd` 外都意味着服务器随后会被 Host 直接拉起。 */
+type LaunchdOutcome = 'already-running' | 'launchd' | 'plist-write-failed' | 'bootstrap-failed' | 'launchd-timeout'
 
 /**
  * 插件自有服务器选项。
@@ -393,7 +403,16 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
    * 方式重建，失败则让调用方看到明确的不可用错误，而不是静默降级。
    */
   private async ensureServer(): Promise<void> {
-    if (this.serverReady !== undefined) return this.serverReady
+    if (this.serverReady !== undefined) {
+      await this.serverReady
+      // 缓存只代表“本 Host 曾经成功准备过服务器”，不代表它现在还活着。服务器可能在
+      // Host 存活期间退出（例如用户手动 kill-server）。此时如果跳过重建，后面的
+      // `new-session` 会由 Host 直接把服务器拉起来，绕开 launchd，终端又会在 Desktop
+      // 重启后失去局域网访问。
+      if (await this.isServerRunning(this.requireTmuxPath())) return
+      this.recordLaunchEvent('server-vanished', { note: '缓存认为服务器就绪，但探测不到，重新走完整启动流程' })
+      this.serverReady = undefined
+    }
     const pending = (async () => {
       const tmuxPath = this.requireTmuxPath()
       try {
@@ -403,16 +422,18 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
       } catch (error) {
         throw new TerminalRuntimeError('TERMINAL_RUNTIME_UNAVAILABLE', `tmux 配置目录不可写：${errorMessage(error)}`)
       }
-      if (this.platform === 'darwin') await this.startServerViaLaunchd(tmuxPath)
+      const outcome: LaunchdOutcome | 'not-darwin' = this.platform === 'darwin' ? await this.startServerViaLaunchd(tmuxPath) : 'not-darwin'
       // 服务器已在运行时是空操作；launchd 路径失败时也由这里按旧方式直接拉起。
       const started = await this.runner.run(tmuxPath, ['-S', this.server.socket, '-f', this.server.config, 'start-server'])
       if (started.status !== 0) {
+        this.recordLaunchEvent('start-failed', { outcome, status: started.status, stderr: started.stderr })
         throw new TerminalRuntimeError('TERMINAL_RUNTIME_UNAVAILABLE', sanitizeCommandError('tmux 服务器启动失败', started.stderr))
       }
       const options = await this.runner.run(tmuxPath, ['-S', this.server.socket, ...SERVER_OPTION_ARGUMENTS])
       if (options.status !== 0) {
         throw new TerminalRuntimeError('TERMINAL_RUNTIME_UNAVAILABLE', sanitizeCommandError('tmux 服务器选项写入失败', options.stderr))
       }
+      await this.recordServerOrigin(tmuxPath, outcome)
     })()
     this.serverReady = pending.catch((error: unknown) => {
       // 失败不缓存：下一次 create 重新尝试，避免一次偶发失败永久禁用终端。
@@ -437,8 +458,8 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
    * 服务器已经存活时什么都不做，沿用现有 socket、配置和会话。任何一步失败都返回，
    * 由调用方按旧方式直接拉起，终端不会因此不可用。
    */
-  private async startServerViaLaunchd(tmuxPath: string): Promise<void> {
-    if (await this.isServerRunning(tmuxPath)) return
+  private async startServerViaLaunchd(tmuxPath: string): Promise<LaunchdOutcome> {
+    if (await this.isServerRunning(tmuxPath)) return 'already-running'
     const uid = process.getuid?.() ?? 0
     const label = launchdLabel(this.server.socket)
     const plistPath = join(this.server.directory, `${label}.plist`)
@@ -446,26 +467,76 @@ export class TmuxTerminalBackend implements TerminalRuntimeAdapter {
       writeFileSync(plistPath, launchdPlist(label, tmuxPath, this.server), { encoding: 'utf8', mode: 0o600 })
     } catch (error) {
       debugWarn('codingns4dsh: launchd plist write failed', { error: errorMessage(error) })
-      return
+      this.recordLaunchEvent('launchd-plist-write-failed', { error: errorMessage(error) })
+      return 'plist-write-failed'
     }
     // 服务器退出后 job 仍留在 launchd 里，重复 bootstrap 会失败；先清掉旧登记。
-    await this.runner.run('launchctl', ['bootout', `gui/${uid}/${label}`])
+    const booted = await this.runner.run('launchctl', ['bootout', `gui/${uid}/${label}`])
     const loaded = await this.runner.run('launchctl', ['bootstrap', `gui/${uid}`, plistPath])
     if (loaded.status !== 0) {
       debugWarn('codingns4dsh: launchctl bootstrap failed, fallback to direct start', {
         status: loaded.status,
         stderr: loaded.stderr,
       })
-      return
+      this.recordLaunchEvent('launchd-bootstrap-failed', {
+        label,
+        bootoutStatus: booted.status,
+        bootoutStderr: booted.stderr,
+        status: loaded.status,
+        stderr: loaded.stderr,
+      })
+      return 'bootstrap-failed'
     }
     for (let attempt = 0; attempt < 30; attempt += 1) {
       if (await this.isServerRunning(tmuxPath)) {
         await this.inheritProcessEnvironment(tmuxPath)
-        return
+        return 'launchd'
       }
       await new Promise((resolve) => setTimeout(resolve, 100))
     }
     debugWarn('codingns4dsh: launchd tmux server did not come up, fallback to direct start', {})
+    this.recordLaunchEvent('launchd-server-timeout', { label, waitedMs: 3000 })
+    return 'launchd-timeout'
+  }
+
+  /**
+   * 记录这台 tmux 服务器到底是谁拉起的。
+   *
+   * 由 launchd job 拉起的进程环境里 `XPC_SERVICE_NAME` 等于 job 标签；由 Host 直接拉起的
+   * 则继承 Host 的环境（Desktop 下是 `0`，并带有 `__CFBundleIdentifier`）。这是判断
+   * “launchd 方案是否真的生效”的最直接证据。只在 macOS 上有意义，失败一律静默。
+   */
+  private async recordServerOrigin(tmuxPath: string, outcome: LaunchdOutcome | 'not-darwin'): Promise<void> {
+    if (this.platform !== 'darwin') return
+    const pidResult = await this.runner.run(tmuxPath, ['-S', this.server.socket, 'display-message', '-p', '#{pid}'])
+    const serverPid = Number.parseInt(pidResult.stdout.trim(), 10)
+    let xpcServiceName: string | null = null
+    let responsibleBundle: string | null = null
+    if (Number.isSafeInteger(serverPid) && serverPid > 0) {
+      const env = await this.runner.run('ps', ['-E', '-p', String(serverPid), '-o', 'command='])
+      xpcServiceName = /(?:^|\s)XPC_SERVICE_NAME=(\S+)/u.exec(env.stdout)?.[1] ?? null
+      responsibleBundle = /(?:^|\s)__CFBundleIdentifier=(\S+)/u.exec(env.stdout)?.[1] ?? null
+    }
+    const label = launchdLabel(this.server.socket)
+    this.recordLaunchEvent('server-ready', {
+      outcome,
+      serverPid: Number.isSafeInteger(serverPid) ? serverPid : null,
+      xpcServiceName,
+      responsibleBundle,
+      launcher: xpcServiceName === label ? 'launchd' : xpcServiceName === null ? 'unknown' : 'host-direct',
+    })
+  }
+
+  private recordLaunchEvent(event: string, detail: Record<string, unknown> = {}): void {
+    debugInfo(`codingns4dsh: tmux server ${event}`, detail)
+    try {
+      const logPath = join(this.server.directory, LAUNCH_LOG_NAME)
+      try {
+        if (statSync(logPath).size > LAUNCH_LOG_MAX_BYTES) writeFileSync(logPath, '', { mode: 0o600 })
+      } catch { /* 日志文件还不存在 */ }
+      const line = JSON.stringify({ time: new Date().toISOString(), hostPid: process.pid, event, ...detail })
+      appendFileSync(logPath, `${line}\n`, { encoding: 'utf8', mode: 0o600 })
+    } catch { /* 诊断日志写不进去时不能影响终端创建 */ }
   }
 
   /**
