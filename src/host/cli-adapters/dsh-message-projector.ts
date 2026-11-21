@@ -457,6 +457,7 @@ export class CodingNsDshMessageProjector {
       toolName: event.toolName ?? (event.kind || 'external-agent'),
       ...(event.callId ? { callId: event.callId } : {}),
       ...(detail ? { reason: detail } : {}),
+      ...(this.options.adapterId === 'codex' && this.options.permission?.nativeApprovalMode === 'full-access-confirm' ? { interactive: true } : {}),
       ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
     }) ?? 'unavailable'
     const approved = outcome === 'allowed-once'

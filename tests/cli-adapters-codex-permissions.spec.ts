@@ -30,35 +30,37 @@ async function createPermissionHarness(segmented: boolean, approvalAvailable = t
     executed: false,
     finished: false,
     policy: options.policy ?? 'ask' as 'ask' | 'never',
-    policyChanges: 0,
+    policyChanges: [] as Array<'ask' | 'never'>,
   }
   let decide!: (outcome: CodingNsNativeApprovalOutcome) => void
   let markApprovalReached!: () => void
   const decision = new Promise<CodingNsNativeApprovalOutcome>((resolve) => { decide = resolve })
   const approvalReached = new Promise<void>((resolve) => { markApprovalReached = resolve })
+  const preset = () => options.policy !== 'never' ? 'workspace-write' : state.policy === 'never' ? 'danger-full-access' : 'custom'
+  const nativeApproval = {
+    config: { policy: 'ask' },
+    overrideOf: () => state.policy,
+    effectivePolicy: () => state.policy,
+    ...(options.policySetter === false ? {} : { setPolicy(target: unknown, policy: 'ask' | 'never') {
+      assert.equal(target, agent)
+      state.policy = policy
+      state.policyChanges.push(policy)
+    } }),
+    async request(request: { agent: unknown; callId?: string; reason?: string }) {
+      if (state.policy === 'never') return 'rejected'
+      state.approvals.push(request)
+      markApprovalReached()
+      return decision
+    },
+  }
   const dshContext = { get(name: string): unknown {
     if (name === 'agents') return { get: (id: string) => id === sessionId ? agent : undefined }
     if (name === 'sandboxPolicy') return { resolve: ({ session: target }: { session: unknown }) => {
       assert.equal(target, session)
-      return { mode: 'workspace-write', workspaceRoot: '/workspace/repo' }
+      return { mode: options.policy === 'never' ? 'danger-full-access' : 'workspace-write', workspaceRoot: '/workspace/repo' }
     } }
-    if (name === 'permissionPresets') return { current: () => 'workspace-write' }
-    if (name === 'approval' && approvalAvailable) return {
-      config: { policy: state.policy },
-      overrideOf: () => state.policy,
-      effectivePolicy: () => state.policy,
-      ...(options.policySetter === false ? {} : { setPolicy(target: unknown, policy: 'ask') {
-        assert.equal(target, agent)
-        state.policy = policy
-        state.policyChanges++
-      } }),
-      async request(request: { agent: unknown; callId?: string; reason?: string }) {
-        if (state.policy === 'never') return 'rejected'
-        state.approvals.push(request)
-        markApprovalReached()
-        return decision
-      },
-    }
+    if (name === 'permissionPresets') return { current: preset }
+    if (name === 'approval' && approvalAvailable) return nativeApproval
     return undefined
   } }
   const bridge = createCodingNsNativeSessionBridge(dshContext as never)
@@ -127,14 +129,14 @@ async function createPermissionHarness(segmented: boolean, approvalAvailable = t
   await features.start('cliAdapters')
   await rpc.resolve('cli/session/set')?.handler('session/set', { sessionId, adapterId: 'codex', ...(nativeApprovalMode ? { nativeApprovalMode } : {}) })
   const chunks: Record<string, unknown>[] = []
-  const run = async () => {
+  const run = async (next: () => AsyncIterable<unknown> = async function* () {}) => {
     // 用户只表达测试意图，不提供提权参数或测试文件路径。
-    for await (const chunk of listener({ sessionId, messages: [{ role: 'user', content: '请触发权限申请并验证我的选择' }] }, async function* () {})) chunks.push(chunk)
+    for await (const chunk of listener({ sessionId, messages: [{ role: 'user', content: '请触发权限申请并验证我的选择' }] }, next)) chunks.push(chunk)
     state.finished = true
   }
   const running = run()
   return {
-    state, agent, chunks, running, approvalReached, decide, run, rpc, sessionId,
+    state, agent, chunks, running, approvalReached, decide, run, rpc, sessionId, nativeApproval, preset,
     async dispose() {
       decide('cancelled')
       try { await running } finally { await features.disable('cliAdapters') }
@@ -147,7 +149,8 @@ for (const segmented of [false, true]) for (const outcome of ['allowed-once', 'r
     const harness = await createPermissionHarness(segmented, true, 'full-access-confirm', { command: true, policy: 'never' })
     try {
       await Promise.race([harness.approvalReached, harness.running.then(() => { throw new Error('Turn ended before native command approval') })])
-      assert.equal(harness.state.policyChanges, 1)
+      assert.deepEqual(harness.state.policyChanges, ['ask', 'never'])
+      assert.equal(harness.state.policy, 'never', 'restore before the user answers')
       assert.equal(harness.state.executed, false)
       assert.equal(harness.state.finished, false)
       assert.equal(harness.state.reply, undefined)
@@ -169,17 +172,51 @@ for (const segmented of [false, true]) for (const outcome of ['allowed-once', 'r
   })
 }
 
-test('Codex full-access-confirm fails before CLI launch if a never policy cannot be changed', { timeout: 5_000 }, async () => {
+test('Codex full-access-confirm fails before CLI launch without a restorable native policy', { timeout: 5_000 }, async () => {
   const harness = await createPermissionHarness(false, true, 'full-access-confirm', { command: true, policy: 'never', policySetter: false })
   try {
     await harness.running
-    assert.equal(harness.state.policyChanges, 0)
+    assert.deepEqual(harness.state.policyChanges, [])
     assert.equal(harness.state.executed, false)
     assert.equal(harness.state.rpcCalls.length, 0)
     assert.equal(harness.state.approvals.length, 0)
     assert.match(JSON.stringify(harness.chunks), /DSH interactive approval is unavailable/u)
   } finally { await harness.dispose() }
 })
+
+for (const exit of ['dsh', 'full-access'] as const) {
+  test(`same session: never → Codex full-access-confirm → ${exit} leaves the original DSH preset`, { timeout: 5_000 }, async () => {
+    const harness = await createPermissionHarness(false, true, 'full-access-confirm', { command: true, policy: 'never' })
+    try {
+      await harness.approvalReached
+      harness.decide('allowed-once')
+      await harness.running
+      assert.equal(harness.state.executed, true)
+      const set = harness.rpc.resolve('cli/session/set')!.handler
+      const saved = await set('session/set', exit === 'dsh'
+        ? { sessionId: harness.sessionId, adapterId: 'dsh' }
+        : { sessionId: harness.sessionId, adapterId: 'codex', nativeApprovalMode: exit })
+      assert.equal('nativeApprovalMode' in (saved as object), exit !== 'dsh')
+      assert.equal(harness.preset(), 'danger-full-access')
+      assert.equal(harness.nativeApproval.overrideOf(), 'never')
+      if (exit === 'dsh') {
+        const native = async function* () {
+          assert.equal(await harness.nativeApproval.request({ agent: harness.agent, callId: 'native-tool' }), 'rejected')
+          yield { type: 'block-start', index: 0, blockType: 'text' }
+          yield { type: 'text-delta', index: 0, text: 'native-result' }
+          yield { type: 'block-end', index: 0, block: { type: 'text', text: 'native-result' } }
+          yield { type: 'finish', reason: { kind: 'stop' } }
+        }
+        await harness.run(native)
+        assert.equal(harness.chunks.at(-2)?.type, 'block-end')
+        assert.deepEqual(harness.chunks.at(-2)?.block, { type: 'text', text: 'native-result' })
+        assert.deepEqual(harness.chunks.at(-1)?.reason, { kind: 'stop' })
+      }
+      assert.equal(harness.state.approvals.length, 1, 'native approval must not show another prompt')
+      assert.deepEqual(harness.state.policyChanges, ['ask', 'never'], 'switching does not write another native policy')
+    } finally { await harness.dispose() }
+  })
+}
 
 for (const segmented of [false, true]) {
   for (const outcome of ['allowed-once', 'rejected', 'cancelled'] as const) {

@@ -29,25 +29,57 @@ interface ContextLike {
   on?(name: string, listener: (session: unknown, event: unknown) => void, options?: { readonly global?: boolean }): unknown
 }
 
-/** Apply an explicitly selected interactive mode through DSH's canonical policy setter. */
-export function enableInteractiveSessionApproval(context: unknown, sessionId: string): boolean {
+interface InteractiveApprovalService extends ApprovalServiceLike {
+  effectivePolicy(session: unknown): unknown
+  overrideOf?(session: unknown): unknown
+  setPolicy?(agent: unknown, policy: 'ask' | 'never'): void
+}
+
+function interactiveApprovalTarget(context: unknown, sessionId: string) {
   const nativeContext = asContext(context)
   const get = nativeContext?.get.bind(nativeContext)
   const agents = safeGet(get, 'agents') as AgentRegistryLike | undefined
-  const approval = safeGet(get, 'approval') as {
-    request?(request: Record<string, unknown>): Promise<unknown>
-    effectivePolicy?(session: unknown): unknown
-    setPolicy?(agent: unknown, policy: 'ask'): void
-  } | undefined
+  const approval = safeGet(get, 'approval') as InteractiveApprovalService | undefined
   try {
     const agent = agents?.get(sessionId) as AgentLike | undefined
-    if (agent?.session === undefined || typeof approval?.request !== 'function' || typeof approval.effectivePolicy !== 'function') return false
+    if (agent?.session === undefined || typeof approval?.request !== 'function' || typeof approval.effectivePolicy !== 'function') return undefined
     const current = approval.effectivePolicy(agent.session)
-    if (current === 'ask') return true
-    if (current !== 'never' || typeof approval.setPolicy !== 'function') return false
-    approval.setPolicy(agent, 'ask')
-    return approval.effectivePolicy(agent.session) === 'ask'
-  } catch { return false }
+    if (current === 'ask') return { agent, session: agent.session, approval, current } as const
+    // DSH cannot clear an override. Do not pin an inherited deployment default.
+    const setPolicy = approval.setPolicy?.bind(approval)
+    if (current === 'never' && setPolicy !== undefined && approval.overrideOf?.(agent.session) === 'never') {
+      return { agent, session: agent.session, approval, current, setPolicy } as const
+    }
+  } catch { /* Unsupported or unavailable native service. */ }
+  return undefined
+}
+
+export function supportsInteractiveSessionApproval(context: unknown, sessionId: string): boolean {
+  return interactiveApprovalTarget(context, sessionId) !== undefined
+}
+
+/** DSH reads policy synchronously in request(); restore it before awaiting the answerer. */
+export function requestInteractiveSessionApproval(context: unknown, sessionId: string, request: Record<string, unknown>): Promise<unknown> {
+  const target = interactiveApprovalTarget(context, sessionId)
+  if (target === undefined) return Promise.resolve('unavailable')
+  const { agent, session, approval } = target
+  const input = { ...request, agent }
+  if (target.current === 'ask') return approval.request(input)
+  const { setPolicy } = target
+  let pending: Promise<unknown> | undefined
+  try {
+    setPolicy(agent, 'ask')
+    if (approval.effectivePolicy(session) === 'ask') pending = approval.request(input)
+  } finally {
+    try {
+      if (approval.effectivePolicy(session) !== 'never') setPolicy(agent, 'never')
+      if (approval.effectivePolicy(session) !== 'never') throw new Error('DSH approval policy was not restored')
+    } catch (error) {
+      void pending?.catch(() => undefined)
+      throw error
+    }
+  }
+  return pending ?? Promise.resolve('unavailable')
 }
 
 export function supportsWorkspaceApproval(context: unknown): boolean {

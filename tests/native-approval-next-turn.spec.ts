@@ -22,7 +22,7 @@ for (const [adapterId, nextMode] of [['codex', 'full-access'], ['zcode', 'full-a
       if (received.length === 1) { started(); await gate; yield { type: 'session-binding', providerSessionId: 'late-native-binding' } as const }
       yield { type: 'finish', reason: 'stop' } as const
     },
-  }] as never, {}, { sessionStore: store, nativeSessions: { ensure: async () => null, enableInteractiveApproval() { approvalActivations++; return true } } as never })
+  }] as never, {}, { sessionStore: store, nativeSessions: { ensure: async () => null, supportsInteractiveApproval() { approvalActivations++; return true } } as never })
   registry.setSession('running', { adapterId, nativeApprovalMode: 'manual' })
   const running = drain(registry.execute({ adapterId, sessionId: 'running', messages: [], prompt: 'first', permission: manual }))
   try {
@@ -53,7 +53,7 @@ for (const nextMode of ['full-access', 'full-access-confirm'] as const) for (con
       permissions.push(input.permission)
       yield permissions.length === 3 ? { type: 'finish', reason: 'stop' } as const : { type: 'step-boundary' } as const
     },
-  }] as never, {}, { nativeSessions: { ensure: async () => null, enableInteractiveApproval() { approvalActivations++; return true } } as never })
+  }] as never, {}, { nativeSessions: { ensure: async () => null, supportsInteractiveApproval() { approvalActivations++; return true } } as never })
   const input = { adapterId: 'codex', sessionId: 'segmented', messages: [], prompt: 'first', splitToolSteps: true, ...(initial ? { permission: initial } : {}) }
   try {
     registry.setSession('segmented', { adapterId: 'codex', nativeApprovalMode: 'manual' })

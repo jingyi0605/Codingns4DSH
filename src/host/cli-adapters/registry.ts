@@ -802,10 +802,9 @@ export class CodingNsCliAdapterRegistry {
       // Agent Loop 通常已经创建了同名 DSH 原生会话；直接调用 Registry 时才按需补建。
       // 原生服务失败不能阻断外部 Agent，消息仍由现有 llm/stream 链路处理。
       try { nativeSessionReady = await this.nativeSessions?.ensure(input.sessionId, input.cwd) === input.sessionId } catch { /* Optional native projection is unavailable. */ }
-      // Save-time UI changes and resumed steps cannot change the active turn's policy.
-      // DSH may still carry the previous full-access preset's `never` policy.
+      // Check before launch without changing the native policy for the whole turn.
       if (!resumingSegmentedTurn && input.adapterId === 'codex' && driverInput.permission?.nativeApprovalMode === 'full-access-confirm'
-        && this.nativeSessions?.enableInteractiveApproval?.(input.sessionId) !== true) {
+        && this.nativeSessions?.supportsInteractiveApproval?.(input.sessionId) !== true) {
         throw new CodingNsRpcError('CODINGNS_CLI_APPROVAL_UNAVAILABLE', 'DSH interactive approval is unavailable. Select another approval mode or restore the approval service.')
       }
       // 每轮都写入稳定的适配器身份。旧日志只有通用 codingns-external 标记，
@@ -972,6 +971,11 @@ export class CodingNsCliAdapterRegistry {
       this.scheduleAutoCompaction(input.sessionId, input.adapterId)
       try { if (nativeSessionReady) await this.nativeSessions?.flush(input.sessionId) } catch { /* DSH 自身检查点策略负责重试 */ }
     }
+  }
+
+  permissionForTurn(input: Pick<CodingNsCliTurnInput, 'sessionId' | 'permission'> & { adapterId: string }): CodingNsCliTurnInput['permission'] {
+    const suspended = this.segmentedTurns.get(input.sessionId)
+    return suspended?.adapterId === input.adapterId ? suspended.permission : input.permission
   }
 
   async listSessions(options: { readonly includeArchived?: boolean; readonly adapterId?: string } = {}): Promise<CodingNsCliSessionRecord[]> {
