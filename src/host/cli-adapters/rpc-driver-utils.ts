@@ -9,35 +9,72 @@ export async function* streamRpcRequest(
   method: string,
   params: unknown,
   signal: AbortSignal | undefined,
-  options: { readonly dispose?: boolean; readonly killOnAbort?: boolean; readonly onNotification?: (message: JsonRpcMessage) => void } = {},
+  options: {
+    readonly dispose?: boolean
+    readonly killOnAbort?: boolean
+    readonly onNotification?: (message: JsonRpcMessage) => void
+    readonly waitAfterResponse?: (response: unknown) => number | undefined
+  } = {},
 ): AsyncGenerator<JsonRpcMessage, unknown, void> {
   const queue: JsonRpcMessage[] = []
   let wake: (() => void) | undefined
   let settled = false
   let failure: unknown
-  const listener = (message: JsonRpcMessage): void => {
-    queue.push(message)
-    options.onNotification?.(message)
+  let result: unknown
+  let exitError: Error | undefined
+  const resume = (): void => {
     wake?.()
     wake = undefined
   }
+  const listener = (message: JsonRpcMessage): void => {
+    queue.push(message)
+    options.onNotification?.(message)
+    resume()
+  }
   const removeListener = process.addNotificationListener(listener)
+  const removeExitListener = options.waitAfterResponse === undefined ? undefined : process.addExitListener((error) => {
+    exitError = error
+    resume()
+  })
+  if (options.waitAfterResponse !== undefined) signal?.addEventListener('abort', resume, { once: true })
   const response = process.request(method, params, {
     ...(signal === undefined ? {} : { signal }),
     ...(options.killOnAbort === undefined ? {} : { killOnAbort: options.killOnAbort }),
-  }).then((value) => { settled = true; wake?.(); wake = undefined; return value }, (error: unknown) => { failure = error; settled = true; wake?.(); wake = undefined; return undefined })
+  }).then((value) => { result = value }, (error: unknown) => { failure = error }).finally(() => {
+    settled = true
+    resume()
+  })
 
+  let timer: ReturnType<typeof setTimeout> | undefined
   try {
-    while (!settled || queue.length > 0) {
+    while (true) {
       if (queue.length > 0) {
         yield queue.shift()!
         continue
       }
-      await new Promise<void>((resolve) => { wake = resolve })
+      let wait: number | undefined
+      if (settled) {
+        if (failure !== undefined) throw failure
+        wait = options.waitAfterResponse?.(result)
+        if (wait === undefined || wait <= 0) break
+        signal?.throwIfAborted()
+        if (exitError !== undefined) throw exitError
+      }
+      await new Promise<void>((resolve) => {
+        wake = resolve
+        if (wait !== undefined && Number.isFinite(wait)) timer = setTimeout(resume, wait)
+      })
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        timer = undefined
+      }
     }
-    if (failure !== undefined) throw failure
-    return await response
+    await response
+    return result
   } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    if (options.waitAfterResponse !== undefined) signal?.removeEventListener('abort', resume)
+    removeExitListener?.()
     removeListener()
     if (options.dispose !== false) process.dispose()
   }
