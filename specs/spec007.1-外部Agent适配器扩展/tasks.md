@@ -353,7 +353,7 @@
   - 做什么与可见结果：Codex 权限菜单新增「完全访问，危险操作需确认」。勾选风险确认后保存，下一轮使用 `danger-full-access`、`on-request` 和 `user`；普通文件访问没有沙箱限制，被 Codex 要求审批的命令交给 DSH 人工确认。
   - 依赖与先读：已有原生审批菜单、Registry 权限快照、Codex app-server 和 DSH 原生审批服务。先读本 Spec 需求 5–7、设计 §3.3、§4.2、§7，以及 [权限说明](../../docs/agent-native-permissions.md) 和外部 Agent、设置、国际化开发规则。原 Spec 的选型草案未描述此已实施的菜单，本条是用户明确要求的现有实现扩展。
   - 改哪里：`src/shared/native-approval-modes.ts`、`contracts/cli-adapter.ts`、Host 设置 schema、Client selector/slot/词典、`registry.ts`、`native-session-bridge.ts`、`dsh-capabilities/host/workspace-approval-adapter.ts`、能力矩阵及相关测试。
-  - 设计决定：只给 Codex 开放；复用 DSH 风险确认组件，取消和失败保留旧值；新回合以快照启用 DSH `ask`，已是 `ask` 时不重复写入；保存、续段不改变当前回合权限。审批服务或策略设置不可用时，在启动 Codex 前报错。旧模式继续保留原含义，子会话不继承普通会话偏好。
+  - 设计决定：只给 Codex 开放；复用 DSH 风险确认组件，取消和失败保留旧值。回合快照选了新模式时，发出审批请求才临时切到 `ask`，DSH 受理后立即恢复原有显式 `never`，不等待答复。原本是 `ask` 就不写入；仅继承部署默认 `never` 且不能清除覆盖时，启动前报错。切换模式或切回 DSH 原生不改变原有预设；`custom` 只是 DSH 计算出的显示值。旧模式继续保留原含义，子会话不继承普通会话偏好。
   - 范围边界：不升级项目依赖、不改变插件默认权限、不替换 Codex 的危险命令判断、不修改正式 Desktop、不发布。首轮未构建应用；随后用户明确授权 Stage0，已在独立源码副本构建，不写主工作区 `data/build/dist/`。验收通过后用户追加授权清理全部 Stage0、中文提交并向上游发起 PR。
   - 验证方式：源码覆盖启动/thread/turn 权限、命令批准/拒绝/取消、旧 `never`、服务不可用、持久化与偏好隔离、下一轮生效和 UI 确认/失败恢复；真实 Chrome 加载安装包提取的 PermissionSelect 验证 320/360/390/430/768/1280 宽度。运行类型、国际化、版本、能力、diff 检查及适配器源码回归。
   - 验证证据：权限和菜单源码 39 项通过；另生命周期/原生桥接/UI 61 项通过；能力、模块和 ZCode 回归 59 项通过；最终菜单/持久化/下一轮/能力适配器复查 43 项通过。Chrome 临时夹具 1 项通过，覆盖新模式勾选、取消、保存及原模式回归；截图和摘要原保存在本机临时目录，验收通过后按用户要求清理。类型、版本、能力和 `git diff --check` 通过，国际化 0 阻断、124 条原有告警。
@@ -361,4 +361,5 @@
   - 定向复跑：`node --import ./tests/register-source-loader.mjs --test --test-concurrency=1 tests/cli-adapters-codex-permissions.spec.ts tests/native-approval-next-turn.spec.ts tests/native-approval-modes.spec.ts tests/native-approval-ui.spec.ts tests/workspace-mcp-capabilities.spec.ts`。浏览器按 [权限说明](../../docs/agent-native-permissions.md) 设置安装包提取组件和 Chrome 路径，再运行 `tests/native-approval-mobile-browser.spec.ts`；本次输出在 `%TEMP%`，不覆盖应用产物。
   - 复跑注意：本机 pnpm 11 的默认依赖预检会尝试重装并因无 TTY 中止；使用 `pnpm --config.verify-deps-before-run=false run <check>` 执行现有依赖，不改依赖或锁文件。浏览器夹具原有 Antigravity「规划」断言与当前「默认」实现不符，本次修正该断言；提取器兼容 `exports.apply` 的空格差异。
   - Stage0 追加验收：Windows 隔离环境 DSH `0.2.2-rc.5`、真实 Codex `0.169.1`、真实 Chrome 通过。批准删除专用测试文件，拒绝与取消保留文件；同一 Provider 会话续聊与两次重启恢复通过。真实界面保存会话模式与偏好后核对 Profile 持久化；原生审批审计依次为 `allowed-once`、`rejected`、`cancelled`、`allowed-once`。用户确认通过后已关闭并清理隔离环境，`17896` 已释放，旧验收入口失效；正式 `17890` 服务保持原进程。过程、配置覆盖层持久化问题修正及清理结果见 [Stage0 验收记录](docs/20261121-Codex完全访问危险操作确认Stage0验收.md)。
-  - 待验：正式 Desktop 安装后的交互、物理手机和其他操作系统。先前浏览器夹具没有模型请求；追加 Stage0 使用真实 Codex 模型与原生审批。
+  - 恢复策略回归：`tests/cli-adapters-codex-permissions.spec.ts` 在同一会话覆盖 `never → 新模式 → DSH 原生` 和 `never → 新模式 → 原完全访问`，验证回切后仍为原预设；`tests/workspace-mcp-capabilities.spec.ts` 验证审批待答、请求报错和继承部署默认时均不留下临时覆盖。
+  - 待验：恢复策略补丁没有重跑 Windows Stage0；正式 Desktop 安装后的交互、物理手机和其他操作系统也未验证。先前浏览器夹具没有模型请求；初版 Stage0 使用真实 Codex 模型与原生审批。
