@@ -419,3 +419,37 @@ test('Antigravity 完全访问自动放行 ACP 审批，不再弹出审批面板
     assert.equal(chunks.at(-1)?.reason, 'stop')
   } finally { driver.dispose() }
 })
+
+test('Antigravity ACP 回合结算前把新增模型调用的耗时和上下文交给 DSH', { timeout: 5_000 }, async () => {
+  const reads: (number | 'latest')[] = []
+  const { driver } = acpDriver({}, {
+    readRequestSamples: (_id: string, after: number | 'latest') => {
+      reads.push(after)
+      if (after === 'latest') return { samples: [{ stepIndex: 4, startedAt: 100, completedAt: 900, outputTokens: 40, contextTokens: 3_000 }], lastStepIndex: 4 }
+      return after === 4
+        ? { samples: [{ stepIndex: 5, startedAt: 1_000, completedAt: 3_000, outputTokens: 200, contextTokens: 5_000 }], lastStepIndex: 5 }
+        : { samples: [], lastStepIndex: after }
+    },
+  })
+  try {
+    const chunks = await collect(driver, {
+      sessionId: 'agy-performance', permission: { nativeApprovalMode: 'manual', approvalPolicy: 'ask' }, providerSessionId: 'agy-acp-session',
+    })
+    const observations = chunks.filter(chunk => chunk.type === 'usage-observation')
+    // 续聊：回合一开始先给出上一次调用的上下文量（不带耗时），圆环不必等到回合结束。
+    assert.deepEqual(observations.shift(), {
+      type: 'usage-observation',
+      contextTokens: 3_000, contextWindow: 1_048_576, contextUsageRatio: Number((3_000 / 1_048_576).toFixed(6)),
+    })
+    assert.ok(chunks.findIndex(chunk => chunk.type === 'usage-observation') > chunks.findIndex(chunk => chunk.type === 'text-delta'))
+    assert.deepEqual(observations, [{
+      type: 'usage-observation',
+      requestPerformance: { adapterId: 'antigravity', id: 'agy-acp-session:5', samples: [
+        { id: 'agy-acp-session:5', startedAt: 1_000, firstTokenAt: 1_000, completedAt: 3_000, outputTokens: 200 },
+      ] },
+      contextTokens: 5_000, contextWindow: 1_048_576, contextUsageRatio: Number((5_000 / 1_048_576).toFixed(6)),
+    }])
+    assert.equal(reads[0], 'latest')
+    assert.ok(chunks.indexOf(observations[0]) < chunks.findIndex(chunk => chunk.type === 'finish'))
+  } finally { driver.dispose() }
+})

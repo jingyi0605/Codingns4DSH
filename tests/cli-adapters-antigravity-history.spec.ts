@@ -7,7 +7,7 @@ import { PassThrough } from 'node:stream'
 import test from 'node:test'
 import { AntigravityDriver } from '../data/build/dist/host/cli-adapters/antigravity-driver.js'
 import { readAntigravityToolDetail } from '../data/build/dist/host/cli-adapters/antigravity-tool-detail.js'
-import { readAntigravityContextDetails } from '../data/build/dist/host/cli-adapters/antigravity-session-db.js'
+import { readAntigravityContextDetails, readAntigravityRequestSamples } from '../data/build/dist/host/cli-adapters/antigravity-session-db.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
 import type { CodingNsNativeSessionBridge } from '../src/host/native-session-bridge.js'
 
@@ -262,3 +262,31 @@ function projectedHistory() {
   } })
   return { calls, results, projector }
 }
+
+test('Antigravity reads completed model calls from planner steps for ACP throughput', t => {
+  const { root, db } = database(t)
+  const timestamp = (seconds: number, nanos: number) => Buffer.concat([field(1, seconds), field(2, nanos)])
+  // 实测 planner response metadata：1=开始，7=完成，9.2=输入，9.3=输出，9.5=缓存读取。
+  const planner = (start: [number, number], done: [number, number] | null, usage: { input: number; output: number; cache: number }) => Buffer.concat([
+    field(1, timestamp(...start)),
+    ...(done === null ? [] : [field(7, timestamp(...done))]),
+    field(9, Buffer.concat([field(2, usage.input), field(3, usage.output), field(5, usage.cache)])),
+  ])
+  const insert = db.prepare('INSERT INTO steps VALUES (?, ?, ?, ?)')
+  insert.run(3, 15, null, planner([1_795_274_000, 0], [1_795_274_002, 500_000_000], { input: 100, output: 50, cache: 10 }))
+  insert.run(4, 132, null, Buffer.from('tool'))
+  insert.run(7, 15, null, planner([1_795_274_561, 947_657_000], [1_795_274_567, 283_058_000], { input: 5_179, output: 386, cache: 328_439 }))
+  insert.run(9, 15, null, planner([1_795_274_570, 0], null, { input: 1, output: 1, cache: 1 }))
+  insert.run(11, 15, null, planner([1_795_274_580, 0], [1_795_274_590, 0], { input: 1, output: 0, cache: 1 }))
+
+  assert.deepEqual(readAntigravityRequestSamples(providerSessionId, 'latest', root), {
+    samples: [{ stepIndex: 7, startedAt: 1_795_274_561_947, completedAt: 1_795_274_567_283, outputTokens: 386, contextTokens: 333_618 }],
+    lastStepIndex: 11,
+  })
+  assert.deepEqual(readAntigravityRequestSamples(providerSessionId, 3, root), {
+    samples: [{ stepIndex: 7, startedAt: 1_795_274_561_947, completedAt: 1_795_274_567_283, outputTokens: 386, contextTokens: 333_618 }],
+    lastStepIndex: 11,
+  })
+  assert.equal(readAntigravityRequestSamples(providerSessionId, -1, root)?.samples.length, 2)
+  assert.equal(readAntigravityRequestSamples('../other', -1, root), null)
+})
