@@ -1,11 +1,11 @@
 import type { CodingNsCliPermissionState, CodingNsCliSessionConfig, CodingNsNativeApprovalMode } from './contracts/cli-adapter.js'
 
-const COMMON: readonly CodingNsNativeApprovalMode[] = ['manual', 'auto-review', 'read-only', 'full-access']
+const CODEX: readonly CodingNsNativeApprovalMode[] = ['manual', 'auto-review', 'read-only', 'full-access-confirm', 'full-access']
 const ZCODE: readonly CodingNsNativeApprovalMode[] = ['manual', 'auto-review', 'read-only', 'accept-edits', 'full-access']
 const ANTIGRAVITY: readonly CodingNsNativeApprovalMode[] = ['manual', 'accept-edits', 'read-only', 'full-access']
 
 export function nativeApprovalModes(adapterId: string): readonly CodingNsNativeApprovalMode[] {
-  return adapterId === 'codex' ? COMMON : adapterId === 'zcode' ? ZCODE : adapterId === 'antigravity' ? ANTIGRAVITY : []
+  return adapterId === 'codex' ? CODEX : adapterId === 'zcode' ? ZCODE : adapterId === 'antigravity' ? ANTIGRAVITY : []
 }
 
 export function isNativeApprovalMode(adapterId: string, value: unknown): value is CodingNsNativeApprovalMode {
@@ -29,6 +29,7 @@ export function resolveNativeApprovalPermission(config: CodingNsCliSessionConfig
     return { approvalPolicy: 'ask', nativeApprovalMode: mode }
   }
   if (mode === 'read-only') return { sandboxMode: 'read-only', approvalPolicy: 'ask', nativeApprovalMode: mode }
+  if (mode === 'full-access-confirm') return { sandboxMode: 'danger-full-access', approvalPolicy: 'ask', nativeApprovalMode: mode }
   if (mode === 'full-access') return { sandboxMode: 'danger-full-access', approvalPolicy: 'never', nativeApprovalMode: mode }
   // ZCode 自主模式由原生 guarded 执行风险策略，不宣称存在文件系统沙箱。
   return { ...(config.adapterId === 'codex' ? { sandboxMode: 'workspace-write' as const } : {}), approvalPolicy: 'ask', nativeApprovalMode: mode }

@@ -4,6 +4,7 @@ import { createElement, type ComponentType, type ComponentProps, type ReactNode 
 /** 富文本菜单沿用宿主的键盘导航、焦点归还和外部点击关闭行为。 */
 export { Menu as DshMenu } from '@deepseek-ai/dsh-client-ui-primitives'
 export { Button as DshButton, Checkbox as DshCheckbox, Input as DshInput, Modal as DshModal } from '@deepseek-ai/dsh-client-ui-primitives'
+export { RiskConfirmation as DshRiskConfirmation } from '@deepseek-ai/dsh-client-ui-primitives'
 export { FileTypeIcon as DshFileTypeIcon, classifyFileType as classifyDshFileType, IconFolderCloseRegular as DshFolderIcon } from '@deepseek-ai/dsh-client-ui-primitives'
 export { PathLabel as DshPathLabel, Tooltip as DshTooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 
