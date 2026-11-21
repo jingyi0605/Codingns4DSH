@@ -802,6 +802,12 @@ export class CodingNsCliAdapterRegistry {
       // Agent Loop 通常已经创建了同名 DSH 原生会话；直接调用 Registry 时才按需补建。
       // 原生服务失败不能阻断外部 Agent，消息仍由现有 llm/stream 链路处理。
       try { nativeSessionReady = await this.nativeSessions?.ensure(input.sessionId, input.cwd) === input.sessionId } catch { /* Optional native projection is unavailable. */ }
+      // Save-time UI changes and resumed steps cannot change the active turn's policy.
+      // DSH may still carry the previous full-access preset's `never` policy.
+      if (!resumingSegmentedTurn && input.adapterId === 'codex' && driverInput.permission?.nativeApprovalMode === 'full-access-confirm'
+        && this.nativeSessions?.enableInteractiveApproval?.(input.sessionId) !== true) {
+        throw new CodingNsRpcError('CODINGNS_CLI_APPROVAL_UNAVAILABLE', 'DSH interactive approval is unavailable. Select another approval mode or restore the approval service.')
+      }
       // 每轮都写入稳定的适配器身份。旧日志只有通用 codingns-external 标记，
       // 这条 request/context 是升级后自动迁移时唯一可靠的回填依据。
       try {

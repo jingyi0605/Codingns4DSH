@@ -29,6 +29,27 @@ interface ContextLike {
   on?(name: string, listener: (session: unknown, event: unknown) => void, options?: { readonly global?: boolean }): unknown
 }
 
+/** Apply an explicitly selected interactive mode through DSH's canonical policy setter. */
+export function enableInteractiveSessionApproval(context: unknown, sessionId: string): boolean {
+  const nativeContext = asContext(context)
+  const get = nativeContext?.get.bind(nativeContext)
+  const agents = safeGet(get, 'agents') as AgentRegistryLike | undefined
+  const approval = safeGet(get, 'approval') as {
+    request?(request: Record<string, unknown>): Promise<unknown>
+    effectivePolicy?(session: unknown): unknown
+    setPolicy?(agent: unknown, policy: 'ask'): void
+  } | undefined
+  try {
+    const agent = agents?.get(sessionId) as AgentLike | undefined
+    if (agent?.session === undefined || typeof approval?.request !== 'function' || typeof approval.effectivePolicy !== 'function') return false
+    const current = approval.effectivePolicy(agent.session)
+    if (current === 'ask') return true
+    if (current !== 'never' || typeof approval.setPolicy !== 'function') return false
+    approval.setPolicy(agent, 'ask')
+    return approval.effectivePolicy(agent.session) === 'ask'
+  } catch { return false }
+}
+
 export function supportsWorkspaceApproval(context: unknown): boolean {
   const nativeContext = asContext(context)
   const get = nativeContext?.get.bind(nativeContext)

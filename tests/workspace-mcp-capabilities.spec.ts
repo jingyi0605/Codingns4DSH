@@ -12,10 +12,39 @@ import {
 } from '../data/build/dist/dsh-capabilities/host/workspace-pending-questions-adapter.js'
 import {
   createWorkspaceApprovalAdapter,
+  enableInteractiveSessionApproval,
   supportsWorkspaceApproval,
   type WorkspaceApprovalAdapter,
   type WorkspaceApprovalOutcome,
 } from '../data/build/dist/dsh-capabilities/host/workspace-approval-adapter.js'
+
+test('interactive approval uses the canonical per-session setter, verifies the result, and fails closed', () => {
+  const session = { seq: 0 }
+  const agent = { session }
+  let policy: unknown = 'never'
+  let writes = 0
+  let setter: ((target: unknown, next: 'ask') => void) | undefined = (target, next) => {
+    assert.equal(target, agent)
+    assert.equal(next, 'ask')
+    writes++
+    policy = next
+  }
+  const approval = { async request() { return 'unavailable' }, effectivePolicy(target: unknown) { assert.equal(target, session); return policy },
+    setPolicy(target: unknown, next: 'ask') { setter?.(target, next) } }
+  const context = { get(name: string) { return name === 'agents' ? { get: () => agent } : name === 'approval' ? approval : undefined } }
+  assert.equal(enableInteractiveSessionApproval(context, 'session'), true)
+  assert.equal(writes, 1)
+  assert.equal(enableInteractiveSessionApproval(context, 'session'), true)
+  assert.equal(writes, 1, 'an already interactive session needs no new policy event')
+  policy = 'never'; setter = undefined
+  assert.equal(enableInteractiveSessionApproval(context, 'session'), false, 'a setter that does not apply cannot be reported as success')
+  setter = () => { throw new Error('unavailable') }
+  assert.equal(enableInteractiveSessionApproval(context, 'session'), false)
+  policy = undefined
+  assert.equal(enableInteractiveSessionApproval(context, 'session'), false)
+  assert.equal(enableInteractiveSessionApproval({}, 'session'), false)
+  assert.equal(enableInteractiveSessionApproval({ get: () => undefined }, 'session'), false)
+})
 import { createDshCapabilityRegistry } from '../data/build/dist/dsh-capabilities/routes.js'
 import { DSH_CAPABILITY_MATRIX } from '../data/build/dist/dsh-capabilities/matrix.js'
 import type { DshCapabilityProfile, DshCapabilityResolution } from '../data/build/dist/dsh-capabilities/types.js'

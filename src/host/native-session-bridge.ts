@@ -2,6 +2,7 @@ import { externalTurnMessage, type CodingNsBackgroundTurn } from './cli-adapters
 import { randomUUID } from 'node:crypto'
 import { createSessionActivator, type SessionActivationController } from '../dsh-capabilities/host/session-activation-adapter.js'
 import { readNativeSessionModelSelection } from '../dsh-capabilities/host/session-model-selection-adapter.js'
+import { enableInteractiveSessionApproval } from '../dsh-capabilities/host/workspace-approval-adapter.js'
 import { createDshCapabilityRegistry } from '../dsh-capabilities/routes.js'
 import { readCodingNsImageArtifact } from './image-artifact-store.js'
 import type { Context } from '@deepseek-ai/cordis'
@@ -205,6 +206,8 @@ export interface CodingNsNativeSessionBridge {
   injectMessage?(sessionId: string, message: string): boolean
   /** 使用 DSH 原生 approval 组件请求一次权限决定；服务不可用时拒绝。 */
   requestApproval?(sessionId: string, request: CodingNsNativeApprovalRequest): Promise<CodingNsNativeApprovalOutcome>
+  /** Enable prompts at a new logical turn after an explicit full-access-confirm selection. */
+  enableInteractiveApproval?(sessionId: string): boolean
   /** 使用 DSH 原生 userQuestions 组件提问；服务不可用或取消时返回 null。 */
   askQuestions?(sessionId: string, request: CodingNsNativeQuestionRequest): Promise<CodingNsAgentQuestionResponse | null>
   /** 将 Host 上的 Provider 图片转成 DSH 持久化附件；失败时返回 null 让投影层降级。 */
@@ -776,6 +779,9 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
       } catch {
         return false
       }
+    },
+    enableInteractiveApproval(sessionId) {
+      return enableInteractiveSessionApproval(ctx, sessionId)
     },
     async requestApproval(sessionId, request) {
       const agent = nativeAgent(ctx, sessionId)

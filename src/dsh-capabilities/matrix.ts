@@ -31,7 +31,7 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('session.activation', 'session-activation-021', 'host', '>=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/session-activation-adapter.ts', 'host/native-session-bridge.ts']),
   route('workspace.session-control', 'workspace-session-control-020', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/workspace-session-control-adapter.ts', 'host/workspace-mcp/tools.ts']),
   route('workspace.pending-questions', 'workspace-pending-questions-020', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/workspace-pending-questions-adapter.ts', 'host/workspace-mcp/tools.ts']),
-  route('workspace.approval', 'workspace-approval-020', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/workspace-approval-adapter.ts', 'host/workspace-mcp/tools.ts']),
+  route('workspace.approval', 'workspace-approval-020', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/workspace-approval-adapter.ts', 'host/workspace-mcp/tools.ts', 'host/native-session-bridge.ts']),
   route('conversation.message-presentation', 'message-presentation-020', 'client', '>=0.2.1-alpha.2 <=0.2.1-alpha.2', 'supported', ['dsh-capabilities/client/message-presentation-adapter.ts', 'client/session-translation-chat.ts']),
   route('conversation.message-presentation', 'message-presentation-021', 'client', '>=0.2.1-alpha.3', 'supported', ['dsh-capabilities/client/message-presentation-adapter.ts', 'client/session-translation-chat.ts']),
   route('connection.peer', 'connection.peer-021', 'host', '>=0.2.1-alpha.3', 'supported', ['dsh-capabilities/host/connection-peer-adapter.ts', 'host/rpc.ts', 'host/modules/peer-host/peer-host-native-dispatch.ts']),
