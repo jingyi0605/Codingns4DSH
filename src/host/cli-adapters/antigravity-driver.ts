@@ -197,7 +197,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       capabilities: ['stream', 'resume', 'interrupt', 'tool-events', 'permission', 'questions'],
       permissionOptions: 'once',
       readQuestionRequest: antigravityQuestionRequest,
-      decidePermission: (_message, input) => input.permission?.nativeApprovalMode === undefined ? 'reject' : undefined,
+      decidePermission: (_message, input) => antigravityPermissionDecision(input.permission),
       enrichUsage: (usage, input) => {
         if (usage.cacheReadTokens !== undefined || usage.cacheWriteTokens !== undefined) {
           const normalized = usageChunk({ ...usage, uncachedInputTokens: usage.inputTokens })
@@ -811,6 +811,16 @@ function antigravityPermissionMode(permission: CodingNsCliTurnInput['permission'
   if (permission?.sandboxMode === 'danger-full-access' && permission.approvalPolicy === 'never') return null
   if (permission?.sandboxMode === 'workspace-write' && permission.approvalPolicy === 'never') return 'accept-edits'
   return 'plan'
+}
+
+/**
+ * ACP 权限请求的自动决定。没有原生审批模式的旧调用保持拒绝；“完全访问”由用户
+ * 明确选择，agy 即使带了 --dangerously-skip-permissions 仍会通过 ACP 发请求，
+ * 这里直接放行，不再弹审批面板；其他模式继续交给 DSH 原生审批。
+ */
+function antigravityPermissionDecision(permission: CodingNsCliTurnInput['permission']): 'allow' | 'reject' | undefined {
+  if (permission?.nativeApprovalMode === undefined) return 'reject'
+  return permission.nativeApprovalMode === 'full-access' ? 'allow' : undefined
 }
 
 function isAntigravityPermissionDenial(text: string): boolean {
