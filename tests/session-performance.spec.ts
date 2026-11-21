@@ -231,11 +231,11 @@ test('Antigravity composer displays the last model call when total billed input 
     state = projection.apply(state, sample({ inputTokens: 588_044, cacheReadTokens: 3_293_145 }))
     assert.deepEqual(projection.wire.view(state), {})
     assert.doesNotMatch(render(), /percent/)
-    assert.match(renderDock(), /<button[^>]*>上下文<\/button>/u)
+    assert.doesNotMatch(renderDock(), /<button|上下文/u, 'no standalone context button before native data arrives')
     state = projection.apply(state, sample({ ...billed, contextTokens: 187_713 }))
     assert.deepEqual(projection.wire.view(state), { pressureTokens: 187_713 })
     assert.doesNotMatch(render(), /percent/)
-    assert.match(renderDock(), /<button/u)
+    assert.doesNotMatch(renderDock(), /<button/u)
     magpieSnapshot = { usedTokens: 20_000, contextWindow: 500_000 }
     assert.match(render(), /percent&quot;:4/)
     assert.equal(renderDock(), '')

@@ -129,26 +129,6 @@ function contextLocale(language: 'en' | 'zh'): CodingNsLocale {
   }
 }
 
-test('the Antigravity context button opens the observed tokens without inventing a capacity', t => {
-  const { body, doc, restore } = setupDom()
-  const locale = { ...contextLocale('zh'), bind: () => resolveCodingNsTranslator() }
-  const component = AntigravityContextMeter({ locale, pressureTokens: 187_713 }) as ReactElement<any, any>
-  const view = createHookRenderer(component.type, component.props)
-  t.after(() => { view.dispose(); restore() })
-  const trigger = view.render().props.children[0]
-  assert.equal(trigger.props['aria-expanded'], false)
-  trigger.props.onClick({ currentTarget: { getBoundingClientRect: () => ({ right: 950, top: 800 }) } })
-  const [openedTrigger, portal] = view.render().props.children
-  assert.equal(openedTrigger.props['aria-expanded'], true)
-  assert.equal(portal.containerInfo, body)
-  const markup = renderToStaticMarkup(portal.children)
-  assert.ok(markup.includes((187_713).toLocaleString()))
-  assert.match(markup, /上下文容量未知/u)
-  assert.doesNotMatch(markup, /%|1,000,000/u)
-  doc.dispatchEvent(Object.assign(new Event('keydown'), { key: 'Escape' }))
-  assert.equal(view.render().props.children[0].props['aria-expanded'], false)
-})
-
 test('Antigravity shows context details in the Desktop rc.5 panel over the Fetch route', t =>
   assertAntigravityNativePanel(t, 'A6Bq1a', true))
 test('Antigravity shows context details in the Stage0 rc.5 panel over the native channel', t =>
@@ -182,7 +162,7 @@ async function assertAntigravityNativePanel(t: TestContext, classPrefix: string,
     return { ok: true as const, value: { compactionThreshold: 512_000, breakdown } }
   } }
   const component = AntigravityContextMeter({
-    locale, native: true, sessionId: 'agy-session', rpc, pressureTokens: 128_000, contextWindow: 1_048_576,
+    locale, sessionId: 'agy-session', rpc, pressureTokens: 128_000, contextWindow: 1_048_576,
   }) as ReactElement<any, any>
   const view = createHookRenderer(() => {
     const output = component.type(component.props)
