@@ -2,7 +2,7 @@ name: Routine event forward
 
 on:
   issues:
-  pull_request:
+  pull_request_target:
     types:
       - assigned
       - unassigned
