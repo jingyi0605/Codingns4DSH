@@ -1,25 +1,24 @@
-import { createElement, Fragment, useEffect, useId, useRef, useState } from 'react'
-import type { CSSProperties, MouseEvent, ReactElement } from 'react'
+import { createElement, Fragment, useEffect, useRef, useState } from 'react'
+import type { CSSProperties, ReactElement } from 'react'
 import { createPortal } from 'react-dom'
 import type { AntigravityContextDetails } from '../shared/contracts/cli-adapter.js'
 import type { CodingNsRpcClient } from './features/types.js'
 import { uiFontSize } from './font-scale.js'
 import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
-import { useDismissOnOutsidePointer } from './popup-dismiss.js'
 import { callCodingNsRpcResult } from './rpc-call.js'
 import { dshThemeColor } from './theme.js'
 
 interface AntigravityContextMeterProps {
   readonly sessionId?: string
-  readonly native?: boolean
   readonly pressureTokens?: number
   readonly contextWindow?: number
   readonly locale: CodingNsLocale
   readonly rpc?: CodingNsRpcClient
 }
 
+/** 只给 DSH 原生的上下文圆环弹窗补充 agy 的压缩阈值和构成估算，自己不渲染任何可见入口。 */
 export function AntigravityContextMeter(props: AntigravityContextMeterProps): ReactElement {
-  return props.native ? createElement(NativeCompactionThreshold, props) : createElement(FallbackContextMeter, props)
+  return createElement(NativeCompactionThreshold, props)
 }
 
 function NativeCompactionThreshold(props: AntigravityContextMeterProps): ReactElement {
@@ -47,10 +46,10 @@ function NativeCompactionThreshold(props: AntigravityContextMeterProps): ReactEl
 }
 
 function ContextSummary(props: AntigravityContextMeterProps): ReactElement {
-  const { contextWindow, pressureTokens, locale, native } = props
+  const { contextWindow, pressureTokens, locale } = props
   const t = useCodingNsTranslator(locale)
   return createElement('div', { 'data-codingns-antigravity-summary': '', style: summaryStyle },
-    native ? createElement('style', undefined, nativeSummaryCss) : null,
+    createElement('style', undefined, nativeSummaryCss),
     contextWindow === undefined
       ? createElement('div', undefined,
           createElement('div', undefined, pressureTokens === undefined
@@ -130,32 +129,6 @@ function ProgressRow({ label, used, limit, color }: {
     } })))
 }
 
-function FallbackContextMeter(props: AntigravityContextMeterProps): ReactElement {
-  const t = useCodingNsTranslator(props.locale)
-  const panelId = useId()
-  const trigger = useRef<HTMLButtonElement>(null)
-  const panel = useRef<HTMLDivElement>(null)
-  const [position, setPosition] = useState<{ right: number; bottom: number } | null>(null)
-  const toggle = (event: MouseEvent<HTMLButtonElement>): void => {
-    const rect = event.currentTarget.getBoundingClientRect()
-    setPosition(previous => previous === null ? {
-      right: Math.min(Math.max(12, window.innerWidth - rect.right), Math.max(12, window.innerWidth - panelWidth - 12)),
-      bottom: window.innerHeight - rect.top + 8,
-    } : null)
-  }
-  useDismissOnOutsidePointer(trigger, position !== null, () => setPosition(null), { portal: panel })
-  const title = t('cli.antigravityContextTitle')
-  return createElement('span', undefined,
-    createElement('button', {
-      type: 'button', ref: trigger, onClick: toggle, 'aria-controls': panelId,
-      'aria-expanded': position !== null, style: buttonStyle,
-    }, title),
-    position !== null && createPortal(createElement('div', {
-      id: panelId, ref: panel, role: 'region', 'aria-label': title, style: { ...panelStyle, ...position },
-    }, createElement(ContextSummary, props)), document.body),
-  )
-}
-
 const compactTokens = new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 })
 const breakdownParts = [
   { key: 'systemTokens', label: 'magpie.context.system', color: 'var(--dsw-static-neutral-bluish-400, #aeb3bc)' },
@@ -169,17 +142,6 @@ const nativeSummaryCss = `
   ${nativeSummaryPanel} { width: ${responsivePanelWidth}; }
   ${nativeSummaryPanel} > div:nth-child(-n + 2):not([data-codingns-antigravity-summary]) { display: none; }
 `
-
-const buttonStyle: CSSProperties = {
-  fontSize: uiFontSize(12), color: dshThemeColor.labelSecondary, background: dshThemeColor.surfaceSubtle,
-  padding: '3px 6px', border: 0, borderRadius: 6, cursor: 'pointer', whiteSpace: 'nowrap',
-}
-
-const panelStyle: CSSProperties = {
-  position: 'fixed', zIndex: 1000, boxSizing: 'border-box', width: responsivePanelWidth,
-  padding: '10px 12px', border: `1px solid ${dshThemeColor.menuBorder}`, borderRadius: 10,
-  background: dshThemeColor.menuBackground, color: dshThemeColor.labelPrimary, boxShadow: dshThemeColor.prominentShadow,
-}
 
 const summaryStyle: CSSProperties = {
   display: 'grid', gap: 12, color: dshThemeColor.labelSecondary, fontSize: uiFontSize(13), lineHeight: 1.4,

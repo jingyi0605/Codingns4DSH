@@ -18,7 +18,6 @@ export interface SessionPerformancePresentation {
 export interface SessionPerformancePresentationOptions {
   readonly antigravityContext?: ComponentType<{
     readonly sessionId: string
-    readonly native: boolean
     readonly pressureTokens?: number
     readonly contextWindow?: number
   }>
@@ -106,8 +105,7 @@ function installGrokContextPresentation(
         const magpieSnapshot = magpieContext?.useSnapshot?.(magpieContext.rpc, props.sessionId) ?? null
         const legacyMagpieReady = magpieContext?.useReady?.(magpieContext.rpc, props.sessionId) === true
         if (adapter !== 'antigravity' || magpieSnapshot !== null || legacyMagpieReady) return null
-        const native = pressure?.contextWindow !== undefined && pressure.pressureTokens !== undefined
-        return element(AntigravityMeter, { key: props.sessionId, sessionId: props.sessionId, native, ...pressure })
+        return element(AntigravityMeter, { key: props.sessionId, sessionId: props.sessionId, ...pressure })
       }))
     }
     const removeComposer = installComposerPresentation(owner, slots, Native => function ComposerWithGrokContext(props) {
