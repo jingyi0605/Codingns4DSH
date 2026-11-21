@@ -16,6 +16,7 @@ import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSeg
 import { normalizeToolStatus, serializeToolValue } from './tool-observation.js'
 import { AntigravityAutoUpdater, antigravityCommandEnvironment, spawnAntigravity } from './antigravity-updater.js'
 import { readAntigravityToolDetail, type AntigravityToolDetailRequest, type AntigravityToolDetail } from './antigravity-tool-detail.js'
+import { readAntigravityRequestSamples, type AntigravityRequestSamples } from './antigravity-session-db.js'
 
 const ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS = 30_000
 
@@ -109,6 +110,8 @@ function acpModelMatches(state: unknown, model: string): boolean | undefined {
 export interface AntigravityDriverOptions {
   /** 原生调用详情只读来源；测试可注入独立数据库，不能使用工具参数中的文件补历史。 */
   readonly readToolDetail?: (request: AntigravityToolDetailRequest) => AntigravityToolDetail | null
+  /** ACP 通道的逐次模型调用耗时来源；默认读 AGY 会话库，测试可注入。 */
+  readonly readRequestSamples?: (providerSessionId: string, afterStepIndex: number | 'latest') => AntigravityRequestSamples | null
   readonly autoUpdater?: Pick<AntigravityAutoUpdater, 'check' | 'dispose'>
   readonly binaries?: readonly string[]
   readonly spawnSync?: typeof spawnSync
@@ -153,6 +156,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   private readonly resolveEffort: () => string | null
   private readonly acp: AcpCliDriver
   private readonly readToolDetail: (request: AntigravityToolDetailRequest) => AntigravityToolDetail | null
+  private readonly readRequestSamples: (providerSessionId: string, afterStepIndex: number | 'latest') => AntigravityRequestSamples | null
 
   readonly warmModelCatalog = true
   readonly supportsToolStepSplitting = true
@@ -209,6 +213,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       },
     })
     this.readToolDetail = options.readToolDetail ?? readAntigravityToolDetail
+    this.readRequestSamples = options.readRequestSamples ?? ((providerSessionId, afterStepIndex) => readAntigravityRequestSamples(providerSessionId, afterStepIndex))
   }
 
   async listModels(): Promise<CodingNsCliModelCatalog> {
@@ -305,11 +310,41 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     }
     try {
       let providerSessionId = acpInput.providerSessionId
+      // 只统计本回合新增的模型调用：续聊时先记下库里已有的最后一个序号。
+      const performance = { sessionId: providerSessionId, after: -1 }
+      const baseline = providerSessionId ? this.readRequestSamples(providerSessionId, 'latest') : null
+      performance.after = baseline?.lastStepIndex ?? -1
+      // 续聊时回合一开始就先给出上一次调用的上下文占用，原生圆环不必等到第一次工具调用结束。
+      // 只带上下文量、不带耗时，避免把旧调用重复计入 tok/s。
+      let pendingContext: CodingNsAgentEvent | null = providerSessionId && baseline !== null
+        ? this.buildAcpPerformanceObservation(acpInput, providerSessionId, baseline, false) : null
+      // DSH 的当前步骤要在第一个内容事件之后才打开，样本过早到达会被丢弃。
+      const takePendingContext = (event: CodingNsAgentEvent): CodingNsAgentEvent[] => {
+        if (pendingContext === null || event.type === 'session-binding' || event.type === 'finish') return []
+        const next = pendingContext
+        pendingContext = null
+        return [next]
+      }
+      const flushPerformance = (): CodingNsAgentEvent[] => {
+        if (!performance.sessionId) return []
+        const read = this.readRequestSamples(performance.sessionId, performance.after)
+        if (read === null) return []
+        performance.after = read.lastStepIndex
+        const observation = this.buildAcpPerformanceObservation(acpInput, performance.sessionId, read)
+        return observation === null ? [] : [observation]
+      }
       for await (const event of this.acp.executeTurn(acpInput)) {
         if (event.type === 'session-binding') {
           providerSessionId = event.providerSessionId
           this.validateProviderSessionBinding(acpInput, providerSessionId)
+          if (performance.sessionId !== providerSessionId) {
+            performance.sessionId = providerSessionId
+            // 恢复失败后换成全新会话时，旧基线不再适用。
+            if (providerSessionId !== acpInput.providerSessionId) { performance.after = -1; pendingContext = null }
+          }
         }
+        // finish 之后 DSH 不再接收样本，必须在它之前把本回合剩余的调用结算出去。
+        if (event.type === 'finish') yield* flushPerformance()
         if (event.type === 'tool-event' && providerSessionId && event.callId && (event.status === 'completed' || event.status === 'failed')) {
           const detail = this.readToolDetail({ providerSessionId, callId: event.callId, toolName: event.toolName })
           if (detail !== null) {
@@ -319,10 +354,14 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
               ...(detail.images ? { outputImages: detail.images } : {}),
               ...(detail.error ? { status: 'failed' as const, error: detail.error } : {}),
             }
+            yield* takePendingContext(event)
+            yield* flushPerformance()
             continue
           }
         }
         yield event
+        yield* takePendingContext(event)
+        if (event.type === 'tool-event' && (event.status === 'completed' || event.status === 'failed')) yield* flushPerformance()
       }
     } finally {
       // Agy ACP 进程带完整 Language Server，只为这一回合借用，不留常驻进程。
@@ -755,6 +794,35 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       outputTokens: usage.output_tokens,
     }
     return { type: 'usage-observation', requestPerformance: { adapterId: 'antigravity', id: sample.id, samples: [sample] } }
+  }
+
+  /**
+   * ACP 通道没有 stream-json 的 duration_seconds，改用会话库里每次模型调用的实测
+   * 开始/完成时间和输出 token 合成吞吐样本；同时把最后一次调用看到的上下文量带上，
+   * 让上下文占用能走原生计量。首 token 时刻 AGY 不报告，沿用调用起点，不编造首字延迟。
+   */
+  private buildAcpPerformanceObservation(input: CodingNsCliTurnInput, providerSessionId: string, read: AntigravityRequestSamples, withPerformance = true): CodingNsAgentEvent | null {
+    const last = read.samples.at(-1)
+    if (last === undefined) return null
+    const samples = read.samples.map(sample => ({
+      id: `${providerSessionId}:${sample.stepIndex}`,
+      startedAt: sample.startedAt,
+      firstTokenAt: sample.startedAt,
+      completedAt: sample.completedAt,
+      outputTokens: sample.outputTokens,
+    }))
+    const contextWindow = input.modelContextWindow ?? this.resolveContextWindow(input.modelId)
+    const contextTokens = last.contextTokens > 0 ? last.contextTokens : undefined
+    if (!withPerformance && contextTokens === undefined) return null
+    return {
+      type: 'usage-observation',
+      ...(withPerformance ? { requestPerformance: { adapterId: 'antigravity' as const, id: samples.at(-1)!.id, samples } } : {}),
+      ...(contextTokens === undefined ? {} : { contextTokens }),
+      ...(contextTokens === undefined || contextWindow === undefined || contextWindow <= 0 ? {} : {
+        contextWindow,
+        contextUsageRatio: Number(Math.min(1, contextTokens / contextWindow).toFixed(6)),
+      }),
+    }
   }
 
   protected buildArgs(input: AntigravityTurnInput): readonly string[] {
