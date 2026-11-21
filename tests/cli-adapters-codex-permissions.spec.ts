@@ -17,7 +17,8 @@ const requestedPermissions = { fileSystem: { write: ['/workspace/approval-probe.
  * 外部运行时仅在权限工具已启用时发送请求，避免直接注入请求掩盖启动参数缺失。
  * 文件操作用状态记录，测试不会启动真实进程或修改工作区外文件。
  */
-async function createPermissionHarness(segmented: boolean, approvalAvailable = true, nativeApprovalMode?: string) {
+async function createPermissionHarness(segmented: boolean, approvalAvailable = true, nativeApprovalMode?: string,
+  options: { command?: boolean; policy?: 'ask' | 'never'; policySetter?: boolean } = {}) {
   const sessionId = `codex-permission-${segmented}-${approvalAvailable}`
   const session = { id: sessionId, header: { cwd: '/workspace/repo' } }
   const agent = { id: sessionId, session }
@@ -28,6 +29,8 @@ async function createPermissionHarness(segmented: boolean, approvalAvailable = t
     reply: undefined as Record<string, any> | undefined,
     executed: false,
     finished: false,
+    policy: options.policy ?? 'ask' as 'ask' | 'never',
+    policyChanges: 0,
   }
   let decide!: (outcome: CodingNsNativeApprovalOutcome) => void
   let markApprovalReached!: () => void
@@ -41,9 +44,16 @@ async function createPermissionHarness(segmented: boolean, approvalAvailable = t
     } }
     if (name === 'permissionPresets') return { current: () => 'workspace-write' }
     if (name === 'approval' && approvalAvailable) return {
-      config: { policy: 'ask' },
-      overrideOf: () => 'ask',
+      config: { policy: state.policy },
+      overrideOf: () => state.policy,
+      effectivePolicy: () => state.policy,
+      ...(options.policySetter === false ? {} : { setPolicy(target: unknown, policy: 'ask') {
+        assert.equal(target, agent)
+        state.policy = policy
+        state.policyChanges++
+      } }),
       async request(request: { agent: unknown; callId?: string; reason?: string }) {
+        if (state.policy === 'never') return 'rejected'
         state.approvals.push(request)
         markApprovalReached()
         return decision
@@ -76,7 +86,8 @@ async function createPermissionHarness(segmented: boolean, approvalAvailable = t
       state.rpcCalls.push(request)
       if (request.method === undefined && request.id === 77) {
         state.reply = request.result
-        state.executed = request.result?.permissions?.fileSystem?.write?.includes('/workspace/approval-probe.txt') === true
+        state.executed = options.command ? request.result?.decision === 'accept'
+          : request.result?.permissions?.fileSystem?.write?.includes('/workspace/approval-probe.txt') === true
         complete()
         return
       }
@@ -86,14 +97,15 @@ async function createPermissionHarness(segmented: boolean, approvalAvailable = t
         : request.method === 'model/list' ? { data: [] } : {}
       send({ jsonrpc: '2.0', id: request.id, result })
       if (request.method !== 'turn/start') return
-      if (!permissionToolEnabled) {
+      if (!permissionToolEnabled && !options.command) {
         complete()
         return
       }
-      send({ jsonrpc: '2.0', id: 77, method: 'item/permissions/requestApproval', params: {
+      send({ jsonrpc: '2.0', id: 77, method: options.command ? 'item/commandExecution/requestApproval' : 'item/permissions/requestApproval', params: {
         threadId: 'permission-thread', turnId: 'permission-turn', itemId: 'permission-item',
         environmentId: 'local', cwd: '/workspace/repo', reason: '测试工作区外写入权限',
-        permissions: requestedPermissions,
+        ...(options.command ? { command: 'pwsh.exe -Command "Remove-Item -LiteralPath fixture -Force"', availableDecisions: ['accept', 'decline'] }
+          : { permissions: requestedPermissions }),
       } })
     }
     return { stdout, stderr, stdin: { write }, kill() { stdout.end(); stderr.end(); return true } }
@@ -129,6 +141,45 @@ async function createPermissionHarness(segmented: boolean, approvalAvailable = t
     },
   }
 }
+
+for (const segmented of [false, true]) for (const outcome of ['allowed-once', 'rejected', 'cancelled'] as const) {
+  test(`Codex full-access-confirm ${segmented ? 'segmented' : 'ordinary'} command waits for ${outcome} after a never preset`, { timeout: 5_000 }, async () => {
+    const harness = await createPermissionHarness(segmented, true, 'full-access-confirm', { command: true, policy: 'never' })
+    try {
+      await Promise.race([harness.approvalReached, harness.running.then(() => { throw new Error('Turn ended before native command approval') })])
+      assert.equal(harness.state.policyChanges, 1)
+      assert.equal(harness.state.executed, false)
+      assert.equal(harness.state.finished, false)
+      assert.equal(harness.state.reply, undefined)
+      for (const method of ['thread/start', 'turn/start']) {
+        const params = harness.state.rpcCalls.find(call => call.method === method)?.params
+        assert.equal(params?.approvalPolicy, 'on-request')
+        assert.equal(params?.approvalsReviewer, 'user')
+        assert.equal(method === 'thread/start' ? params?.sandbox : params?.sandboxPolicy.type, method === 'thread/start' ? 'danger-full-access' : 'dangerFullAccess')
+      }
+      const launch = harness.state.args.join(' ').replace(/"/gu, '')
+      assert.match(launch, /sandbox_mode=danger-full-access/u)
+      assert.match(launch, /approval_policy=on-request/u)
+      harness.decide(outcome)
+      await harness.running
+      assert.deepEqual(harness.state.reply, { decision: outcome === 'allowed-once' ? 'accept' : 'decline' })
+      assert.equal(harness.state.executed, outcome === 'allowed-once')
+      assert.equal(harness.chunks.at(-1)?.type, 'finish')
+    } finally { await harness.dispose() }
+  })
+}
+
+test('Codex full-access-confirm fails before CLI launch if a never policy cannot be changed', { timeout: 5_000 }, async () => {
+  const harness = await createPermissionHarness(false, true, 'full-access-confirm', { command: true, policy: 'never', policySetter: false })
+  try {
+    await harness.running
+    assert.equal(harness.state.policyChanges, 0)
+    assert.equal(harness.state.executed, false)
+    assert.equal(harness.state.rpcCalls.length, 0)
+    assert.equal(harness.state.approvals.length, 0)
+    assert.match(JSON.stringify(harness.chunks), /DSH interactive approval is unavailable/u)
+  } finally { await harness.dispose() }
+})
 
 for (const segmented of [false, true]) {
   for (const outcome of ['allowed-once', 'rejected', 'cancelled'] as const) {
