@@ -406,3 +406,16 @@ test('Antigravity 图片回合：DSH 附件存储的无后缀对象按内容识�
     assert.deepEqual(prompt.at(-1), { type: 'image', data: PNG.toString('base64'), mimeType: 'image/png' })
   })
 })
+
+test('Antigravity 完全访问自动放行 ACP 审批，不再弹出审批面板', { timeout: 5_000 }, async () => {
+  const { driver, calls, replies } = acpDriver({ serverRequests: [commandApproval] })
+  const config = { adapterId: 'antigravity', nativeApprovalMode: 'full-access' } as const
+  const permission = resolveNativeApprovalPermission(config, undefined)!
+  try {
+    const chunks = await collect(driver, { sessionId: 'agy-full-access', prompt: 'Test approval', permission, providerSessionId: 'agy-acp-session' })
+    assert.ok(calls[0]?.includes('--dangerously-skip-permissions'))
+    assert.deepEqual(replies.get(91)?.result, { outcome: { outcome: 'selected', optionId: 'approve-this-command' } })
+    assert.equal(chunks.some(chunk => chunk.type === 'permission-request'), false)
+    assert.equal(chunks.at(-1)?.reason, 'stop')
+  } finally { driver.dispose() }
+})
