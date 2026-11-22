@@ -9,6 +9,7 @@ export const WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE = 'data-codingns-session-archiv
 export const WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE = 'data-codingns-session-archive-modal'
 /** 模态框内每个会话行上的 Agent 彩色标签标记。 */
 export const WORKSPACE_SESSION_ARCHIVE_AGENT_ATTRIBUTE = 'data-codingns-session-archive-agent'
+export const WORKSPACE_SESSION_ARCHIVE_PENDING_DELETE_ATTRIBUTE = 'data-codingns-session-archive-pending-delete'
 
 const MORE_SESSION_PATTERN = /(?:展开|显示|expand|show).*(?:其余|更多|remaining|more).*(?:会话|sessions?)/iu
 
@@ -61,6 +62,10 @@ export interface WorkspaceSessionArchiveDomOptions {
   readonly onSessionUnarchived?: (sessionId: string) => void | Promise<void>
   /** DSH 语言运行时；归档入口、模态框和 Agent 兜底展示名都从它取词。 */
   readonly locale?: CodingNsLocale
+  /** 判断归档会话是否已排队等待下次重启后彻底删除。 */
+  readonly isPendingDeletion?: (sessionId: string) => boolean
+  /** 从归档弹窗直接取消排队删除；返回是否成功取消以及是否同时移出归档。 */
+  readonly onCancelPendingDeletion?: (sessionId: string, title: string) => Promise<{ readonly cancelled: boolean; readonly unarchived: boolean }>
 }
 
 /** 读取当前 DSH Workspace 的归档会话摘要，独立导出供契约测试和宿主探测使用。 */
@@ -91,6 +96,8 @@ export function startWorkspaceSessionArchiveDom(
     ?? ((sessionId: string): string => sessionAdapterId(sessionId) ?? 'dsh')
   const readNativeWorkspaceSnapshot = options.readNativeWorkspaceSnapshot
   const onSessionUnarchived = options.onSessionUnarchived
+  const isPendingDeletion = options.isPendingDeletion
+  const onCancelPendingDeletion = options.onCancelPendingDeletion
   let disposed = false
   let scanQueued = false
   let loading: Promise<void> | undefined
@@ -138,6 +145,8 @@ export function startWorkspaceSessionArchiveDom(
           t,
           onChanged: () => { void refreshData() },
           onSessionUnarchived,
+          ...(isPendingDeletion === undefined ? {} : { isPendingDeletion }),
+          ...(onCancelPendingDeletion === undefined ? {} : { onCancelPendingDeletion }),
         }))
       }
       for (const [index, button] of buttons.entries()) {
@@ -567,6 +576,8 @@ interface ArchiveModalContext {
   readonly t: CodingNsTranslator
   readonly onChanged: () => void
   readonly onSessionUnarchived: ((sessionId: string) => void | Promise<void>) | undefined
+  readonly isPendingDeletion?: (sessionId: string) => boolean
+  readonly onCancelPendingDeletion?: (sessionId: string, title: string) => Promise<{ readonly cancelled: boolean; readonly unarchived: boolean }>
 }
 
 function openArchiveModal(
@@ -689,7 +700,8 @@ function createArchiveRow(
   item: ArchivedSessionItem,
   context: ArchiveModalContext,
 ): HTMLElement {
-  const { dom, adapterIdForSession, t } = context
+  const { dom, adapterIdForSession, t, isPendingDeletion, onCancelPendingDeletion, onChanged } = context
+  const pendingDeletion = isPendingDeletion?.(item.sessionId) === true
   const row = dom.createElement('div')
   Object.assign(row.style, { display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '12px', padding: '12px 0', borderBottom: '1px solid var(--dsw-alias-border-l1, rgba(0,0,0,.08))' })
   const content = dom.createElement('div')
@@ -703,12 +715,73 @@ function createArchiveRow(
   const meta = dom.createElement('div')
   Object.assign(meta.style, { minWidth: '0', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: '6px 12px' })
   meta.append(createAgentBadge(adapterIdForSession(item.sessionId), dom, t))
+  const pendingBadge = pendingDeletion ? createPendingDeletionBadge(item.sessionId, dom, t) : undefined
+  if (pendingBadge !== undefined) meta.append(pendingBadge)
   if (item.createdAt !== undefined) meta.append(createArchiveTimestamp('archive.createdAt', item.createdAt, dom, t))
   meta.append(createArchiveTimestamp('archive.archivedAt', item.archivedAt, dom, t))
   content.append(name, meta)
+  if (pendingDeletion && onCancelPendingDeletion !== undefined) {
+    const cancelBtn = dom.createElement('button')
+    cancelBtn.type = 'button'
+    cancelBtn.setAttribute('data-codingns-session-archive-cancel-delete', item.sessionId)
+    cancelBtn.textContent = t('archive.cancelPendingDeletion')
+    Object.assign(cancelBtn.style, {
+      flex: '0 0 auto',
+      padding: '4px 10px',
+      borderRadius: '6px',
+      border: `1px solid ${dshThemeColor.border}`,
+      background: 'transparent',
+      color: dshThemeColor.labelPrimary,
+      fontSize: '12px',
+      cursor: 'pointer',
+      font: 'inherit',
+    })
+    cancelBtn.addEventListener('click', async () => {
+      cancelBtn.disabled = true
+      cancelBtn.textContent = t('archive.processing')
+      const result = await onCancelPendingDeletion(item.sessionId, item.title)
+      if (!result.cancelled) {
+        cancelBtn.disabled = false
+        cancelBtn.textContent = t('archive.cancelPendingDeletion')
+        return
+      }
+      if (result.unarchived) {
+        row.remove()
+      } else {
+        pendingBadge?.remove()
+        cancelBtn.replaceWith(createRestoreButton(item, row, context))
+      }
+      onChanged()
+    })
+    row.append(content, cancelBtn)
+    return row
+  }
   const restore = createRestoreButton(item, row, context)
   row.append(content, restore)
   return row
+}
+
+function createPendingDeletionBadge(
+  sessionId: string,
+  dom: Pick<Document, 'createElement'>,
+  t: CodingNsTranslator,
+): HTMLElement {
+  const badge = dom.createElement('span')
+  badge.setAttribute(WORKSPACE_SESSION_ARCHIVE_PENDING_DELETE_ATTRIBUTE, sessionId)
+  badge.textContent = t('archive.pendingDeletionTag')
+  Object.assign(badge.style, {
+    display: 'inline-flex',
+    alignItems: 'center',
+    padding: '1px 7px',
+    borderRadius: '999px',
+    border: `1px solid ${dshThemeColor.error}`,
+    background: 'rgba(220, 38, 38, 0.12)',
+    color: dshThemeColor.error,
+    fontSize: '12px',
+    fontWeight: '500',
+    lineHeight: '1.4',
+  })
+  return badge
 }
 
 function createArchiveTimestamp(

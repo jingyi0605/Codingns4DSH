@@ -13,7 +13,7 @@ import {
 import { useCodingNsTranslator } from '../locale.js'
 import { SettingsToggleRow, settingsControlClass, settingsIconButtonStyle } from '../settings-controls.js'
 
-type WorkspaceToggleField = 'showAdapterLogo' | 'showArchivedSessions' | 'showWorkspaceHiding' | 'showSubscriptionUsage' | 'showQuickPhrases' | 'showSkillQuickReference' | 'optimizeSessionTitles' | 'rememberConversationRightbarRatio'
+type WorkspaceToggleField = 'showAdapterLogo' | 'showArchivedSessions' | 'showWorkspaceHiding' | 'showSubscriptionUsage' | 'showQuickPhrases' | 'showSkillQuickReference' | 'optimizeSessionTitles' | 'rememberConversationRightbarRatio' | 'enableSessionDeletion'
 
 /** 工作区会话增强的单列设置面板。 */
 export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, notify }: FeaturePanelProps): ReactElement {
@@ -99,6 +99,15 @@ export function WorkspaceSessionEnhancementPanel({ services, enabled, snapshot, 
       label: t('workspace.rememberConversationRightbarRatio'), description: t('workspace.rememberConversationRightbarRatioDescription'),
       checked: value.rememberConversationRightbarRatio, disabled,
       onChange: (checked) => updateSetting('rememberConversationRightbarRatio', checked),
+    }),
+    createElement(SettingsToggleRow, {
+      label: t('workspace.enableSessionDeletion'),
+      description: services.contextMenus === undefined
+        ? t('workspace.enableSessionDeletionUnavailable')
+        : t('workspace.enableSessionDeletionDescription'),
+      checked: value.enableSessionDeletion ?? DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS.enableSessionDeletion,
+      disabled: disabled || services.contextMenus === undefined,
+      onChange: (checked) => updateSetting('enableSessionDeletion', checked),
     }),
     usageSettingsOpen && createElement(SubscriptionUsageSettingsDialog, {
       services,

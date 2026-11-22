@@ -80,6 +80,12 @@ export function clearSessionAdapters(): void {
   notify()
 }
 
+/** Remove a permanently deleted session binding from the client adapter cache. */
+export function removeSessionAdapter(sessionId: string): void {
+  if (!adaptersBySession.delete(sessionId)) return
+  notify()
+}
+
 /** 只供测试和诊断读取的脱敏快照。 */
 export function sessionAdapterSnapshot(): Readonly<Record<string, string>> {
   return Object.fromEntries(adaptersBySession)
