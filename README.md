@@ -11,9 +11,9 @@
 
 **简体中文** · [English](README.en.md)
 
-**开发版本 `@jingyi0605/codingns4dsh@0.2.3-beta.1`（未发布）** · DSH 最低版本 **`0.2.2-alpha.2`**（临时 Stage0 已验证 `0.2.2-rc.5` 和 `0.2.3-alpha.1`；更新版本仅告警）· Node **`>= 24.9`** · macOS / Linux / Windows
+**开发版本 `@jingyi0605/codingns4dsh@0.2.3-beta.2`（未发布）** · DSH 最低版本 **`0.2.2-alpha.2`**（临时 Stage0 已验证 `0.2.2-rc.5` 和 `0.2.3-alpha.2`；更新版本仅告警）· Node **`>= 24.9`** · macOS / Linux / Windows
 
-本次验证使用 macOS 上两个隔离的 Stage0 Profile。`0.2.3-alpha.1` 的 npm CLI 需用同一上游 tag 的 Cordis 组件才能启动；正式 Stage0 未切换。范围与限制见 [临时 Stage0 验收记录](docs/开发记录/20261122-DSH-0.2.3临时Stage0验收.md)。
+本次验证使用 macOS 上两个隔离的 Stage0 Profile。`0.2.3-alpha.2` 的 npm CLI 需用同一上游 tag 的 Cordis 组件才能启动；正式 Stage0 未切换。范围与限制见 [临时 Stage0 验收记录](docs/开发记录/20261122-DSH-0.2.3临时Stage0验收.md)。
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965** · **[微信群 / QQ 群二维码](#交流群)**
 
@@ -252,14 +252,14 @@ DSH 原生会话的翻译默认关闭，可在会话模型选择菜单中开启�
 
 ## 安装
 
-**环境要求**：DSH `>=0.2.2-alpha.2`（已验证 `0.2.3-alpha.1`；更高版本会显示未验证警告，但不阻止安装或运行）、Node.js `>=24.9`，并安装 pnpm。macOS/Linux 的持久终端还需要 tmux。
+**环境要求**：DSH `>=0.2.2-alpha.2`（已验证 `0.2.3-alpha.2`；更高版本会显示未验证警告，但不阻止安装或运行）、Node.js `>=24.9`，并安装 pnpm。macOS/Linux 的持久终端还需要 tmux。
 
-下方的 `0.2.3-beta.1` 安装命令要等该版本发布后才能使用。
+下方的 `0.2.3-beta.2` 安装命令要等该版本发布后才能使用。
 
 ### 使用内置 Web 配置
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.3-beta.1
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.3-beta.2
 dsh web
 ```
 
@@ -269,7 +269,7 @@ dsh web
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.3-beta.1
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.3-beta.2
 dsh codingns
 ```
 
