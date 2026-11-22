@@ -2898,3 +2898,90 @@ test('查看请求模态框在读取失败时给出重试，没有可绑定会�
   t.after(() => unboundView.dispose())
   assert.equal(findTestElement(unboundView.render(), (element) => element.type === 'button' && element.props?.className === 'codingns4dsh-magpie-route-requests'), null, 'a session without a Magpie binding cannot scope requests')
 })
+
+test('agy-cli 的池化窗口在 parseMagpieQuotas 与 parseMagpieQuotaCards 中自动合并去重', () => {
+  const agyQuotaRow = {
+    provider: 'agy-cli',
+    name: 'Antigravity (local agy CLI)',
+    user: 'zj59122.us@gmail.com',
+    windows: [
+      { name: 'Claude Opus 5.5', family: 'Claude', pool: 'Claude & GPT', used: 0, resetsAt: '2026-11-29T02:19:16Z' },
+      { name: 'Claude Sonnet 5.5', family: 'Claude', pool: 'Claude & GPT', used: 0, resetsAt: '2026-11-29T02:19:16Z' },
+      { name: 'Gemini 3.8 Flash', family: 'Gemini', pool: 'Gemini', used: 12, resetsAt: '2026-11-28T15:13:34Z' },
+      { name: 'Gemini 4 Argon', family: 'Gemini', pool: 'Gemini 4 Argon', used: 0.03, resetsAt: '2026-11-28T15:22:33Z' },
+      { name: 'Gemini 4 Hydrogen', family: 'Gemini', pool: 'Gemini', used: 12, resetsAt: '2026-11-28T15:13:34Z' },
+      { name: 'Gemini 4 Neon', family: 'Gemini', pool: 'Gemini', used: 12, resetsAt: '2026-11-28T15:13:34Z' },
+      { name: 'GPT-OSS 120B', family: 'GPT-OSS', pool: 'Claude & GPT', used: 0, resetsAt: '2026-11-29T02:19:16Z' },
+      { name: 'Orchestrator (Neon)', family: 'Orchestrator', pool: 'Gemini', used: 12, resetsAt: '2026-11-28T15:13:34Z' },
+      { name: '7 days', pool: 'Gemini', used: 12.9, resetsAt: '2026-11-28T15:13:34Z' },
+      { name: '5 hours', pool: 'Gemini', used: 8.3, resetsAt: '2026-11-22T05:16:01Z' },
+      { name: '7 days', pool: 'Claude & GPT', used: 0, resetsAt: '2026-11-29T02:19:16Z' },
+      { name: '5 hours', pool: 'Claude & GPT', used: 0, resetsAt: '2026-11-22T07:19:16Z' },
+      { name: '7 days', pool: 'Gemini 4 Argon', used: 0.03, resetsAt: '2026-11-28T15:22:33Z' },
+    ],
+  }
+
+  const expectedWindows = [
+    { name: 'Gemini · 5 hours', usedPercent: 8.3, remainingPercent: null, resetsAt: '2026-11-22T05:16:01Z' },
+    { name: 'Gemini · 7 days', usedPercent: 12.9, remainingPercent: null, resetsAt: '2026-11-28T15:13:34Z' },
+    { name: 'Claude & GPT · 5 hours', usedPercent: 0, remainingPercent: null, resetsAt: '2026-11-22T07:19:16Z' },
+    { name: 'Claude & GPT · 7 days', usedPercent: 0, remainingPercent: null, resetsAt: '2026-11-29T02:19:16Z' },
+    { name: 'Gemini 4 Argon · 7 days', usedPercent: 0.03, remainingPercent: null, resetsAt: '2026-11-28T15:22:33Z' },
+  ]
+
+  const sessionQuotas = parseMagpieQuotas([agyQuotaRow])
+  assert.ok(sessionQuotas !== null)
+  assert.deepEqual(
+    sessionQuotas[0]!.windows.map((w) => ({
+      name: w.name,
+      usedPercent: w.usedPercent,
+      remainingPercent: w.remainingPercent,
+      resetsAt: w.resetsAt,
+    })),
+    expectedWindows,
+  )
+
+  const dashboardCards = parseMagpieQuotaCards([agyQuotaRow])
+  assert.ok(dashboardCards !== null)
+  assert.deepEqual(
+    dashboardCards[0]!.windows.map((w) => ({
+      name: w.name,
+      usedPercent: w.usedPercent,
+      remainingPercent: w.remainingPercent,
+      resetsAt: w.resetsAt,
+    })),
+    expectedWindows,
+  )
+
+  // 已带池名前缀的 /v1/magpie/quotas 响应不会重复拼接前缀
+  const preNamed = parseMagpieQuotas([{
+    provider: 'agy-cli',
+    name: 'Antigravity (local agy CLI)',
+    windows: [
+      { name: 'Gemini · 7 days', pool: 'Gemini', used: 12, remaining: 88, resetsAt: '2026-11-28T15:13:34Z' },
+      { name: 'Gemini · 5 hours', pool: 'Gemini', used: 8, remaining: 92, resetsAt: '2026-11-22T05:16:01Z' },
+    ],
+  }])
+  assert.deepEqual(preNamed?.[0]?.windows.map((w) => w.name), ['Gemini · 5 hours', 'Gemini · 7 days'])
+
+  // 只有 family、没有 pool 的旧版按模型窗口也按模型族折叠并取最紧窗口
+  const familyOnly = parseMagpieQuotas([{
+    provider: 'antigravity',
+    name: 'Antigravity',
+    windows: [
+      { name: 'Claude Opus 4.6 (Thinking)', family: 'Claude', used: 25, resetsAt: '2026-11-22T08:00:00Z' },
+      { name: 'Claude Sonnet 4.6', family: 'Claude', used: 40, resetsAt: '2026-11-22T09:00:00Z' },
+      { name: 'Gemini 3 Flash', family: 'Gemini', used: 10, resetsAt: '2026-11-22T07:00:00Z' },
+      { name: 'Gemini 3.1 Pro (High)', family: 'Gemini', used: 60, resetsAt: '2026-11-22T06:00:00Z' },
+      { name: 'GPT-OSS 120B (Medium)', family: 'GPT-OSS', used: 5, resetsAt: '2026-11-22T10:00:00Z' },
+    ],
+  }])
+  assert.deepEqual(
+    familyOnly?.[0]?.windows.map((w) => ({ name: w.name, usedPercent: w.usedPercent })),
+    [
+      { name: 'Gemini', usedPercent: 60 },
+      { name: 'Claude', usedPercent: 40 },
+      { name: 'GPT-OSS', usedPercent: 5 },
+    ],
+  )
+})

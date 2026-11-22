@@ -1388,3 +1388,34 @@ function applyProviderFields(current: Record<string, unknown>, body: Record<stri
     } else if (value !== undefined) current[key] = value
   }
 }
+
+test('parseMagpieWebAccounts 对 agy-cli 池化窗口去重并保留池前缀名称', () => {
+  const accounts = parseMagpieWebAccounts([
+    {
+      provider: 'agy-cli',
+      name: 'Antigravity (local agy CLI)',
+      user: 'zj59122.us@gmail.com',
+      windows: [
+        { name: 'Claude Opus 5.5', family: 'Claude', pool: 'Claude & GPT', used: 0, resetsAt: '2026-11-29T02:19:16Z' },
+        { name: 'Claude Sonnet 5.5', family: 'Claude', pool: 'Claude & GPT', used: 0, resetsAt: '2026-11-29T02:19:16Z' },
+        { name: 'Gemini 4 Hydrogen', family: 'Gemini', pool: 'Gemini', used: 12, resetsAt: '2026-11-28T15:13:34Z' },
+        { name: 'Gemini 4 Argon', family: 'Gemini', pool: 'Gemini 4 Argon', used: 0.03, resetsAt: '2026-11-28T15:22:33Z' },
+        { name: '7 days', pool: 'Gemini', used: 12.9, resetsAt: '2026-11-28T15:13:34Z' },
+        { name: '5 hours', pool: 'Gemini', used: 8.3, resetsAt: '2026-11-22T05:16:01Z' },
+        { name: '7 days', pool: 'Claude & GPT', used: 0, resetsAt: '2026-11-29T02:19:16Z' },
+        { name: '7 days', pool: 'Gemini 4 Argon', used: 0.03, resetsAt: '2026-11-28T15:22:33Z' },
+      ],
+    },
+  ], null, null)
+
+  assert.ok(accounts !== null)
+  assert.deepEqual(
+    accounts[0]?.windows.map((w) => ({ name: w.name, used: w.used })),
+    [
+      { name: 'Gemini · 5 hours', used: 8.3 },
+      { name: 'Gemini · 7 days', used: 12.9 },
+      { name: 'Claude & GPT · 7 days', used: 0 },
+      { name: 'Gemini 4 Argon · 7 days', used: 0.03 },
+    ],
+  )
+})
