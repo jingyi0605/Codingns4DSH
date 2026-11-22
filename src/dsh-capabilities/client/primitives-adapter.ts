@@ -56,6 +56,8 @@ type PrimitiveExports = typeof primitives & {
   readonly IconPhoneOutlineMedium?: IconComponent
   readonly IconWrapFillRegular?: IconComponent
   readonly IconNowrapFillRegular?: IconComponent
+  readonly IconTrashOutlineRegular?: IconComponent
+  readonly IconTrashOutlineMedium?: IconComponent
   readonly ShortcutKeys?: ShortcutKeysComponent
 }
 
@@ -108,6 +110,18 @@ export function resolveChevronDownIcon(): IconComponent {
 export function resolveRefreshIcon(): IconComponent {
   const value = primitives as PrimitiveExports
   return value.IconRefreshOutlineRegular ?? value.IconRefreshOutlineMedium ?? unavailableIcon
+}
+
+/** 工作区会话删除入口与行操作使用的垃圾桶图标。 */
+export function resolveTrashIcon(): IconComponent {
+  const value = primitives as PrimitiveExports
+  return value.IconTrashOutlineRegular ?? value.IconTrashOutlineMedium ?? TrashOutlineIcon
+}
+
+function TrashOutlineIcon({ size = 14, className }: { readonly size?: number; readonly className?: string }) {
+  return createElement('svg', { width: size, height: size, className, viewBox: '0 0 16 16', fill: 'none', 'aria-hidden': true, focusable: false,
+    stroke: 'currentColor', strokeWidth: 1.25, strokeLinecap: 'round', strokeLinejoin: 'round' },
+    createElement('path', { d: 'M2.5 4.25h11M6.25 2.5h3.5M12.25 4.25l-.55 8.1a1.2 1.2 0 0 1-1.2 1.15h-5a1.2 1.2 0 0 1-1.2-1.15l-.55-8.1M6.5 7v3.75M9.5 7v3.75' }))
 }
 
 /** Document toolbar glyphs shared with the native text preview. */
@@ -183,16 +197,14 @@ export function resolveCloseFillIcon(): IconComponent {
 /**
  * 模型搜索的模糊排序。
  *
- * 内置模型选择器用 primitives 的 `rankByName` 排名搜索结构：查询必须是名称的
- * 大小写不敏感子序列，前缀命中优先，其次按对齐分数。插件模型选择器复用同一
- * 排序，保证同一查询在内置与外部 Agent 两个选择器里得到相同的顺序；旧版 DSH
- * 缺少该导出时退回等价的本地实现，行为不变。
+ * 0.2.2 使用 primitives 的 `rankByName`。宿主不再导出它时，继续使用相同的
+ * 本地子序列匹配，让外部 Agent 选择器保留原有排序。
  */
 export type RankModelByName = <T extends { readonly name: string }>(items: readonly T[], rawQuery: string) => readonly T[]
 
 export const rankModelByName: RankModelByName = (items, rawQuery) => {
-  const exported = (primitives as Partial<typeof primitives>).rankByName
-  if (typeof exported === 'function') return exported(items, rawQuery) as readonly (typeof items)[number][]
+  const exported = (primitives as { readonly rankByName?: RankModelByName })['rankByName']
+  if (typeof exported === 'function') return exported(items, rawQuery)
   return rankByNameFallback(items, rawQuery)
 }
 

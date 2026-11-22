@@ -14,6 +14,7 @@ export interface DshContextMenuContribution {
 export interface DshContextMenuAction {
   readonly id: string
   readonly label: string
+  readonly icon?: { readonly key: string; readonly src?: string }
   readonly disabled?: boolean
   readonly danger?: boolean
   readonly separatorBefore?: boolean

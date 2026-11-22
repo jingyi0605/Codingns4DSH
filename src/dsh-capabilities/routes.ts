@@ -18,6 +18,26 @@ import { supportsFlatSubagentActivation } from './host/subagent-activation-adapt
 import { createGlobalPanelAdapter, supportsGlobalPanel } from './client/global-panel-adapter.js'
 import { readContextMenus, supportsContextMenus } from './client/context-menu-adapter.js'
 import { createPluginUpdateManager, supportsPluginUpdateManager } from './host/plugin-update-adapter.js'
+import {
+  readImmediateDeletionAdapter,
+  readPersistenceLocationAdapter,
+  readProjectionCleanupAdapter,
+  readRestartReplayAdapter,
+  readSearchIndexReconcileAdapter,
+  readSpillCleanupAdapter,
+  readWorkspaceCleanupAdapter,
+  supportsImmediateSessionDeletion,
+  supportsPersistenceLocation,
+  supportsProjectionDeletionCleanup,
+  supportsRestartSessionDeletionReplay,
+  supportsSearchIndexReconciliation,
+  supportsSpillDeletionCleanup,
+  supportsWorkspaceDeletionCleanup,
+} from './host/session-deletion-adapter.js'
+import {
+  readSessionDeletionUiRefresh,
+  supportsSessionDeletionUiRefresh,
+} from './client/session-deletion-adapter.js'
 import { CODINGNS_VERSION } from '../shared/contracts/version.js'
 
 /**
@@ -79,6 +99,7 @@ export function createDshCapabilityRegistry(
     add({ id: 'remote-result', capability: 'typert.remote', supportedDsh: '>=0.1.5-rc.3 <=0.1.7-rc.2', runtime, priority: 10, status: 'supported', introducedIn: '0.1.5-rc.3', detect: (ctx) => (ctx as { remote?: unknown }).remote !== undefined, create: (ctx) => (ctx as { remote: unknown }).remote })
     addDsh020HostRoutes(add, range020)
     addPeerHostHostRoutes(add)
+    addSessionDeletionHostRoutes(add, range020)
   } else {
     add({ id: 'plugin-client-reload-unavailable-020', capability: 'plugin.client.reload-status', supportedDsh: range020, runtime, priority: 10,
       status: 'supported', introducedIn: '0.2.0-rc.2', detect: () => false, create: () => undefined })
@@ -86,6 +107,8 @@ export function createDshCapabilityRegistry(
       detect: supportsGlobalPanel, create: createGlobalPanelAdapter })
     add({ id: 'ui-context-menu-022', capability: 'ui.context-menu', supportedDsh: '>=0.2.2-alpha.3', runtime, priority: 20,
       status: 'supported', introducedIn: '0.2.2-alpha.3', detect: supportsContextMenus, create: readContextMenus })
+    add({ id: 'session-deletion-ui-refresh-022', capability: 'session.deletion.ui-refresh', supportedDsh: '>=0.2.2-alpha.3', runtime, priority: 20,
+      status: 'supported', introducedIn: '0.2.2-alpha.3', detect: supportsSessionDeletionUiRefresh, create: readSessionDeletionUiRefresh })
     add({ id: 'session-performance-presentation-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformancePresentation, create: createSessionPerformancePresentation })
     add({ id: 'message-presentation-020', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.1-alpha.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.2',
       detect: ctx => supportsLegacyMessagePresentation({ slots: read(ctx, 'slots') }, facts.primitives), create: () => createLegacyMessagePresentation(facts.primitives) })
@@ -455,4 +478,84 @@ function addPeerHostRoute(
 function readPeerHostAdapter(context: unknown, field: string): unknown {
   if (Array.isArray(context)) return undefined
   return readKey(context, field)
+}
+
+function addSessionDeletionHostRoutes(add: CapabilityRouteAdder, supportedDsh: string): void {
+  add({
+    id: 'session-deletion-persistence-location-022',
+    capability: 'session.deletion.persistence-location',
+    supportedDsh,
+    runtime: 'host',
+    priority: 10,
+    status: 'supported',
+    introducedIn: '0.2.2-alpha.2',
+    detect: supportsPersistenceLocation,
+    create: readPersistenceLocationAdapter,
+  })
+  add({
+    id: 'session-deletion-immediate-022',
+    capability: 'session.deletion.immediate',
+    supportedDsh,
+    runtime: 'host',
+    priority: 10,
+    status: 'supported',
+    introducedIn: '0.2.2-alpha.2',
+    detect: supportsImmediateSessionDeletion,
+    create: readImmediateDeletionAdapter,
+  })
+  add({
+    id: 'session-deletion-restart-replay-022',
+    capability: 'session.deletion.restart-replay',
+    supportedDsh,
+    runtime: 'host',
+    priority: 10,
+    status: 'supported',
+    introducedIn: '0.2.2-alpha.2',
+    detect: supportsRestartSessionDeletionReplay,
+    create: readRestartReplayAdapter,
+  })
+  add({
+    id: 'session-deletion-workspace-cleanup-022',
+    capability: 'session.deletion.workspace-cleanup',
+    supportedDsh,
+    runtime: 'host',
+    priority: 10,
+    status: 'supported',
+    introducedIn: '0.2.2-alpha.2',
+    detect: supportsWorkspaceDeletionCleanup,
+    create: readWorkspaceCleanupAdapter,
+  })
+  add({
+    id: 'session-deletion-projection-cleanup-022',
+    capability: 'session.deletion.projection-cleanup',
+    supportedDsh,
+    runtime: 'host',
+    priority: 10,
+    status: 'supported',
+    introducedIn: '0.2.2-alpha.2',
+    detect: supportsProjectionDeletionCleanup,
+    create: readProjectionCleanupAdapter,
+  })
+  add({
+    id: 'session-deletion-spill-cleanup-022',
+    capability: 'session.deletion.spill-cleanup',
+    supportedDsh,
+    runtime: 'host',
+    priority: 10,
+    status: 'supported',
+    introducedIn: '0.2.2-alpha.2',
+    detect: supportsSpillDeletionCleanup,
+    create: readSpillCleanupAdapter,
+  })
+  add({
+    id: 'session-deletion-search-reconcile-022',
+    capability: 'session.deletion.search-reconcile',
+    supportedDsh,
+    runtime: 'host',
+    priority: 10,
+    status: 'supported',
+    introducedIn: '0.2.2-alpha.2',
+    detect: supportsSearchIndexReconciliation,
+    create: readSearchIndexReconcileAdapter,
+  })
 }

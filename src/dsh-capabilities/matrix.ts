@@ -118,6 +118,14 @@ export const DSH_CAPABILITY_MATRIX: readonly DshCapabilityMatrixRoute[] = [
   route('web.index-tap', 'index-tap-020', 'host', DSH_COMPATIBILITY, 'supported', ['host/index.ts', 'host/modules/pwa/pwa-viewport.ts']),
   route('layout.columns', 'layout-columns-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/mobile-sidebar-gestures.ts', 'client/features/workspace-session-enhancement.ts', 'client/mobile-sidebar-rail-dom.ts', 'client/features/mobile-access.ts']),
   route('sidebar.right.expand', 'sidebar-right-expand-020', 'client', DSH_COMPATIBILITY, 'supported', ['client/mobile-sidebar-gestures.ts', 'client/features/workspace-session-enhancement.ts']),
+  route('session.deletion.persistence-location', 'session-deletion-persistence-location-022', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/session-deletion-adapter.ts', 'host/features/session-deletion.ts', 'host/session-deletion/target-locator.ts']),
+  route('session.deletion.immediate', 'session-deletion-immediate-022', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/session-deletion-adapter.ts', 'host/session-deletion/service.ts']),
+  route('session.deletion.restart-replay', 'session-deletion-restart-replay-022', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/session-deletion-adapter.ts', 'host/session-deletion/service.ts']),
+  route('session.deletion.workspace-cleanup', 'session-deletion-workspace-cleanup-022', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/session-deletion-adapter.ts', 'host/session-deletion/cleanup.ts']),
+  route('session.deletion.projection-cleanup', 'session-deletion-projection-cleanup-022', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/session-deletion-adapter.ts', 'host/session-deletion/cleanup.ts']),
+  route('session.deletion.spill-cleanup', 'session-deletion-spill-cleanup-022', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/session-deletion-adapter.ts', 'host/session-deletion/cleanup.ts']),
+  route('session.deletion.search-reconcile', 'session-deletion-search-reconcile-022', 'host', DSH_COMPATIBILITY, 'supported', ['dsh-capabilities/host/session-deletion-adapter.ts', 'host/session-deletion/cleanup.ts']),
+  route('session.deletion.ui-refresh', 'session-deletion-ui-refresh-022', 'client', '>=0.2.2-alpha.3', 'supported', ['dsh-capabilities/client/session-deletion-adapter.ts', 'client/session-deletion.ts']),
 ]
 
 function route(

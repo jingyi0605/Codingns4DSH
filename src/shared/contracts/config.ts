@@ -211,6 +211,8 @@ export interface WorkspaceSessionEnhancementSettings {
   optimizeSessionTitles: boolean
   /** 是否记忆对话窗口与右侧栏的宽度比例；具体比例保存在当前浏览器。 */
   rememberConversationRightbarRatio: boolean
+  /** 是否在原生会话行菜单显示永久删除入口（默认关闭）。 */
+  enableSessionDeletion: boolean
   /** 插件本地保存的快捷会话条目。 */
   quickPhrases: QuickPhrase[]
   /** 内置快捷会话是否已经完成首次初始化；仅用于兼容旧配置。 */
@@ -528,6 +530,7 @@ export const DEFAULT_WORKSPACE_SESSION_ENHANCEMENT_SETTINGS: WorkspaceSessionEnh
   showSkillQuickReference: true,
   optimizeSessionTitles: false,
   rememberConversationRightbarRatio: false,
+  enableSessionDeletion: false,
   quickPhrases: DEFAULT_QUICK_PHRASES.map((phrase) => ({ ...phrase })),
   quickPhrasesSeeded: true,
 }

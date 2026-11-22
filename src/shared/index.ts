@@ -433,7 +433,29 @@ export type {
   RelaySignalingServerMessage,
   RelaySignalingTicketResponse,
 } from './contracts/signaling.js'
-export type { DshHostStatus } from './contracts/host-status.js'
+export type {
+  DshHostStatus,
+} from './contracts/host-status.js'
+export {
+  SESSION_DELETION_RPC_ENDPOINTS,
+  SessionDeletionError,
+  isNonEmptyToken,
+  validateLocalSessionId,
+  type SessionDeletionCancelRequest,
+  type SessionDeletionCancelResult,
+  type SessionDeletionCleanupItem,
+  type SessionDeletionCommitRequest,
+  type SessionDeletionCommitResult,
+  type SessionDeletionMode,
+  type SessionDeletionPhase,
+  type SessionDeletionPrepareRequest,
+  type SessionDeletionPrepareResult,
+  type SessionDeletionReasonCode,
+  type SessionDeletionStatusRequest,
+  type SessionDeletionStatusResult,
+  type SessionDeletionStorageSummary,
+  type SessionDeletionSubagentStatus,
+} from './contracts/session-deletion.js'
 export {
   CODINGNS4DSH_DEBUG_ENV,
   CODINGNS4DSH_DEBUG_LEVEL_ENV,
