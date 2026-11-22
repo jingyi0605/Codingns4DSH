@@ -463,6 +463,59 @@ test('远端虚拟工作区按原生 Store 快照显示归档入口并可取消�
   controller.dispose()
 })
 
+test('已排队等待重启删除的归档会话显示“下次重启后彻底删除”标签并支持在弹窗中取消', async () => {
+  clearSessionAdapters()
+  const header = workspaceHeader('workspace-a')
+  const more = new FakeArchiveElement('button')
+  more.textContent = '展开其余 3 个会话'
+  const group = new FakeArchiveElement('section')
+  group.append(header, more)
+  const document = new FakeArchiveDocument(group)
+  const cancelCalls: string[] = []
+  let archivedIds = ['queued-del-1']
+  const controller = startWorkspaceSessionArchiveDom({
+    document,
+    isPendingDeletion: (id) => id === 'queued-del-1',
+    onCancelPendingDeletion: async (id) => {
+      cancelCalls.push(id)
+      archivedIds = []
+      return { cancelled: true, unarchived: true }
+    },
+    remote: {
+      workspace: {
+        async *follow() {
+          yield { type: 'baseline', value: { items: [{ workspaceId: 'workspace-a', path: '/work', sessionIds: ['queued-del-1'] }], archivedSessionIds: archivedIds } }
+        },
+        async unarchiveSession() {},
+      },
+      session: {
+        async list() {
+          return { items: [{ sessionId: 'queued-del-1', updatedAt: 1_800_000_000_000, projections: { values: { title: '待重启删除对话' } } }] }
+        },
+      },
+    },
+  })
+
+  await nextArchiveTurn()
+  const entry = group.children.find((child) => child.getAttribute(WORKSPACE_SESSION_ARCHIVE_ATTRIBUTE) !== null)
+  entry.listeners.get('click')()
+  await nextArchiveTurn()
+  await nextArchiveTurn()
+
+  const overlay = document.body.children.find((child) => child.getAttribute(WORKSPACE_SESSION_ARCHIVE_MODAL_ATTRIBUTE) !== null)
+  const list = overlay.children[0].children[2]
+  const row = list.children[0]
+  const badge = collectArchiveNodes(row).find((node) => node.getAttribute('data-codingns-session-archive-pending-delete') === 'queued-del-1')
+  assert.equal(badge?.textContent, '下次重启后彻底删除')
+
+  const cancelBtn = collectArchiveNodes(row).find((node) => node.getAttribute('data-codingns-session-archive-cancel-delete') === 'queued-del-1')
+  assert.equal(cancelBtn?.textContent, '取消删除')
+  await cancelBtn.listeners.get('click')()
+  assert.deepEqual(cancelCalls, ['queued-del-1'])
+  assert.equal(list.children.length, 0)
+  controller.dispose()
+})
+
 function workspaceHeader(workspaceId) {
   const header = new FakeArchiveElement('div')
   header.setAttribute('role', 'treeitem')
@@ -512,6 +565,13 @@ class FakeArchiveElement {
     if (this.parentElement === null) return
     const index = this.parentElement.children.indexOf(this)
     if (index >= 0) this.parentElement.children.splice(index, 1)
+    this.parentElement = null
+  }
+  replaceWith(node) {
+    if (this.parentElement === null) return
+    const index = this.parentElement.children.indexOf(this)
+    node.parentElement = this.parentElement
+    if (index >= 0) this.parentElement.children[index] = node
     this.parentElement = null
   }
 }
