@@ -14,6 +14,7 @@ import type {
   MagpieRoutingGroupMember,
 } from '../../shared/contracts/magpie-management.js'
 import { isMagpieProviderId, magpieProviderId } from '../../shared/magpie-provider-id.js'
+import { collapseMagpieQuotaWindows, type MagpieRawQuotaWindow } from './magpie-quota-windows.js'
 import { MagpieWebService, type MagpieWebRequestOptions } from './magpie-web.js'
 
 const MAX_PROVIDERS = 100
@@ -780,20 +781,28 @@ function readWebRows(value: unknown, limit: number): readonly Record<string, unk
 function readAccountWindows(value: unknown): readonly MagpieAccountWindow[] | null {
   if (value === undefined || value === null) return []
   if (!Array.isArray(value) || value.length > 100) return null
-  const windows: MagpieAccountWindow[] = []
+  const windows: MagpieRawQuotaWindow<MagpieAccountWindow>[] = []
   for (const item of value) {
     const record = asRecord(item)
     const name = safeText(record?.name ?? record?.Name, 100)
     if (record === null || name === null) return null
+    const used = optionalNumber(record.used ?? record.Used)
+    const remaining = optionalNumber(record.remaining ?? record.Remaining)
     windows.push({
-      name,
-      used: optionalNumber(record.used ?? record.Used),
-      remaining: optionalNumber(record.remaining ?? record.Remaining),
-      resetsAt: optionalSafeText(record.resetsAt ?? record.resets_at, 64),
-      display: optionalSafeText(record.display, 120),
+      window: {
+        name,
+        used,
+        remaining,
+        resetsAt: optionalSafeText(record.resetsAt ?? record.resets_at, 64),
+        display: optionalSafeText(record.display, 120),
+      },
+      pool: optionalSafeText(record.pool ?? record.Pool, 100),
+      family: optionalSafeText(record.family ?? record.Family, 100),
+      usedPercent: used,
+      remainingPercent: remaining,
     })
   }
-  return windows
+  return collapseMagpieQuotaWindows(windows, (window, nextName) => ({ ...window, name: nextName }))
 }
 
 function mergeAccount(left: MagpieAccountManagementRecord, right: MagpieAccountManagementRecord): MagpieAccountManagementRecord {

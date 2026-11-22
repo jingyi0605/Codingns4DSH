@@ -35,6 +35,7 @@ import type {
 } from '../../shared/contracts/magpie-management.js'
 import { commandEnvironment, resolveCommandPath, runAsyncCommand, WINDOWS, withCommandSignal } from './process-utils.js'
 import { parseMagpieWebProviders } from './magpie-management.js'
+import { collapseMagpieQuotaWindows, type MagpieRawQuotaWindow } from './magpie-quota-windows.js'
 import { parseMagpieContextResponse } from './magpie-context.js'
 import type { MagpieWebService } from './magpie-web.js'
 import { claudeModelDisplayName } from './model-catalog.js'
@@ -1822,12 +1823,21 @@ export function parseMagpieQuotas(value: unknown): readonly MagpieQuota[] | null
     if (record === null || provider === null || name === null) return null
     const windowsValue = record.windows
     if (!Array.isArray(windowsValue) || windowsValue.length > 64) return null
-    const windows = windowsValue.flatMap((item) => {
+    const rawWindows = windowsValue.flatMap((item): readonly MagpieRawQuotaWindow<MagpieQuotaWindow>[] => {
       const window = asRecord(item)
       const windowName = routeText(window?.name)
-      return window === null || windowName === null ? [] : [readQuotaWindow(window, windowName)]
+      if (window === null || windowName === null) return []
+      const parsed = readQuotaWindow(window, windowName)
+      return [{
+        window: parsed,
+        pool: routeText(window.pool ?? window.Pool),
+        family: routeText(window.family ?? window.Family),
+        usedPercent: parsed.usedPercent,
+        remainingPercent: parsed.remainingPercent,
+      }]
     })
-    if (windows.length !== windowsValue.length) return null
+    if (rawWindows.length !== windowsValue.length) return null
+    const windows = collapseMagpieQuotaWindows(rawWindows, (window, nextName) => ({ ...window, name: nextName }))
     quotas.push({
       provider,
       name,
@@ -2006,25 +2016,34 @@ export function parseMagpieQuotaCards(value: unknown): readonly MagpieDashboardQ
     const name = routeText(record?.name)
     if (record === null || provider === null || name === null
       || !Array.isArray(record.windows) || record.windows.length > 64) return null
-    const windows = record.windows.flatMap((item) => {
+    const rawWindows = record.windows.flatMap((item): readonly MagpieRawQuotaWindow<MagpieDashboardQuota['windows'][number]>[] => {
       const window = asRecord(item)
       const windowName = routeText(window?.name)
       if (window === null || windowName === null) return []
+      const usedPercent = quotaUsedPercent(window)
+      const remainingPercent = quotaRemainingPercent(window)
       return [{
-        name: windowName,
-        usedPercent: quotaUsedPercent(window),
-        remainingPercent: quotaRemainingPercent(window),
-        resetsAt: routeText(window.resetsAt),
-        display: routeText(window.display),
-        amount: safeDecimal(window.amount),
-        limit: safeDecimal(window.limit),
-        unit: routeText(window.unit),
-        holdsWhy: routeText(window.holdsWhy),
-        runsOutAt: routeText(window.runsOutAt),
-        runsOut: safeDecimal(window.runsOut),
+        window: {
+          name: windowName,
+          usedPercent,
+          remainingPercent,
+          resetsAt: routeText(window.resetsAt),
+          display: routeText(window.display),
+          amount: safeDecimal(window.amount),
+          limit: safeDecimal(window.limit),
+          unit: routeText(window.unit),
+          holdsWhy: routeText(window.holdsWhy),
+          runsOutAt: routeText(window.runsOutAt),
+          runsOut: safeDecimal(window.runsOut),
+        },
+        pool: routeText(window.pool ?? window.Pool),
+        family: routeText(window.family ?? window.Family),
+        usedPercent,
+        remainingPercent,
       }]
     })
-    if (windows.length !== record.windows.length) return null
+    if (rawWindows.length !== record.windows.length) return null
+    const windows = collapseMagpieQuotaWindows(rawWindows, (window, nextName) => ({ ...window, name: nextName }))
     const dailyRecord = record.daily === undefined ? null : asRecord(record.daily)
     const dailyPoints = dailyRecord === null ? [] : dailyRecord.days
     if (dailyRecord !== null && (!Array.isArray(dailyPoints) || dailyPoints.length > 366)) return null
