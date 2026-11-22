@@ -20,7 +20,7 @@ function fixture(reply: string, failPrimary = false) {
       yield { type: 'text-delta', text: JSON.stringify({ translation: reply }) }
       yield { type: 'finish', reason: { kind: 'stop' } }
     },
-  } }, '0.2.1-alpha.2')!
+  } }, '0.2.2-alpha.2')!
   assert.ok(service)
   service.configure(settings)
   service.activate()

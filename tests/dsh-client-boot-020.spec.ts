@@ -31,7 +31,7 @@ test('0.2.0-rc.1 Client boot 前可安装 Aggregated Transport 并建立公开 C
   })
   const app = new Context()
   try {
-    await app.plugin(applyDshConnection)
+    await app.plugin(applyDshConnection, { recovery: { get: () => undefined } } as never)
     const connection = app.get('connection') as {
       readonly rpc: { call: (channel: string, endpoint: string, payload: unknown) => Promise<{ ok: true; value: unknown }> }
       readonly generation: { getSnapshot: () => unknown }

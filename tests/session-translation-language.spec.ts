@@ -32,7 +32,7 @@ function fixture(reply = '翻译后的内容。') {
     get: (name: string) => name === 'agentDefaultModel'
       ? { currentSelection: () => ({ provider: 'test', model: 'translator' }) }
       : undefined,
-  }, '0.2.1-alpha.2')
+  }, '0.2.2-alpha.2')
   assert.ok(service)
   service.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
   service.activate()

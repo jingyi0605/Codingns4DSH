@@ -718,7 +718,7 @@ test('原生会话显式开启时，输入和输出均覆盖默认关闭，并�
     get(name: string) {
       return name === 'agentDefaultModel' ? { currentSelection: () => ({ provider: 'native', model: 'translator' }) } : undefined
     },
-  }, '0.2.1-alpha.2')!
+  }, '0.2.2-alpha.2')!
   translation.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, nativeEnabled: false })
   translation.activate()
   const harness = createHarness({ translation: translation as never, translationEnabled: true }) as Harness & { start(): Promise<void> }
@@ -767,7 +767,7 @@ for (const adapterId of ['dsh', 'codex'] as const) {
       get: (name: string) => name === 'agentDefaultModel'
         ? { currentSelection: () => ({ provider: 'native', model: 'translator' }) }
         : undefined,
-    }, '0.2.1-alpha.2')!
+    }, '0.2.2-alpha.2')!
     translation.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
     translation.activate()
     const executions: Record<string, unknown>[] = []

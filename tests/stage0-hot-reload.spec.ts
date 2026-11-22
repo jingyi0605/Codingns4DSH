@@ -7,8 +7,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { runInNewContext } from 'node:vm'
-import { applyEntryPatches, entryListSchema } from '@deepseek-ai/cordis-plugin-include'
-import { createRequire } from 'node:module'
+import { applyEntryPatches, parseEntryYaml } from '@deepseek-ai/cordis-plugin-include'
 import { createServer } from 'node:net'
 import { reloadScript } from '../scripts/stage0-client-hmr.mjs'
 import { registerStage0DevHmr } from '../data/build/dist/host/stage0-dev-hmr.js'
@@ -18,8 +17,6 @@ const repositoryRoot = fileURLToPath(new URL('../', import.meta.url))
 const stage0Script = join(repositoryRoot, 'scripts/run-dsh-stage0.sh')
 const packageId = '@jingyi0605/codingns4dsh'
 const unixOnly = { skip: process.platform === 'win32' }
-const require = createRequire(import.meta.url)
-const yaml = createRequire(require.resolve('@deepseek-ai/cordis-plugin-include'))('js-yaml')
 
 test('Stage0 launcher defaults to the tested DSH runtime without changing persistent data paths', () => {
   const launcher = readFileSync(stage0Script, 'utf8')
@@ -221,7 +218,7 @@ test('端口被占用时预检在编译前失败并给出占用进程', unixOnly
 })
 
 test('Stage0 patch 经原生 patch 算法后保留终端隔离并监听 Host 产物', () => {
-  const patches = yaml.load(readFileSync(join(repositoryRoot, 'dsh-stage0.patch.yml'), 'utf8'), { schema: entryListSchema })
+  const patches = parseEntryYaml(readFileSync(join(repositoryRoot, 'dsh-stage0.patch.yml'), 'utf8')) as any[]
   const entries = [
     { id: 'terminal-controller', name: '@deepseek-ai/dsh-api-terminal-controller' },
     { id: 'ui-sidebar-terminal', name: '@deepseek-ai/dsh-client-ui-sidebar-terminal' },
@@ -231,7 +228,7 @@ test('Stage0 patch 经原生 patch 算法后保留终端隔离并监听 Host 产
     { id: 'session-query-sqlite', name: '@deepseek-ai/dsh-session-query-sqlite', config: { path: ':memory:', openAt: 'never' } },
   ]
   const warnings: string[] = []
-  const result = applyEntryPatches(entries, patches, (warning) => warnings.push(warning))
+  const { data: result } = applyEntryPatches(entries, patches, (warning) => warnings.push(warning))
   assert.deepEqual(warnings, [])
   for (const id of ['terminal-controller', 'ui-sidebar-terminal', 'client-hmr']) {
     assert.equal(result.find((entry) => entry.id === id)?.disabled, true)

@@ -25,7 +25,7 @@ test('each message category independently gates translation for native and exter
         yield { type: 'finish', reason: { kind: 'stop' } }
       })(),
     },
-  }, '0.2.1-alpha.2')!
+  }, '0.2.2-alpha.2')!
   service.activate()
   try {
     for (const adapterId of ['dsh', 'codex']) {
@@ -60,7 +60,7 @@ test('adapter options independently control input, reasoning and replies after s
         yield { type: 'finish', reason: { kind: 'stop' } }
       })(),
     },
-  }, '0.2.1-alpha.2')!
+  }, '0.2.2-alpha.2')!
   const settings = {
     ...DEFAULT_SESSION_TRANSLATION_SETTINGS,
     inputEnabled: false,
@@ -285,7 +285,7 @@ test('翻译服务失败时输入回退原文，且不会执行工具', async ()
       return undefined
     },
   }
-  const service = createSessionTranslationService(context, '0.2.1-alpha.2')
+  const service = createSessionTranslationService(context, '0.2.2-alpha.2')
   assert.notEqual(service, undefined)
   service!.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
   service!.activate()
@@ -312,7 +312,7 @@ test('翻译模型返回聊天式中文时输入回退原文', async () => {
       return undefined
     },
   }
-  const service = createSessionTranslationService(context, '0.2.1-alpha.2')
+  const service = createSessionTranslationService(context, '0.2.2-alpha.2')
   assert.notEqual(service, undefined)
   service!.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
   service!.activate()
@@ -340,7 +340,7 @@ test('原文已是目标语言时跳过输入和输出翻译并记录无需处�
       return undefined
     },
   }
-  const service = createSessionTranslationService(context, '0.2.1-alpha.2')
+  const service = createSessionTranslationService(context, '0.2.2-alpha.2')
   assert.notEqual(service, undefined)
   service!.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
   service!.activate()
@@ -484,7 +484,7 @@ test('翻译请求使用指定模型并显式关闭思考，同时保护命令�
       return undefined
     },
   }
-  const service = createSessionTranslationService(context, '0.2.1-alpha.2')
+  const service = createSessionTranslationService(context, '0.2.2-alpha.2')
   assert.notEqual(service, undefined)
   service!.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationModel: { provider: 'deepseek', model: 'deepseek-chat' } })
   service!.activate()
@@ -534,7 +534,7 @@ test('非思考翻译模型不强行发送不存在的 off 档位', async () => 
       return undefined
     },
   }
-  const service = createSessionTranslationService(context, '0.2.1-alpha.2')
+  const service = createSessionTranslationService(context, '0.2.2-alpha.2')
   assert.notEqual(service, undefined)
   service!.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
   service!.activate()
@@ -571,7 +571,7 @@ test('跟随默认模型时不会把外部 Agent 的虚拟 Provider 当成翻译
       return undefined
     },
   }
-  const service = createSessionTranslationService(context, '0.2.1-alpha.2')
+  const service = createSessionTranslationService(context, '0.2.2-alpha.2')
   assert.notEqual(service, undefined)
   service!.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
   service!.activate()
@@ -601,7 +601,7 @@ test('目标语言是英语时，缺少语言特征的英文短指令直接放�
       return undefined
     },
   }
-  const service = createSessionTranslationService(context, '0.2.1-alpha.2')
+  const service = createSessionTranslationService(context, '0.2.2-alpha.2')
   assert.notEqual(service, undefined)
   service!.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
   service!.activate()
@@ -637,7 +637,7 @@ test('目标语言是英语时，带法语或德语特征的输入仍然交给�
       return undefined
     },
   }
-  const service = createSessionTranslationService(context, '0.2.1-alpha.2')
+  const service = createSessionTranslationService(context, '0.2.2-alpha.2')
   assert.notEqual(service, undefined)
   service!.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
   service!.activate()
@@ -668,7 +668,7 @@ test('输出方向目标为中文时，没有特征字的短中文回复不再�
       return undefined
     },
   }
-  const service = createSessionTranslationService(context, '0.2.1-alpha.2')
+  const service = createSessionTranslationService(context, '0.2.2-alpha.2')
   assert.notEqual(service, undefined)
   service!.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
   service!.activate()

@@ -29,7 +29,7 @@ function fixture(translateText = (text: string) => text.replaceAll(original, 'Tr
         yield { type: 'finish', reason: { kind: failure ? 'max-tokens' : 'stop' } }
       })()
     },
-  } }, '0.2.1-alpha.3')!
+  } }, '0.2.2-alpha.2')!
   service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, nativeEnabled: true })
   service.activate()
   const recovery = createSessionTranslationRecovery(service, () => ({ adapterId: 'dsh', translationEnabled: enabled }))

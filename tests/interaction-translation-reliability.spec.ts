@@ -26,7 +26,7 @@ function modelFixture(stream: (request: any, source: string) => AsyncIterable<an
         return stream(options, source)
       },
     },
-  }, '0.2.1-alpha.2')!
+  }, '0.2.2-alpha.2')!
   assert.ok(service)
   service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationModels: pool.map(model => ({ provider: 'test', model })) })
   service.activate()
