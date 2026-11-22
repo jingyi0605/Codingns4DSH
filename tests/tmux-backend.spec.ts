@@ -8,6 +8,7 @@ import {
   TMUX_SERVER_SOCKET_NAME,
   TmuxTerminalBackend,
   launchdLabel,
+  launchdPlist,
   tmuxSessionName,
 } from '../data/build/dist/host/terminal/backends/tmux-backend.js'
 
@@ -562,6 +563,8 @@ function launchdRunner({ serverAlive = false, bootstrapStatus = 0 } = {}) {
   let alive = serverAlive
   return {
     calls,
+    /** 模拟服务器在 Host 存活期间退出（例如被手动 kill-server）。 */
+    die() { alive = false },
     run(command, args) {
       calls.push([command, ...args])
       if (command === 'launchctl') {
@@ -597,10 +600,15 @@ test('macOS：服务器未运行时通过 launchd 拉起，且先于直接 start
     assert.ok(bootstrap < tmuxCommandIndex(runner.calls, 'set-option'))
     assert.ok(tmuxCommandIndex(runner.calls, 'set-option') < tmuxCommandIndex(runner.calls, 'new-session'))
     const plist = readFileSync(join(directory, `${label}.plist`), 'utf8')
-    assert.match(plist, /<key>AbandonProcessGroup<\/key><true\/>/u)
-    assert.ok(plist.includes(`<string>${socket}</string>`))
-    assert.ok(plist.includes(`<string>${join(directory, 'tmux.conf')}</string>`))
-    assert.match(plist, /<string>start-server<\/string>/u)
+    // 必须由苹果自带的 osascript 作为 job 的第一个可执行文件，tmux 以前台模式运行；
+    // 直接让 launchd 跑 tmux 会让里面的第三方程序失去局域网访问。
+    assert.match(plist, /<array><string>\/usr\/bin\/osascript<\/string><string>-e<\/string>/u)
+    assert.match(plist, /do shell script/u)
+    assert.match(plist, / '-D' /u, 'tmux 必须前台运行，osascript 才会一直作为责任进程存活')
+    assert.ok(plist.includes(socket))
+    assert.ok(plist.includes(join(directory, 'tmux.conf')))
+    assert.doesNotMatch(plist, /start-server/u)
+    assert.doesNotMatch(plist, /AbandonProcessGroup/u)
     assert.doesNotMatch(plist, /KeepAlive/u)
     // The backend simulates macOS, but Windows stat cannot report POSIX file permissions.
     if (process.platform !== 'win32') {
@@ -609,6 +617,28 @@ test('macOS：服务器未运行时通过 launchd 拉起，且先于直接 start
   } finally {
     rmSync(directory, { recursive: true, force: true })
   }
+})
+
+test('launchd plist 对路径中的引号、空格和 XML 特殊字符做转义', () => {
+  const server = {
+    directory: '/tmp/a b',
+    socket: '/tmp/a b/it\'s "x" & <y>.sock',
+    config: '/tmp/a b/tmux.conf',
+    exitDirectory: '/tmp/a b/exit',
+  }
+  const plist = launchdPlist('local.test', '/opt/homebrew/bin/tmux', server)
+  assert.doesNotMatch(plist, /<y>|& /u, 'XML 特殊字符必须转义')
+  // 还原 XML 与 AppleScript 两层转义后，得到的应是可执行的 shell 命令。
+  const script = /<string>(do shell script .*)<\/string><\/array>/u.exec(plist)?.[1]
+  assert.ok(script)
+  const unxml = script.replaceAll('&lt;', '<').replaceAll('&gt;', '>').replaceAll('&amp;', '&')
+  const literal = /^do shell script "(.*)"$/u.exec(unxml)?.[1]
+  assert.ok(literal)
+  const shell = literal.replaceAll('\\"', '"').replaceAll('\\\\', '\\')
+  assert.equal(
+    shell,
+    `exec '/opt/homebrew/bin/tmux' '-D' '-S' '/tmp/a b/it'\\''s "x" & <y>.sock' '-f' '/tmp/a b/tmux.conf' >/dev/null 2>&1`,
+  )
 })
 
 test('macOS：服务器已在运行时不碰 launchd，也不重写 plist', async () => {
@@ -663,6 +693,57 @@ test('macOS：launchd 拉起的服务器继承 Host 环境，分号结尾的值�
       if (previous[name] === undefined) delete process.env[key]
       else process.env[key] = previous[name]
     }
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('macOS：服务器在 Host 存活期间退出后，下一次创建重新走 launchd，而不是由 new-session 直接拉起', async () => {
+  const directory = serverDirectory()
+  const runner = launchdRunner()
+  const backend = new TmuxTerminalBackend({ platform: 'darwin', tmuxPath: '/opt/homebrew/bin/tmux', serverDirectory: directory, commandRunner: runner })
+  try {
+    await backend.create({ session })
+    runner.die()
+    const before = runner.calls.length
+    await backend.create({ session })
+    const after = runner.calls.slice(before)
+    const bootstrap = after.findIndex((call) => call[0] === 'launchctl' && call[1] === 'bootstrap')
+    assert.ok(bootstrap >= 0, '服务器消失后必须重新通过 launchd 拉起')
+    assert.ok(bootstrap < tmuxCommandIndex(after, 'new-session'), 'launchd 必须先于 new-session，否则服务器会被 Host 直接拉起')
+    const events = readFileSync(join(directory, 'launch.log'), 'utf8').trim().split('\n').map((line) => JSON.parse(line).event)
+    assert.deepEqual(events, ['server-ready', 'server-vanished', 'server-ready'])
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('macOS：服务器一直存活时，后续创建不再重复经过 launchd', async () => {
+  const directory = serverDirectory()
+  const runner = launchdRunner()
+  const backend = new TmuxTerminalBackend({ platform: 'darwin', tmuxPath: '/opt/homebrew/bin/tmux', serverDirectory: directory, commandRunner: runner })
+  try {
+    await backend.create({ session })
+    const before = runner.calls.length
+    await backend.create({ session })
+    assert.equal(runner.calls.slice(before).filter((call) => call[0] === 'launchctl').length, 0)
+    assert.equal(tmuxCommandIndex(runner.calls.slice(before), 'start-server'), -1)
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('macOS：launchd 失败时启动记录带上失败原因与回退结局', async () => {
+  const directory = serverDirectory()
+  const runner = launchdRunner({ bootstrapStatus: 5 })
+  const backend = new TmuxTerminalBackend({ platform: 'darwin', tmuxPath: '/opt/homebrew/bin/tmux', serverDirectory: directory, commandRunner: runner })
+  try {
+    await backend.create({ session })
+    const entries = readFileSync(join(directory, 'launch.log'), 'utf8').trim().split('\n').map((line) => JSON.parse(line))
+    const failed = entries.find((entry) => entry.event === 'launchd-bootstrap-failed')
+    assert.equal(failed.status, 5)
+    assert.match(failed.stderr, /Bootstrap failed/u)
+    assert.equal(entries.find((entry) => entry.event === 'server-ready').outcome, 'bootstrap-failed')
+  } finally {
     rmSync(directory, { recursive: true, force: true })
   }
 })

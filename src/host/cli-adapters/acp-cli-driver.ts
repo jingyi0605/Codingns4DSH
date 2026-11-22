@@ -85,6 +85,18 @@ export interface AcpCliDriverOptions {
    * 用量，并让整轮累计只在没有增量样本时兜底。
    */
   readonly stepUsage?: AcpStepUsageReader
+  /**
+   * `session/load` 的历史重放保护。
+   *
+   * 部分 Provider（实测 Antigravity）在 `session/load` 期间和响应之后仍会连续发出整段
+   * 历史的 `session/update`，且没有任何重放标记。这些通知若落进后面的 `session/prompt`
+   * 监听器，就会被当成本回合的新内容，历史消息会出现在最新消息下面。
+   *
+   * 开启后：load 期间用独立监听器吞掉所有通知，响应到达后继续等到通知静默 `quietMs`
+   * （最多 `maxMs`）才进入配置和 prompt；同时记下重放过的 toolCallId，prompt 期间
+   * 迟到的同 ID 工具通知也会被丢弃。
+   */
+  readonly loadReplayGuard?: { readonly quietMs: number; readonly maxMs: number }
 }
 
 /** Provider 逐请求用量的增量读取器；`take` 只返回自上次调用以来的新增请求。 */
@@ -116,6 +128,8 @@ interface AcpSession {
   readonly questions: Map<string, AcpPendingQuestionRequest>
   /** 已由 Host 自动回应的请求不会再投影成 UI 权限组件。 */
   readonly autoResolvedPermissions: Set<string>
+  /** `session/load` 重放过的工具调用 ID；prompt 期间迟到的同 ID 通知属于历史，不能进入本回合。 */
+  readonly replayedToolCallIds: Set<string>
 }
 
 interface AcpPermissionRequest {
@@ -157,6 +171,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
   private readonly permissionOptions: AcpCliDriverOptions['permissionOptions']
   private readonly enrichUsage: AcpCliDriverOptions['enrichUsage']
   private readonly stepUsage: AcpCliDriverOptions['stepUsage']
+  private readonly loadReplayGuard: AcpCliDriverOptions['loadReplayGuard']
   private cachedBinary: string | null = null
   private readonly processes = new Set<JsonRpcProcess>()
   private readonly sessions = new Map<string, AcpSession>()
@@ -189,6 +204,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.permissionOptions = options.permissionOptions
     this.enrichUsage = options.enrichUsage
     this.stepUsage = options.stepUsage
+    this.loadReplayGuard = options.loadReplayGuard
   }
 
   async detect(): Promise<{ installed: boolean; version: string | null; command: string | null }> {
@@ -322,6 +338,9 @@ export class AcpCliDriver implements CodingNsCliDriver {
           requestDone = false
           break
         }
+        // load 重放过的工具调用在静默窗口之后仍可能迟到，属于历史，不属于本回合。
+        const replayedToolCallId = acpUpdateToolCallId(next.value)
+        if (replayedToolCallId !== undefined && session.replayedToolCallIds.has(replayedToolCallId)) continue
         followup?.observe(next.value)
         const rawChunk = acpMessageToChunk(next.value, input.signal?.aborted ?? false, this.readQuestionRequest, session.autoResolvedPermissions, this.permissionOptions)
         const enrichedChunk = rawChunk?.type === 'usage' ? this.enrichUsage?.(rawChunk, input) ?? rawChunk : rawChunk
@@ -460,7 +479,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
         cwd: input.cwd ?? process.cwd(),
         mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),
       }, { signal: input.signal, killOnAbort: false })
-      : await this.loadOrCreate(session.rpc, input)
+      : await this.loadWithReplayGuard(session, input)
     session.acpSessionId = readSessionId(created) ?? input.providerSessionId ?? input.sessionId
     return created
   }
@@ -518,6 +537,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
       permissions: new Map(),
       questions: new Map(),
       autoResolvedPermissions: new Set(),
+      replayedToolCallIds: new Set(),
     }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, state)
@@ -570,6 +590,34 @@ export class AcpCliDriver implements CodingNsCliDriver {
     rpc.notify('initialized', {})
   }
 
+  /**
+   * 恢复会话并吞掉 Provider 重放的历史通知（见 `loadReplayGuard`）。
+   * 未开启保护时与直接 `loadOrCreate` 完全一致。
+   */
+  private async loadWithReplayGuard(session: AcpSession, input: CodingNsCliTurnInput): Promise<unknown> {
+    const guard = this.loadReplayGuard
+    if (guard === undefined) return this.loadOrCreate(session.rpc, input)
+    let lastActivity = Date.now()
+    const removeListener = session.rpc.addNotificationListener((message) => {
+      lastActivity = Date.now()
+      const toolCallId = acpUpdateToolCallId(message)
+      if (toolCallId !== undefined) session.replayedToolCallIds.add(toolCallId)
+    })
+    try {
+      const loaded = await this.loadOrCreate(session.rpc, input)
+      // 重放没有结束标记：响应之后通知仍在涌入，必须等它静默下来再放行 prompt。
+      lastActivity = Math.max(lastActivity, Date.now())
+      const deadline = Date.now() + guard.maxMs
+      while (Date.now() - lastActivity < guard.quietMs && Date.now() < deadline && input.signal?.aborted !== true) {
+        const remaining = Math.min(guard.quietMs - (Date.now() - lastActivity), deadline - Date.now())
+        await new Promise<void>((resolve) => { setTimeout(resolve, Math.max(1, remaining)) })
+      }
+      return loaded
+    } finally {
+      removeListener()
+    }
+  }
+
   private async loadOrCreate(rpc: JsonRpcProcess, input: CodingNsCliTurnInput): Promise<unknown> {
     if (input.providerSessionId) {
       // 恢复失败必须把真实错误交给 Host，不能静默新建会话重放用户请求。
@@ -585,6 +633,15 @@ export class AcpCliDriver implements CodingNsCliDriver {
       mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),
     }, { signal: input.signal, killOnAbort: false })
   }
+}
+
+/** 读取 `session/update` 通知里的工具调用 ID；不是工具通知时返回 undefined。 */
+function acpUpdateToolCallId(message: JsonRpcMessage): string | undefined {
+  if (message.method !== 'session/update') return undefined
+  const params = isRecord(message.params) ? message.params : undefined
+  const update = params !== undefined && isRecord(params.update) ? params.update : undefined
+  if (update === undefined) return undefined
+  return firstToolText(update.toolCallId, update.tool_call_id)
 }
 
 function acpMessageToChunk(

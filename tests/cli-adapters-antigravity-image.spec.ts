@@ -25,6 +25,10 @@ interface FakeOptions {
   readonly configuredState?: Record<string, unknown>
   readonly promptUsage?: Record<string, unknown>
   readonly promptUpdates?: readonly Record<string, unknown>[]
+  /** session/load 时重放的历史 session/update：前一半在响应之前，后一半在响应之后（与 agy 实测一致，无任何重放标记）。 */
+  readonly loadReplay?: readonly Record<string, unknown>[]
+  /** 静默窗口之后才到的重放通知（只含工具调用，复用 loadReplay 里出现过的 toolCallId）。 */
+  readonly lateReplay?: readonly Record<string, unknown>[]
 }
 
 /** 造一个说 ACP 的 agy 子进程，记录所有客户端请求与命令行。 */
@@ -52,11 +56,18 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
       }
       exit = () => { stdout.end(); stderr.end() }
       let promptId: number | string = 0
+      let promptDelayed = false
       let pendingServerRequests = [...(options.serverRequests ?? [])]
       const reply = (id: number | string | undefined, result: unknown): void => {
         stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`)
       }
       const finishPrompt = (): void => {
+        // 重放场景下让 prompt 持续一段时间，迟到的历史通知才会落进 prompt 监听器。
+        if (options.loadReplay !== undefined && !promptDelayed) {
+          promptDelayed = true
+          setTimeout(finishPrompt, 600)
+          return
+        }
         for (const body of options.promptUpdates ?? []) update(body)
         update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Red' } })
         reply(promptId, { stopReason: 'end_turn', usage: options.promptUsage })
@@ -79,6 +90,15 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
           if (failure !== undefined) {
             stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: failure })}\n`)
           } else if (request.method === 'initialize') reply(request.id, {})
+          else if (request.method === 'session/load' && options.loadReplay !== undefined) {
+            const half = Math.ceil(options.loadReplay.length / 2)
+            options.loadReplay.slice(0, half).forEach(update)
+            reply(request.id, { sessionId: options.sessionId ?? 'agy-acp-session', ...options.sessionState })
+            // 响应之后重放仍在继续，且比紧随其后的 set_config_option 慢。
+            setTimeout(() => options.loadReplay!.slice(half).forEach(update), 30)
+            // 超出静默窗口才到的重放：只能靠 toolCallId 识别并丢弃。
+            if (options.lateReplay !== undefined) setTimeout(() => options.lateReplay!.forEach(update), 450)
+          }
           else if (request.method === 'session/new' || request.method === 'session/load') reply(request.id, { sessionId: options.sessionId ?? 'agy-acp-session', ...options.sessionState })
           else if (request.method === 'session/set_config_option') reply(request.id, options.configuredState ?? {})
           else if (request.method === 'session/prompt') {
@@ -248,6 +268,43 @@ test('Antigravity ACP 不等待守护命令或已经结束的命令', async () =
       await turn
     }
   }
+})
+
+test('Antigravity session/load 重放的历史不会进入本回合，避免旧消息出现在最新消息下面', async () => {
+  await withAttachments(async ({ image }) => {
+    const replayTool = (id: string, path: string) => ({ sessionUpdate: 'tool_call', toolCallId: id, name: 'read_file', args: { Path: path }, status: 'completed', kind: 'read', title: path, rawInput: { Path: path }, rawOutput: 'old' })
+    const { driver } = acpDriver({
+      sessionId: 'agy-existing-conversation',
+      loadReplay: [
+        { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'old user prompt' } },
+        { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'old reasoning' } },
+        replayTool('call_old_1', '/old/one.md'),
+        replayTool('call_old_2', '/old/two.md'),
+        { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old answer' } },
+        replayTool('call_old_3', '/old/three.md'),
+      ],
+      lateReplay: [replayTool('call_old_3', '/old/three.md')],
+    })
+    const chunks = await collect(driver, {
+      modelId: 'gemini-4-hydrogen',
+      providerSessionId: 'agy-existing-conversation',
+      attachments: [{ kind: 'image', path: image }],
+    })
+    const serialized = JSON.stringify(chunks)
+    for (const stale of ['call_old_1', 'call_old_2', 'call_old_3', 'old user prompt', 'old reasoning', 'old answer', '/old/']) {
+      assert.equal(serialized.includes(stale), false, `重放的历史 ${stale} 不能进入本回合`)
+    }
+    assert.equal(serialized.includes('Red'), true, '本回合真实输出必须保留')
+  })
+})
+
+test('Antigravity 新建会话不等待重放静默窗口', async () => {
+  await withAttachments(async ({ image }) => {
+    const { driver } = acpDriver()
+    const started = Date.now()
+    await collect(driver, { modelId: 'gemini-4-hydrogen', attachments: [{ kind: 'image', path: image }] })
+    assert.ok(Date.now() - started < 250, 'session/new 没有历史可重放，不应额外等待')
+  })
 })
 
 test('Antigravity 图片回合：全放行用进程参数，普通文件保留 @路径 并授权其目录', async () => {
@@ -503,4 +560,51 @@ test('Antigravity 图片回合：DSH 附件存储的无后缀对象按内容识�
     const prompt = requests.find((request) => request.method === 'session/prompt')!.params.prompt as Array<Record<string, unknown>>
     assert.deepEqual(prompt.at(-1), { type: 'image', data: PNG.toString('base64'), mimeType: 'image/png' })
   })
+})
+
+test('Antigravity 完全访问自动放行 ACP 审批，不再弹出审批面板', { timeout: 5_000 }, async () => {
+  const { driver, calls, replies } = acpDriver({ serverRequests: [commandApproval] })
+  const config = { adapterId: 'antigravity', nativeApprovalMode: 'full-access' } as const
+  const permission = resolveNativeApprovalPermission(config, undefined)!
+  try {
+    const chunks = await collect(driver, { sessionId: 'agy-full-access', prompt: 'Test approval', permission, providerSessionId: 'agy-acp-session' })
+    assert.ok(calls[0]?.includes('--dangerously-skip-permissions'))
+    assert.deepEqual(replies.get(91)?.result, { outcome: { outcome: 'selected', optionId: 'approve-this-command' } })
+    assert.equal(chunks.some(chunk => chunk.type === 'permission-request'), false)
+    assert.equal(chunks.at(-1)?.reason, 'stop')
+  } finally { driver.dispose() }
+})
+
+test('Antigravity ACP 回合结算前把新增模型调用的耗时和上下文交给 DSH', { timeout: 5_000 }, async () => {
+  const reads: (number | 'latest')[] = []
+  const { driver } = acpDriver({}, {
+    readRequestSamples: (_id: string, after: number | 'latest') => {
+      reads.push(after)
+      if (after === 'latest') return { samples: [{ stepIndex: 4, startedAt: 100, completedAt: 900, outputTokens: 40, contextTokens: 3_000 }], lastStepIndex: 4 }
+      return after === 4
+        ? { samples: [{ stepIndex: 5, startedAt: 1_000, completedAt: 3_000, outputTokens: 200, contextTokens: 5_000 }], lastStepIndex: 5 }
+        : { samples: [], lastStepIndex: after }
+    },
+  })
+  try {
+    const chunks = await collect(driver, {
+      sessionId: 'agy-performance', permission: { nativeApprovalMode: 'manual', approvalPolicy: 'ask' }, providerSessionId: 'agy-acp-session',
+    })
+    const observations = chunks.filter(chunk => chunk.type === 'usage-observation')
+    // 续聊：回合一开始先给出上一次调用的上下文量（不带耗时），圆环不必等到回合结束。
+    assert.deepEqual(observations.shift(), {
+      type: 'usage-observation',
+      contextTokens: 3_000, contextWindow: 1_048_576, contextUsageRatio: Number((3_000 / 1_048_576).toFixed(6)),
+    })
+    assert.ok(chunks.findIndex(chunk => chunk.type === 'usage-observation') > chunks.findIndex(chunk => chunk.type === 'text-delta'))
+    assert.deepEqual(observations, [{
+      type: 'usage-observation',
+      requestPerformance: { adapterId: 'antigravity', id: 'agy-acp-session:5', samples: [
+        { id: 'agy-acp-session:5', startedAt: 1_000, firstTokenAt: 1_000, completedAt: 3_000, outputTokens: 200 },
+      ] },
+      contextTokens: 5_000, contextWindow: 1_048_576, contextUsageRatio: Number((5_000 / 1_048_576).toFixed(6)),
+    }])
+    assert.equal(reads[0], 'latest')
+    assert.ok(chunks.indexOf(observations[0]) < chunks.findIndex(chunk => chunk.type === 'finish'))
+  } finally { driver.dispose() }
 })
