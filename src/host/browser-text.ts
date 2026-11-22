@@ -24,6 +24,7 @@ export type HostBrowserTextKey =
   | 'login.rateLimited'
   | 'login.badCaptcha'
   | 'login.badCredentials'
+  | 'login.hostUnavailable'
   | 'login.headerTooLarge'
   | 'manifest.description'
   | 'push.turnEndTitle'
@@ -56,6 +57,7 @@ const TEXT: Record<HostLocale, Record<HostBrowserTextKey, string>> = {
     'login.rateLimited': 'Too many sign-in attempts. Try again in {seconds} seconds.',
     'login.badCaptcha': 'Enter the correct CAPTCHA code.',
     'login.badCredentials': 'Incorrect username or password.',
+    'login.hostUnavailable': 'DSH could not complete sign-in. Please try again shortly.',
     'login.headerTooLarge': 'Request headers too large',
     'manifest.description': 'DeepSeek Harness Web app (Codingns4DSH LAN entry)',
     'push.turnEndTitle': 'DSH session finished',
@@ -87,6 +89,7 @@ const TEXT: Record<HostLocale, Record<HostBrowserTextKey, string>> = {
     'login.rateLimited': '登录尝试过于频繁，请 {seconds} 秒后重试',
     'login.badCaptcha': '请输入正确的图形验证码',
     'login.badCredentials': '用户名或密码错误',
+    'login.hostUnavailable': 'DSH 暂时无法完成登录，请稍后重试。',
     'login.headerTooLarge': '请求头过大',
     'manifest.description': 'DeepSeek Harness Web 应用（Codingns4DSH 局域网入口）',
     'push.turnEndTitle': 'DSH 会话已完成',
