@@ -38,8 +38,7 @@ export function supportsSessionPerformancePresentation(context: unknown): boolea
 }
 
 /** Reuse the native activity pill, dialog, localization, settings, and session binding. */
-export function createSessionPerformancePresentation(context: unknown): SessionPerformancePresentation {
-  const slots = (context as { slots: PresentationSlots }).slots
+export function createSessionPerformancePresentation(context: unknown, slots = (context as { slots: PresentationSlots }).slots): SessionPerformancePresentation {
   return {
     install(useAdapter, element, hooks, options) {
       const wrappers = new Set<unknown>()

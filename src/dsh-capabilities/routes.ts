@@ -13,11 +13,13 @@ import { createWorkspaceApprovalAdapter, supportsWorkspaceApproval } from './hos
 import { createSessionPromptAdapter, supportsSessionPromptAssembly } from './host/session-prompt-adapter.js'
 import { createSessionPerformanceAdapter, supportsSessionPerformance } from './host/session-performance-adapter.js'
 import { createSessionPerformancePresentation, supportsSessionPerformancePresentation } from './client/session-performance-adapter.js'
+import type { PresentationSlots } from './client/slot-presentation-mirror.js'
 import { createAgentTeamAdapter, supportsExternalAgentTeam, supportsNativeAgentTeam } from './host/agent-team-adapter.js'
 import { supportsFlatSubagentActivation } from './host/subagent-activation-adapter.js'
 import { createGlobalPanelAdapter, supportsGlobalPanel } from './client/global-panel-adapter.js'
 import { readContextMenus, supportsContextMenus } from './client/context-menu-adapter.js'
 import { createPluginUpdateManager, supportsPluginUpdateManager } from './host/plugin-update-adapter.js'
+import { createBrowserEntryUrl, createLegacyBrowserEntryUrl } from './host/browser-entry-url-adapter.js'
 import { CODINGNS_VERSION } from '../shared/contracts/version.js'
 
 /**
@@ -39,6 +41,12 @@ export function createDshCapabilityRegistry(
   const add = <T>(route: DshCapabilityRoute<T>): void => registry.register(route)
 
   if (runtime === 'host') {
+    add({ id: 'web-browser-entry-connection-022', capability: 'web.browser-entry-url', supportedDsh: '>=0.2.2-alpha.2 <=0.2.2', runtime, priority: 10,
+      status: 'supported', introducedIn: '0.2.2-alpha.2', detect: ctx => hasMethods(read(ctx, 'connection'), ['authenticatedUrl']),
+      create: ctx => createLegacyBrowserEntryUrl(read(ctx, 'connection')) })
+    add({ id: 'web-browser-entry-event-023', capability: 'web.browser-entry-url', supportedDsh: '>=0.2.3-alpha.1', runtime, priority: 10,
+      status: 'supported', introducedIn: '0.2.3-alpha.1', detect: ctx => read(ctx, 'webServer') !== undefined && typeof read(ctx, 'emit') === 'function',
+      create: createBrowserEntryUrl })
     add({ id: 'session-external-compaction-021', capability: 'session.external-compaction', supportedDsh: '>=0.2.1-rc.5', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-rc.5',
       detect: supportsSessionCompaction, create: createSessionCompactionAdapter })
     for (const [capability, id] of [['plugin.update.inspect', 'plugin-manager-inspect-021'], ['plugin.update.apply', 'plugin-manager-install-021']] as const) {
@@ -86,7 +94,9 @@ export function createDshCapabilityRegistry(
       detect: supportsGlobalPanel, create: createGlobalPanelAdapter })
     add({ id: 'ui-context-menu-022', capability: 'ui.context-menu', supportedDsh: '>=0.2.2-alpha.3', runtime, priority: 20,
       status: 'supported', introducedIn: '0.2.2-alpha.3', detect: supportsContextMenus, create: readContextMenus })
-    add({ id: 'session-performance-presentation-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3', detect: supportsSessionPerformancePresentation, create: createSessionPerformancePresentation })
+    add({ id: 'session-performance-presentation-021', capability: 'session.external-performance', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
+      detect: ctx => supportsSessionPerformancePresentation({ slots: read(ctx, 'slots') }),
+      create: ctx => createSessionPerformancePresentation(ctx, read(ctx, 'slots') as PresentationSlots) })
     add({ id: 'message-presentation-020', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.1-alpha.2 <=0.2.1-alpha.2', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.2',
       detect: ctx => supportsLegacyMessagePresentation({ slots: read(ctx, 'slots') }, facts.primitives), create: () => createLegacyMessagePresentation(facts.primitives) })
     add({ id: 'message-presentation-021', capability: 'conversation.message-presentation', supportedDsh: '>=0.2.1-alpha.3', runtime, priority: 10, status: 'supported', introducedIn: '0.2.1-alpha.3',
