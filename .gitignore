@@ -9,8 +9,10 @@ data
 AGENTS.md
 docs/开发记录/*
 !docs/开发记录/20261119-工作区MCP与OutcomeGo接入变更.md
+!docs/开发记录/20261122-DSH-0.2.3临时Stage0验收.md
 docs/生成报告
-docs/调查报告
+docs/调查报告/*
+!docs/调查报告/20261122-DSH-0.2.3-alpha.1接口差异.md
 docs/配图
 .DS_Store
 output/imagegen/dsh-cover-api/dsh-bilibili-cover-api-16x9.png
