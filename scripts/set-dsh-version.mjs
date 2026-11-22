@@ -73,14 +73,7 @@ const updated = source
 if (updated === source) throw new Error('没有找到 DSH_VERSION 或 DSH_COMPATIBILITY')
 await writeFile(versionPath, updated)
 
-for (const relativePath of ['src/dsh-capabilities/matrix.ts', 'src/dsh-capabilities/routes.ts']) {
-  const filePath = join(root, relativePath)
-  const document = await readFile(filePath, 'utf8')
-  const updatedDocument = typeof previousCompatibility === 'string'
-    ? document.replaceAll(previousCompatibility, nextCompatibility)
-    : document
-  if (updatedDocument !== document) await writeFile(filePath, updatedDocument)
-}
+// 共享下界随 DSH_COMPATIBILITY 更新；不能改写路由中写明的历史接口版本。
 
 for (const relativePath of ['README.md', 'README.en.md', 'profile/README.md']) {
   const documentPath = join(root, relativePath)

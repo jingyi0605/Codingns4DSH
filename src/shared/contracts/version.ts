@@ -1,5 +1,5 @@
 /** DSH verification target; macOS Stage0/CLI scope is recorded in the README. */
-export const DSH_VERSION = '0.2.2-rc.5' as const
+export const DSH_VERSION = '0.2.3-alpha.1' as const
 
 /** DSH 测试版本别名，供新代码表达语义，保留 DSH_VERSION 兼容旧调用方。 */
 export const DSH_TESTED_VERSION = DSH_VERSION
@@ -8,7 +8,7 @@ export const DSH_TESTED_VERSION = DSH_VERSION
  * Only the minimum version blocks installation and activation.
  * Hosts newer than DSH_TESTED_VERSION receive an advisory warning.
  */
-export const DSH_COMPATIBILITY = '>=0.2.1-alpha.2' as const
+export const DSH_COMPATIBILITY = '>=0.2.2-alpha.2' as const
 
 /**
  * 兼容范围下界，即插件仍然接受的最低 DSH 版本。
@@ -34,7 +34,7 @@ export function isLegacyDshVersion(version: string): boolean {
 }
 
 /** Codingns4DSH 插件自身的 npm 版本。 */
-export const CODINGNS_VERSION = '0.2.2-rc.11' as const
+export const CODINGNS_VERSION = '0.2.3-beta.1' as const
 
 interface ParsedVersion {
   readonly major: number
