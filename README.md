@@ -11,9 +11,9 @@
 
 **简体中文** · [English](README.en.md)
 
-**当前版本 `@jingyi0605/codingns4dsh@0.2.2-rc.11`** · DSH 最低版本 **`0.2.1-alpha.2`**（已验证 `0.2.2-rc.5`；更新版本仅告警，不阻止安装或运行）· Node **`>= 24.9`** · macOS / Linux / Windows
+**开发版本 `@jingyi0605/codingns4dsh@0.2.3-beta.2`（未发布）** · DSH 最低版本 **`0.2.2-alpha.2`**（临时 Stage0 已验证 `0.2.2-rc.5` 和 `0.2.3-alpha.2`；更新版本仅告警）· Node **`>= 24.9`** · macOS / Linux / Windows
 
-本次 DSH 验证范围为 macOS Stage0 Web 的原生会话、拒答计费、Webhook、投影回放及设置，以及真实 Codex / Claude CLI 配合本地模型协议夹具的生命周期。Desktop、Windows/Linux 实机、公网 Relay 和真实模型服务尚未验证；详见 [验收记录](docs/开发记录/20261118-DSH-rc4兼容升级与Stage0验收.md)。
+本次验证使用 macOS 上两个隔离的 Stage0 Profile。`0.2.3-alpha.2` 的 npm CLI 需用同一上游 tag 的 Cordis 组件才能启动；正式 Stage0 未切换。范围与限制见 [临时 Stage0 验收记录](docs/开发记录/20261122-DSH-0.2.3临时Stage0验收.md)。
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ 群 1092985965** · **[微信群 / QQ 群二维码](#交流群)**
 
@@ -252,12 +252,14 @@ DSH 原生会话的翻译默认关闭，可在会话模型选择菜单中开启�
 
 ## 安装
 
-**环境要求**：DSH `>=0.2.1-alpha.2`（已验证 `0.2.2-rc.5`；更高版本会显示未验证警告，但不阻止安装或运行）、Node.js `>=24.9`，并安装 pnpm。macOS/Linux 的持久终端还需要 tmux。
+**环境要求**：DSH `>=0.2.2-alpha.2`（已验证 `0.2.3-alpha.2`；更高版本会显示未验证警告，但不阻止安装或运行）、Node.js `>=24.9`，并安装 pnpm。macOS/Linux 的持久终端还需要 tmux。
+
+下方的 `0.2.3-beta.1` 安装命令要等该版本发布后才能使用。
 
 ### 使用内置 Web 配置
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.2-rc.11
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.3-beta.2
 dsh web
 ```
 
@@ -267,7 +269,7 @@ dsh web
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.2-rc.11
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.3-beta.2
 dsh codingns
 ```
 
@@ -337,7 +339,7 @@ pnpm typecheck
 
 [Spec019: Global Assistant Extraction and Performance Governance](specs/spec019-全局智能助理独立化与性能治理/README.md) tracks the proposal to make the global assistant an independently installable plugin, remove assistant-specific runtime from the base plugin, and verify idle/active performance with reproducible budgets.
 
-[Spec007.4: External Agent Team collaboration and management](specs/spec007.4-外部Agent团队协作与管理/README.md) adds native DSH Team tools for eligible external collaborators and Leads from DSH `0.2.1-alpha.2` onward when structural capability probes succeed. Headless reference acceptance covers native/external and mixed Codex/Claude workflows on alpha.2 and alpha.3; the plugin-wide compatibility floor is now `>=0.2.1-alpha.2`. Newer hosts are enabled but remain unverified until tested. See the Spec for adapter eligibility, recovery evidence, and validation limits.
+[Spec007.4: External Agent Team collaboration and management](specs/spec007.4-外部Agent团队协作与管理/README.md) adds native DSH Team tools for eligible external collaborators and Leads from DSH `0.2.1-alpha.2` onward when structural capability probes succeed. Headless reference acceptance covers native/external and mixed Codex/Claude workflows on alpha.2 and alpha.3; the plugin-wide compatibility floor is now `>=0.2.2-alpha.2`. Newer hosts are enabled but remain unverified until tested. See the Spec for adapter eligibility, recovery evidence, and validation limits.
 
 ---
 

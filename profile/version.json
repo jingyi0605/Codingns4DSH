@@ -1,5 +1,5 @@
 {
-  "pluginVersion": "0.2.2-rc.11",
-  "dshCompatibility": ">=0.2.1-alpha.2",
-  "dshTestedVersion": "0.2.2-rc.5"
+  "pluginVersion": "0.2.3-beta.2",
+  "dshCompatibility": ">=0.2.2-alpha.2",
+  "dshTestedVersion": "0.2.3-alpha.2"
 }
