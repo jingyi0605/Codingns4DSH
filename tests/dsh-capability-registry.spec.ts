@@ -12,6 +12,8 @@ import { SUPPORTED_DSH_COMPATIBILITY, SUPPORTED_DSH_VERSION } from '../data/buil
 import { FeatureRegistry, FeatureRegistryError } from '../data/build/dist/features/index.js'
 import { CODINGNS_BOOTSTRAP_DSH_VERSION, DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL, installDshPeerHostPrebootShim } from '../data/build/dist/bootstrap/index.js'
 
+const minimumVersion = SUPPORTED_DSH_COMPATIBILITY.slice(2)
+
 function route(overrides: Partial<DshCapabilityRoute<unknown>>): DshCapabilityRoute<unknown> {
   return {
     id: 'route',
@@ -81,7 +83,7 @@ test('newer hosts retain shared capabilities when structural probes succeed', ()
   const context = {
     settings: { describe() {}, mutate() {}, configure() {} },
   }
-  for (const version of ['0.2.1-rc.4', '0.3.0-alpha.1', '1.0.0']) {
+  for (const version of ['0.2.2-rc.5', '0.3.0-alpha.1', '1.0.0']) {
     const profile = createDshCapabilityRegistry(version, 'host', context).getProfile(context)
     assert.equal(profile.capabilities.get('settings.store')?.status, 'ready', version)
   }
@@ -130,14 +132,14 @@ test('pre-boot Transport 按页面 shim 状态解析：已安装即 ready，缺�
 
     // Web 页面：shim 已随启动页安装即可用，alpha.2 走当前兼容边界路由。
     installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
-    const web = createDshCapabilityRegistry('0.2.1-alpha.2', 'client', {}).getProfile({})
+    const web = createDshCapabilityRegistry(minimumVersion, 'client', {}).getProfile({})
     assert.equal(web.capabilities.get('peer-host.client-preboot-transport')?.routeId, 'peer-host-client-preboot-transport-020')
     assert.equal(web.capabilities.get('peer-host.client-preboot-transport')?.status, 'ready')
 
     // Desktop 页面：Transport 由运行时赋值，shim 用访问器接管，同样可用。
     globals.__DSH_TRANSPORT__ = { ownsHost: true, streamBaseUrl: 'http://127.0.0.1:13082' }
     globals.dshDesktopBoot = {}
-    const desktop = createDshCapabilityRegistry('0.2.1-alpha.2', 'client', {}).getProfile({})
+    const desktop = createDshCapabilityRegistry(minimumVersion, 'client', {}).getProfile({})
     assert.equal(desktop.capabilities.get('peer-host.client-preboot-transport')?.status, 'ready')
 
     // 结构不支持（非对象 Transport）时会话 shim 判 external，能力不可用。
@@ -145,7 +147,7 @@ test('pre-boot Transport 按页面 shim 状态解析：已安装即 ready，缺�
     delete globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]
     globals.__DSH_TRANSPORT__ = 'desktop-managed'
     installDshPeerHostPrebootShim({ dshVersion: CODINGNS_BOOTSTRAP_DSH_VERSION })
-    const external = createDshCapabilityRegistry('0.2.1-alpha.2', 'client', {}).getProfile({})
+    const external = createDshCapabilityRegistry(minimumVersion, 'client', {}).getProfile({})
     assert.equal(external.capabilities.get('peer-host.client-preboot-transport')?.status, 'unavailable')
   } finally {
     globals[DSH_PEER_HOST_PREBOOT_SHIM_GLOBAL]?.dispose?.()
@@ -207,7 +209,8 @@ test('0.2 世代 Host fixture 按服务形状解析到 020 路由', () => {
     connection: {
       rpc: { handle: () => undefined, intercept: () => undefined },
       fetch: { register: () => undefined },
-      operator: {},
+      browserPeer: {},
+      createPeer() {},
       admit: () => undefined,
       requestRejection: () => undefined,
     },
@@ -233,9 +236,9 @@ test('0.2 世代 Host fixture 按服务形状解析到 020 路由', () => {
   const expectations = [
     ['settings.store', 'settings-forms-020'],
     ['connection.rpc', 'connection-rpc-020'],
-    ['connection.peer', 'connection-peer-admission-020'],
+    ['connection.peer', 'connection.peer-021'],
     ['connection.attachment', 'connection-rpc-attachment-020'],
-    ['connection.uplink', 'connection-rpc-uplink-020'],
+    ['connection.uplink', 'connection.uplink-021'],
     ['typert.remote', 'remote-context-stream-020'],
     ['typert.context', 'typert-context-registry-020'],
     ['typert.stream', 'typert-remote-stream-020'],
@@ -244,16 +247,11 @@ test('0.2 世代 Host fixture 按服务形状解析到 020 路由', () => {
     ['web.index-inject', 'index-inject-rows-020'],
     ['web.index-tap', 'index-tap-020'],
   ] as const
-  // alpha.3 changes peer admission; the other service routes remain stable.
-  for (const dshVersion of ['0.2.1-alpha.2', SUPPORTED_DSH_VERSION, '0.2.1-rc.4', '0.3.0-alpha.1', '1.0.0']) {
-    const fixture = dshVersion === '0.2.1-alpha.2' ? context : { ...context, connection: {
-      ...context.connection, operator: undefined, browserPeer: {}, createPeer() {},
-    } }
-    const profile = createDshCapabilityRegistry(dshVersion, 'host', fixture).getProfile(fixture)
+  for (const dshVersion of [minimumVersion, '0.2.2-rc.5', SUPPORTED_DSH_VERSION, '0.3.0-alpha.1', '1.0.0']) {
+    const profile = createDshCapabilityRegistry(dshVersion, 'host', context).getProfile(context)
     for (const [capability, routeId] of expectations) {
       const resolution = profile.capabilities.get(capability)
-      const expectedRoute = dshVersion !== '0.2.1-alpha.2' && (capability === 'connection.peer' || capability === 'connection.uplink') ? `${capability}-021` : routeId
-      assert.equal(resolution?.routeId, expectedRoute, `${dshVersion} ${capability}`)
+      assert.equal(resolution?.routeId, routeId, `${dshVersion} ${capability}`)
       assert.equal(resolution?.status, 'ready', `${dshVersion} ${capability}`)
     }
     // 原生子代理启动入口按世代换代，但对外仍是同一个 `subagent.continuable` 能力。
@@ -342,7 +340,7 @@ test('0.2 世代 Client fixture 按服务形状与图标事实解析到 020 路�
     ['layout.columns', 'layout-columns-020'],
     ['sidebar.right.expand', 'sidebar-right-expand-020'],
   ] as const
-  for (const dshVersion of ['0.2.1-alpha.2', SUPPORTED_DSH_VERSION]) {
+  for (const dshVersion of [minimumVersion, SUPPORTED_DSH_VERSION]) {
     const profile = createDshCapabilityRegistry(dshVersion, 'client', context, facts).getProfile(context)
     for (const [capability, routeId] of expectations) {
       const resolution = profile.capabilities.get(capability)
@@ -424,7 +422,7 @@ test('客户端探测在 Cordis 的 inject 限制下仍解析 settings.store', a
   // 未注入的服务在 Cordis 代理上直接读取会抛 without-inject，旧探测因此短路失败。
   assert.throws(() => Reflect.get(probe as Context, 'configForms'), /without inject/u)
 
-  const profile = createDshCapabilityRegistry('0.2.1-alpha.2', 'client', probe, {}).getProfile(probe)
+  const profile = createDshCapabilityRegistry(minimumVersion, 'client', probe, {}).getProfile(probe)
   const resolution = profile.capabilities.get('settings.store')
   assert.equal(resolution?.routeId, 'config-forms-020')
   assert.equal(resolution?.status, 'ready')
@@ -474,7 +472,7 @@ test('0.2 代能力路由复用兼容范围常量，不写裸版本字面量', (
   assert.ok(modernRoutes.length > 0)
   // introducedIn 由 supportedDsh 的下界推导，因此跟随兼容范围下界（0.2.0-rc.2），
   // 而不是跟随测试版本；升级测试版本不应改写这些路由的“引入版本”。
-  assert.ok(modernRoutes.every((route) => route.introducedIn === '0.2.1-alpha.2'))
+  assert.ok(modernRoutes.every((route) => route.introducedIn === minimumVersion))
 
   const registry = new DshCapabilityRegistry(SUPPORTED_DSH_VERSION, 'host')
   registry.register(route({ id: 'modern', supportedDsh: SUPPORTED_DSH_COMPATIBILITY, create: () => 'modern' }))

@@ -37,7 +37,7 @@ function fixture() {
   }
   const card = new NativeCard()
   const settings = { value: { sessionTranslation: { inputLanguage: 'en', outputLanguage: 'zh' } }, status: 'ready', revision: 0, writable: true }
-  const services: any = { dshVersion: '0.2.1-alpha.2', rpc: { call: async (_channel: string, action: string) => {
+  const services: any = { dshVersion: '0.2.2-alpha.2', rpc: { call: async (_channel: string, action: string) => {
     assert.equal(action, 'cli/session/get')
     return { ok: true, value: { adapterId: 'opencode', translationEnabled: true } }
   } } }
@@ -120,7 +120,7 @@ test('todo translation retains the native progress component and its collapsed s
   renderer.dispose()
 })
 
-for (const version of ['0.2.1-alpha.2', '0.2.1-alpha.3']) test('DSH ' + version + ' renders its original composer with its store, hooks, and locale', async () => {
+for (const version of ['0.2.2-alpha.2', '0.2.3-alpha.2']) test('DSH ' + version + ' renders its original composer with its store, hooks, and locale', async () => {
   const f = fixture()
   f.services.dshVersion = version
   const core = new SlotCore()

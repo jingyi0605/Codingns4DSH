@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { Context } from '@deepseek-ai/cordis'
 import { DSH_TESTED_VERSION } from '../src/shared/contracts/version.js'
 import { DshAgentTeamAdapter } from '../src/dsh-capabilities/host/agent-team-adapter.js'
 import { CodingNsTeamDispatcher } from '../src/host/cli-bridge/team-dispatch.js'
@@ -34,7 +34,11 @@ for (const version of ['0.2.1-alpha.2', '0.2.1-alpha.3', DSH_TESTED_VERSION]) {
   const available = existsSync(join(directory, 'lib/types/index.js'))
     && JSON.parse(readFileSync(join(directory, 'package.json'), 'utf8')).version === version
   test(`native DSH ${version} TeamService owns provisioning, task CAS, peer attribution, and interruption`, { skip: !available }, async () => {
-    const { TeamService } = await import(pathToFileURL(join(directory, 'lib/types/index.js')).href)
+    const requireRuntime = createRequire(join(directory, 'package.json'))
+    const [{ Context }, { TeamService }] = await Promise.all([
+      import(pathToFileURL(requireRuntime.resolve('@deepseek-ai/cordis')).href),
+      import(pathToFileURL(join(directory, 'lib/types/index.js')).href),
+    ])
     const ctx = new Context()
     const states = new Map<string, unknown>(); let definition: any
     const sessions = new Map<string, any>(); const agents = new Map<string, any>(); const providers = new Map<string, any>([['spawn', {}]])
