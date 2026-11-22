@@ -39,6 +39,8 @@ export interface AcpCliDriverOptions {
   readonly buildArgs?: (input: CodingNsCliTurnInput) => readonly string[]
   /** Provider 是否支持在已经建立的 ACP 会话内切换模型。 */
   readonly runtimeModelSelection?: boolean
+  /** Provider 需要在 session/new 或 session/load 之前显式认证时，由每个新进程调用。 */
+  readonly authenticate?: (rpc: JsonRpcProcess, input: CodingNsCliTurnInput) => Promise<void>
   /** 产品通过原生 ACP 请求设置会话模型、权限和思考强度；失败时禁止继续发送 prompt。 */
   readonly configureSession?: (rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput, openedSession: unknown) => Promise<void>
   /**
@@ -156,6 +158,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
   private readonly buildArgsForTurn: (input: CodingNsCliTurnInput) => readonly string[]
   private readonly runtimeModelSelection: boolean
   private readonly createPromptFollowup: AcpCliDriverOptions['createPromptFollowup']
+  private readonly authenticate: AcpCliDriverOptions['authenticate']
   private readonly configureSession: AcpCliDriverOptions['configureSession']
   private readonly recoverConfigureSession: AcpCliDriverOptions['recoverConfigureSession']
   private readonly readModelCatalog: AcpCliDriverOptions['readModelCatalog']
@@ -189,6 +192,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.buildArgsForTurn = options.buildArgs ?? (() => this.args)
     this.runtimeModelSelection = options.runtimeModelSelection ?? true
     this.createPromptFollowup = options.createPromptFollowup
+    this.authenticate = options.authenticate
     this.configureSession = options.configureSession
     this.recoverConfigureSession = options.recoverConfigureSession
     this.readModelCatalog = options.readModelCatalog
@@ -573,6 +577,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     })
     try {
       await this.initialize(rpc, input.signal)
+      if (this.authenticate !== undefined) await this.authenticate(rpc, input)
       return state
     } catch (error) {
       rpc.dispose()

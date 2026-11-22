@@ -26,6 +26,8 @@ const ANTIGRAVITY_CUMULATIVE_LIMIT = 256
 /** 仅在本轮 Host 调用内传递，不进入共享协议或持久化会话。 */
 interface AntigravityTurnInput extends CodingNsCliTurnInput {
   readonly magpieSettings?: string
+  /** 为代理的 Gemini 模型建立 ACP 会话时使用的内置模型 ID。 */
+  readonly magpieAcpModel?: string
   /** 图片回合走 ACP 时，普通文件附件所在目录；图片已内联，不需要目录授权。 */
   readonly acpAddDirectories?: readonly string[]
 }
@@ -197,6 +199,11 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       buildArgs: (input) => this.buildAcpArgs(input as AntigravityTurnInput),
       // 模型和思考档位走 ACP 的 config option，不用 session/set_model。
       runtimeModelSelection: false,
+      authenticate: async (rpc, input: AntigravityTurnInput) => {
+        if (input.magpieAcpModel !== undefined) {
+          await rpc.request('authenticate', { methodId: 'gemini-api-key' }, { signal: input.signal, killOnAbort: false })
+        }
+      },
       configureSession: (rpc, sessionId, input, openedSession) => this.configureAcpSession(rpc, sessionId, input, openedSession),
       capabilities: ['stream', 'resume', 'interrupt', 'tool-events', 'permission', 'questions'],
       permissionOptions: 'once',
@@ -247,24 +254,39 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
     const signal = input.signal === undefined ? this.modelProbeAbort.signal
       : AbortSignal.any([this.modelProbeAbort.signal, input.signal])
     const magpie = await this.readMagpieEnvironment(signal)
+    // 与 Magpie 的 Shell 包装器一致：显式模型优先，否则跟随其当前模型。
+    const modelId = magpie !== null && isProviderDefaultModel(input.modelId) ? magpie.model : input.modelId
+    const nativeMode = input.permission?.nativeApprovalMode
+    const hasImage = input.attachments?.some(attachment => attachment.kind === 'image') === true
+    const canUseMagpieStream = magpie !== null && modelId?.startsWith('magpie/') === true
+      && nativeMode === 'full-access' && antigravityPermissionMode(input.permission) === null
+    const useAcp = hasImage || (nativeMode !== undefined && !canUseMagpieStream)
+    // ACP 校验内置 ID，网关按用户选中的供应商模型转发生成请求。
+    const geminiModel = useAcp && magpie !== null
+      ? /^magpie\/agy-cli\/(gemini-[0-9][a-z0-9.-]*)$/u.exec(modelId?.trim() ?? '')?.[1] : undefined
+    const mapping = geminiModel === undefined ? undefined : { acpModel: geminiModel, gatewayModel: `agy-cli/${geminiModel}` }
     // AGY cannot add request headers itself, so a per-turn loopback proxy tags
     // its Magpie requests with the DSH session ID. Without it Magpie records
     // them with no session and the usage panel can never match them.
-    // Falls back to the direct gateway URL when the proxy cannot start.
-    const proxy = magpie === null ? null : await startMagpieSessionProxy(magpie.env.GOOGLE_GEMINI_BASE_URL!, input.sessionId)
+    const proxy = magpie === null ? null : await startMagpieSessionProxy(magpie.env.GOOGLE_GEMINI_BASE_URL, input.sessionId, mapping)
       .catch(() => null)
     try {
-      // 与 Magpie 的 Shell 包装器一致：显式 --model 优先，否则跟随其当前模型。
+      if (mapping !== undefined && proxy === null) {
+        throw new Error('Antigravity 无法启动 Magpie Gemini 模型映射，请确认 Magpie 网关使用本机回环地址。')
+      }
       // 凭据只留在本轮子进程环境，不修改宿主环境、会话配置或 Client 返回值。
       const prepared: AntigravityTurnInput = magpie === null ? { ...input, signal } : {
         ...input,
         signal,
-        modelId: isProviderDefaultModel(input.modelId) ? magpie.model : input.modelId!,
-        runtimeEnv: { ...magpie.env, ...(proxy === null ? {} : { GOOGLE_GEMINI_BASE_URL: proxy.baseUrl }), ...input.runtimeEnv },
+        ...(modelId === undefined ? {} : { modelId }),
+        // 映射与 API Key 必须成对传给 AGY，避免继承的网关或凭据把请求送错地方。
+        runtimeEnv: mapping !== undefined && proxy !== null
+          ? { ...input.runtimeEnv, GEMINI_API_KEY: magpie.env.GEMINI_API_KEY, GOOGLE_API_KEY: magpie.env.GEMINI_API_KEY, GOOGLE_GEMINI_BASE_URL: proxy.baseUrl }
+          : { ...magpie.env, ...(proxy === null ? {} : { GOOGLE_GEMINI_BASE_URL: proxy.baseUrl }), ...input.runtimeEnv },
         ...(magpie.settings === undefined ? {} : { magpieSettings: magpie.settings }),
+        ...(geminiModel === undefined ? {} : { magpieAcpModel: geminiModel }),
       }
-      const nativeMode = prepared.permission?.nativeApprovalMode
-      if (nativeMode !== undefined || prepared.attachments?.some(attachment => attachment.kind === 'image')) {
+      if (useAcp) {
         yield* this.executeAcpTurn(prepared)
         return
       }
@@ -384,13 +406,16 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
   }
 
   /** 把 DSH 选择的模型、思考档位和权限模式写进 ACP 会话；失败必须让本轮报错，不能悄悄换模型。 */
-  private async configureAcpSession(rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput, openedSession: unknown): Promise<void> {
+  private async configureAcpSession(rpc: JsonRpcProcess, sessionId: string, input: AntigravityTurnInput, openedSession: unknown): Promise<void> {
     const explicit = !isProviderDefaultModel(input.modelId)
-    const model = explicit ? input.modelId!.trim() : this.resolveModelId(undefined)
+    const model = input.magpieAcpModel ?? (explicit ? input.modelId!.trim() : this.resolveModelId(undefined))
     if (model !== null) {
       try {
         const configured = await rpc.request('session/set_config_option', { sessionId, configId: 'model', value: model }, { signal: input.signal, killOnAbort: false })
-        if (acpModelMatches(configured, model) === false) throw new Error(`Antigravity ACP did not select model ${model}`)
+        const matches = acpModelMatches(configured, model)
+        if (matches === false || (matches === undefined && input.magpieAcpModel !== undefined && acpModelMatches(openedSession, model) !== true)) {
+          throw new Error(`Antigravity ACP did not select model ${model}`)
+        }
       } catch (error) {
         if (!(error instanceof JsonRpcRequestError && error.code === -32602)) throw error
         if (acpModelMatches(openedSession, model) !== true) {
@@ -416,7 +441,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
 
   private async readMagpieEnvironment(signal: AbortSignal): Promise<{
     readonly model: string
-    readonly env: Readonly<Record<string, string>>
+    readonly env: { readonly GEMINI_API_KEY: string; readonly GOOGLE_GEMINI_BASE_URL: string }
     readonly settings?: string
   } | null> {
     signal.throwIfAborted()

@@ -11,6 +11,17 @@ export interface MagpieSessionProxy {
   close(): Promise<void>
 }
 
+export interface MagpieGeminiModelMapping {
+  readonly acpModel: string
+  readonly gatewayModel: string
+}
+
+function mapGeminiPath(path: string, basePath: string, mapping: MagpieGeminiModelMapping): string {
+  const modelPath = `${basePath}/v1beta/models/${mapping.acpModel}:`
+  if (!path.startsWith(modelPath) || !/^(?:generateContent|streamGenerateContent|countTokens)(?:\?|$)/u.test(path.slice(modelPath.length))) return path
+  return `${basePath}/v1beta/models/${mapping.gatewayModel}:${path.slice(modelPath.length)}`
+}
+
 /**
  * Antigravity talks to the Magpie gateway through `GOOGLE_GEMINI_BASE_URL` and
  * offers no way to add request headers on that path (settings fields, URL
@@ -20,29 +31,32 @@ export interface MagpieSessionProxy {
  *
  * It stores no credentials: the CLI's own `Authorization`/API key headers pass
  * through untouched, and an explicit session header from the client wins.
- * Returns null, leaving the caller on the direct gateway URL, when the target
- * is not a loopback HTTP(S) URL or the session ID cannot be sent as a header.
+ * A per-turn Gemini mapping rewrites only the matching model's API path.
+ * Returns null when the target is not a loopback HTTP(S) URL or the session ID
+ * cannot be sent as a header. A mapped turn must have a working proxy.
  */
-export async function startMagpieSessionProxy(targetUrl: string, sessionId: string): Promise<MagpieSessionProxy | null> {
+export async function startMagpieSessionProxy(targetUrl: string, sessionId: string, mapping?: MagpieGeminiModelMapping): Promise<MagpieSessionProxy | null> {
   const session = sessionId.trim()
   if (session === '' || session.length > MAX_SESSION_ID_LENGTH || /[\u0000-\u001f\u007f]/u.test(session)) return null
   const target = parseLoopbackTarget(targetUrl)
   if (target === null) return null
   const send = target.protocol === 'https:' ? httpsRequest : httpRequest
-  const basePath = target.pathname.replace(/\/+$/u, '')
+  const rawBasePath = target.pathname.replace(/\/+$/u, '')
+  // The Gemini SDK appends /v1beta itself. A gateway URL ending in /v1 is the OpenAI API base.
+  const basePath = mapping === undefined ? rawBasePath : rawBasePath.replace(/\/v1(?:beta)?$/u, '')
 
   const server: Server = createServer((req, res) => {
     const headers: IncomingHttpHeaders = { ...req.headers, host: target.host }
     delete headers.connection
     if (headers[MAGPIE_SESSION_HEADER] === undefined) headers[MAGPIE_SESSION_HEADER] = session
+    const path = req.url ?? '/'
     const upstream = send({
       protocol: target.protocol,
       hostname: target.hostname.replace(/^\[|\]$/gu, ''),
       port: target.port === '' ? undefined : target.port,
       method: req.method,
-      // `baseUrl` already carries the gateway's base path, so the CLI sends it back
-      // as part of every request path: forward verbatim to match a direct connection.
-      path: req.url ?? '/',
+      // The CLI already includes the base path. Preserve it and the query string.
+      path: mapping !== undefined && req.method === 'POST' ? mapGeminiPath(path, basePath, mapping) : path,
       headers,
     }, (response) => {
       res.writeHead(response.statusCode ?? 502, response.headers)
