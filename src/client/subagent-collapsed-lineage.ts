@@ -91,6 +91,11 @@ interface CatalogInjected {
   readonly openChildAside?: ((address: unknown) => void) | undefined
 }
 
+// The status plugin moved the declaration in 0.2.3, but still supplies the same root Slot hook.
+interface SessionStatusSlotProps {
+  readonly useSessionStatus?: ((select: (snapshot: unknown) => unknown) => unknown) | undefined
+}
+
 /**
  * 合并目录运行态和会话摘要。
  *
@@ -176,10 +181,12 @@ export function createSubagentSessionsActions(
 
 type CollapsedLineageProps = PropsRuntime<'conversation.session.header.lineage'>
   & CatalogInjected
+  & SessionStatusSlotProps
   & PropsLocale<typeof SUBAGENT_COLLAPSED_LOCALE_NS>
 
 type CollapsedCatalogActionProps = PropsRuntime<'conversation.session.header.actions'>
   & CatalogInjected
+  & SessionStatusSlotProps
   & PropsLocale<typeof SUBAGENT_COLLAPSED_LOCALE_NS>
 
 /** 将目录项分成诊断、运行中和停止三组；目录本身不会被过滤或删除。 */

@@ -17,6 +17,7 @@ export type DshCapabilityId =
   | 'session.prompt-assembly'
   | 'session.working-directory'
   | 'connection.rpc'
+  | 'web.browser-entry-url'
   | 'connection.peer'
   | 'connection.attachment'
   | 'connection.uplink'

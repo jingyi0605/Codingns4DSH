@@ -1,3 +1,12 @@
+import { isDshVersionAtLeast } from '../../shared/contracts/version.js'
+
+/** Cordis resolves Connection's new authentication sub-service in the caller's scope. */
+export function hostConnectionServices(dshVersion: string): string[] {
+  return isDshVersionAtLeast(dshVersion, '0.2.3-alpha.1')
+    ? ['connection', 'connection.authentication']
+    : ['connection']
+}
+
 interface ConnectionPeers {
   readonly operator?: unknown
   readonly browserPeer?: unknown

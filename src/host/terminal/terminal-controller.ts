@@ -1,5 +1,5 @@
-import type { Context } from '@deepseek-ai/cordis'
-import { Remote, RemoteError, TypertRemoteService } from '@deepseek-ai/dsh-typert-protocol'
+import { Service, type Context } from '@deepseek-ai/cordis'
+import { Remote, RemoteError, type TypertGatewayBinding } from '@deepseek-ai/dsh-typert-protocol'
 import type { TerminalBindingScope, TerminalEnhancementSettings } from '../../shared/contracts/config.js'
 import type {
   CodingNsTerminalCreateRequest,
@@ -76,8 +76,13 @@ export interface CodingNsTerminalControllerOptions {
 }
 
 /** Codingns4DSH 自有终端 Host controller，避免与 DSH 官方 `remote.terminal` 冲突。 */
-export class CodingNsTerminalController extends TypertRemoteService {
+export class CodingNsTerminalController extends Service {
   static inject = ['typert']
+  // The Gateway reads this public binding. The 0.2.3 base class also accesses a
+  // Cordis root symbol that does not exist in the published 0.2.2 runtime.
+  readonly typertRemote: TypertGatewayBinding<this> = Object.freeze({
+    service: this, serviceKey: 'terminalController', namespace: 'codingnsTerminal',
+  })
   private readonly platform: string
   private readonly detectShells: () => readonly DetectedTerminalShell[]
   private readonly maxTerminals: number
@@ -90,7 +95,7 @@ export class CodingNsTerminalController extends TypertRemoteService {
   private readonly sessionWorkspaces = new Map<string, string>()
 
   constructor(ctx: Context, private readonly options: CodingNsTerminalControllerOptions) {
-    super(ctx, 'terminalController', { namespace: 'codingnsTerminal' })
+    super(ctx, 'terminalController')
     this.platform = options.platform ?? process.platform
     this.detectShells = options.detectShells ?? (() => detectTerminalShells({ platform: this.platform }))
     this.maxTerminals = options.maxTerminals ?? 8

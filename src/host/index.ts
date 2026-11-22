@@ -38,6 +38,8 @@ import { installSessionHandleEviction, type SessionHandleEvictionController } fr
 import { CredentialService } from './credentials/service.js'
 import { CredentialBroker } from './credentials/broker.js'
 import { createCredentialBrokerTool } from './credentials/tool.js'
+import type { BrowserEntryUrl } from '../dsh-capabilities/host/browser-entry-url-adapter.js'
+import { hostConnectionServices } from '../dsh-capabilities/host/connection-peer-adapter.js'
 
 export async function apply(ctx?: Context): Promise<void> {
   if (ctx === undefined) return
@@ -103,14 +105,13 @@ export async function apply(ctx?: Context): Promise<void> {
     }
   })
 
-  ctx.inject(['settings', 'connection', 'webServer'], async (hostCtx) => {
+  ctx.inject(['settings', 'webServer', ...hostConnectionServices(dshVersion)], async (hostCtx) => {
     const settingsContext = hostCtx as Context & { readonly settings: DshHostSettingsProvider }
     debugInfo('codingns4dsh: host inject ready', {
       hasConnection: hostCtx.connection !== undefined,
       hasSettings: settingsContext.settings !== undefined,
       hasWebServer: (hostCtx as Context & { webServer?: unknown }).webServer !== undefined,
     })
-    const webServerPort = (hostCtx as Context & { webServer: { port: number } }).webServer.port
     // 仅在 DSH 已提供 Transport 时补充 ownsHost；普通 Web 的 Codingns4DSH
     // 设置由 Client RPC 桥接持久化，不能在这里追加同名全局覆盖 Desktop。
     const indexInjectionEvents = hostCtx as unknown as { on(name: string, listener: (table: unknown[]) => void): unknown }
@@ -213,14 +214,24 @@ export async function apply(ctx?: Context): Promise<void> {
     const sessionTranslation = createSessionTranslationService(hostCtx, dshVersion)
     const credentialService = new CredentialService()
     const credentialBroker = new CredentialBroker({ service: credentialService })
+    const webServerPort = (hostCtx as Context & { webServer: { port?: number } }).webServer.port
+    const browserEntryUrl = capabilityProfile.capabilities.get('web.browser-entry-url')?.value as BrowserEntryUrl | undefined
+    const dshWebAuthenticatedUrl = webServerPort === undefined ? undefined : browserEntryUrl?.(`http://127.0.0.1:${webServerPort}`)
     const services: CodingNsHostServices = {
       rpc: new CodingNsRpcTable(),
       dshContext: hostCtx,
       dshVersion,
       settings,
       settingsProvider: settingsContext.settings,
-      dshWebPort: webServerPort,
-      dshWebAuthenticatedUrl: hostCtx.connection.authenticatedUrl(`http://127.0.0.1:${String(webServerPort)}`),
+      ...(webServerPort === undefined ? {} : { dshWebPort: webServerPort }),
+      ...(dshWebAuthenticatedUrl === undefined ? {} : { dshWebAuthenticatedUrl }),
+      ...(browserEntryUrl === undefined ? {} : {
+        resolveDshWebAuthenticatedUrl: (baseUrl: string) => {
+          const port = (hostCtx as Context & { webServer: { port?: number } }).webServer.port
+          // A LAN mapping can target another local port. Never send this Host's token to it.
+          return port !== undefined && baseUrl === `http://127.0.0.1:${port}/` ? browserEntryUrl(baseUrl) : undefined
+        },
+      }),
       events: {
         on: (name: string, listener: (...args: any[]) => any, options?: unknown): unknown =>
           hostCtx.on(name as never, listener as never, options as never),
