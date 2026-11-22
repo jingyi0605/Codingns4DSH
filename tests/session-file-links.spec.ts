@@ -12,7 +12,7 @@ test('插件入口在 PeerHost 未启用时随原生服务就绪挂载，并在�
   const { apply } = await import('../src/client/index.js')
   const globals = globalThis as unknown as Record<string, unknown>
   const previousVersion = globals[CODINGNS_DSH_VERSION_GLOBAL]
-  globals[CODINGNS_DSH_VERSION_GLOBAL] = '0.2.1-alpha.2'
+  globals[CODINGNS_DSH_VERSION_GLOBAL] = '0.2.2-alpha.2'
   let opened = ''
   const sidebar = { openResource(address: string) { opened = address } }
   const original = sidebar.openResource
