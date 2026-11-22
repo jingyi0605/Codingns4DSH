@@ -193,6 +193,9 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       buildArgs: (input) => this.buildAcpArgs(input as AntigravityTurnInput),
       // 模型和思考档位走 ACP 的 config option，不用 session/set_model。
       runtimeModelSelection: false,
+      // AGY 的 session/load 会回放历史，部分通知晚于响应抵达并混进本轮 prompt。
+      // session/resume 恢复相同会话而不回放；失败时沿用真实错误，不退回 load。
+      restoreSessionMethod: 'session/resume',
       configureSession: (rpc, sessionId, input, openedSession) => this.configureAcpSession(rpc, sessionId, input, openedSession),
       capabilities: ['stream', 'resume', 'interrupt', 'tool-events', 'permission', 'questions'],
       permissionOptions: 'once',

@@ -39,6 +39,8 @@ export interface AcpCliDriverOptions {
   readonly buildArgs?: (input: CodingNsCliTurnInput) => readonly string[]
   /** Provider 是否支持在已经建立的 ACP 会话内切换模型。 */
   readonly runtimeModelSelection?: boolean
+  /** 默认 session/load；支持无历史回放恢复的 Provider 可显式选择 session/resume。 */
+  readonly restoreSessionMethod?: 'session/load' | 'session/resume'
   /** 产品通过原生 ACP 请求设置会话模型、权限和思考强度；失败时禁止继续发送 prompt。 */
   readonly configureSession?: (rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput, openedSession: unknown) => Promise<void>
   /**
@@ -142,6 +144,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
   private readonly buildArgsForTurn: (input: CodingNsCliTurnInput) => readonly string[]
   private readonly runtimeModelSelection: boolean
   private readonly createPromptFollowup: AcpCliDriverOptions['createPromptFollowup']
+  private readonly restoreSessionMethod: NonNullable<AcpCliDriverOptions['restoreSessionMethod']>
   private readonly configureSession: AcpCliDriverOptions['configureSession']
   private readonly recoverConfigureSession: AcpCliDriverOptions['recoverConfigureSession']
   private readonly readModelCatalog: AcpCliDriverOptions['readModelCatalog']
@@ -174,6 +177,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.buildArgsForTurn = options.buildArgs ?? (() => this.args)
     this.runtimeModelSelection = options.runtimeModelSelection ?? true
     this.createPromptFollowup = options.createPromptFollowup
+    this.restoreSessionMethod = options.restoreSessionMethod ?? 'session/load'
     this.configureSession = options.configureSession
     this.recoverConfigureSession = options.recoverConfigureSession
     this.readModelCatalog = options.readModelCatalog
@@ -452,7 +456,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     }
   }
 
-  /** 在一个已经拿到进程的会话上确保存在 ACP 会话 ID（session/new 或 session/load）。 */
+  /** 在一个已经拿到进程的会话上新建或恢复 ACP 会话 ID。 */
   private async openAcpSession(session: AcpSession, input: CodingNsCliTurnInput): Promise<unknown> {
     if (session.acpSessionId !== '') return undefined
     const created = input.providerSessionId === undefined
@@ -574,7 +578,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     if (input.providerSessionId) {
       // 恢复失败必须把真实错误交给 Host，不能静默新建会话重放用户请求。
       // 新会话会丢失原上下文，也会把“会话损坏”伪装成一次成功的空白对话。
-      return rpc.request('session/load', {
+      return rpc.request(this.restoreSessionMethod, {
         sessionId: input.providerSessionId,
         cwd: input.cwd ?? process.cwd(),
         mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),

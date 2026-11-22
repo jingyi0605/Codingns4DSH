@@ -25,6 +25,8 @@ interface FakeOptions {
   readonly configuredState?: Record<string, unknown>
   readonly promptUsage?: Record<string, unknown>
   readonly promptUpdates?: readonly Record<string, unknown>[]
+  /** session/load 回放可晚于响应到达，直至下一次 prompt 才被消费。 */
+  readonly loadReplay?: readonly Record<string, unknown>[]
 }
 
 /** 造一个说 ACP 的 agy 子进程，记录所有客户端请求与命令行。 */
@@ -38,7 +40,7 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
   const driver = new AntigravityDriver({
     autoUpdater: { check() {}, dispose() {} },
     binaries: ['fake-agy'],
-    spawnSync: (() => ({ status: 0, stdout: 'agy 1.5.9', stderr: '' })) as never,
+    spawnSync: (() => ({ status: 0, stdout: 'agy 1.5.14', stderr: '' })) as never,
     resolveContextWindow: () => 1_048_576,
     resolveModelId: () => null,
     resolveEffort: () => null,
@@ -53,10 +55,13 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
       exit = () => { stdout.end(); stderr.end() }
       let promptId: number | string = 0
       let pendingServerRequests = [...(options.serverRequests ?? [])]
+      let pendingReplay: readonly Record<string, unknown>[] = []
       const reply = (id: number | string | undefined, result: unknown): void => {
         stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`)
       }
       const finishPrompt = (): void => {
+        for (const body of pendingReplay) update(body)
+        pendingReplay = []
         for (const body of options.promptUpdates ?? []) update(body)
         update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Red' } })
         reply(promptId, { stopReason: 'end_turn', usage: options.promptUsage })
@@ -79,8 +84,10 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
           if (failure !== undefined) {
             stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: failure })}\n`)
           } else if (request.method === 'initialize') reply(request.id, {})
-          else if (request.method === 'session/new' || request.method === 'session/load') reply(request.id, { sessionId: options.sessionId ?? 'agy-acp-session', ...options.sessionState })
-          else if (request.method === 'session/set_config_option') reply(request.id, options.configuredState ?? {})
+          else if (request.method === 'session/new' || request.method === 'session/load' || request.method === 'session/resume') {
+            if (request.method === 'session/load') pendingReplay = options.loadReplay ?? []
+            reply(request.id, { sessionId: options.sessionId ?? 'agy-acp-session', ...options.sessionState })
+          } else if (request.method === 'session/set_config_option') reply(request.id, options.configuredState ?? {})
           else if (request.method === 'session/prompt') {
             promptId = request.id ?? 0
             if (pendingServerRequests.length > 0) {
@@ -146,7 +153,7 @@ test('Antigravity 图片回合走 ACP 内联 image 块，不再只传 @路径', 
   })
 })
 
-test('Antigravity 图片回合恢复会话用 session/load，并在回合结束后关闭 ACP 进程', async () => {
+test('Antigravity 图片回合恢复会话用 session/resume，并在回合结束后关闭 ACP 进程', async () => {
   await withAttachments(async ({ image }) => {
     const { driver, requests, killed } = acpDriver({ sessionId: 'agy-existing-conversation' })
     await collect(driver, {
@@ -154,8 +161,9 @@ test('Antigravity 图片回合恢复会话用 session/load，并在回合结束�
       providerSessionId: 'agy-existing-conversation',
       attachments: [{ kind: 'image', path: image }],
     })
-    const load = requests.find((request) => request.method === 'session/load')
-    assert.equal(load?.params.sessionId, 'agy-existing-conversation')
+    const resume = requests.find((request) => request.method === 'session/resume')
+    assert.equal(resume?.params.sessionId, 'agy-existing-conversation')
+    assert.equal(requests.some((request) => request.method === 'session/load'), false)
     assert.equal(requests.some((request) => request.method === 'session/new'), false)
     assert.equal(killed(), 1, 'Agy ACP 带完整 Language Server，不能为图片回合留下常驻进程')
   })
@@ -247,6 +255,42 @@ test('Antigravity ACP 不等待守护命令或已经结束的命令', async () =
       driver.dispose()
       await turn
     }
+  }
+})
+
+test('Antigravity ACP 冷恢复不把延迟的历史正文、思考和工具回放写进新回合', async () => {
+  const { driver, requests, killed } = acpDriver({
+    sessionId: 'agy-existing-conversation',
+    loadReplay: [
+      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'OLD_REPLY' } },
+      { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'OLD_THOUGHT' } },
+      { sessionUpdate: 'tool_call', toolCallId: 'old-call', name: 'read_file', status: 'completed', args: { Path: '/old/file' } },
+    ],
+  })
+  try {
+    // 每轮结束都会关闭 ACP 进程；连续恢复时，即使新正文相同也必须各自保留。
+    for (let turn = 0; turn < 2; turn += 1) {
+      const chunks = await collect(driver, { providerSessionId: 'agy-existing-conversation', permission: { nativeApprovalMode: 'manual' } })
+      assert.deepEqual(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text), ['Red'])
+      assert.equal(chunks.some(chunk => chunk.type === 'reasoning-delta' || chunk.type === 'tool-event'), false)
+      assert.deepEqual(chunks.filter(chunk => chunk.type === 'finish'), [{ type: 'finish', reason: 'stop' }])
+    }
+    assert.equal(requests.filter(request => request.method === 'session/resume').length, 2)
+    assert.equal(requests.some(request => request.method === 'session/load' || request.method === 'session/new'), false)
+    assert.equal(killed(), 2)
+  } finally {
+    driver.dispose()
+  }
+})
+
+test('Antigravity ACP 恢复失败释放进程，不退回历史回放或新建会话', async () => {
+  const { driver, requests, killed } = acpDriver({ sessionId: 'agy-existing-conversation', failures: { 'session/resume:': { code: -32601, message: 'resume unavailable' } } })
+  try {
+    await assert.rejects(collect(driver, { providerSessionId: 'agy-existing-conversation', permission: { nativeApprovalMode: 'manual' } }), /resume unavailable/u)
+    assert.equal(requests.some(request => request.method === 'session/load' || request.method === 'session/new' || request.method === 'session/prompt'), false)
+    assert.equal(killed(), 1)
+  } finally {
+    driver.dispose()
   }
 })
 
@@ -395,7 +439,7 @@ for (const [mode, modeId, decision, optionId] of [
       }
       assert.deepEqual(calls.map(args => args.slice(1)), [['acp']])
       assert.equal(requests.find(request => request.method === 'session/set_mode')?.params.modeId, modeId)
-      assert.equal(requests.find(request => request.method === 'session/load')?.params.sessionId, 'agy-acp-session')
+      assert.equal(requests.find(request => request.method === 'session/resume')?.params.sessionId, 'agy-acp-session')
       assert.equal(requests.filter(request => request.method === 'session/prompt').length, 1)
       assert.deepEqual(replies.get(91)?.result, { outcome: optionId === undefined ? { outcome: 'cancelled' } : { outcome: 'selected', optionId } })
       assert.deepEqual(events.filter(event => event.type === 'finish').map(event => event.reason), [decision === 'cancelled' ? 'cancel' : 'stop'])
