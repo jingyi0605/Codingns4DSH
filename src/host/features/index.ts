@@ -14,6 +14,7 @@ import { createSessionTranslationFeature } from './session-translation.js'
 import { createPluginUpdateFeature } from './plugin-update.js'
 import { createWorkspaceMcpHostFeature } from './workspace-mcp.js'
 import { createCredentialsFeature } from './credentials.js'
+import { createSessionDeletionFeature } from './session-deletion.js'
 import type { CodingNsHostServices } from './types.js'
 
 export interface HostFeatureOptions {
@@ -38,6 +39,7 @@ export function createHostFeatures(options: HostFeatureOptions = {}): readonly F
     createGitManagementFeature(),
     createFileManagementFeature(),
     createPeerHostFeature(),
+    createSessionDeletionFeature(),
   ]
 }
 
@@ -58,4 +60,5 @@ export { createCredentialsFeature } from './credentials.js'
 export { createGitManagementFeature } from './git-management.js'
 export { createFileManagementFeature } from './file-management.js'
 export { createPeerHostFeature, toPeerHostClientRecord } from './peer-host.js'
+export { createSessionDeletionFeature } from './session-deletion.js'
 export type { CodingNsHostServices } from './types.js'

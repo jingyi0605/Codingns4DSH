@@ -136,6 +136,7 @@ export const CodingNsSettingsSchema = z.object({
     showSkillQuickReference: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.showSkillQuickReference),
     optimizeSessionTitles: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.optimizeSessionTitles),
     rememberConversationRightbarRatio: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.rememberConversationRightbarRatio),
+    enableSessionDeletion: z.boolean().default(DEFAULT_CODINGNS_SETTINGS.workspaceSessionEnhancement.enableSessionDeletion),
     quickPhrases: z.array(z.object({
       id: z.string().min(1).max(128),
       text: z.string().min(1).max(4000),

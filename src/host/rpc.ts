@@ -310,6 +310,7 @@ const CODINGNS_RPC_ENDPOINTS = [
   'cli/management/plan', 'cli/management/start', 'cli/management/status', 'cli/management/cancel',
   'magpie/context', 'magpie/usage/dashboard', 'magpie/usage/dashboard/stream', 'magpie/usage/requests', 'magpie/usage/account/update', 'magpie/usage/reset',
   'magpie/management/snapshot', 'magpie/management/provider/update', 'magpie/management/group/update', 'magpie/management/account/update', 'magpie/management/detection',
+  'sessionDeletion/prepare', 'sessionDeletion/commit', 'sessionDeletion/status', 'sessionDeletion/cancel', 'sessionDeletion/list',
 ] as const
 
 /**
@@ -470,7 +471,7 @@ function isAllowedSettingsPath(path: readonly string[]): boolean {
     return path.length === 2 && [
       'showAdapterLogo', 'showArchivedSessions', 'showWorkspaceHiding', 'hiddenWorkspaceIds',
       'showSubscriptionUsage', 'showQuickPhrases', 'showSkillQuickReference', 'optimizeSessionTitles', 'rememberConversationRightbarRatio',
-      'quickPhrases', 'quickPhrasesSeeded',
+      'enableSessionDeletion', 'quickPhrases', 'quickPhrasesSeeded',
     ].includes(path[1] ?? '')
   }
   if (path[0] === 'mobileAccess') {
@@ -522,7 +523,7 @@ async function handleFetchRpc(
   })
   // 旧的精确路由没有 Connection Peer；探测会执行本机命令，只在 Connection 通道开放，
   // 否则任何能访问该路由的调用方都能触发进程启动。
-  if (endpoint === 'magpie/management/detection') return new Response('not found', { status: 404 })
+  if (endpoint === 'magpie/management/detection' || endpoint.startsWith('sessionDeletion/')) return new Response('not found', { status: 404 })
   let body: unknown
   try {
     body = await request.json()
