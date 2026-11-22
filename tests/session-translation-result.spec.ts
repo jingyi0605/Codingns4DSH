@@ -7,6 +7,7 @@ import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js
 import { CodingNsRpcTable } from '../src/host/rpc-table.js'
 import { FeatureRegistry } from '../src/features/registry.js'
 import { DEFAULT_SESSION_TRANSLATION_SETTINGS, SESSION_TRANSLATION_ADAPTER_IDS } from '../src/shared/contracts/session-translation.js'
+import { DSH_VERSION } from '../src/shared/contracts/version.js'
 
 // Exact input and returned text from session-002f7258, event 9; no session metadata.
 const reported = JSON.parse(readFileSync(new URL('./fixtures/session-translation-commentary.json', import.meta.url), 'utf8')) as { original: string; response: string }
@@ -24,7 +25,7 @@ function fixture(stream: (request: Request) => AsyncIterable<Request>) {
     listProviders: () => [{ id: 'test', name: 'Test' }],
     listModels: async () => [{ id: 'primary', name: 'Primary' }],
     stream(request: Request) { requests.push(request); return stream(request) },
-  } }, '0.2.1-alpha.3')!
+  } }, DSH_VERSION)!
   assert.ok(service)
   service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationModels: [
     { provider: 'test', model: 'primary' }, { provider: 'test', model: 'backup' },
@@ -95,7 +96,7 @@ test('commentary and malformed result envelopes fail without extracting a plausi
   const good = JSON.stringify({ translation: translated })
   for (const invalid of [
     reported.response, `${reported.response}\n${good}`, `${good}\nTranslation complete.`,
-    `<think>We must output only the translation.</think>\n${good}`, `\`\`\`json\n${good}\n\`\`\``,
+    `<think>We must output only the translation.</think>\n${good}`, `Here is the JSON:\n\`\`\`json\n${good}\n\`\`\``,
     JSON.stringify({ reasoning: 'We need to translate this.', translation: translated }),
     JSON.stringify({ translation: null }), JSON.stringify({ translation: [translated] }),
     JSON.stringify({ translated }), JSON.stringify([translated]), JSON.stringify(translated),
@@ -198,3 +199,39 @@ for (const kind of ['assistant', 'reasoning'] as const) {
     assert.deepEqual(f.requests.map(request => request.model), ['primary', 'backup'])
   })
 }
+
+test('accepts fenced JSON, raw in-string newlines, and unescaped quotes inside a single translation field', async t => {
+  const source = 'Keep "idle" as prose.\n\nCheck `src/app.ts` next.'
+  const expected = '保留"空闲"作为正文。\n\n接下来检查 `src/app.ts`。'
+  const cases = [
+    `\`\`\`json\n${JSON.stringify({ translation: '保留"空闲"作为正文。\n\n接下来检查 @@CODINGNS_TRANSLATION_0@@。' })}\n\`\`\``,
+    `\uFEFF\`\`\`\n{"translation": "保留\\"空闲\\"作为正文。\n\n接下来检查 @@CODINGNS_TRANSLATION_0@@。"}\n\`\`\``,
+    '{"translation": "保留"空闲"作为正文。\n\n接下来检查 @@CODINGNS_TRANSLATION_0@@。"}',
+  ]
+  for (const raw of cases) {
+    const f = fixture(() => response(raw))
+    t.after(() => f.service.dispose())
+    const result = await f.service.translateOutput('dsh', 'assistant', source, undefined, true)
+    assert.equal(result?.failed, undefined, raw)
+    assert.equal(result?.translated, expected, raw)
+  }
+})
+
+test('still rejects fenced commentary, multi-block fences, and malformed multi-field JSON', async t => {
+  const source = 'Please review `src/app.ts`.'
+  const invalidResponses = [
+    'Here is the JSON:\n```json\n{"translation":"请检查 @@CODINGNS_TRANSLATION_0@@。"}\n```',
+    '```json\n{"translation":"请检查 @@CODINGNS_TRANSLATION_0@@。"}\n```\nHope this helps.',
+    '```json\n{"translation":"请检查 @@CODINGNS_TRANSLATION_0@@。"}\n```\nextra\n```json\n{"translation":"请检查 @@CODINGNS_TRANSLATION_0@@。"}\n```',
+    '{"translation": "请检查 "引号" @@CODINGNS_TRANSLATION_0@@。", "explanation": "private-leak"}',
+    '{"translation": "请检查 @@CODINGNS_TRANSLATION_0@@。"}\n{"translation": "extra"}',
+  ]
+  for (const raw of invalidResponses) {
+    const f = fixture(() => response(raw))
+    t.after(() => f.service.dispose())
+    const result = await f.service.translateOutput('dsh', 'assistant', source, undefined, true)
+    assert.equal(result?.failed, true, raw)
+    assert.equal(result?.translated, source, raw)
+    assert.deepEqual(result?.failure, { code: 'invalid-response', retryable: false, validation: 'format' })
+  }
+})

@@ -8,6 +8,7 @@ import {
   normalizeSessionTranslationSettings,
 } from '../data/build/dist/shared/contracts/session-translation.js'
 import type { SessionTranslationModel } from '../src/shared/contracts/session-translation.js'
+import { DSH_VERSION } from '../data/build/dist/shared/contracts/version.js'
 
 const primary = { provider: 'primary-provider', model: 'primary' }
 const secondary = { provider: 'backup-provider', model: 'secondary' }
@@ -27,7 +28,7 @@ function fixture(stream: (request: Request) => AsyncIterable<Request>, pool: rea
     get: (name: string) => name === 'agentDefaultModel'
       ? { currentSelection: () => ({ provider: 'default-provider', model: 'default-model' }) }
       : undefined,
-  }, '0.2.1-alpha.2')!
+  }, DSH_VERSION)!
   assert.ok(service)
   service.configure({ ...DEFAULT_SESSION_TRANSLATION_SETTINGS, translationModels: pool })
   service.activate()
@@ -236,6 +237,54 @@ for (const phase of ['metadata', 'stream'] as const) {
     if (phase === 'stream') assert.equal(f.requests[0].signal.aborted, true)
   })
 }
+
+test('active streaming past 30s completes on the primary model while a mid-stream stall still falls back', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const payload = JSON.stringify({ translation: 'Please review the code' })
+  const f = fixture((request) => (async function* () {
+    if (request.model === primary.model) {
+      await new Promise(resolve => setTimeout(resolve, 20_000))
+      yield { type: 'text-delta', text: payload.slice(0, 12) }
+      await new Promise(resolve => setTimeout(resolve, 20_000))
+      yield { type: 'text-delta', text: payload.slice(12) }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+      return
+    }
+    yield* response('Fallback translation')
+  })())
+  t.after(() => f.service.dispose())
+
+  const pending = f.service.translateInputDetailed!('codex', '请检查代码', undefined, true)
+  await setImmediate()
+  t.mock.timers.tick(20_000)
+  await setImmediate()
+  t.mock.timers.tick(20_000)
+  const completed = await pending
+  assert.equal(completed.failed, undefined)
+  assert.equal(completed.translated, 'Please review the code')
+  assert.deepEqual(completed.model, primary)
+
+  f.runtime.stream = (request) => {
+    f.requests.push(request)
+    if (request.model === primary.model) {
+      return (async function* () {
+        await new Promise(resolve => setTimeout(resolve, 10_000))
+        yield { type: 'text-delta', text: '{"translation":"partial' }
+        await new Promise(() => {})
+      })()
+    }
+    return response('Fallback after stall')
+  }
+  const stalled = f.service.translateInputDetailed!('codex', '请检查代码', undefined, true)
+  await setImmediate()
+  t.mock.timers.tick(10_000)
+  await setImmediate()
+  t.mock.timers.tick(30_000)
+  const recovered = await stalled
+  assert.equal(recovered.failed, undefined)
+  assert.equal(recovered.translated, 'Fallback after stall')
+  assert.deepEqual(recovered.model, secondary)
+})
 
 test('caller cancellation ends a pending attempt without calling subsequent models', async () => {
   const f = fixture(() => (async function* () { await new Promise(() => {}); yield {} })())
