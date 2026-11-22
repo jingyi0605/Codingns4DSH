@@ -53,6 +53,8 @@ interface ActiveProxy {
   sockets: Set<LanAccessDshStream>
   state: LanAccessDshSnapshot['state']
   error: string | null
+  upstreamCookie?: string
+  cookieExchange?: Promise<boolean>
 }
 
 export interface LanAccessDshLoginRecord extends LanAccessDshLoginConfig {}
@@ -200,12 +202,11 @@ export class LanAccessDshProxy {
   /** 当前进程内主动退出的会话；正常会话由签名令牌承载，可跨代理重建复用。 */
   private readonly revokedSessions = new Set<string>()
   private readonly loginAttempts = new LoginAttemptGuard()
-  private upstreamCookie: string | null = null
   private pwaProvider: LanAccessDshPwaProvider | null = null
 
   constructor(
     private readonly runtime: LanAccessDshRuntime = createNodeLanAccessDshRuntime(),
-    private readonly authenticatedUrl?: string,
+    private readonly authenticatedUrl?: string | ((baseUrl: string) => string | undefined),
     sessionCookieName = resolveLoginProtectionCookieName(),
   ) {
     this.sessionCookieName = resolveLoginProtectionCookieName(sessionCookieName)
@@ -249,16 +250,6 @@ export class LanAccessDshProxy {
       active.actualListenPort = listener.actualPort
       active.close = listener.close
       active.state = 'listening'
-      try {
-        await this.takeOverDshWebToken()
-      } catch (error) {
-        // Do not leave a listener that can serve a page but cannot authenticate its API requests.
-        active.error = error instanceof Error ? error.message : String(error)
-        this.active = null
-        active.state = 'error'
-        await active.close()
-        throw error
-      }
       return this.snapshot(active)
     } catch (error) {
       this.active = null
@@ -354,7 +345,7 @@ export class LanAccessDshProxy {
         const removeDsh = (): void => { active.sockets.delete(dshSocket) }
         dshSocket.once('close', removeDsh)
         dshSocket.once('error', removeDsh)
-        const requestTransform = new LanAccessDshRequestTransform(`127.0.0.1:${active.config.dshPort}`, this.upstreamCookie)
+        const requestTransform = new LanAccessDshRequestTransform(`127.0.0.1:${active.config.dshPort}`, active.upstreamCookie ?? null)
         upstream.pipe(requestTransform as unknown as NodeJS.WritableStream)
         requestTransform.pipe(dshSocket as unknown as NodeJS.WritableStream)
         dshSocket.pipe(localSocket)
@@ -383,7 +374,7 @@ export class LanAccessDshProxy {
     return this.authorizeWithoutMcp(request, localAddress, localSocket)
   }
 
-  private authorizeWithoutMcp(request: ParsedLanRequest, localAddress: boolean, localSocket: LanAccessDshStream): Uint8Array | 'pass' {
+  private authorizeWithoutMcp(request: ParsedLanRequest, localAddress: boolean, localSocket: LanAccessDshStream): Uint8Array | 'pass' | Promise<Uint8Array | 'pass'> {
     const config = this.loginConfig
     // 登录页与登录错误按浏览器自己的语言渲染；DSH 只支持 zh/en，其它语言回退中文。
     const locale = resolveAcceptLanguageLocale(request.headers['accept-language'])
@@ -391,7 +382,7 @@ export class LanAccessDshProxy {
     // PeerHost 的握手和目标 Host 认证端点必须在建立登录保护会话前可达：
     // 握手只返回公开能力摘要，auth/login 负责交换目标 Host 自己签发的短期票据。
     // 其他 API 仍然经过登录保护，不把业务数据面暴露给未登录客户端。
-    if (request.method === 'GET' && request.path === '/api/public/host-handshake') return 'pass'
+    if (request.method === 'GET' && request.path === '/api/public/host-handshake') return this.afterDshLogin(locale, '', () => 'pass', false)
     const authResponse = resolvePeerHostAuthResponse(request, config, this.revokedSessions, this.loginAttempts, loginContext)
     if (authResponse !== undefined) return authResponse
     // Host-to-Host 请求不持有浏览器 Cookie，而是由 PeerHost Host 侧注入目标 Host
@@ -400,7 +391,8 @@ export class LanAccessDshProxy {
       const token = readBearerToken(request.headers.authorization)
       if (token !== undefined) {
         return verifyPeerHostAccessToken(config, token, this.revokedSessions)
-          ? 'pass'
+          ? this.afterDshLogin(locale, '', () =>
+            this.loginConfig === config && verifyPeerHostAccessToken(config, token, this.revokedSessions) ? 'pass' : loginResponse(401, hostBrowserText(locale, 'login.required')), false)
           : loginResponse(401, '需要登录')
       }
     }
@@ -441,7 +433,12 @@ export class LanAccessDshProxy {
         'Set-Cookie': sessionCookie(this.sessionCookieName, session.token, config.timeoutSeconds),
       })
     }
-    if (localAddress || config === null || !config.enabled || !config.scopes.lan) return 'pass'
+    if (localAddress || config === null || !config.enabled || !config.scopes.lan) {
+      const active = this.active
+      if (active === null || active.upstreamCookie !== undefined || this.authenticatedUrl === undefined) return 'pass'
+      // Keep the native login available when no LAN password is required.
+      return this.takeOverDshWebToken(active).then(() => 'pass', () => 'pass')
+    }
     if (request.path === '/__codingns/login' && request.method === 'POST') {
       const form = new URLSearchParams(new TextDecoder().decode(request.body))
       const username = form.get('username') ?? ''
@@ -464,11 +461,11 @@ export class LanAccessDshProxy {
         return loginResponse(401, loginPageWithError(hostBrowserText(locale, 'login.badCredentials'), username, challenge, locale))
       }
       this.loginAttempts.recordSuccess(loginContext)
-      const expiresAt = Date.now() + config.timeoutSeconds * 1000
-      const payload = encodeSessionPayload({ username: config.username, scope: 'lan', expiresAt, nonce: randomBytes(16).toString('base64url') })
-      const token = `${payload}.${signSessionPayload(payload, config)}`
-      this.revokedSessions.delete(token)
-      return loginResponse(303, '', { 'Set-Cookie': sessionCookie(this.sessionCookieName, token, config.timeoutSeconds), Location: '/' })
+      return this.afterDshLogin(locale, username, () => {
+        if (this.loginConfig !== config) return loginResponse(401, loginPage(undefined, locale))
+        const { token } = issueLoginProtectionSession(config, 'lan')
+        return loginResponse(303, '', { 'Set-Cookie': sessionCookie(this.sessionCookieName, token, config.timeoutSeconds), Location: '/' })
+      })
     }
     if (request.path === '/__codingns/logout') {
       const token = readCookie(request.headers.cookie, this.sessionCookieName)
@@ -480,7 +477,10 @@ export class LanAccessDshProxy {
     if (request.path === '/manifest.webmanifest' && request.method === 'GET') return 'pass'
     const token = readCookie(request.headers.cookie, this.sessionCookieName)
     if (token !== undefined && !this.revokedSessions.has(token) && verifySignedSessionToken(token, config, 'lan')) {
-      return 'pass'
+      return this.afterDshLogin(locale, config.username, () =>
+        this.loginConfig === config && !this.revokedSessions.has(token) && verifySignedSessionToken(token, config, 'lan')
+          ? 'pass'
+          : loginResponse(401, hostBrowserText(locale, 'login.required')), request.method === 'GET' && (request.path === '/' || request.path.endsWith('.html')))
     }
     // 只有真正渲染登录页的 HTML 请求才签发验证码。浏览器会为 favicon、图标等
     // 静态资源发出额外的未登录请求，如果它们也签发验证码，就会不断翻转页面上
@@ -503,14 +503,33 @@ export class LanAccessDshProxy {
     return resolveLanAccessDshPwaResponse(request, this.pwaProvider?.snapshot(locale) ?? null)
   }
 
-  /** DSH 启动时的认证 URL 只在 Host 内交换一次 Cookie，绝不下发到浏览器。 */
-  private async takeOverDshWebToken(): Promise<void> {
-    if (this.authenticatedUrl === undefined) return
-    this.upstreamCookie = null
-    const response = await fetch(this.authenticatedUrl, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
-    const cookie = getSetCookie(response.headers)
-    if (response.status !== 303 || cookie === undefined) throw new Error(`DSH Web Token 接管失败 (${response.status})`)
-    this.upstreamCookie = cookie
+  private afterDshLogin(locale: HostLocale, username: string, next: () => Uint8Array | 'pass', showPage = true): Uint8Array | 'pass' | Promise<Uint8Array | 'pass'> {
+    const active = this.active
+    if (active === null || active.upstreamCookie !== undefined || this.authenticatedUrl === undefined) return next()
+    const message = hostBrowserText(locale, 'login.hostUnavailable')
+    const unavailable = () => loginResponse(503, showPage ? loginPageWithError(message, username, undefined, locale) : message)
+    return this.takeOverDshWebToken(active).then(ready => ready && this.active === active ? next() : unavailable(), unavailable)
+  }
+
+  /** Resolve and exchange the current Host's credential locally, only when an admitted request needs it. */
+  private async takeOverDshWebToken(active: ActiveProxy): Promise<boolean> {
+    if (active.upstreamCookie !== undefined) return true
+    if (active.cookieExchange !== undefined) return active.cookieExchange
+    const base = new URL(`http://127.0.0.1:${active.config.dshPort}/`)
+    const entry = typeof this.authenticatedUrl === 'function' ? this.authenticatedUrl(base.href) : this.authenticatedUrl
+    if (entry === undefined) return false
+    const url = URL.parse(entry)
+    if (url === null || url.origin !== base.origin || url.pathname !== base.pathname || url.username || url.password || url.searchParams.getAll('token').length !== 1 || !url.searchParams.get('token')) return false
+    // This exchange belongs to the requesting connection, not a periodic refresh.
+    active.cookieExchange = (async () => {
+      const response = await fetch(url, { redirect: 'manual', signal: AbortSignal.timeout(5000) })
+      const cookie = response.status === 303 ? getSetCookie(response.headers) : undefined
+      await response.body?.cancel()
+      if (cookie === undefined || this.active !== active) return false
+      active.upstreamCookie = cookie
+      return true
+    })()
+    try { return await active.cookieExchange } finally { delete active.cookieExchange }
   }
 }
 
@@ -830,7 +849,11 @@ function clearSessionCookie(name: string): string {
 function getSetCookie(headers: Headers): string | undefined {
   const extended = headers as Headers & { getSetCookie?: () => string[] }
   const values = extended.getSetCookie?.() ?? (headers.get('set-cookie') === null ? [] : [headers.get('set-cookie')!])
-  return values.map((value) => value.split(';', 1)[0]).find((value) => value !== '')
+  for (const value of values) {
+    const pair = value.split(';', 1)[0]?.trim() ?? ''
+    const separator = pair.indexOf('=')
+    if (separator > 0 && separator < pair.length - 1 && COOKIE_NAME_PATTERN.test(pair.slice(0, separator))) return pair
+  }
 }
 
 /**
@@ -922,6 +945,7 @@ function statusText(status: number): string {
     case 429: return 'Too Many Requests'
     case 431: return 'Request Header Fields Too Large'
     case 500: return 'Internal Server Error'
+    case 503: return 'Service Unavailable'
     default: return 'Request Error'
   }
 }
@@ -1079,9 +1103,15 @@ export function rewriteLanAccessDshRequestHeaders(input: Uint8Array, targetAutho
   }
   if (upstreamCookie !== undefined) {
     if (hasCookie) {
+      const upstreamName = upstreamCookie.slice(0, upstreamCookie.indexOf('='))
+      const forwarded = [upstreamCookie]
       for (let index = 1; index < lines.length; index += 1) {
-        if (lines[index]?.toLowerCase().startsWith('cookie:')) lines[index] = `Cookie: ${lines[index]!.slice(lines[index]!.indexOf(':') + 1).trim()}; ${upstreamCookie}`
+        if (!lines[index]?.toLowerCase().startsWith('cookie:')) continue
+        const pairs = lines[index]!.slice(lines[index]!.indexOf(':') + 1).split(';').map(pair => pair.trim())
+        forwarded.push(...pairs.filter(pair => pair !== '' && pair.slice(0, pair.indexOf('=')).trim() !== upstreamName))
+        lines.splice(index--, 1)
       }
+      lines.splice(-2, 0, `Cookie: ${forwarded.join('; ')}`)
     } else lines.splice(-2, 0, `Cookie: ${upstreamCookie}`)
   }
   // Node fetch 不会为服务端转发自动附加 Origin，而 DSH 的 API 信任栅栏

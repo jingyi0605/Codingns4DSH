@@ -37,6 +37,8 @@ export interface CodingNsHostServices {
   readonly dshWebPort?: number
   /** DSH 官方生成的一次性 Web 认证 URL；只留在 Host 内部完成 Cookie 交换。 */
   readonly dshWebAuthenticatedUrl?: string
+  /** 在局域网请求需要时查询 DSH 原生认证入口，避免启动顺序把缺失结果固定下来。 */
+  readonly resolveDshWebAuthenticatedUrl?: (baseUrl: string) => string | undefined
   /** DSH 事件总线；CLI 模块用它接入 llm/stream，测试环境可以不提供。 */
   readonly events?: CodingNsHostEvents
   /** DSH 原生会话桥接；不可用时为 undefined，插件不因此阻断启动。 */
