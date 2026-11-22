@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
 import test from 'node:test'
 import semver from 'semver'
-import { evaluatePluginCompatibility } from '@deepseek-ai/dsh-app-boot'
+import { evaluatePluginCompatibility } from 'dsh-app-boot-022'
 import {
   CODINGNS_SETTINGS_ENTRY_IDS,
   SUPPORTED_DSH_COMPATIBILITY,
@@ -91,10 +91,10 @@ test('installed framework versions satisfy the actual pinned DSH peer requiremen
 })
 
 test('DSH native manifest validation enforces only the minimum, including future prereleases', () => {
-  for (const version of ['0.2.0-rc.1', '0.2.0-rc.2', '0.2.1-alpha.1']) {
+  for (const version of ['0.2.0-rc.2', '0.2.1-rc.5', '0.2.1', '0.2.2-alpha.1']) {
     assert.ok(evaluatePluginCompatibility(manifest, {}, version), version)
   }
-  for (const version of ['0.2.1-alpha.2', '0.2.1-rc.4', '0.2.1-rc.10', '0.2.1', '0.2.2-alpha.2', '0.2.2-alpha.3', '0.2.2-rc.1', '0.2.2-rc.3', '0.3.0-alpha.1', '1.0.0']) {
+  for (const version of ['0.2.2-alpha.2', '0.2.2-alpha.3', '0.2.2-rc.5', '0.2.2', '0.2.3-alpha.1', '0.3.0-alpha.1', '1.0.0']) {
     assert.equal(evaluatePluginCompatibility(manifest, {}, version), undefined, version)
     assert.ok(semver.satisfies(version, manifest.peerDependencies['@deepseek-ai/dsh'], { includePrerelease: true }), version)
   }

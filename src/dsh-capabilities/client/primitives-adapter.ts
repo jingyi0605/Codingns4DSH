@@ -183,16 +183,14 @@ export function resolveCloseFillIcon(): IconComponent {
 /**
  * 模型搜索的模糊排序。
  *
- * 内置模型选择器用 primitives 的 `rankByName` 排名搜索结构：查询必须是名称的
- * 大小写不敏感子序列，前缀命中优先，其次按对齐分数。插件模型选择器复用同一
- * 排序，保证同一查询在内置与外部 Agent 两个选择器里得到相同的顺序；旧版 DSH
- * 缺少该导出时退回等价的本地实现，行为不变。
+ * 0.2.2 使用 primitives 的 `rankByName`。宿主不再导出它时，继续使用相同的
+ * 本地子序列匹配，让外部 Agent 选择器保留原有排序。
  */
 export type RankModelByName = <T extends { readonly name: string }>(items: readonly T[], rawQuery: string) => readonly T[]
 
 export const rankModelByName: RankModelByName = (items, rawQuery) => {
-  const exported = (primitives as Partial<typeof primitives>).rankByName
-  if (typeof exported === 'function') return exported(items, rawQuery) as readonly (typeof items)[number][]
+  const exported = (primitives as { readonly rankByName?: RankModelByName })['rankByName']
+  if (typeof exported === 'function') return exported(items, rawQuery)
   return rankByNameFallback(items, rawQuery)
 }
 

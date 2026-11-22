@@ -11,9 +11,9 @@
 
 [简体中文](README.md) · **English**
 
-**Current release `@jingyi0605/codingns4dsh@0.2.2-rc.11`** · DSH minimum **`0.2.1-alpha.2`** (tested with `0.2.2-rc.5`; newer versions warn but do not block installation or operation) · Node **`>= 24.9`** · macOS / Linux / Windows
+**Development version `@jingyi0605/codingns4dsh@0.2.3-beta.1` (unpublished)** · DSH minimum **`0.2.2-alpha.2`** (temporary Stage0 tested on `0.2.2-rc.5` and `0.2.3-alpha.1`; newer versions only warn) · Node **`>= 24.9`** · macOS / Linux / Windows
 
-DSH verification covers macOS Stage0 Web native sessions, refusal accounting, Webhooks, projection replay and settings, plus installed Codex / Claude CLI lifecycles against local model protocol fixtures. Desktop, Windows/Linux machines, public Relay and live model services remain unverified. See the [acceptance record](docs/开发记录/20261118-DSH-rc4兼容升级与Stage0验收.md).
+Verification ran in two isolated Stage0 profiles on macOS. The `0.2.3-alpha.1` npm CLI needed Cordis components built from the matching upstream tag. The existing Stage0 was not switched. See the [Stage0 verification notes](docs/开发记录/20261122-DSH-0.2.3临时Stage0验收.md) for scope and limitations.
 
 **[GitHub](https://github.com/jingyi0605/Codingns4DSH)** · **[npm](https://www.npmjs.com/package/@jingyi0605/codingns4dsh)** · **QQ group 1092985965** · **[WeChat / QQ QR codes](#community)**
 
@@ -233,12 +233,14 @@ The account menu shows login status, access method, connection latency and Host 
 
 ## Installation
 
-**Requirements**: DSH `>=0.2.1-alpha.2` (tested with `0.2.2-rc.5`; newer versions show an unverified-compatibility warning but do not block installation or operation), Node.js `>=24.9`, and pnpm. Persistent terminals on macOS/Linux also require tmux.
+**Requirements**: DSH `>=0.2.2-alpha.2` (tested with `0.2.3-alpha.1`; newer versions show an unverified-compatibility warning but do not block installation or operation), Node.js `>=24.9`, and pnpm. Persistent terminals on macOS/Linux also require tmux.
+
+The `0.2.3-beta.1` install commands below will work once that version is published.
 
 ### Use the Built-in Web Profile
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.2-rc.11
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.3-beta.1
 dsh web
 ```
 
@@ -248,7 +250,7 @@ Create a separate environment from the built-in Web profile:
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.2-rc.11
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.3-beta.1
 dsh codingns
 ```
 

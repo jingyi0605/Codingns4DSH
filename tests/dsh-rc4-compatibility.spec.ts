@@ -12,7 +12,7 @@ test('rc.3 and rc.4 retain shared LLM/settings routes and old hosts degrade by s
     settings: { describe() {}, mutate() {}, configure() {} },
     llm: { listProviders() { return [] }, async listModels() { return [] }, async *stream() {} },
   }
-  for (const version of ['0.2.1-alpha.2', '0.2.1-alpha.3', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.3', '0.2.2-rc.4']) {
+  for (const version of ['0.2.2-alpha.2', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.3', '0.2.2-rc.4', '0.2.3-alpha.1']) {
     const profile = createDshCapabilityRegistry(version, 'host', context).resolve(context)
     assert.equal(profile.capabilities.get('llm.text')?.routeId, 'llm-text-021', version)
     assert.equal(profile.capabilities.get('settings.store')?.routeId, 'settings-forms-020', version)
