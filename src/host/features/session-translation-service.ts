@@ -36,7 +36,9 @@ interface AgentDefaultModel {
   currentSelection?(): ModelSelection | undefined
 }
 
-export const SESSION_TRANSLATION_SEGMENT_LIMIT = 3000
+export const SESSION_TRANSLATION_SEGMENT_LIMIT = 1500
+const SESSION_TRANSLATION_STALL_TIMEOUT_MS = 30_000
+const SESSION_TRANSLATION_MAX_ATTEMPT_TIMEOUT_MS = 90_000
 
 export interface SessionTranslationOutputBatchResult {
   readonly record: SessionTranslationRecord
@@ -154,13 +156,20 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
         if (candidate.provider.trim() === '' || candidate.model.trim() === '') continue
         selected = candidate
         const controller = new AbortController()
-        const timeout = globalThis.setTimeout(() => controller.abort(new Error('session translation timeout')), 30_000)
+        let stallTimeout: ReturnType<typeof globalThis.setTimeout> | undefined
+        const resetStallTimeout = (): void => {
+          if (stallTimeout !== undefined) globalThis.clearTimeout(stallTimeout)
+          stallTimeout = globalThis.setTimeout(() => controller.abort(new Error('session translation timeout')), SESSION_TRANSLATION_STALL_TIMEOUT_MS)
+        }
+        resetStallTimeout()
+        const hardTimeout = globalThis.setTimeout(() => controller.abort(new Error('session translation timeout')), SESSION_TRANSLATION_MAX_ATTEMPT_TIMEOUT_MS)
         const combined = signal === undefined ? controller.signal : AbortSignal.any([controller.signal, signal])
         let attemptTokens = 0
         try {
           const translated = await withAbort(async () => {
             combined.throwIfAborted()
             const reasoningEffort = await translationReasoningEffort(llm, candidate, combined)
+            resetStallTimeout()
             const response = await readTranslation(llm.stream({
               provider: candidate.provider,
               model: candidate.model,
@@ -176,7 +185,7 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
             }), combined, (tokens) => {
               totalTokens = (totalTokens ?? 0) + tokens - attemptTokens
               attemptTokens = tokens
-            })
+            }, resetStallTimeout)
             combined.throwIfAborted()
             const result = parseTranslationResult(response)
             // Validate prose before restoring code, whose language is intentionally unchanged.
@@ -194,7 +203,8 @@ export function createSessionTranslationService(ctx: unknown, dshVersion: string
           })
           if (signal?.aborted) break
         } finally {
-          globalThis.clearTimeout(timeout)
+          if (stallTimeout !== undefined) globalThis.clearTimeout(stallTimeout)
+          globalThis.clearTimeout(hardTimeout)
         }
       }
     } catch (error) {
@@ -455,7 +465,7 @@ function translationSystem(language: SessionTranslationLanguage, kind: SessionTr
   ].join('\n')
 }
 
-/** Split long protected text without cutting a complete paragraph when possible. */
+/** Split long protected text without cutting a complete paragraph, line, or placeholder when possible. */
 export function splitTranslationText(text: string, limit = SESSION_TRANSLATION_SEGMENT_LIMIT): readonly string[] {
   if (limit <= 0) throw new RangeError('Translation segment limit must be positive')
   if (text.length <= limit) return [text]
@@ -467,20 +477,56 @@ export function splitTranslationText(text: string, limit = SESSION_TRANSLATION_S
       segments.push(text.slice(start))
       break
     }
-    const hardLimit = start + limit
+    const hardLimit = safePlaceholderSplitLimit(text, start, start + limit)
     const paragraphEnd = nearestParagraphEnd(text, start, hardLimit)
-    const end = paragraphEnd > start ? paragraphEnd : hardLimit
+    const lineEnd = paragraphEnd > start ? paragraphEnd : nearestLineEnd(text, start, hardLimit)
+    const boundaryEnd = lineEnd > start ? lineEnd : nearestProseBoundaryEnd(text, start, hardLimit)
+    const end = boundaryEnd > start ? boundaryEnd : hardLimit
     segments.push(text.slice(start, end))
     start = end
   }
   return segments
 }
 
+function safePlaceholderSplitLimit(text: string, start: number, limit: number): number {
+  const placeholders = /@@CODINGNS_TRANSLATION_\d+@@/gu
+  placeholders.lastIndex = Math.max(0, limit - 64)
+  for (const match of text.matchAll(placeholders)) {
+    const matchStart = match.index
+    const matchEnd = matchStart + match[0].length
+    if (matchStart >= limit) break
+    if (matchEnd > limit) {
+      return matchStart > start ? matchStart : matchEnd
+    }
+  }
+  return limit
+}
+
 function nearestParagraphEnd(text: string, start: number, limit: number): number {
-  const doubleNewline = text.lastIndexOf('\n\n', limit)
-  const crlfDoubleNewline = text.lastIndexOf('\r\n\r\n', limit)
+  const doubleNewline = limit - 2 >= start ? text.lastIndexOf('\n\n', limit - 2) : -1
+  const crlfDoubleNewline = limit - 4 >= start ? text.lastIndexOf('\r\n\r\n', limit - 4) : -1
   const boundary = Math.max(doubleNewline >= start ? doubleNewline + 2 : start, crlfDoubleNewline >= start ? crlfDoubleNewline + 4 : start)
   return boundary > start ? boundary : start
+}
+
+function nearestLineEnd(text: string, start: number, limit: number): number {
+  const newline = text.lastIndexOf('\n', limit - 1)
+  return newline >= start ? newline + 1 : start
+}
+
+function nearestProseBoundaryEnd(text: string, start: number, limit: number): number {
+  for (let index = limit; index > start; index--) {
+    const previous = text[index - 1]!
+    if (previous === '。' || previous === '！' || previous === '？') return index
+    if (/\s/u.test(previous) && index - 1 > start) {
+      const beforeSpace = text[index - 2]!
+      if (beforeSpace === '.' || beforeSpace === '!' || beforeSpace === '?') return index
+    }
+  }
+  for (let index = limit; index > start; index--) {
+    if (/\s/u.test(text[index - 1]!)) return index
+  }
+  return start
 }
 
 function preserveSegmentWhitespace(original: string, translated: string): string {
@@ -503,16 +549,123 @@ function translationUserMessage(language: SessionTranslationLanguage, kind: Sess
   ].join('\n')
 }
 
-/** Never salvage a translation from surrounding analysis: it can become an Agent instruction. */
+/**
+ * Never salvage a translation from surrounding analysis: it can become an Agent instruction.
+ * Only accept a whole-response single-field `{"translation": "..."}` JSON object (optionally
+ * wrapped solely in a Markdown JSON code fence), tolerating unambiguous in-string raw line breaks
+ * or unescaped quotes without relaxing the response contract.
+ */
 function parseTranslationResult(response: string): string {
+  const candidate = unwrapWholeJsonFence(response)
+  const parsed = tryParseSingleTranslationObject(candidate)
+    ?? tryParseSingleTranslationObject(escapeUnescapedJsonStringControlChars(candidate))
+    ?? tryParseSingleTranslationWithInnerEscapes(candidate)
+  if (parsed === undefined) {
+    throw new TranslationValidationError('format', 'model returned an unusable translation: invalid JSON response')
+  }
+  return parsed
+}
+
+function unwrapWholeJsonFence(response: string): string {
+  const trimmed = response.replace(/^\uFEFF/u, '').trim()
+  const fenced = trimmed.match(/^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu)
+  if (fenced === null) return trimmed
+  const body = fenced[1]!
+  // Reject multi-block responses where commentary sits between two fenced blocks.
+  if (/(?:^|\r?\n)```[ \t]*(?:\r?\n|$)/u.test(body)) return trimmed
+  return body.trim()
+}
+
+function tryParseSingleTranslationObject(source: string): string | undefined {
   let value: unknown
-  try { value = JSON.parse(response) }
-  catch { throw new TranslationValidationError('format', 'model returned an unusable translation: invalid JSON response') }
+  try { value = JSON.parse(source) }
+  catch { return undefined }
   if (value === null || typeof value !== 'object' || Array.isArray(value)
     || Object.keys(value).length !== 1 || !('translation' in value) || typeof value.translation !== 'string') {
     throw new TranslationValidationError('format', 'model returned an unusable translation: expected only a translation string field')
   }
   return value.translation
+}
+
+function escapeUnescapedJsonStringControlChars(source: string): string {
+  let result = ''
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < source.length; index++) {
+    const ch = source[index]!
+    if (!inString) {
+      if (ch === '"') inString = true
+      result += ch
+      continue
+    }
+    if (escaped) {
+      escaped = false
+      result += ch
+      continue
+    }
+    if (ch === '\\') {
+      escaped = true
+      result += ch
+      continue
+    }
+    if (ch === '"') {
+      inString = false
+      result += ch
+      continue
+    }
+    if (ch === '\n') result += '\\n'
+    else if (ch === '\r') result += '\\r'
+    else if (ch === '\t') result += '\\t'
+    else result += ch
+  }
+  return result
+}
+
+function tryParseSingleTranslationWithInnerEscapes(source: string): string | undefined {
+  const match = source.match(/^\{\s*"translation"\s*:\s*"([\s\S]*)"\s*\}$/u)
+  if (match === null) return undefined
+  const inner = match[1]!
+  // Reject multi-field objects or concatenated JSON objects even when inner quotes are malformed.
+  if (/(?<!\\)"\s*,\s*"[^"\r\n]+"\s*:/u.test(inner) || /(?<!\\)"\s*\}\s*(?:\r?\n|$)/u.test(inner)) {
+    return undefined
+  }
+  let repaired = ''
+  for (let index = 0; index < inner.length; index++) {
+    const ch = inner[index]!
+    if (ch === '\\') {
+      const next = inner[index + 1]
+      if (next === undefined) {
+        repaired += '\\\\'
+      } else if (next === 'u' && /^[0-9a-fA-F]{4}$/u.test(inner.slice(index + 2, index + 6))) {
+        repaired += inner.slice(index, index + 6)
+        index += 5
+      } else if ('"\\/bfnrt'.includes(next)) {
+        repaired += `\\${next}`
+        index += 1
+      } else {
+        repaired += `\\\\${next}`
+        index += 1
+      }
+    } else if (ch === '"') {
+      repaired += '\\"'
+    } else if (ch === '\n') {
+      repaired += '\\n'
+    } else if (ch === '\r') {
+      repaired += '\\r'
+    } else if (ch === '\t') {
+      repaired += '\\t'
+    } else if (ch.charCodeAt(0) < 0x20) {
+      repaired += `\\u${ch.charCodeAt(0).toString(16).padStart(4, '0')}`
+    } else {
+      repaired += ch
+    }
+  }
+  try {
+    const parsed = JSON.parse(`"${repaired}"`)
+    return typeof parsed === 'string' ? parsed : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** 模型把输入当成聊天并生成另一段中文回复时，不能把它误当成英语等目标语言译文。 */
@@ -624,11 +777,12 @@ function isPlainLatinText(text: string): boolean {
   return true
 }
 
-async function readTranslation(stream: AsyncIterable<Record<string, any>>, signal: AbortSignal, onUsage: (tokens: number) => void): Promise<string> {
+async function readTranslation(stream: AsyncIterable<Record<string, any>>, signal: AbortSignal, onUsage: (tokens: number) => void, onProgress?: () => void): Promise<string> {
   let text = ''
   let completed = false
   for await (const chunk of stream) {
     signal.throwIfAborted()
+    onProgress?.()
     if (chunk.type === 'usage' && chunk.usage != null) {
       const usage = chunk.usage
       const validTokens = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
