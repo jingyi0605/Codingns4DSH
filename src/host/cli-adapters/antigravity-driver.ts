@@ -200,6 +200,9 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       configureSession: (rpc, sessionId, input, openedSession) => this.configureAcpSession(rpc, sessionId, input, openedSession),
       capabilities: ['stream', 'resume', 'interrupt', 'tool-events', 'permission', 'questions'],
       permissionOptions: 'once',
+      // agy 的 session/load 会把整段历史（工具调用、推理、正文）当成 session/update 重放，
+      // 实测 1000+ 条通知在约 350ms 内发完，横跨 load 响应前后，没有任何重放标记。
+      loadReplayGuard: { quietMs: 300, maxMs: 10_000 },
       readQuestionRequest: antigravityQuestionRequest,
       decidePermission: (_message, input) => antigravityPermissionDecision(input.permission),
       enrichUsage: (usage, input) => {
