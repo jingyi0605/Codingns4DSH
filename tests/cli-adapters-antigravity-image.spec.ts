@@ -23,6 +23,10 @@ interface FakeOptions {
   readonly sessionState?: Record<string, unknown>
   readonly configuredState?: Record<string, unknown>
   readonly promptUsage?: Record<string, unknown>
+  /** session/load 时重放的历史 session/update：前一半在响应之前，后一半在响应之后（与 agy 实测一致，无任何重放标记）。 */
+  readonly loadReplay?: readonly Record<string, unknown>[]
+  /** 静默窗口之后才到的重放通知（只含工具调用，复用 loadReplay 里出现过的 toolCallId）。 */
+  readonly lateReplay?: readonly Record<string, unknown>[]
 }
 
 /** 造一个说 ACP 的 agy 子进程，记录所有客户端请求与命令行。 */
@@ -44,11 +48,18 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
       const stdout = new PassThrough()
       const stderr = new PassThrough()
       let promptId: number | string = 0
+      let promptDelayed = false
       let pendingServerRequests = [...(options.serverRequests ?? [])]
       const reply = (id: number | string | undefined, result: unknown): void => {
         stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`)
       }
       const finishPrompt = (): void => {
+        // 重放场景下让 prompt 持续一段时间，迟到的历史通知才会落进 prompt 监听器。
+        if (options.loadReplay !== undefined && !promptDelayed) {
+          promptDelayed = true
+          setTimeout(finishPrompt, 600)
+          return
+        }
         stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Red' } } } })}\n`)
         reply(promptId, { stopReason: 'end_turn', usage: options.promptUsage })
       }
@@ -70,6 +81,18 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
           if (failure !== undefined) {
             stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: failure })}\n`)
           } else if (request.method === 'initialize') reply(request.id, {})
+          else if (request.method === 'session/load' && options.loadReplay !== undefined) {
+            const half = Math.ceil(options.loadReplay.length / 2)
+            const emit = (update: Record<string, unknown>): void => {
+              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'agy-acp-session', update } })}\n`)
+            }
+            options.loadReplay.slice(0, half).forEach(emit)
+            reply(request.id, { sessionId: options.sessionId ?? 'agy-acp-session', ...options.sessionState })
+            // 响应之后重放仍在继续，且比紧随其后的 set_config_option 慢。
+            setTimeout(() => options.loadReplay!.slice(half).forEach(emit), 30)
+            // 超出静默窗口才到的重放：只能靠 toolCallId 识别并丢弃。
+            if (options.lateReplay !== undefined) setTimeout(() => options.lateReplay!.forEach(emit), 450)
+          }
           else if (request.method === 'session/new' || request.method === 'session/load') reply(request.id, { sessionId: options.sessionId ?? 'agy-acp-session', ...options.sessionState })
           else if (request.method === 'session/set_config_option') reply(request.id, options.configuredState ?? {})
           else if (request.method === 'session/prompt') {
@@ -149,6 +172,43 @@ test('Antigravity 图片回合恢复会话用 session/load，并在回合结束�
     assert.equal(load?.params.sessionId, 'agy-existing-conversation')
     assert.equal(requests.some((request) => request.method === 'session/new'), false)
     assert.equal(killed(), 1, 'Agy ACP 带完整 Language Server，不能为图片回合留下常驻进程')
+  })
+})
+
+test('Antigravity session/load 重放的历史不会进入本回合，避免旧消息出现在最新消息下面', async () => {
+  await withAttachments(async ({ image }) => {
+    const replayTool = (id: string, path: string) => ({ sessionUpdate: 'tool_call', toolCallId: id, name: 'read_file', args: { Path: path }, status: 'completed', kind: 'read', title: path, rawInput: { Path: path }, rawOutput: 'old' })
+    const { driver } = acpDriver({
+      sessionId: 'agy-existing-conversation',
+      loadReplay: [
+        { sessionUpdate: 'user_message_chunk', content: { type: 'text', text: 'old user prompt' } },
+        { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'old reasoning' } },
+        replayTool('call_old_1', '/old/one.md'),
+        replayTool('call_old_2', '/old/two.md'),
+        { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'old answer' } },
+        replayTool('call_old_3', '/old/three.md'),
+      ],
+      lateReplay: [replayTool('call_old_3', '/old/three.md')],
+    })
+    const chunks = await collect(driver, {
+      modelId: 'gemini-4-hydrogen',
+      providerSessionId: 'agy-existing-conversation',
+      attachments: [{ kind: 'image', path: image }],
+    })
+    const serialized = JSON.stringify(chunks)
+    for (const stale of ['call_old_1', 'call_old_2', 'call_old_3', 'old user prompt', 'old reasoning', 'old answer', '/old/']) {
+      assert.equal(serialized.includes(stale), false, `重放的历史 ${stale} 不能进入本回合`)
+    }
+    assert.equal(serialized.includes('Red'), true, '本回合真实输出必须保留')
+  })
+})
+
+test('Antigravity 新建会话不等待重放静默窗口', async () => {
+  await withAttachments(async ({ image }) => {
+    const { driver } = acpDriver()
+    const started = Date.now()
+    await collect(driver, { modelId: 'gemini-4-hydrogen', attachments: [{ kind: 'image', path: image }] })
+    assert.ok(Date.now() - started < 250, 'session/new 没有历史可重放，不应额外等待')
   })
 })
 
