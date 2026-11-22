@@ -1,6 +1,6 @@
 # Codingns4DSH Profile
 
-这是独立的 Codingns4DSH Profile，插件开发版本为 `0.2.3-beta.1`（未发布），最低支持 DSH `0.2.2-alpha.2`。更新的 DSH 版本会显示未验证警告，但不会阻止安装或启用。
+这是独立的 Codingns4DSH Profile，插件开发版本为 `0.2.3-beta.2`（未发布），最低支持 DSH `0.2.2-alpha.2`。更新的 DSH 版本会显示未验证警告，但不会阻止安装或启用。
 
 本次在 macOS 的隔离 Stage0 Profile 上验证了 `0.2.2-rc.5` 和 `0.2.3-alpha.2`；详见 [临时 Stage0 验收记录](../docs/开发记录/20261122-DSH-0.2.3临时Stage0验收.md)。
 

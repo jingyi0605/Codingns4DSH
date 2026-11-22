@@ -33,8 +33,9 @@ await writeJson('profile/version.json', profileVersion)
 
 const versionPath = join(root, 'src/shared/contracts/version.ts')
 const source = await readFile(versionPath, 'utf8')
-const updated = source.replace(/^(export const CODINGNS_VERSION = ')[^']+(' as const)$/mu, `$1${nextVersion}$2`)
-if (updated === source) throw new Error('没有找到 CODINGNS_VERSION')
+const versionPattern = /^(export const CODINGNS_VERSION = ')[^']+(' as const)$/mu
+if (!versionPattern.test(source)) throw new Error('没有找到 CODINGNS_VERSION')
+const updated = source.replace(versionPattern, `$1${nextVersion}$2`)
 await writeFile(versionPath, updated)
 
 for (const relativePath of ['README.md', 'README.en.md', 'profile/README.md']) {

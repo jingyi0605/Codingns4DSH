@@ -235,7 +235,7 @@ The account menu shows login status, access method, connection latency and Host 
 
 **Requirements**: DSH `>=0.2.2-alpha.2` (tested with `0.2.3-alpha.2`; newer versions show an unverified-compatibility warning but do not block installation or operation), Node.js `>=24.9`, and pnpm. Persistent terminals on macOS/Linux also require tmux.
 
-The `0.2.3-beta.1` install commands below will work once that version is published.
+The `0.2.3-beta.2` install commands below will work once that version is published.
 
 ### Use the Built-in Web Profile
 
