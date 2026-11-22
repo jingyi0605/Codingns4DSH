@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict'
+import { once } from 'node:events'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -25,6 +28,7 @@ interface FakeOptions {
   readonly configuredState?: Record<string, unknown>
   readonly promptUsage?: Record<string, unknown>
   readonly promptUpdates?: readonly Record<string, unknown>[]
+  readonly onPrompt?: (request: RpcRequest, env: NodeJS.ProcessEnv) => Promise<void>
   /** session/load 时重放的历史 session/update：前一半在响应之前，后一半在响应之后（与 agy 实测一致，无任何重放标记）。 */
   readonly loadReplay?: readonly Record<string, unknown>[]
   /** 静默窗口之后才到的重放通知（只含工具调用，复用 loadReplay 里出现过的 toolCallId）。 */
@@ -47,7 +51,7 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
     resolveModelId: () => null,
     resolveEffort: () => null,
     ...driverOptions,
-    spawn: ((command: string, args: string[]) => {
+    spawn: ((command: string, args: string[], { env }: { env: NodeJS.ProcessEnv }) => {
       calls.push([command, ...args])
       const stdout = new PassThrough()
       const stderr = new PassThrough()
@@ -107,6 +111,13 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
               const [next, ...rest] = pendingServerRequests
               pendingServerRequests = rest
               stdout.write(`${JSON.stringify(next)}\n`)
+            } else if (options.onPrompt !== undefined) {
+              void options.onPrompt(request, env).then(finishPrompt, (error: unknown) => {
+                stdout.write(`${JSON.stringify({
+                  jsonrpc: '2.0', id: request.id,
+                  error: { code: -32603, message: String(error) },
+                })}\n`)
+              })
             } else finishPrompt()
           } else if (request.id !== undefined) reply(request.id, {})
           return true
@@ -336,6 +347,86 @@ test('Antigravity 图片回合：Claude 不下发思考档位，provider-default
       ['model', 'gemini-4-hydrogen'],
       ['thought_level', 'high'],
     ])
+  })
+})
+
+test('Antigravity 用内置 Gemini ID 建立和恢复 ACP 会话，把图片转到指定 Magpie 模型', async (t) => {
+  const modelId = 'magpie/agy-cli/gemini-4-neon'
+  const apiKey = 'fixture-agy-key'
+  const received: Array<{ path: string | undefined; key: string | string[] | undefined; session: string | string[] | undefined; body: unknown }> = []
+  const gateway = createServer(async (req, res) => {
+    const body = JSON.parse(Buffer.concat(await Array.fromAsync(req)).toString('utf8'))
+    received.push({ path: req.url, key: req.headers['x-goog-api-key'], session: req.headers['x-magpie-session'], body })
+    res.writeHead(200, { 'content-type': 'text/event-stream' }).end('data: {}\n\n')
+  })
+  gateway.listen(0, '127.0.0.1')
+  await once(gateway, 'listening')
+  t.after(() => { gateway.closeAllConnections(); gateway.close() })
+  const gatewayUrl = `http://127.0.0.1:${(gateway.address() as AddressInfo).port}/v1`
+  const stdout = [`model=${modelId}`, `GEMINI_API_KEY=${apiKey}`, `GOOGLE_GEMINI_BASE_URL=${gatewayUrl}`].join('\n')
+  const { driver, requests } = acpDriver({
+    configuredState: { configOptions: [{ id: 'model', currentValue: 'gemini-4-neon' }] },
+    async onPrompt(request, env) {
+      const [text, image] = request.params.prompt
+      const body = { contents: [{ role: 'user', parts: [{ text: text.text }, { inlineData: { mimeType: image.mimeType, data: image.data } }] }] }
+      const response = await fetch(`${env.GOOGLE_GEMINI_BASE_URL}/v1beta/models/gemini-4-neon:streamGenerateContent?alt=sse`, {
+        method: 'POST', headers: { 'x-goog-api-key': env.GOOGLE_API_KEY!, 'content-type': 'application/json' }, body: JSON.stringify(body),
+      })
+      assert.equal(env.GEMINI_API_KEY, apiKey)
+      assert.equal(response.status, 200)
+      assert.equal(await response.text(), 'data: {}\n\n')
+    },
+  }, {
+    magpieCommand: () => 'fixture-magpie',
+    spawnSync: (command: string) => ({ status: 0, stdout: command === 'fixture-magpie' ? stdout : 'agy 1.5.14', stderr: '' }),
+    readRequestSamples: () => null,
+  })
+  t.after(() => driver.dispose())
+  await withAttachments(async ({ image }) => {
+    const permission = resolveNativeApprovalPermission({ adapterId: 'antigravity', nativeApprovalMode: 'manual' }, undefined)
+    const turn = {
+      permission, attachments: [{ kind: 'image', path: image }],
+      runtimeEnv: { GEMINI_API_KEY: 'inherited-key', GOOGLE_API_KEY: 'inherited-key', GOOGLE_GEMINI_BASE_URL: 'http://127.0.0.1:1' },
+    }
+    assert.equal((await collect(driver, { ...turn, modelId })).at(-1)?.reason, 'stop')
+    assert.equal((await collect(driver, { ...turn, modelId: 'provider-default', providerSessionId: 'agy-acp-session' })).at(-1)?.reason, 'stop')
+  })
+  const methods = ['initialize', 'initialized', 'authenticate', 'session/new', 'session/set_config_option', 'session/set_mode', 'session/prompt']
+  assert.deepEqual(requests.map(({ method }) => method), [...methods, ...methods.map(method => method === 'session/new' ? 'session/load' : method)])
+  assert.deepEqual(requests.filter(({ method }) => method === 'authenticate').map(({ params }) => params.methodId), ['gemini-api-key', 'gemini-api-key'])
+  assert.deepEqual(requests.filter(({ method }) => method === 'session/set_config_option').map(({ params }) => params.value), ['gemini-4-neon', 'gemini-4-neon'])
+  assert.deepEqual(requests.filter(({ method }) => method === 'session/set_mode').map(({ params }) => params.modeId), ['default', 'default'])
+  const expected = {
+    path: '/v1beta/models/agy-cli/gemini-4-neon:streamGenerateContent?alt=sse',
+    key: apiKey, session: 'dsh-agy-image',
+    body: { contents: [{ role: 'user', parts: [{ text: '看图' }, { inlineData: { mimeType: 'image/png', data: PNG.toString('base64') } }] }] },
+  }
+  assert.deepEqual(received, [expected, expected])
+})
+
+test('Antigravity 的其他 Magpie 模型在人工审批或有图片时仍由 ACP 校验', async () => {
+  const modelId = 'magpie/auto/deepseek-v4.1-flash-1017'
+  const settings = '/tmp/magpie-agy-settings.json'
+  const stdout = [`model=${modelId}`, `settings=${settings}`, 'GEMINI_API_KEY=fixture', 'GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:1'].join('\n')
+  await withAttachments(async ({ image }) => {
+    for (const nativeApprovalMode of ['manual', 'full-access'] as const) {
+      const { driver, calls, requests } = acpDriver({
+        failures: { 'session/set_config_option:model': { code: -32602, message: 'Unknown model ID' } },
+      }, {
+        magpieCommand: () => 'fixture-magpie',
+        spawnSync: (command: string) => ({ status: 0, stdout: command === 'fixture-magpie' ? stdout : 'agy 1.5.14', stderr: '' }),
+      })
+      const permission = resolveNativeApprovalPermission({ adapterId: 'antigravity', nativeApprovalMode }, undefined)
+      try {
+        await assert.rejects(collect(driver, {
+          modelId, permission,
+          ...(nativeApprovalMode === 'full-access' ? { attachments: [{ kind: 'image', path: image }] } : {}),
+        }), /Unknown model ID/u)
+        assert.deepEqual(calls[0]?.slice(1, 4), ['--settings', settings, 'acp'])
+        assert.equal(requests.some(({ method }) => method === 'authenticate' || method === 'session/prompt'), false)
+        assert.equal(requests.find(({ method }) => method === 'session/set_config_option')?.params.value, modelId)
+      } finally { driver.dispose() }
+    }
   })
 })
 

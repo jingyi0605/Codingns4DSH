@@ -8,6 +8,7 @@ import { antigravityContextProjection } from '../data/build/dist/host/cli-adapte
 import { createCodingNsNativeSessionBridge, type CodingNsNativeSessionBridge } from '../data/build/dist/host/native-session-bridge.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 import type { CodingNsAgentEvent } from '../src/shared/contracts/cli-adapter.js'
+import { resolveNativeApprovalPermission } from '../src/shared/native-approval-modes.js'
 
 /**
  * 造一个只回放固定 NDJSON 的 agy 子进程；每次调用消费一组输出行。
@@ -84,6 +85,7 @@ function magpieDriver(readEnv: () => { status: number; stdout: string }, options
     }) as never,
     spawn: ((_command: string, args: string[], options: { env: NodeJS.ProcessEnv }) => {
       calls.push({ args, env: options.env })
+      assert.equal(args.includes('acp'), false, 'Magpie stream-json fixture must not start ACP')
       const child = Object.assign(new EventEmitter(), {
         stdout: new PassThrough(), stderr: new PassThrough(), stdin: new PassThrough(),
         kill() { return true },
@@ -181,6 +183,29 @@ test('Antigravity 首轮和续接重新读取 Magpie 默认模型，同时保留
     assert.equal(calls[1]?.env.GEMINI_API_KEY, 'test-magpie-key')
     assert.equal(calls[2]?.env.GEMINI_API_KEY, 'host-override')
     assert.equal(calls[2]?.env.CODINGNS_CREDENTIAL_BROKER_ENDPOINT, 'test-broker')
+  } finally { driver.dispose() }
+})
+
+test('Antigravity 完全访问的文本回合用 stream-json 运行 Magpie AGY 模型并支持续接', async () => {
+  const selectedModel = 'magpie/agy-cli/gemini-4-neon'
+  const defaultModel = 'magpie/agy-cli/gemini-4-hydrogen'
+  const permission = resolveNativeApprovalPermission({ adapterId: 'antigravity', nativeApprovalMode: 'full-access' }, undefined)
+  const output = magpieEnv.replace('model=magpie/hl/gpt-6-astra', `model=${defaultModel}`)
+  const { driver, calls } = magpieDriver(() => ({ status: 0, stdout: output }))
+  try {
+    const first = await collect(driver, { modelId: selectedModel, permission })
+    const resumed = await collect(driver, { modelId: 'provider-default', permission, providerSessionId: 'agy-provider-session' })
+    assert.equal(first.at(-1)?.reason, 'stop')
+    assert.equal(resumed.at(-1)?.reason, 'stop')
+    assert.deepEqual(calls.map(({ args }) => args.slice(-2)), [['--model', selectedModel], ['--model', defaultModel]])
+    assert.deepEqual(calls[1]?.args.slice(0, 2), ['--conversation', 'agy-provider-session'])
+    for (const { args } of calls) {
+      const inputFormat = args.indexOf('--input-format')
+      assert.deepEqual(args.slice(inputFormat, inputFormat + 4), ['--input-format', 'stream-json', '--output-format', 'stream-json'])
+      assert.equal(args.includes('--dangerously-skip-permissions'), true)
+      const settings = args.indexOf('--settings')
+      assert.deepEqual(args.slice(settings, settings + 2), ['--settings', '/tmp/magpie-agy-settings.json'])
+    }
   } finally { driver.dispose() }
 })
 
