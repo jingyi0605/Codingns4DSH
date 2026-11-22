@@ -33,6 +33,10 @@ permissions:
 
 jobs:
   forward:
+    # This job can access webhook secrets on pull_request_target.
+    # Do not add checkout or fetch or execute code from a PR.
+    # Keep the forwarding script inline and treat GITHUB_EVENT_PATH as data only.
+    # Never interpolate event fields into shell commands.
     runs-on: ubuntu-latest
     timeout-minutes: 1
     continue-on-error: true
