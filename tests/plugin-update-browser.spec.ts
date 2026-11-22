@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { build } from 'tsdown'
+import semver from 'semver'
 import { headlessBrowser } from './headless-browser-driver.js'
 import { FeatureRegistry } from '../src/features/registry.js'
 import { CodingNsRpcTable } from '../src/host/rpc-table.js'
@@ -22,9 +23,9 @@ test('isolated settings browser exercises real HTTP authorization, confirmation,
   await build({ config: false, entry: ['tests/fixtures/plugin-update-panel.ts'], outDir, platform: 'browser', format: 'iife',
     dts: false, sourcemap: false, clean: true, define: { 'process.env.NODE_ENV': '"production"' },
     deps: { alwaysBundle: () => true, onlyBundle: false }, css: { inject: false } })
-  const version = '0.2.2-rc.11'
-  const longVersion = `0.2.4-rc.${'a'.repeat(80)}`
-  const incompatible = '0.2.3-rc.1'
+  const version = semver.inc(CODINGNS_VERSION, 'prerelease')!
+  const longVersion = `${version}.${'a'.repeat(80)}`
+  const incompatible = semver.inc(version, 'prerelease')!
   const commit = 'a'.repeat(40)
   const body = '<script>window.releaseExecuted=true</script>\nFixture release notes\n' + 'long-line-'.repeat(80)
   const metadataPaths: string[] = []

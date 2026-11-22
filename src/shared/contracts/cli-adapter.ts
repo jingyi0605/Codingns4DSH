@@ -182,7 +182,7 @@ export interface CodingNsCliTeamDiagnostic {
 }
 
 /** 原生 CLI 审批选择；inherit 仅供保留旧会话权限，菜单不再展示。 */
-export type CodingNsNativeApprovalMode = 'inherit' | 'manual' | 'auto-review' | 'read-only' | 'accept-edits' | 'full-access'
+export type CodingNsNativeApprovalMode = 'inherit' | 'manual' | 'auto-review' | 'read-only' | 'accept-edits' | 'full-access' | 'full-access-confirm'
 
 /** 每个 DSH 会话绑定的 CLI 选择；不包含凭据。 */
 export interface CodingNsCliSessionConfig {

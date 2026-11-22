@@ -19,8 +19,9 @@ try {
   const sourceBytes = Buffer.alloc(entry.size)
   await file.read(sourceBytes, 0, sourceBytes.length, 8 + header.readUInt32LE(4) + Number(entry.offset))
   const source = sourceBytes.toString('utf8')
-  if (!source.includes('function PermissionSelect(') || !source.includes('exports.apply=apply;')) throw new Error('Permission UI exports changed; update the fixture for this DSH version')
+  const applyExport = /exports\.apply\s*=\s*apply;/u
+  if (!source.includes('function PermissionSelect(') || !applyExport.test(source)) throw new Error('Permission UI exports changed; update the fixture for this DSH version')
   const output = resolve(destination)
   await mkdir(dirname(output), { recursive: true })
-  await writeFile(output, source.replace('exports.apply=apply;', 'exports.PermissionSelect=PermissionSelect;exports.accessZh=accessZh;exports.apply=apply;'), { flag: 'wx' })
+  await writeFile(output, source.replace(applyExport, 'exports.PermissionSelect=PermissionSelect;exports.accessZh=accessZh;exports.apply=apply;'), { flag: 'wx' })
 } finally { await file.close() }

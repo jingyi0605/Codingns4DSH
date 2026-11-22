@@ -200,6 +200,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       configureSession: (rpc, sessionId, input, openedSession) => this.configureAcpSession(rpc, sessionId, input, openedSession),
       capabilities: ['stream', 'resume', 'interrupt', 'tool-events', 'permission', 'questions'],
       permissionOptions: 'once',
+      createPromptFollowup: createAntigravityPromptFollowup,
       // agy 的 session/load 会把整段历史（工具调用、推理、正文）当成 session/update 重放，
       // 实测 1000+ 条通知在约 350ms 内发完，横跨 load 响应前后，没有任何重放标记。
       loadReplayGuard: { quietMs: 300, maxMs: 10_000 },
@@ -846,6 +847,45 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       args.push('--effort', input.effortId)
     }
     return args
+  }
+}
+
+const AGY_FOLLOWUP_START_TIMEOUT_MS = 60_000
+const AGY_FOLLOWUP_IDLE_TIMEOUT_MS = 10_000
+
+function createAntigravityPromptFollowup() {
+  const pending = new Set<string>()
+  let following = false
+  let deadline = 0
+  return {
+    observe(message: JsonRpcMessage): void {
+      if (message.method !== 'session/update' || !isRecord(message.params) || !isRecord(message.params.update)) return
+      const update = message.params.update
+      const type = update.sessionUpdate
+      if (type === 'tool_call' || type === 'tool_call_update') {
+        const callId = update.toolCallId
+        if (typeof callId !== 'string') return
+        if (update.status === 'completed' || update.status === 'failed') {
+          if (pending.delete(callId) && pending.size === 0 && following) {
+            deadline = Date.now() + AGY_FOLLOWUP_START_TIMEOUT_MS
+          }
+          return
+        }
+        if (type !== 'tool_call' || (update.status !== 'pending' && update.status !== 'in_progress')) return
+        const input = isRecord(update.rawInput) ? update.rawInput : update.args
+        if (update.name === 'run_command' && isRecord(input) && input.IsDaemon === true) return
+        if (following || update.name === 'run_command') pending.add(callId)
+      } else if (following && pending.size === 0 && (type === 'agent_message_chunk' || type === 'agent_thought_chunk')) {
+        deadline = Date.now() + AGY_FOLLOWUP_IDLE_TIMEOUT_MS
+      }
+    },
+    waitAfterResponse(response: unknown): number | undefined {
+      if (!following) {
+        if (pending.size === 0 || !isRecord(response) || response.stopReason !== 'end_turn') return undefined
+        following = true
+      }
+      return pending.size > 0 ? Infinity : deadline - Date.now()
+    },
   }
 }
 

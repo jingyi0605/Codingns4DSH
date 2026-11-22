@@ -12,10 +12,66 @@ import {
 } from '../data/build/dist/dsh-capabilities/host/workspace-pending-questions-adapter.js'
 import {
   createWorkspaceApprovalAdapter,
+  requestInteractiveSessionApproval,
+  supportsInteractiveSessionApproval,
   supportsWorkspaceApproval,
   type WorkspaceApprovalAdapter,
   type WorkspaceApprovalOutcome,
 } from '../data/build/dist/dsh-capabilities/host/workspace-approval-adapter.js'
+
+test('interactive approval restores the original override before waiting and leaves inherited defaults untouched', async () => {
+  const session = { seq: 0 }
+  const agent = { session }
+  let override: 'ask' | 'never' | undefined = 'never'
+  let defaultPolicy: 'ask' | 'never' = 'never'
+  const writes: string[] = []
+  let finish!: (outcome: string) => void
+  const decision = new Promise<string>(resolve => { finish = resolve })
+  let setterApplies = true
+  let requestFails = false
+  const approval = {
+    request(input: Record<string, unknown>) {
+      assert.equal(input.agent, agent)
+      assert.equal(approval.effectivePolicy(session), 'ask')
+      if (requestFails) throw new Error('request failed')
+      return decision
+    },
+    effectivePolicy(target: unknown) { assert.equal(target, session); return override ?? defaultPolicy },
+    overrideOf() { return override },
+    setPolicy(target: unknown, next: 'ask' | 'never') {
+      assert.equal(target, agent)
+      if (!setterApplies) return
+      writes.push(next)
+      override = next
+    },
+  }
+  const context = { get(name: string) { return name === 'agents' ? { get: () => agent } : name === 'approval' ? approval : undefined } }
+  assert.equal(supportsInteractiveSessionApproval(context, 'session'), true)
+  assert.deepEqual(writes, [])
+  const pending = requestInteractiveSessionApproval(context, 'session', {})
+  assert.equal(approval.effectivePolicy(session), 'never')
+  assert.deepEqual(writes, ['ask', 'never'])
+  finish('allowed-once')
+  assert.equal(await pending, 'allowed-once')
+
+  requestFails = true
+  assert.throws(() => requestInteractiveSessionApproval(context, 'session', {}), /request failed/)
+  requestFails = false
+  assert.equal(approval.effectivePolicy(session), 'never')
+  assert.deepEqual(writes.splice(0), ['ask', 'never', 'ask', 'never'])
+
+  setterApplies = false
+  assert.equal(await requestInteractiveSessionApproval(context, 'session', {}), 'unavailable')
+  override = undefined
+  assert.equal(supportsInteractiveSessionApproval(context, 'session'), false)
+  assert.equal(await requestInteractiveSessionApproval(context, 'session', {}), 'unavailable')
+  defaultPolicy = 'ask'
+  assert.equal(supportsInteractiveSessionApproval(context, 'session'), true)
+  assert.equal(await requestInteractiveSessionApproval(context, 'session', {}), 'allowed-once')
+  assert.equal(override, undefined)
+  assert.deepEqual(writes, [])
+  assert.equal(supportsInteractiveSessionApproval({}, 'session'), false)
+})
 import { createDshCapabilityRegistry } from '../data/build/dist/dsh-capabilities/routes.js'
 import { DSH_CAPABILITY_MATRIX } from '../data/build/dist/dsh-capabilities/matrix.js'
 import type { DshCapabilityProfile, DshCapabilityResolution } from '../data/build/dist/dsh-capabilities/types.js'

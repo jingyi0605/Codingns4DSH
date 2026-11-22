@@ -19,7 +19,7 @@ import {
   needsServiceTierRevalidation,
   toggledServiceTierId,
 } from './service-tier.js'
-import { DshButton, DshInput, DshModal, rankModelByName, resolveControlIcon, resolveCloseFillIcon, resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
+import { DshButton, DshInput, DshModal, DshRiskConfirmation, rankModelByName, resolveControlIcon, resolveCloseFillIcon, resolveDataIcon } from '../dsh-capabilities/client/primitives-adapter.js'
 import { composerSlotSelector } from '../dsh-capabilities/client/composer-slot-selectors.js'
 import { providerIconUrl } from './provider-icons.js'
 import { publishSessionSelection } from './session-adapter-cache.js'
@@ -350,12 +350,26 @@ function NativeApprovalSlot(props: CliSlotProps & {
   const [selection, update] = useSelection(sessionId, props.rpc)
   const [pending, setPending] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [confirming, setConfirming] = useState(false)
+  const [acknowledged, setAcknowledged] = useState(false)
+  const confirmChoice = useRef<((approved: boolean) => void) | null>(null)
   const inherited = props.useProjection?.('permissions') as { readonly currentValue?: string } | undefined
   const currentValue = nativeApprovalCurrentValue(selection.adapterId, selection.nativeApprovalMode, inherited?.currentValue)
   const nextTurn = session?.running === true || (session?.queue?.length ?? 0) > 0
   const disabledReason = pending ? 'saving'
     : sessionId === undefined || session === undefined ? 'unavailable' : undefined
   useEffect(() => { setFailed(false) }, [sessionId, selection.adapterId])
+  useEffect(() => {
+    setConfirming(false)
+    setAcknowledged(false)
+    return () => { confirmChoice.current?.(false); confirmChoice.current = null }
+  }, [sessionId, selection.adapterId])
+  const closeConfirmation = (approved: boolean): void => {
+    confirmChoice.current?.(approved)
+    confirmChoice.current = null
+    setConfirming(false)
+    setAcknowledged(false)
+  }
   const catalog = nativeApprovalCatalog(selection.adapterId, t)
   if (catalog.options.length === 0) return createElement(props.NativePermission, { ...props, key: selection.adapterId })
   return createElement('div', { 'data-codingns-approval': 'override', 'data-codingns-approval-disabled': disabledReason,
@@ -363,7 +377,7 @@ function NativeApprovalSlot(props: CliSlotProps & {
     style: { position: 'relative', display: 'inline-flex', alignItems: 'center', flexShrink: 0, whiteSpace: 'nowrap' } },
     createElement(props.NativePermission, {
       ...props, key: selection.adapterId,
-      locked: pending || sessionId === undefined || !canChangeNativeApproval(session),
+      locked: pending || confirming || sessionId === undefined || !canChangeNativeApproval(session),
       usePermissionCatalog: (select: (state: unknown) => unknown) => select({ value: catalog }),
       useProjection: (key: string) => key === 'permissions' ? { ...inherited, currentValue } : props.useProjection?.(key),
       t: (key: string, values?: Record<string, unknown>) => {
@@ -374,7 +388,15 @@ function NativeApprovalSlot(props: CliSlotProps & {
       },
       select: async (value: string): Promise<boolean> => {
         const next = nativeApprovalModeForValue(selection.adapterId, value)
-        if (next === undefined || pending || !canChangeNativeApproval(session)) return false
+        if (next === undefined || pending || confirmChoice.current !== null || !canChangeNativeApproval(session)) return false
+        if (next === 'full-access-confirm') {
+          const approved = await new Promise<boolean>(resolve => {
+            confirmChoice.current = resolve
+            setAcknowledged(false)
+            setConfirming(true)
+          })
+          if (!approved) return false
+        }
         setPending(true)
         setFailed(false)
         try {
@@ -385,6 +407,19 @@ function NativeApprovalSlot(props: CliSlotProps & {
       },
     }),
     failed && createElement('span', { role: 'alert', title: t('nativeApproval.failed'), style: { color: dshThemeColor.labelPrimary, fontSize: uiFontSize(12) } }, t('nativeApproval.failed')),
+    confirming && createElement(DshRiskConfirmation, {
+      open: true,
+      title: t('nativeApproval.fullConfirmTitle'),
+      description: t('nativeApproval.fullConfirmHint'),
+      acknowledgeLabel: t('nativeApproval.confirmAcknowledge'),
+      cancelLabel: t('nativeApproval.confirmCancel'),
+      closeLabel: t('nativeApproval.confirmClose'),
+      confirmLabel: t('nativeApproval.fullConfirmEnable'),
+      acknowledged,
+      onAcknowledgedChange: setAcknowledged,
+      onCancel: () => closeConfirmation(false),
+      onConfirm: () => { if (acknowledged) closeConfirmation(true) },
+    }),
   )
 }
 

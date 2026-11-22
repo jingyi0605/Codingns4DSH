@@ -67,6 +67,10 @@ export interface AcpCliDriverOptions {
   /** 在 DSH 已明确授权的范围内自动回应 ACP 权限请求；返回 undefined 继续交给原生审批面板。 */
   readonly decidePermission?: (message: JsonRpcMessage, input: CodingNsCliTurnInput) => 'allow' | 'reject' | undefined
   readonly permissionOptions?: 'once'
+  readonly createPromptFollowup?: () => {
+    observe(message: JsonRpcMessage): void
+    waitAfterResponse(response: unknown): number | undefined
+  }
   /** Provider 可在 Host 侧补齐 ACP 未携带的上下文窗口等用量字段。 */
   readonly enrichUsage?: (
     usage: Extract<CodingNsAgentEvent, { type: 'usage' }>,
@@ -151,6 +155,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
   private readonly args: readonly string[]
   private readonly buildArgsForTurn: (input: CodingNsCliTurnInput) => readonly string[]
   private readonly runtimeModelSelection: boolean
+  private readonly createPromptFollowup: AcpCliDriverOptions['createPromptFollowup']
   private readonly configureSession: AcpCliDriverOptions['configureSession']
   private readonly recoverConfigureSession: AcpCliDriverOptions['recoverConfigureSession']
   private readonly readModelCatalog: AcpCliDriverOptions['readModelCatalog']
@@ -183,6 +188,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.args = options.args
     this.buildArgsForTurn = options.buildArgs ?? (() => this.args)
     this.runtimeModelSelection = options.runtimeModelSelection ?? true
+    this.createPromptFollowup = options.createPromptFollowup
     this.configureSession = options.configureSession
     this.recoverConfigureSession = options.recoverConfigureSession
     this.readModelCatalog = options.readModelCatalog
@@ -313,15 +319,18 @@ export class AcpCliDriver implements CodingNsCliDriver {
       return this.enrichUsage?.(merged, input) ?? merged
     }
     let requestDone = true
+    const followup = this.createPromptFollowup?.()
+    let stream: ReturnType<typeof streamRpcRequest> | undefined
     try {
-      const stream = streamRpcRequest(session.rpc, 'session/prompt', {
+      stream = streamRpcRequest(session.rpc, 'session/prompt', {
         sessionId: providerSessionId,
         prompt: await buildAcpPromptBlocks(input.prompt, input.attachments ?? []),
-      }, input.signal, { dispose: false, killOnAbort: false })
+      }, input.signal, {
+        dispose: false,
+        killOnAbort: false,
+        ...(followup === undefined ? {} : { waitAfterResponse: (response) => followup.waitAfterResponse(response) }),
+      })
       let response: unknown
-      // 只有读到 session/prompt 的最终响应才算 Provider 本轮真正结束；提前
-      // break（消费方关闭迭代器）时 requestDone 保持 true，finally 会补发
-      // session/cancel，避免 Provider 留在“prompt 仍在运行”的状态。
       while (true) {
         const next = await stream.next()
         if (next.done) {
@@ -332,6 +341,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
         // load 重放过的工具调用在静默窗口之后仍可能迟到，属于历史，不属于本回合。
         const replayedToolCallId = acpUpdateToolCallId(next.value)
         if (replayedToolCallId !== undefined && session.replayedToolCallIds.has(replayedToolCallId)) continue
+        followup?.observe(next.value)
         const rawChunk = acpMessageToChunk(next.value, input.signal?.aborted ?? false, this.readQuestionRequest, session.autoResolvedPermissions, this.permissionOptions)
         const enrichedChunk = rawChunk?.type === 'usage' ? this.enrichUsage?.(rawChunk, input) ?? rawChunk : rawChunk
         const chunk = enrichedChunk === null ? null : decorateCodingNsSegmentEvent(enrichedChunk, input, segmentState, this.descriptor.id)
@@ -408,6 +418,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
         yield { type: 'finish', reason: 'error', failure: failureFromUnknown(error) }
       }
     } finally {
+      await stream?.return(undefined)
       // 回合中止（用户停止）或消费方提前关闭迭代器时，必须让 Provider 真正
       // 结束这条 prompt。`JsonRpcProcess` 在 abort 时补发的是 JSON-RPC 通用
       // `$/cancelRequest`，ACP 服务只认 `session/cancel`，否则 Provider 的

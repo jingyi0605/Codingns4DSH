@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
+import { setImmediate as nextTick } from 'node:timers/promises'
 import { AntigravityDriver } from '../data/build/dist/host/cli-adapters/antigravity-driver.js'
 import { CodingNsDshMessageProjector } from '../src/host/cli-adapters/dsh-message-projector.js'
 import { CodingNsCliAdapterRegistry } from '../src/host/cli-adapters/registry.js'
@@ -23,6 +24,7 @@ interface FakeOptions {
   readonly sessionState?: Record<string, unknown>
   readonly configuredState?: Record<string, unknown>
   readonly promptUsage?: Record<string, unknown>
+  readonly promptUpdates?: readonly Record<string, unknown>[]
   /** session/load 时重放的历史 session/update：前一半在响应之前，后一半在响应之后（与 agy 实测一致，无任何重放标记）。 */
   readonly loadReplay?: readonly Record<string, unknown>[]
   /** 静默窗口之后才到的重放通知（只含工具调用，复用 loadReplay 里出现过的 toolCallId）。 */
@@ -35,6 +37,8 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
   const requests: RpcRequest[] = []
   const replies = new Map<number | string, RpcRequest>()
   let killed = 0
+  let update = (_body: Record<string, unknown>): void => { throw new Error('ACP process has not started') }
+  let exit = (): void => { throw new Error('ACP process has not started') }
   const driver = new AntigravityDriver({
     autoUpdater: { check() {}, dispose() {} },
     binaries: ['fake-agy'],
@@ -47,6 +51,10 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
       calls.push([command, ...args])
       const stdout = new PassThrough()
       const stderr = new PassThrough()
+      update = (body) => {
+        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: options.sessionId ?? 'agy-acp-session', update: body } })}\n`)
+      }
+      exit = () => { stdout.end(); stderr.end() }
       let promptId: number | string = 0
       let promptDelayed = false
       let pendingServerRequests = [...(options.serverRequests ?? [])]
@@ -60,7 +68,8 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
           setTimeout(finishPrompt, 600)
           return
         }
-        stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Red' } } } })}\n`)
+        for (const body of options.promptUpdates ?? []) update(body)
+        update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Red' } })
         reply(promptId, { stopReason: 'end_turn', usage: options.promptUsage })
       }
       const stdin = {
@@ -83,15 +92,12 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
           } else if (request.method === 'initialize') reply(request.id, {})
           else if (request.method === 'session/load' && options.loadReplay !== undefined) {
             const half = Math.ceil(options.loadReplay.length / 2)
-            const emit = (update: Record<string, unknown>): void => {
-              stdout.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: 'agy-acp-session', update } })}\n`)
-            }
-            options.loadReplay.slice(0, half).forEach(emit)
+            options.loadReplay.slice(0, half).forEach(update)
             reply(request.id, { sessionId: options.sessionId ?? 'agy-acp-session', ...options.sessionState })
             // 响应之后重放仍在继续，且比紧随其后的 set_config_option 慢。
-            setTimeout(() => options.loadReplay!.slice(half).forEach(emit), 30)
+            setTimeout(() => options.loadReplay!.slice(half).forEach(update), 30)
             // 超出静默窗口才到的重放：只能靠 toolCallId 识别并丢弃。
-            if (options.lateReplay !== undefined) setTimeout(() => options.lateReplay!.forEach(emit), 450)
+            if (options.lateReplay !== undefined) setTimeout(() => options.lateReplay!.forEach(update), 450)
           }
           else if (request.method === 'session/new' || request.method === 'session/load') reply(request.id, { sessionId: options.sessionId ?? 'agy-acp-session', ...options.sessionState })
           else if (request.method === 'session/set_config_option') reply(request.id, options.configuredState ?? {})
@@ -109,7 +115,7 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
       return { stdout, stderr, stdin, kill() { killed += 1; stdout.end(); stderr.end(); return true } }
     }) as never,
   } as never)
-  return { driver, calls, requests, replies, killed: () => killed }
+  return { driver, calls, requests, replies, killed: () => killed, update: (body: Record<string, unknown>) => update(body), exit: () => exit() }
 }
 
 async function collect(driver: AntigravityDriver, input: Record<string, unknown>): Promise<any[]> {
@@ -173,6 +179,95 @@ test('Antigravity 图片回合恢复会话用 session/load，并在回合结束�
     assert.equal(requests.some((request) => request.method === 'session/new'), false)
     assert.equal(killed(), 1, 'Agy ACP 带完整 Language Server，不能为图片回合留下常驻进程')
   })
+})
+
+const backgroundCommand = {
+  sessionUpdate: 'tool_call', toolCallId: 'background-command', name: 'run_command', kind: 'execute', status: 'in_progress',
+  rawInput: { CommandLine: 'Start-Sleep -Seconds 15', WaitMsBeforeAsync: 1000 },
+}
+const completedCommand = {
+  ...backgroundCommand, sessionUpdate: 'tool_call_update', status: 'completed', rawOutput: 'Command exited with code 0.',
+}
+const acpPermission = { permission: { nativeApprovalMode: 'manual' } }
+
+test('Antigravity ACP 保留后台命令结果和后续正文，最后只发送一个终态', async (context) => {
+  context.mock.timers.enable({ apis: ['setTimeout', 'Date'] })
+  const { driver, requests, update, killed } = acpDriver({ promptUpdates: [backgroundCommand] })
+  const turn = collect(driver, acpPermission)
+  try {
+    await nextTick()
+    assert.equal(killed(), 0)
+    update(completedCommand)
+    await nextTick()
+    context.mock.timers.tick(25_000)
+    await nextTick()
+    assert.equal(killed(), 0)
+
+    update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Background output' } })
+    await nextTick()
+    context.mock.timers.tick(9_000)
+    update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: ' arrived' } })
+    await nextTick()
+    context.mock.timers.tick(1_000)
+    await nextTick()
+    assert.equal(killed(), 0)
+    context.mock.timers.tick(9_000)
+
+    const relevant = (await turn).filter(({ type }) => type === 'text-delta' || type === 'tool-event' || type === 'finish')
+    assert.deepEqual(relevant.map(({ type, text, status, reason }) => [type, text ?? status ?? reason]), [
+      ['tool-event', 'running'], ['text-delta', 'Red'], ['tool-event', 'completed'],
+      ['text-delta', 'Background output'], ['text-delta', ' arrived'], ['finish', 'stop'],
+    ])
+    assert.equal(killed(), 1)
+    assert.equal(requests.filter(({ method }) => method === 'session/prompt').length, 1)
+  } finally {
+    driver.dispose()
+    await turn
+  }
+})
+
+test('Antigravity ACP 等待后台命令时能取消或处理进程退出', async () => {
+  for (const reason of ['cancel', 'error'] as const) {
+    const controller = new AbortController()
+    const { driver, requests, exit, killed } = acpDriver({ promptUpdates: [backgroundCommand] })
+    const turn = collect(driver, { ...acpPermission, signal: controller.signal })
+    try {
+      await nextTick()
+      assert.equal(killed(), 0)
+      if (reason === 'cancel') controller.abort()
+      else exit()
+      const chunks = await turn
+      assert.deepEqual(chunks.filter(({ type }) => type === 'finish').map(chunk => chunk.reason), [reason])
+      if (reason === 'cancel') {
+        assert.equal(requests.some(({ method }) => method === 'session/cancel'), true)
+        assert.equal(killed(), 1)
+      }
+    } finally {
+      controller.abort()
+      driver.dispose()
+      await turn
+    }
+  }
+})
+
+test('Antigravity ACP 不等待守护命令或已经结束的命令', async () => {
+  for (const promptUpdates of [
+    [{ ...backgroundCommand, rawInput: { ...backgroundCommand.rawInput, IsDaemon: true } }],
+    [backgroundCommand, completedCommand],
+  ]) {
+    const { driver, killed } = acpDriver({ promptUpdates })
+    const controller = new AbortController()
+    const turn = collect(driver, { ...acpPermission, signal: controller.signal })
+    try {
+      await nextTick()
+      assert.equal(killed(), 1)
+      assert.equal((await turn).at(-1)?.reason, 'stop')
+    } finally {
+      controller.abort()
+      driver.dispose()
+      await turn
+    }
+  }
 })
 
 test('Antigravity session/load 重放的历史不会进入本回合，避免旧消息出现在最新消息下面', async () => {

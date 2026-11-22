@@ -28,7 +28,7 @@ import { pluginUpdateFeature } from '../src/client/features/plugin-update.js'
 import { createHookRenderer } from './fixtures/react-hook-renderer.js'
 import * as dictionary from '../src/client/locales/pluginUpdate.js'
 
-const version = '0.2.2-rc.11'
+const version = semver.inc(CODINGNS_VERSION, 'prerelease')!
 const commit = 'a'.repeat(40)
 const signal = () => new AbortController().signal
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))

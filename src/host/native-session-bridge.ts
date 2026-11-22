@@ -2,6 +2,7 @@ import { externalTurnMessage, type CodingNsBackgroundTurn } from './cli-adapters
 import { randomUUID } from 'node:crypto'
 import { createSessionActivator, type SessionActivationController } from '../dsh-capabilities/host/session-activation-adapter.js'
 import { readNativeSessionModelSelection } from '../dsh-capabilities/host/session-model-selection-adapter.js'
+import { requestInteractiveSessionApproval, supportsInteractiveSessionApproval } from '../dsh-capabilities/host/workspace-approval-adapter.js'
 import { createDshCapabilityRegistry } from '../dsh-capabilities/routes.js'
 import { readCodingNsImageArtifact } from './image-artifact-store.js'
 import type { Context } from '@deepseek-ai/cordis'
@@ -86,6 +87,7 @@ export interface CodingNsNativeApprovalRequest {
   readonly callId?: string
   readonly reason?: string
   readonly signal?: AbortSignal
+  readonly interactive?: true
 }
 
 /** 公共消息投影层交给 DSH 原生问题服务的请求。 */
@@ -205,6 +207,8 @@ export interface CodingNsNativeSessionBridge {
   injectMessage?(sessionId: string, message: string): boolean
   /** 使用 DSH 原生 approval 组件请求一次权限决定；服务不可用时拒绝。 */
   requestApproval?(sessionId: string, request: CodingNsNativeApprovalRequest): Promise<CodingNsNativeApprovalOutcome>
+  /** Check whether full-access-confirm can run without retaining a policy override. */
+  supportsInteractiveApproval?(sessionId: string): boolean
   /** 使用 DSH 原生 userQuestions 组件提问；服务不可用或取消时返回 null。 */
   askQuestions?(sessionId: string, request: CodingNsNativeQuestionRequest): Promise<CodingNsAgentQuestionResponse | null>
   /** 将 Host 上的 Provider 图片转成 DSH 持久化附件；失败时返回 null 让投影层降级。 */
@@ -777,6 +781,9 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
         return false
       }
     },
+    supportsInteractiveApproval(sessionId) {
+      return supportsInteractiveSessionApproval(ctx, sessionId)
+    },
     async requestApproval(sessionId, request) {
       const agent = nativeAgent(ctx, sessionId)
       const approval = nativeApproval(ctx)
@@ -786,14 +793,16 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
         try { policyBlocksApproval = approval.effectivePolicy?.(agent.session) === 'never' } catch { }
       }
       try {
-        const outcome = await approval.request({
-          agent,
+        const input = {
           toolName: request.toolName,
           ...(request.callId ? { callId: request.callId } : {}),
           ...(request.reason ? { reason: request.reason } : {}),
           ...(request.signal === undefined ? {} : { signal: request.signal }),
-        })
-        if (outcome === 'rejected' && policyBlocksApproval) return 'policy-rejected'
+        }
+        const outcome = await (request.interactive === true
+          ? requestInteractiveSessionApproval(ctx, sessionId, input)
+          : approval.request({ agent, ...input }))
+        if (outcome === 'rejected' && policyBlocksApproval && request.interactive !== true) return 'policy-rejected'
         return isApprovalOutcome(outcome) ? outcome : 'unavailable'
       } catch {
         return request.signal?.aborted ? 'cancelled' : 'unavailable'
