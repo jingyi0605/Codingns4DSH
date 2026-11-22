@@ -3,6 +3,7 @@ import test from 'node:test'
 import { protectText, restoreText, stripPlaceholders } from '../src/host/features/session-translation-protection.js'
 import { createSessionTranslationService, SESSION_TRANSLATION_SEGMENT_LIMIT, splitTranslationText } from '../src/host/features/session-translation-service.js'
 import { DEFAULT_SESSION_TRANSLATION_SETTINGS } from '../src/shared/contracts/session-translation.js'
+import { DSH_VERSION } from '../src/shared/contracts/version.js'
 
 const button = '<button type="button" class="_button_1rv3m_2 _ghost_1rv3m_45 _sm_1rv3m_28">跟随 DSH 默认模型</button>'
 const marker = '@@CODINGNS_TRANSLATION_0@@'
@@ -97,7 +98,7 @@ function fixture(reply: (source: string, request: Request) => string) {
     get: (name: string) => name === 'agentDefaultModel'
       ? { currentSelection: () => ({ provider: 'test', model: 'primary' }) }
       : undefined,
-  }, '0.2.1-alpha.2')!
+  }, DSH_VERSION)!
   assert.ok(service)
   service.configure(DEFAULT_SESSION_TRANSLATION_SETTINGS)
   service.activate()
@@ -258,7 +259,7 @@ test('missing, duplicated, unknown, altered, and untranslated responses preserve
 })
 
 test('long translations use paragraph-sized requests and reassemble the translated batches', async (t) => {
-  const original = Array.from({ length: 5 }, (_, index) => `Paragraph ${index + 1}: ${'Review the implementation carefully. '.repeat(70)}`).join('\n\n')
+  const original = Array.from({ length: 5 }, (_, index) => `Paragraph ${index + 1}: ${'Review the implementation carefully. '.repeat(25)}`).join('\n\n')
   assert.ok(original.length > SESSION_TRANSLATION_SEGMENT_LIMIT)
   const expectedSegments = splitTranslationText(original)
   assert.ok(expectedSegments.length > 1)
@@ -282,7 +283,7 @@ test('long translations use paragraph-sized requests and reassemble the translat
 
 function longProtectedMessage(): string {
   return Array.from({ length: 5 }, (_, index) => [
-    `Paragraph ${index + 1}: ${'Review the implementation carefully. '.repeat(40)}`,
+    `Paragraph ${index + 1}: ${'Review the implementation carefully. '.repeat(25)}`,
     `See /tmp/project/file${index}.ts and run \`pnpm test\`.`,
   ].join('\n')).join('\n\n')
 }
@@ -330,4 +331,31 @@ test('a damaged placeholder preserves the original assistant and reasoning outpu
   }
   assert.equal(f.sources.length, 2)
   assert.equal(stripPlaceholders(f.sources[0]!).trim(), 'Please change this button.')
+})
+
+test('Markdown local file links preserve closing parentheses and ordinary slash pairs stay translatable', () => {
+  const source = 'Add an action under [Workspace Session Enhancement](/Users/test/src/file.ts#L27). Clean archive/pin records.'
+  const protectedText = protectText(source)
+  assert.deepEqual(protectedText.values, ['/Users/test/src/file.ts#L27'])
+  assert.equal(protectedText.text, `Add an action under [Workspace Session Enhancement](${marker}). Clean archive/pin records.`)
+  assert.equal(restoreText(protectedText.text, protectedText.values), source)
+})
+
+test('splitTranslationText breaks long single-newline lists at line boundaries without splitting placeholders', () => {
+  const placeholder = '@@CODINGNS_TRANSLATION_0@@'
+  const list = [
+    `1. ${'alpha '.repeat(20)}`,
+    `2. ${'beta '.repeat(20)}`,
+    `3. ${'gamma '.repeat(20)}`,
+  ].join('\n')
+  const lineSegments = splitTranslationText(list, 150)
+  assert.equal(lineSegments.length, 3)
+  assert.equal(lineSegments.join(''), list)
+  assert.ok(lineSegments.slice(0, -1).every(segment => segment.endsWith('\n')))
+
+  const continuous = `${'x'.repeat(20)}${placeholder}${'y'.repeat(20)}`
+  const safeSegments = splitTranslationText(continuous, 28)
+  assert.equal(safeSegments.join(''), continuous)
+  assert.ok(safeSegments.some(segment => segment.includes(placeholder)))
+  assert.ok(safeSegments.every(segment => !/@@CODINGNS_TRANSLATION_\d*$/u.test(segment) || segment.endsWith('@@')))
 })
