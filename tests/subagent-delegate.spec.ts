@@ -153,7 +153,7 @@ test('委派异步派发：立刻返回子会话 ID，不等待子代理首轮�
   }
 })
 
-test('内置 dsh 委派使用 spawn Provider 并下发用户选择的模型', async () => {
+test('内置 dsh 委派使用 spawn，并显式覆盖外部父 Agent 的 provider 与模型', async () => {
   const started: Array<Record<string, any>> = []
   setNativeSubagents({
     registerProvider: () => () => undefined,
@@ -163,17 +163,37 @@ test('内置 dsh 委派使用 spawn Provider 并下发用户选择的模型', as
   setAdapterRegistry(registryWith(['codex']))
   try {
     const result = await dispatchDelegateSubagent(
-      { sessionId: 'parent-dsh', adapterId: 'dsh', modelId: 'deepseek-chat', prompt: '执行 DSH 子任务' },
-      { agents: { get: (id: string) => (id === 'parent-dsh' ? { id: 'agent-dsh', session: { header: { id: 'parent-dsh' } } } : undefined) }, nativeSessions: SESSIONS as never },
+      { sessionId: 'parent-dsh', adapterId: 'dsh', modelId: 'deepseek-account/deepseek-chat', prompt: '执行 DSH 子任务' },
+      { agents: { get: (id: string) => (id === 'parent-dsh' ? { id: 'agent-dsh', session: { header: { id: 'parent-dsh' } }, options: { provider: 'codingns-cli-codex', model: 'gpt' } } : undefined) }, nativeSessions: {
+        ...SESSIONS, controller: { modelCatalog: async () => ({ groups: [
+          { id: 'deepseek-api', models: [{ id: 'deepseek-chat' }] },
+          { id: 'deepseek-account', models: [{ id: 'deepseek-chat' }] },
+        ], default: { provider: 'deepseek-api', model: 'deepseek-chat' } }) },
+      } as never },
     )
     assert.equal(result.ok, true)
     assert.equal(externalTeamProvider('dsh'), 'spawn')
     assert.equal(started[0]?.provider, 'spawn')
-    assert.deepEqual(started[0]?.request?.agentOptions, { model: 'deepseek-chat' })
+    assert.deepEqual(started[0]?.request?.agentOptions, { provider: 'deepseek-account', model: 'deepseek-chat' })
   } finally {
     setNativeSubagents(undefined)
     setAdapterRegistry(undefined)
   }
+})
+
+test('已安装的 Antigravity 可通过委派后端创建原生子会话', async () => {
+  assert.ok(EXTERNAL_SUBAGENT_IDS.includes('antigravity' as never))
+  const registry = registryWith(['antigravity'])
+  const started: any[] = []
+  setAdapterRegistry(registry)
+  setNativeSubagents({ registerProvider: () => () => undefined, startContinuable: async (spec: any) => { started.push(spec); return { childId: 'child-agy', messageId: 'm-agy' } } } as never)
+  try {
+    const result = await dispatchDelegateSubagent({ sessionId: 'parent', adapterId: 'antigravity', prompt: 'read-only acceptance' }, {
+      agents: { get: () => ({ id: 'parent', session: { header: { id: 'parent' } } }) }, nativeSessions: SESSIONS as never,
+    })
+    assert.equal(result.ok, true)
+    assert.equal(started[0]?.provider, 'codingns-external-antigravity')
+  } finally { setNativeSubagents(undefined); setAdapterRegistry(undefined); await registry.dispose() }
 })
 
 test('委派拒绝未支持/未安装的适配器、空任务与找不到的父会话', async () => {

@@ -845,7 +845,10 @@ export function createCliAdaptersFeature(options: {
             }
             const selection = dshSelection
             if (sessionId !== '' && (selection.modelId !== undefined || selection.effortId !== undefined)) {
-              registry.setSession(sessionId, { adapterId: 'dsh', ...selection })
+              const header = readNativeSessionHeader(nativeSessions, sessionId)
+              registry.setSession(sessionId, { adapterId: 'dsh', ...selection,
+                ...(header?.origin === 'subagent' ? { origin: 'subagent', ...(typeof header.parentSession === 'string' ? { parentSessionId: header.parentSession } : {}) } : {}),
+              }, { rememberPreference: header?.origin !== 'subagent' })
             }
             // Native-session output translation wraps only DSH's own Provider stream:
             // preserve text/reasoning and attach the translation record; the client renders it.

@@ -1,14 +1,10 @@
 import { getAdapterRegistry } from './registry-holder.js'
 import type { DshSubagentStartService } from '../../dsh-capabilities/host/subagent-activation-adapter.js'
 export { hasNativeSubagentStart, startNativeSubagent, type NativeSubagentStart, type NativeSubagentStartSpec } from '../../dsh-capabilities/host/subagent-activation-adapter.js'
+import { DELEGATION_TARGET_IDS } from '../../shared/delegation-targets.js'
 
 /** 委派目标在 DSH 原生 Subagent Provider 中使用的稳定标识。 */
-export const EXTERNAL_SUBAGENT_IDS = [
-  // `dsh` 是 DSH 自带的进程内子智能体目标，不对应 cli-adapters Registry 中的外部驱动。
-  // 它仍然放在同一份稳定 ID 列表里，保证 agent_subagent schema、委派 carrier 和
-  // Host 派发入口使用同一套白名单。
-  'dsh', 'mcode', 'zcode', 'claude-code', 'codex', 'kimi', 'gemini', 'pi', 'opencode', 'grok', 'command-code',
-] as const
+export const EXTERNAL_SUBAGENT_IDS = DELEGATION_TARGET_IDS
 
 export function isExternalSubagentId(value: unknown): value is typeof EXTERNAL_SUBAGENT_IDS[number] {
   return typeof value === 'string' && EXTERNAL_SUBAGENT_IDS.includes(value as typeof EXTERNAL_SUBAGENT_IDS[number])
