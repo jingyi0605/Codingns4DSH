@@ -12,7 +12,7 @@ import { createAgentSubagentTool } from '../data/build/dist/host/cli-adapters/su
 import { nativeSubagentTaskKey } from '../data/build/dist/host/cli-adapters/native-subagent-dispatch.js'
 import { guardNativeSubagentParentTurn, markNativeSubagentParentTurnStarted, waitNativeSubagentLifecycle } from '../data/build/dist/host/cli-adapters/native-subagent-dispatch.js'
 import { setNativeSubagents } from '../data/build/dist/host/cli-adapters/native-subagent-holder.js'
-import { registerNativeTeamSubagentProviders, withTeamSubagentSelection } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
+import { EXTERNAL_SUBAGENT_IDS, registerNativeTeamSubagentProviders, withTeamSubagentSelection } from '../data/build/dist/host/cli-adapters/native-team-subagent.js'
 import { setAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry-holder.js'
 import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 
@@ -496,6 +496,33 @@ test('agent_subagent keeps adapter IDs separate from model IDs and defaults nati
   }
 })
 
+test('agent_subagent 接受 antigravity 适配器 ID 并路由到对应的外部 Provider', async () => {
+  const started: Record<string, any>[] = []
+  setNativeSubagents({
+    registerProvider: () => undefined,
+    startContinuable: async (spec) => {
+      started.push(spec as Record<string, any>)
+      return { childId: 'child-antigravity', messageId: 'message-antigravity' }
+    },
+  })
+  const tool = createAgentSubagentTool({ nativeSessions: { get: () => undefined, subscribe: () => () => undefined } as never })
+  const exec = { agent: { id: 'parent-antigravity', options: { subagentDepth: 0 }, session: { header: { id: 'parent-antigravity' } } } }
+  try {
+    const agentSchema = (tool.parameters as { properties: { agent: { enum: string[] } } }).properties.agent
+    assert.ok(agentSchema.enum.includes('antigravity'))
+    const result = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
+      { agent: 'antigravity', prompt: '审查任务', run_in_background: true },
+      exec,
+    )
+    assert.equal(result.ok, true)
+    assert.equal(result.agent, 'antigravity')
+    assert.equal(result.childSessionId, 'child-antigravity')
+    assert.deepEqual(started.map(spec => spec.provider), ['codingns-external-antigravity'])
+  } finally {
+    setNativeSubagents(undefined)
+  }
+})
+
 test('agent_subagent 默认后台返回并允许同一父会话并发创建', async () => {
   let started = 0
   setNativeSubagents({
@@ -684,9 +711,12 @@ test('原生 Provider 注册可去重并在释放后重新装配', async () => {
     registerProvider: (provider: any) => { providers.push(provider); return () => undefined },
   }
   let dispose = registerNativeTeamSubagentProviders(service as never)
+  // `dsh` 复用 DSH 自带的 spawn Provider，不重复注册。
+  const externalProviderCount = EXTERNAL_SUBAGENT_IDS.filter((id) => id !== 'dsh').length
   try {
     registerNativeTeamSubagentProviders(service as never)
-    assert.equal(providers.length, 10)
+    assert.equal(providers.length, externalProviderCount)
+    assert.ok(providers.some((provider) => provider.name === 'codingns-external-antigravity'))
     assert.equal(providers.find((provider) => provider.name === 'codingns-external-mcode')?.inheritsParentContext, true)
     assert.equal((await registry.catalog())[0]?.detectionState, 'pending')
     await providers.find((provider) => provider.name === 'codingns-external-mcode')!.prepareContinuable({ sessionId: 'child-2', parent: { id: 'parent-2' }, signal: new AbortController().signal })
@@ -694,7 +724,7 @@ test('原生 Provider 注册可去重并在释放后重新装配', async () => {
     assert.deepEqual(registry.getSession('child-2'), { adapterId: 'mcode', parentSessionId: 'parent-2', origin: 'subagent' })
     dispose()
     dispose = registerNativeTeamSubagentProviders(service as never)
-    assert.equal(providers.length, 20)
+    assert.equal(providers.length, externalProviderCount * 2)
   } finally {
     dispose()
     setAdapterRegistry(undefined)
