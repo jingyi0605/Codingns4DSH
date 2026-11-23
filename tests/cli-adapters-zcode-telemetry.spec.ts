@@ -5,13 +5,14 @@ import { setImmediate as nextTick } from 'node:timers/promises'
 import { ZcodeTurnTelemetry } from '../data/build/dist/host/cli-adapters/zcode-telemetry.js'
 import { ZcodeAppServerDriver } from '../data/build/dist/host/cli-adapters/zcode-driver.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
+import { CodingNsCliAdapterRegistry } from '../data/build/dist/host/cli-adapters/registry.js'
 
 // 实机有两种带 usage 的通知；只有带 stopReason 的模型完成事件应计费。
 function event(eventId: string, payload: object, type = 'session.updated', sessionId = 'sess-probe') {
   return { method: 'session/event', params: { sessionId, eventId, type, payload } }
 }
 
-for (const action of ['complete-tool', 'late-state', 'cancel'] as const) {
+for (const action of ['complete-tool', 'late-state', 'cancel', 'timeout'] as const) {
   test(`ZCode steer preserves the active tool until ${action}`, { timeout: 5000 }, async () => {
     const stdout = new PassThrough()
     const stderr = new PassThrough()
@@ -24,7 +25,9 @@ for (const action of ['complete-tool', 'late-state', 'cancel'] as const) {
     const prompts: string[] = []
     const signal = new AbortController()
     const toolStarted = Promise.withResolvers<void>()
+    const keepAlive = setInterval(() => {}, 1000)
     const driver = new ZcodeAppServerDriver({ desktopRuntime: null, binaries: ['fake-zcode'],
+      ...(action === 'timeout' ? { steerToolWaitMs: 100 } : {}),
       spawnSync: (() => ({ status: 0, stdout: '3.14.4', stderr: '' })) as never,
       spawn: (() => ({ stdout, stderr, kill() { stdout.end(); stderr.end(); return true }, stdin: { write(line: string) {
         const request = JSON.parse(line)
@@ -76,7 +79,7 @@ for (const action of ['complete-tool', 'late-state', 'cancel'] as const) {
         assert.deepEqual((await run).at(-1), { type: 'finish', reason: 'cancel' })
         assert.equal(prompts.length, 1, 'Cancellation discards pending steer')
       } else {
-        notify(event('tool-finished', { kind: 'result', toolCallId: 'call-1', result: { success: true } }, 'tool.updated'))
+        if (action !== 'timeout') notify(event('tool-finished', { kind: 'result', toolCallId: 'call-1', result: { success: true } }, 'tool.updated'))
         const events = await run
         assert.deepEqual(commands, ['send', 'stop', 'send', 'send'])
         assert.equal(prompts[1], prompts[2])
@@ -84,7 +87,7 @@ for (const action of ['complete-tool', 'late-state', 'cancel'] as const) {
         assert.ok(events.some(chunk => chunk.type === 'text-delta' && chunk.text === '插话已执行'))
         assert.deepEqual(events.at(-1), { type: 'finish', reason: 'stop' })
       }
-    } finally { driver.dispose() }
+    } finally { clearInterval(keepAlive); driver.dispose() }
   })
 }
 
@@ -156,7 +159,7 @@ test('ZCode 流式工具输入、参数校验失败和成功重试保留不同�
 test('ZCode 驱动两轮用量不串账，原生上下文进入 DSH，会话不查询全局统计', async () => {
   const calls: any[] = []
   let turn = 0
-  const driver = new ZcodeAppServerDriver({ binaries: ['fake-zcode'],
+  const driver = new ZcodeAppServerDriver({ desktopRuntime: null, binaries: ['fake-zcode'],
     spawnSync: (() => ({ status: 0, stdout: '3.14.4', stderr: '' })) as never,
     spawn: (() => {
       const stdout = new PassThrough(); const stderr = new PassThrough()
@@ -194,11 +197,253 @@ test('ZCode 驱动两轮用量不串账，原生上下文进入 DSH，会话不�
   } finally { driver.dispose() }
 })
 
+test('ZCode 每次模型请求按真实规模上报上下文，不被整步累加放大', async () => {
+  const driver = new ZcodeAppServerDriver({ desktopRuntime: null, binaries: ['fake-zcode'],
+    spawnSync: (() => ({ status: 0, stdout: '3.18.2', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const notify = (message: object) => stdout.write(`${JSON.stringify(message)}\n`)
+      return { stdout, stderr, kill() { stdout.end(); stderr.end(); return true }, stdin: { write(line: string) {
+        const request = JSON.parse(line)
+        notify({ id: request.id, result: request.method === 'session/create' ? { session: { sessionId: 'sess-probe' } } : {} })
+        if (request.method !== 'session/send') return
+        notify({ method: 'state.updated', params: { patch: { status: 'running' } } })
+        // 一个 step 里两次模型请求：第二次的 prompt 仍只有十万量级，而不是
+        // 「两次 cacheRead 累加」造成的百万级假象。
+        for (const inputTokens of [40_000, 41_000]) {
+          notify(event(`step-${inputTokens}`, { querySource: 'main_turn', stopReason: 'tool_use', contextWindow: 1_000_000,
+            usage: { inputTokens, outputTokens: 200, cacheReadTokens: 60_000, totalTokens: inputTokens + 200 } }))
+        }
+        notify(event('final', { querySource: 'main_turn', stopReason: 'stop', contextWindow: 1_000_000,
+          usage: { inputTokens: 42_000, outputTokens: 300, cacheReadTokens: 60_000, totalTokens: 42_300 } }))
+        notify({ method: 'state.updated', params: { patch: { status: 'idle' } } })
+      } } }
+    }) as never })
+  try {
+    const events: any[] = []
+    for await (const chunk of driver.executeTurn({ sessionId: 'dsh', messages: [], prompt: '提问' })) events.push(chunk)
+    const usage = events.find(event => event.type === 'usage')
+    assert.ok(usage !== undefined, '没有产生 usage 事件')
+    assert.equal(usage.contextTokens, 102_000, '上下文占用应当取最近一次请求的真实规模')
+    assert.equal(usage.contextUsageRatio, 0.102)
+    // 计费仍然是整步累计：两次 4 万 + 最后一次 4.2 万。
+    assert.equal(usage.inputTokens, 123_000)
+    assert.equal(usage.cacheReadTokens, 180_000)
+  } finally { driver.dispose() }
+})
+
+test('ZCode 上下文超过阈值时，DSH 侧在回合结束后自动触发一次原生压缩', { timeout: 20_000 }, async () => {
+  const calls: any[] = []
+  let contextUsed = 900_000
+  const driver = new ZcodeAppServerDriver({ desktopRuntime: null, binaries: ['fake-zcode'],
+    spawnSync: (() => ({ status: 0, stdout: '3.18.2', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const notify = (message: object) => stdout.write(`${JSON.stringify(message)}\n`)
+      return { stdout, stderr, kill() { stdout.end(); stderr.end(); return true }, stdin: { write(line: string) {
+        const request = JSON.parse(line)
+        calls.push(request)
+        notify({ id: request.id, result: request.method === 'session/create'
+          ? { session: { sessionId: 'sess-auto' } }
+          : request.method === 'session/read'
+            ? { snapshot: { projection: { contextWindow: 1_000_000, contextUsed } } }
+            : {} })
+        if (request.method === 'session/read') return
+        if (request.method === 'session/compact') {
+          contextUsed = 20_000
+          return
+        }
+        if (request.method !== 'session/send') return
+        notify({ method: 'state.updated', params: { patch: { status: 'running' } } })
+        // 窗口 1M、占用 90%：已越过自动压缩阈值。
+        notify(event('final', { querySource: 'main_turn', stopReason: 'stop', contextWindow: 1_000_000,
+          usage: { inputTokens: 100_000, outputTokens: 200, cacheReadTokens: 800_000, totalTokens: 100_200 } }, 'session.updated', 'sess-auto'))
+        notify({ method: 'state.updated', params: { patch: { status: 'idle', sessionId: 'sess-auto' } } })
+      } } }
+    }) as never })
+  const warnings: string[] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')) }
+  const trace: string[] = []
+  try {
+    const registry = new CodingNsCliAdapterRegistry([driver], { zcode: true }, { autoCompactionSettleMs: 50 })
+    registry.setSession('dsh', { adapterId: 'zcode' })
+    for await (const event of registry.execute({ sessionId: 'dsh', adapterId: 'zcode', messages: [], prompt: '提问', cwd: process.cwd() })) {
+      if (event.type === 'usage') trace.push(`usage ctx=${(event as any).contextTokens}/${(event as any).contextWindow}`)
+    }
+    // 回合结束后由插件侧延迟触发；等待静默期与压缩调用完成。
+    for (let i = 0; i < 40 && !calls.some(call => call.method === 'session/compact'); i += 1) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+    assert.ok(calls.some(call => call.method === 'session/compact'), `未自动触发原生压缩；warnings=${warnings.join(' | ')}；trace=${trace.join(' , ')}；methods=${calls.map(c => c.method).join(',')}`)
+    assert.ok(warnings.some(w => w.includes('已自动压缩上下文')), `缺少自动压缩日志；warnings=${warnings.join(' | ')}`)
+  } finally {
+    console.warn = originalWarn
+    driver.dispose()
+  }
+})
+
+test('ZCode 优先使用原生 autoCompactThresholdTokens 判定是否压缩', { timeout: 20_000 }, async () => {
+  const calls: any[] = []
+  let contextUsed = 600_000
+  // 原生阈值 500k 小于窗口 1M 的 80%：只有用原生阈值才会触发。
+  const driver = new ZcodeAppServerDriver({ desktopRuntime: null, binaries: ['fake-zcode'],
+    spawnSync: (() => ({ status: 0, stdout: '3.18.2', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const notify = (message: object) => stdout.write(`${JSON.stringify(message)}\n`)
+      return { stdout, stderr, kill() { stdout.end(); stderr.end(); return true }, stdin: { write(line: string) {
+        const request = JSON.parse(line)
+        calls.push(request.method)
+        notify({ id: request.id, result: request.method === 'session/create'
+          ? { session: { sessionId: 'sess-native' }, projection: { contextWindow: 1_000_000 } }
+          : request.method === 'session/read'
+            ? { snapshot: { projection: { contextWindow: 1_000_000, contextUsed, autoCompactThresholdTokens: 500_000 } } }
+            : {} })
+        if (request.method === 'session/read') return
+        if (request.method === 'session/compact') { contextUsed = 20_000; return }
+        if (request.method !== 'session/send') return
+        notify({ method: 'state.updated', params: { patch: { status: 'running' } } })
+        notify(event('final', { querySource: 'main_turn', stopReason: 'stop', contextWindow: 1_000_000,
+          usage: { inputTokens: 100_000, outputTokens: 200, cacheReadTokens: 500_000, totalTokens: 100_200 } }, 'session.updated', 'sess-native'))
+        notify({ method: 'state.updated', params: { patch: { status: 'idle', sessionId: 'sess-native' } } })
+      } } }
+    }) as never })
+  const warnings: string[] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')) }
+  try {
+    const registry = new CodingNsCliAdapterRegistry([driver], { zcode: true }, { autoCompactionSettleMs: 50 })
+    registry.setSession('dsh', { adapterId: 'zcode' })
+    for await (const _event of registry.execute({ sessionId: 'dsh', adapterId: 'zcode', messages: [], prompt: '提问', cwd: process.cwd() })) { /* 驱动整轮 */ }
+    for (let i = 0; i < 40 && !calls.includes('session/compact'); i += 1) await new Promise(r => setTimeout(r, 50))
+    assert.ok(calls.includes('session/compact'), `未按原生阈值触发；warnings=${warnings.join(' | ')}`)
+    assert.ok(warnings.some(w => w.includes('原生阈值 500000')), `日志缺少原生阈值；warnings=${warnings.join(' | ')}`)
+  } finally {
+    console.warn = originalWarn
+    driver.dispose()
+  }
+})
+
+test('ZCode 回合因上下文超限失败后，DSH 侧自动压缩以便重试', { timeout: 20_000 }, async () => {
+  const calls: any[] = []
+  let contextUsed = 990_000
+  const driver = new ZcodeAppServerDriver({ desktopRuntime: null, binaries: ['fake-zcode'],
+    spawnSync: (() => ({ status: 0, stdout: '3.18.2', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const notify = (message: object) => stdout.write(`${JSON.stringify(message)}
+`)
+      return { stdout, stderr, kill() { stdout.end(); stderr.end(); return true }, stdin: { write(line: string) {
+        const request = JSON.parse(line)
+        calls.push(request.method)
+        notify({ id: request.id, result: request.method === 'session/create'
+          ? { session: { sessionId: 'sess-overflow' } }
+          : request.method === 'session/read'
+            ? { snapshot: { projection: { contextWindow: 1_000_000, contextUsed } } }
+            : {} })
+        if (request.method === 'session/read') return
+        if (request.method === 'session/compact') { contextUsed = 30_000; return }
+        if (request.method !== 'session/send') return
+        notify({ method: 'state.updated', params: { patch: { status: 'running' } } })
+        // Provider 直接以「提示过长」失败：这是可补救的一类失败。
+        notify({ method: 'v4/telemetry/event', params: { kind: 'turn.terminal', status: 'failed',
+          errorCode: '1261', errorMessage: 'prompt is too long' } })
+      } } }
+    }) as never })
+  const warnings: string[] = []
+  const originalWarn = console.warn
+  console.warn = (...args: unknown[]) => { warnings.push(args.map(String).join(' ')) }
+  const failures: any[] = []
+  try {
+    const registry = new CodingNsCliAdapterRegistry([driver], { zcode: true }, { autoCompactionSettleMs: 50 })
+    registry.setSession('dsh', { adapterId: 'zcode' })
+    for await (const event of registry.execute({ sessionId: 'dsh', adapterId: 'zcode', messages: [], prompt: '提问', cwd: process.cwd() })) {
+      if (event.type === 'finish' && event.reason === 'error') failures.push(event.failure)
+    }
+    for (let i = 0; i < 40 && !calls.includes('session/compact'); i += 1) await new Promise(r => setTimeout(r, 50))
+    assert.equal(failures[0]?.contextOverflow, true, '超限失败未被标记为 contextOverflow')
+    assert.ok(calls.includes('session/compact'), `未触发超限恢复压缩；warnings=${warnings.join(' | ')}`)
+    assert.ok(warnings.some(w => w.includes('已压缩上下文，可重新发送上一条消息')), `缺少恢复日志；warnings=${warnings.join(' | ')}`)
+  } finally {
+    console.warn = originalWarn
+    driver.dispose()
+  }
+})
+
+test('ZCode 一轮内多段 assistant 消息切成独立文本块，工具前后不再粘成一条', async () => {
+  let turnEvents = 0
+  const driver = new ZcodeAppServerDriver({ desktopRuntime: null, binaries: ['fake-zcode'],
+    spawnSync: (() => ({ status: 0, stdout: '3.14.4', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const notify = (message: object) => stdout.write(`${JSON.stringify(message)}\n`)
+      return { stdout, stderr, kill() { stdout.end(); stderr.end(); return true }, stdin: { write(line: string) {
+        const request = JSON.parse(line)
+        notify({ id: request.id, result: request.method === 'session/create' ? { session: { sessionId: 'sess-probe' } } : {} })
+        if (request.method !== 'session/send') return
+        notify({ method: 'state.updated', params: { patch: { status: 'running' } } })
+        // 真实形状：同轮先一段正文，再一段工具调用，最后一段正文（ZCode 为每段开一条
+        // 新的 assistant 消息，正文增量只带 assistantMessageId）。
+        const stream = (kind: string, payload: object) => notify(event(`ev-${++turnEvents}`, { kind, ...payload }, 'model.streaming'))
+        stream('text_delta', { delta: '第一段。', assistantMessageId: 'msg-1' })
+        stream('tool_input_start', { toolCallId: 'call-1', toolName: 'Edit' })
+        stream('tool_input_end', { toolCallId: 'call-1', toolName: 'Edit' })
+        notify(event(`ev-${++turnEvents}`, { kind: 'result', toolCallId: 'call-1', toolName: 'Edit', result: { success: true, content: 'ok' } }, 'tool.updated'))
+        stream('text_delta', { delta: '第二段。', assistantMessageId: 'msg-2' })
+        notify({ method: 'state.updated', params: { patch: { status: 'idle' } } })
+      } } }
+    }) as never })
+  try {
+    const chunks: any[] = []
+    const projector = new CodingNsDshMessageProjector({ adapterId: 'zcode', sessionId: 'dsh',
+      nativeSessions: { appendToolCall: () => null } as never })
+    const projected = []
+    for await (const chunk of driver.executeTurn({ sessionId: 'dsh', messages: [], prompt: '测试' })) {
+      projected.push(...await projector.push(chunk))
+    }
+    projected.push(...await projector.complete('stop'))
+    chunks.push(...projected)
+    const textBlocks = chunks.filter((chunk) => chunk.type === 'block-end' && chunk.block?.type === 'text')
+    assert.deepEqual(textBlocks.map((chunk) => chunk.block.text), ['第一段。', '第二段。'])
+    assert.equal(new Set(textBlocks.map((chunk) => chunk.index)).size, 2, '两段正文必须落在不同块索引，否则界面仍是一条消息')
+  } finally { driver.dispose() }
+})
+
+test('ZCode step-finish(tool-calls) 收口为 step 边界，直到回合终态', async () => {
+  let turnEvents = 0
+  const driver = new ZcodeAppServerDriver({ desktopRuntime: null, binaries: ['fake-zcode'],
+    spawnSync: (() => ({ status: 0, stdout: '3.14.4', stderr: '' })) as never,
+    spawn: (() => {
+      const stdout = new PassThrough(); const stderr = new PassThrough()
+      const notify = (message: object) => stdout.write(`${JSON.stringify(message)}\n`)
+      return { stdout, stderr, kill() { stdout.end(); stderr.end(); return true }, stdin: { write(line: string) {
+        const request = JSON.parse(line)
+        notify({ id: request.id, result: request.method === 'session/create' ? { session: { sessionId: 'sess-probe' } } : {} })
+        if (request.method !== 'session/send') return
+        notify({ method: 'state.updated', params: { patch: { status: 'running' } } })
+        const stream = (kind: string, payload: object) => notify(event(`ev-${++turnEvents}`, { kind, ...payload }, 'model.streaming'))
+        stream('text_delta', { delta: '先看看文件。', assistantMessageId: 'msg-1' })
+        notify(event(`ev-${++turnEvents}`, { part: { type: 'step-finish', reason: 'tool-calls' } }, 'part.upserted'))
+        stream('text_delta', { delta: '改好了。', assistantMessageId: 'msg-2' })
+        notify(event(`ev-${++turnEvents}`, { part: { type: 'step-finish', reason: 'stop' } }, 'part.upserted'))
+        notify({ method: 'state.updated', params: { patch: { status: 'idle' } } })
+      } } }
+    }) as never })
+  try {
+    const chunks = []
+    for await (const chunk of driver.executeTurn({ sessionId: 'dsh', messages: [], prompt: '测试', splitToolSteps: true })) chunks.push(chunk)
+    const boundaries = chunks.filter((chunk) => chunk.type === 'step-boundary').length
+    assert.equal(boundaries, 1, '只有还会续跑的 step 才收口，最后一个 step 不能多切一刀')
+    assert.deepEqual(chunks.at(-1), { type: 'finish', reason: 'stop' })
+  } finally { driver.dispose() }
+})
+
 test('ZCode 用量读取超时不杀死常驻 CLI，下一轮仍可执行', { timeout: 5000 }, async () => {
   let spawnCount = 0; let usageCalls = 0; let turn = 0
   // 真进程会保持事件循环；内存模拟需要一个句柄等待驱动的 unref 超时。
   const keepAlive = setInterval(() => {}, 1000)
-  const driver = new ZcodeAppServerDriver({ binaries: ['fake-zcode'],
+  const driver = new ZcodeAppServerDriver({ desktopRuntime: null, binaries: ['fake-zcode'],
     spawnSync: (() => ({ status: 0, stdout: '3.14.4', stderr: '' })) as never,
     spawn: (() => {
       spawnCount++

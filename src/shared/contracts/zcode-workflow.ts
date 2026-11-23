@@ -1,3 +1,5 @@
+export const ZCODE_WORKFLOW_APPROVAL_QUESTION_ID = 'zcode-create-workflow-approval'
+
 /** Shared lifecycle rules for the unified ZCode progress reader and UI. */
 export function workflowIsTerminal(status: string): boolean {
   return ['completed', 'failed', 'cancelled', 'canceled', 'aborted', 'interrupted', 'stopped'].includes(status)

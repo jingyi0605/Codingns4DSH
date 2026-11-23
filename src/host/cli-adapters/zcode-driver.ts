@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
@@ -17,7 +17,6 @@ import { NATIVE_COMPACTION_TIMEOUT_CODE } from '../../shared/contracts/cli-adapt
 import type { CodingNsCliCompactionInput, CodingNsCliCompactionResult, CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
 import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage } from './json-rpc-process.js'
 import { detectBinary, emptyCatalog } from './rpc-driver-utils.js'
-import { randomUUID } from 'node:crypto'
 import { ZCODE_CATALOG } from './model-catalog.js'
 import { desktopCliRuntimeCommand, resolveZCodeDesktopRuntime, type CodingNsDesktopAppRuntime } from './desktop-app-runtime.js'
 import { promptWithAttachmentPaths, withAttachmentPaths } from './attachment-utils.js'
@@ -32,6 +31,7 @@ const text = (value: unknown): string => typeof value === 'string' ? value : ''
 
 export interface ZcodeCliDriverOptions {
   readonly compactionTimeoutMs?: number
+  readonly steerToolWaitMs?: number
   readonly homeDirectory?: string
   readonly desktopRuntime?: CodingNsDesktopAppRuntime | null
   readonly binaries?: readonly string[]
@@ -47,6 +47,7 @@ interface ZcodeSession {
   readonly rpc: JsonRpcProcess
   readonly cwd: string | undefined
   workflowEnabled: boolean
+  readonly createWorkflowGrant: { allowed: boolean }
   /** '' 表示尚未创建 ZCode 会话；创建后为 CLI 原生 sess_* 标识。 */
   acpSessionId: string
   providerSessionId: string
@@ -73,20 +74,42 @@ interface ZcodeSession {
   /** 当前回合的 DSH 权限，用于审批应答时阻止只读模式被提升。 */
   permission: CodingNsCliTurnInput['permission']
   acceptingInteractions: boolean
-  readonly interactions: Map<string, { interaction: ZcodeInteraction; promise: Promise<unknown>; resolve: (value: unknown) => void; settled: boolean }>
+  readonly interactions: Map<string, {
+    interaction: ZcodeInteraction
+    promise: Promise<unknown>
+    resolve: (value: unknown) => void
+    settled: boolean
+    offeredSessionGrant?: true
+  }>
   readonly emittedInteractions: Set<string>
   lastUsage: unknown
   autoCompactThresholdTokens: number | undefined
   lastRequestContext: number | undefined
   supportsContextSnapshot: boolean
   compacting: boolean
+  readonly compactionTurnIds: Set<string>
+  readonly pendingCompactionEvents: CodingNsAgentEvent[]
 }
 
-const ZCODE_COMPACTION_TIMEOUT_MS = 300_000
 const ZCODE_STEER_TOOL_WAIT_MS = 10_000
 const ZCODE_STEER_STOP_TIMEOUT_MS = 5_000
 const ZCODE_STEER_SEND_ATTEMPTS = 8
 
+interface ZcodeTurnEventQueue {
+  next(): Promise<IteratorResult<JsonRpcMessage>>
+  push(message: JsonRpcMessage): void
+  close(): void
+}
+
+/**
+ * 原生上下文压缩的等待上限。
+ *
+ * ZCode 协议自身给 `session/compact` 的预算是 5 分钟（客户端 `timeoutMs` 同值）；
+ * 这里保持同一口径，避免像 Codex 那次的 60 秒一样把仍在进行的压缩掐断。
+ */
+export const ZCODE_COMPACTION_TIMEOUT_MS = 300_000
+
+/** 压缩等待超时；code 供命令层映射成“稍后重试”，而不是通用失败。 */
 export class ZcodeCompactionTimeoutError extends Error {
   readonly code = NATIVE_COMPACTION_TIMEOUT_CODE
 
@@ -94,12 +117,6 @@ export class ZcodeCompactionTimeoutError extends Error {
     super('ZCode 上下文压缩超时')
     this.name = 'ZcodeCompactionTimeoutError'
   }
-}
-
-interface ZcodeTurnEventQueue {
-  next(): Promise<IteratorResult<JsonRpcMessage>>
-  push(message: JsonRpcMessage): void
-  close(): void
 }
 
 /**
@@ -148,12 +165,14 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   private cachedCatalog: CodingNsCliModelCatalog | null = null
   private cachedCatalogFingerprint: string | undefined
   private readonly compactionTimeoutMs: number
+  private readonly steerToolWaitMs: number
   private readonly homeDirectory: string
   /** 模型目录声明的默认思考档位；切换 DeepSeek 时服务端要求显式传入。 */
   private readonly defaultEfforts = new Map<string, string>()
 
   constructor(options: ZcodeCliDriverOptions = {}) {
     this.compactionTimeoutMs = options.compactionTimeoutMs ?? ZCODE_COMPACTION_TIMEOUT_MS
+    this.steerToolWaitMs = options.steerToolWaitMs ?? ZCODE_STEER_TOOL_WAIT_MS
     this.homeDirectory = options.homeDirectory ?? homedir()
     this.cachedRuntime = options.desktopRuntime
     this.binaries = options.binaries ?? ['zcode', 'zcode.cmd']
@@ -175,6 +194,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     if (runtime !== null) return { installed: true, version: runtime.appVersion, command: runtime.entry }
     return binary
   }
+
 
   /** 登录态或原生套餐配置变化时，同时作废 Host 和驱动的目录缓存。 */
   catalogFingerprint(): string {
@@ -339,6 +359,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       // DSH accepts null-turn maintenance lifecycles. Registry callers project live;
       // callers without a display sink retain the legacy next-turn fallback.
       if (emit) for (const event of events) emit(event)
+      else session.pendingCompactionEvents.push({ type: 'context-compaction', phase: 'start', compactionId }, ...events)
 
       return { compacted: true }
     } catch (error) {
@@ -424,6 +445,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       session.supportsContextSnapshot = isRecord(created) && isRecord(created.projection)
     }
     yield { type: 'session-binding', providerSessionId: session.acpSessionId }
+    for (const event of session.pendingCompactionEvents.splice(0)) yield event
 
     // 每轮覆盖原生模式，尤其是 resume 后或同一会话从全权限切回只读时。
     await session.rpc.request('session/setMode', {
@@ -479,7 +501,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     session.queueSteer = (prompt) => {
       if (pendingSteer === undefined) {
         pendingSteer = prompt
-        steerTimer = setTimeout(() => eventQueue.push({ method: 'codingns/steer-tool-timeout' }), ZCODE_STEER_TOOL_WAIT_MS)
+        steerTimer = setTimeout(() => eventQueue.push({ method: 'codingns/steer-tool-timeout' }), this.steerToolWaitMs)
         steerTimer.unref()
         eventQueue.push({ method: 'codingns/steer-requested' })
       } else {
@@ -518,6 +540,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       return attempt
     }
     let sendAttempt = send(turnContent)
+    let recoveredOrphan = false
     const onAbort = (): void => {
       session.acceptingInteractions = false
       session.background.cancel()
@@ -535,7 +558,22 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
         if (next.done) break
         if (input.signal?.aborted) break
         if (isRetiredNotification(next.value)) continue
-        if (sendAttempt.error !== null && !waitingForStop) throw sendAttempt.error
+        if (sendAttempt.error !== null && !waitingForStop) {
+          const error = sendAttempt.error
+          if (recoveredOrphan || replacedBySteer || activeNativeTurnId !== undefined || session.sawRunning
+            || !(error instanceof JsonRpcRequestError) || error.code !== -32010) throw error
+          recoveredOrphan = true
+          // The prompt was rejected before a foreground turn began. Stop the stale
+          // native execution once, then give its lock time to release.
+          const timeout = AbortSignal.timeout(ZCODE_STEER_STOP_TIMEOUT_MS)
+          try {
+            await session.rpc.request('session/stop', { sessionId: session.acpSessionId }, {
+              signal: input.signal ? AbortSignal.any([input.signal, timeout]) : timeout, killOnAbort: false,
+            })
+          } catch { throw error }
+          sendAttempt = send(turnContent, true)
+          continue
+        }
         if (next.value.method === 'codingns/steer-stop-timeout' && waitingForStop) {
           throw new Error('ZCode 未确认停止当前回合，插话未发送')
         }
@@ -698,7 +736,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
         if (tool) yield tool
         const context = telemetry.takeContextObservation()
         if (context) yield context
-        const chunk = zcodeMessageToChunk(m, state, input)
+        const chunk = zcodeMessageToChunk(m, state, effectiveInput)
         if (chunk) yield* asZcodeChunks(chunk)
         const end = readZcodeTerminalReason(m, state, input)
         if (end && (m.method === 'session/event' || m.method === 'state.updated' || !session.subscribed)) { reason = end; break }
@@ -736,6 +774,9 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     // 只读会话不能通过 ExitPlanMode 审批悄悄提升到可写模式。
     const effective = session.permission?.sandboxMode === 'read-only'
       ? { ...response, approved: false, reason: 'DSH 当前会话为只读模式' } : response
+    if (effective.approved && effective.allowForSession && pending.offeredSessionGrant) {
+      session.createWorkflowGrant.allowed = true
+    }
     pending.settled = true
     const result = pending.interaction.permissionResponse(effective)
     pending.resolve(result)
@@ -816,6 +857,7 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       rpc,
       cwd: input.cwd,
       workflowEnabled: false,
+      createWorkflowGrant: { allowed: false },
       acpSessionId: '',
       providerSessionId: input.providerSessionId ?? input.sessionId,
       sawRunning: false,
@@ -834,6 +876,8 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
       lastRequestContext: undefined,
       supportsContextSnapshot: false,
       compacting: false,
+      compactionTurnIds: new Set(),
+      pendingCompactionEvents: [],
     }
     this.processes.add(rpc)
     this.sessions.set(input.sessionId, session)
@@ -841,6 +885,14 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     rpc.addNotificationListener(message => {
       const p = record(message.params)
       if (typeof p.sessionId === 'string' && session.acpSessionId && p.sessionId !== session.acpSessionId) return
+      // 压缩回合既不是用户回合也不是自动后台回合：误判成后台回合会插一条「工作流
+      // 执行结果」通知（界面上多一张工作流卡片），并把压缩标记「Compacted」当成
+      // 助手回复显示。这里整体挡掉，只保留交互请求，免得压缩被审批卡住。
+      if (isZcodeCompactionNotification(session, message)) {
+        const interaction = readZcodeInteraction(message)
+        if (interaction !== null) pendingZcodeInteraction(session, interaction)
+        return
+      }
       if (session.background.observe(message, session.acpSessionId)) {
         const interaction = readZcodeInteraction(message)
         if (interaction !== null && session.background.hasActive) pendingZcodeInteraction(session, interaction)
@@ -892,7 +944,20 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
     if (input.modelId?.startsWith('account:') && !this.cachedCatalog?.groups.some(group => group.models.some(model => model.id === input.modelId))) {
       await this.listModels()
     }
-    const selection = resolveZcodeModelSelection(input.modelId, input.effortId, this.cachedCatalog, this.defaultEfforts)
+    let selection = resolveZcodeModelSelection(input.modelId, input.effortId, this.cachedCatalog, this.defaultEfforts)
+    if (selection === null && input.modelId?.startsWith('account:')) {
+      // 去重后，与 current 用同一把 key 的另一条槽位不再进目录；历史会话仍可能
+      // 带着它。只要该 Provider 仍有可用凭据（自有或同族复用）就允许切换，
+      // 真实来源由原生返回的 current 核对，仍由下面的不一致检查兜住。
+      const [providerId, ...rest] = input.modelId.split('/')
+      const credentials = readJsonFile(join(this.homeDirectory, '.zcode', 'v2', 'credentials.json')) ?? {}
+      // 只对 coding-plan 槽位放宽：start-plan/off-peak 走登录 JWT，失去凭据时
+      // 必须照旧拒绝，不能因为同族凑巧有 coding-plan key 就被放行。
+      const planSlot = providerId !== undefined && /-(?:individual-coding-plan|team-coding-plan)$/u.test(providerId)
+      if (planSlot && rest.length > 0 && accountProviderApiKeyExists(providerId, credentials)) {
+        selection = { providerId, modelId: rest.join('/'), ...(input.effortId?.trim() ? { options: { reasoningLevel: input.effortId.trim() } } : {}) }
+      }
+    }
     if (selection === null) throw new Error(`ZCode 模型选择无效: ${input.modelId ?? 'provider-default'}`)
     const applied = await session.rpc.request('session/setModel', {
       sessionId: session.acpSessionId,
@@ -945,8 +1010,27 @@ export class ZcodeAppServerDriver implements CodingNsCliDriver {
   }
 }
 
-/** turn.terminal 失败详情（errorCode/errorMessage）在通知到达时即捕获。 */
-function captureZcodeFailureDetail(message: JsonRpcMessage, session: ZcodeSession): void {
+/**
+ * 判断一条通知是否属于插件自己发起的压缩回合。
+ *
+ * 压缩期间（`compacting`）先把它见到的 turn id 记下来，然后整体挡掉；压缩调用返回后
+ * 该回合可能仍在收尾，所以按已记录的 id 继续挡。没有 turn id 的通知（部分
+ * `state.updated`）在压缩期间同样挡掉——正是这类通知会把压缩误判成后台回合。
+ */
+function isZcodeCompactionNotification(session: ZcodeSession, message: JsonRpcMessage): boolean {
+  const params = isRecord(message.params) ? message.params : {}
+  const turnId = typeof params.turnId === 'string' ? params.turnId : undefined
+  if (session.compacting) {
+    if (turnId !== undefined) {
+      if (session.compactionTurnIds.size >= 64) session.compactionTurnIds.clear()
+      session.compactionTurnIds.add(turnId)
+    }
+    return true
+  }
+  return turnId !== undefined && session.compactionTurnIds.has(turnId)
+}
+
+/** turn.terminal 失败详情（errorCode/errorMessage）在通知到达时即捕获。 */function captureZcodeFailureDetail(message: JsonRpcMessage, session: ZcodeSession): void {
   if (message.method === 'session/event' && record(message.params).type === 'turn.failed') {
     const error = record(record(message.params).payload)
     session.failureCode = text(error.errorCode) || text(record(error.error).code) || 'turn_failed'
@@ -979,7 +1063,18 @@ function zcodeMessageToChunk(message: JsonRpcMessage, session: ZcodeSession, inp
     const id = interaction.event.requestId
     if (session.emittedInteractions.has(id)) return null
     session.emittedInteractions.add(id)
-    return interaction.event
+    const event = interaction.event
+    const pending = session.interactions.get(id)
+    if (!pending || pending.settled || event.type !== 'permission-request' || !session.workflowEnabled
+      || event.kind !== 'tool' || event.toolName !== 'CreateWorkflow') return event
+    const mode = zcodePermissionMode(input)
+    const manualApproval = mode === 'build' && input.permission?.approvalPolicy !== 'never'
+    // ZCode can still explicitly request confirmation for CreateWorkflow in full-access mode.
+    const explicitFullAccess = mode === 'yolo' && input.permission?.nativeApprovalMode === 'full-access'
+    if (!manualApproval && !explicitFullAccess) return event
+    const createWorkflowApproval = session.createWorkflowGrant.allowed ? 'session-granted' : 'offer-session'
+    if (createWorkflowApproval === 'offer-session') pending.offeredSessionGrant = true
+    return { ...event, createWorkflowApproval }
   }
   const method = typeof message.method === 'string' ? message.method : ''
   if (method === '' || method.startsWith('startup/') || method.startsWith('process/')) return null
@@ -1131,11 +1226,13 @@ function readZcodeTerminalReason(
 function failureChunk(session: ZcodeSession): CodingNsAgentEvent {
   const code = session.failureCode
   const detail = session.failureMessage
-  const hint = code === 'provider_not_found'
-    ? '（ZCode 独立运行时还没有可用的模型提供商：请在终端执行一次 zcode login 完成登录后重试）'
-    : code === '1113'
-      ? '（ZCode 当前账号没有可用资源包，请检查套餐余额或切换有额度的账号）'
-    : ''
+  const hint = isZcodeContextOverflow(session)
+    ? '（原生上下文已超出模型窗口：本回合没有完成，请先压缩上下文再重试）'
+    : code === 'provider_not_found'
+      ? '（ZCode 独立运行时还没有可用的模型提供商：请在终端执行一次 zcode login 完成登录后重试）'
+      : code === '1113'
+        ? '（ZCode 当前账号没有可用资源包，请检查套餐余额或切换有额度的账号）'
+        : ''
   return {
     type: 'text-snapshot',
     text: `ZCode 回合失败${code ? ` [${code}]` : ''}${detail ? `：${detail}` : ''}${hint}`,
@@ -1637,26 +1734,36 @@ function isMethodUnavailable(error: unknown): boolean {
 
 function createZcodeTurnEventQueue(): ZcodeTurnEventQueue {
   const pending: JsonRpcMessage[] = []
-  let wake: (() => void) | undefined
+  // 等待者用列表而不是单个槽位：插话等待会与定时器竞速，被放弃的那次 next() 仍然
+  // 挂在队列上，单槽实现会让它顶掉新的等待者，导致后续事件再也唤不醒消费循环。
+  const waiters = new Set<() => void>()
   let closed = false
+  const wakeAll = (): void => {
+    for (const resolve of [...waiters]) resolve()
+    waiters.clear()
+  }
   return {
     async next(): Promise<IteratorResult<JsonRpcMessage>> {
       if (pending.length > 0) return { value: pending.shift()!, done: false }
       if (closed) return { value: undefined, done: true }
-      await new Promise<void>((resolve) => { wake = resolve })
+      let settle: (() => void) | undefined
+      const waited = new Promise<void>((resolve) => { settle = resolve; waiters.add(resolve) })
+      try {
+        await waited
+      } finally {
+        if (settle !== undefined) waiters.delete(settle)
+      }
       if (pending.length > 0) return { value: pending.shift()!, done: false }
       return { value: undefined, done: true }
     },
     push(message: JsonRpcMessage): void {
       if (closed) return
       pending.push(message)
-      wake?.()
-      wake = undefined
+      wakeAll()
     },
     close(): void {
       closed = true
-      wake?.()
-      wake = undefined
+      wakeAll()
     },
   }
 }

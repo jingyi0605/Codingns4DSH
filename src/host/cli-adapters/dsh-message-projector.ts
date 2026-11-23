@@ -452,17 +452,25 @@ export class CodingNsDshMessageProjector {
         if (record !== null && !record.failed) detail = record.translated
       } catch { /* Keep the original plan when translation is unavailable. */ }
     }
-    const outcome = await this.options.nativeSessions?.requestApproval?.(this.options.sessionId, {
+    const request = {
       requestId: event.requestId,
       toolName: event.toolName ?? (event.kind || 'external-agent'),
       ...(event.callId ? { callId: event.callId } : {}),
       ...(detail ? { reason: detail } : {}),
-      ...(this.options.adapterId === 'codex' && this.options.permission?.nativeApprovalMode === 'full-access-confirm' ? { interactive: true } : {}),
+      ...(this.options.adapterId === 'codex' && this.options.permission?.nativeApprovalMode === 'full-access-confirm' ? { interactive: true as const } : {}),
       ...(this.options.signal === undefined ? {} : { signal: this.options.signal }),
-    }) ?? 'unavailable'
-    const approved = outcome === 'allowed-once'
-    const reason = approvalReason(outcome, this.options.permission)
-    await responder({ requestId: event.requestId, approved, ...(reason === undefined ? {} : { reason }) })
+    }
+    const native = this.options.nativeSessions
+    const workflowApproval = this.options.adapterId === 'zcode' && event.toolName === 'CreateWorkflow'
+      ? event.createWorkflowApproval : undefined
+    const outcome = await (workflowApproval !== undefined && native?.requestCreateWorkflowApproval !== undefined
+      ? native.requestCreateWorkflowApproval(this.options.sessionId, request, workflowApproval)
+      : native?.requestApproval?.(this.options.sessionId, request)) ?? 'unavailable'
+    const allowForSession = outcome === 'allowed-for-session'
+    const approved = allowForSession || outcome === 'allowed-once'
+    const reason = allowForSession ? undefined : approvalReason(outcome, this.options.permission)
+    await responder({ requestId: event.requestId, approved,
+      ...(allowForSession ? { allowForSession: true } : {}), ...(reason === undefined ? {} : { reason }) })
     if (outcome === 'policy-rejected' && this.options.adapterId === 'antigravity') {
       return this.fail('DSH 已自动拒绝 agy 的工具请求。请在输入框旁选择 agy 模式后重试。', this.options.signal?.aborted)
     }
