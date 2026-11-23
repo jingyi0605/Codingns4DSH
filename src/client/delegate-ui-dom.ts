@@ -40,9 +40,6 @@ export const DELEGATE_TIMELINE_RAW_ATTRIBUTE = 'data-codingns-delegate-timeline-
 export const DELEGATE_TIMELINE_CARD_ATTRIBUTE = 'data-codingns-delegation-card'
 /** 委派卡片保存原始指令，停用插件时用于恢复 React 之外的 DOM。 */
 export const DELEGATE_TIMELINE_CARD_RAW_ATTRIBUTE = 'data-codingns-delegation-card-raw'
-/** DSH 空状态输入提示保存原始文案的标记。 */
-export const DELEGATE_PLACEHOLDER_BASE_ATTRIBUTE = 'data-codingns-delegate-placeholder-base'
-export const DELEGATE_PLACEHOLDER_MARK_ATTRIBUTE = 'data-codingns-delegate-placeholder'
 /** 插件样式标签的幂等键。 */
 export const DELEGATE_UI_STYLE_ID = 'codingns4dsh-delegate-ui-style'
 
@@ -112,8 +109,6 @@ export interface DelegateUiDomOptions {
   readonly cardStatus?: () => string
   /** 时间线卡片目标标签；未提供时使用英文兼容回退。 */
   readonly cardTarget?: (value: { readonly label: string; readonly adapterId: string; readonly modelId?: string }) => string
-  /** 对话输入框统一占位文本；未提供时不改写原生提示。 */
-  readonly composerPlaceholder?: () => string
 }
 
 /**
@@ -152,7 +147,6 @@ export function startDelegateUiDom(options: DelegateUiDomOptions): DelegateUiDom
     }
     decorateReferenceChips(dom, iconUrl)
     decorateTimelineMessages(dom, iconUrl, options)
-    decorateComposerPlaceholders(dom, options.composerPlaceholder)
   }
 
   const scan = (): void => {
@@ -402,28 +396,6 @@ function decorateReferenceChips(dom: Document, iconUrl: (adapterId: string) => s
 }
 
 /**
- * 统一 DSH 新建会话和已有会话的输入框提示。
- *
- * DSH 没有公开修改内置 placeholder 的接口，因此保存原文后更新显示文本。
- * 观察器会在 React 重绘或会话切换后重新应用，确保两种会话状态始终一致。
- */
-function decorateComposerPlaceholders(dom: Document, textFactory?: () => string): void {
-  const text = textFactory?.().trim()
-  if (text === undefined || text === '') return
-  for (const placeholder of dom.querySelectorAll('[data-composer-placeholder]')) {
-    const base = placeholder.getAttribute(DELEGATE_PLACEHOLDER_BASE_ATTRIBUTE)
-      ?? placeholder.textContent?.trim()
-      ?? ''
-    if (base === '') continue
-    if (!placeholder.hasAttribute(DELEGATE_PLACEHOLDER_BASE_ATTRIBUTE)) {
-      placeholder.setAttribute(DELEGATE_PLACEHOLDER_BASE_ATTRIBUTE, base)
-    }
-    placeholder.setAttribute(DELEGATE_PLACEHOLDER_MARK_ATTRIBUTE, '')
-    if (placeholder.textContent !== text) placeholder.textContent = text
-  }
-}
-
-/**
  * 将已经提交到 DSH 时间线的 carrier 投影为可读的 Agent chip。
  *
  * DSH 的输入 codec 只有一个序列化结果：Host 需要的 carrier；因此 durable
@@ -664,12 +636,6 @@ function removeDelegateNodes(dom: Document): void {
     const raw = card.getAttribute(DELEGATE_TIMELINE_CARD_RAW_ATTRIBUTE)
     const parent = card.parentNode
     if (raw !== null && parent !== null) parent.replaceChild(dom.createTextNode(raw), card)
-  }
-  for (const placeholder of dom.querySelectorAll(`[${DELEGATE_PLACEHOLDER_MARK_ATTRIBUTE}]`)) {
-    const base = placeholder.getAttribute(DELEGATE_PLACEHOLDER_BASE_ATTRIBUTE)
-    if (base !== null) placeholder.textContent = base
-    placeholder.removeAttribute(DELEGATE_PLACEHOLDER_BASE_ATTRIBUTE)
-    placeholder.removeAttribute(DELEGATE_PLACEHOLDER_MARK_ATTRIBUTE)
   }
   for (const row of dom.querySelectorAll(`[${DELEGATE_MENU_ROW_ATTRIBUTE}]`)) row.removeAttribute(DELEGATE_MENU_ROW_ATTRIBUTE)
   // 隐藏规则是插件全局样式，停用时必须一并收回，避免残留选择器影响后续渲染。

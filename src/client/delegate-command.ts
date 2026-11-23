@@ -1,7 +1,8 @@
 import type { Context } from '@deepseek-ai/cordis'
+import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { CodingNsCliAdapterDescriptor } from '../shared/contracts/cli-adapter.js'
 import type { CodingNsRpcClient } from './features/types.js'
-import type { CodingNsLocale } from './locale.js'
+import { useCodingNsTranslator, type CodingNsLocale } from './locale.js'
 import { adapterCatalogWithDsh, callCliRpc } from './cli-catalog.js'
 import type { CodingNsCliModelCatalog } from '../shared/contracts/cli-adapter.js'
 import { subscribeAdapterCatalogChanged } from './adapter-catalog-watch.js'
@@ -139,7 +140,6 @@ export function registerDelegateCommand(ctx: Context, options: RegisterDelegateC
   const ui = startDelegateUiDom({
     menuLabel: () => t('delegate.label'),
     popupPlaceholder: () => t('delegate.searchPlaceholder'),
-    composerPlaceholder: () => t('delegate.composerPlaceholder'),
     cardTitle: () => t('delegate.cardTitle'),
     cardStatus: () => t('delegate.cardStatus'),
     cardTarget: (value) => t('delegate.cardTarget', {
@@ -147,6 +147,16 @@ export function registerDelegateCommand(ctx: Context, options: RegisterDelegateC
       adapter: value.adapterId,
       model: value.modelId === undefined ? '' : ` · ${value.modelId}`,
     }),
+  })
+  const placeholderFiber = ctx.inject(['slots'], (scope) => {
+    const slots = scope.slots
+    scope.effect(() => slots.inject('conversation.input.placeholder', () => slots.register({
+      name: 'conversation.input.placeholder',
+      priority: 100,
+      select: () => true,
+    }, function DelegateComposerPlaceholder() {
+      return useCodingNsTranslator(options.locale)('delegate.composerPlaceholder')
+    })))
   })
   // commandUi 由另一个 Client 插件提供，装配顺序不保证它已经就绪；直接同步读取会
   // 在加载晚于本模块时静默丢掉注册。Cordis 的 inject 会把回调推迟到服务可用时，
@@ -157,6 +167,7 @@ export function registerDelegateCommand(ctx: Context, options: RegisterDelegateC
   })
   return () => {
     ui.dispose()
+    void placeholderFiber.dispose()
     void fiber.dispose()
   }
 }
