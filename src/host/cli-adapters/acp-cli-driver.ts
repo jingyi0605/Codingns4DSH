@@ -9,7 +9,7 @@ import type {
   CodingNsCliTurnInput,
 } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliDriver, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
-import { JsonRpcProcess, type JsonRpcMessage } from './json-rpc-process.js'
+import { JsonRpcProcess, JsonRpcRequestError, type JsonRpcMessage } from './json-rpc-process.js'
 import { isWindowsBatchCommand } from './process-utils.js'
 import { detectBinary, emptyCatalog, isRecord, streamRpcRequest, usageChunk } from './rpc-driver-utils.js'
 import { acpToolStatusFields, firstToolText, isToolRecord, serializeToolValue } from './tool-observation.js'
@@ -41,6 +41,16 @@ export interface AcpCliDriverOptions {
   readonly runtimeModelSelection?: boolean
   /** Provider 需要在 session/new 或 session/load 之前显式认证时，由每个新进程调用。 */
   readonly authenticate?: (rpc: JsonRpcProcess, input: CodingNsCliTurnInput) => Promise<void>
+  /**
+   * session/new 或 session/load 被 Provider 以“需要认证”拒绝时，由产品重新认证。
+   * 返回 true 表示已完成认证，驱动在同一进程上重试一次打开会话；返回 false 或抛错
+   * 则把原始错误或新错误交给调用方。缺省不重试，保持各产品原有失败语义。
+   */
+  readonly recoverAuthentication?: (params: {
+    readonly rpc: JsonRpcProcess
+    readonly input: CodingNsCliTurnInput
+    readonly error: unknown
+  }) => Promise<boolean>
   /** 产品通过原生 ACP 请求设置会话模型、权限和思考强度；失败时禁止继续发送 prompt。 */
   readonly configureSession?: (rpc: JsonRpcProcess, sessionId: string, input: CodingNsCliTurnInput, openedSession: unknown) => Promise<void>
   /**
@@ -159,6 +169,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
   private readonly runtimeModelSelection: boolean
   private readonly createPromptFollowup: AcpCliDriverOptions['createPromptFollowup']
   private readonly authenticate: AcpCliDriverOptions['authenticate']
+  private readonly recoverAuthentication: AcpCliDriverOptions['recoverAuthentication']
   private readonly configureSession: AcpCliDriverOptions['configureSession']
   private readonly recoverConfigureSession: AcpCliDriverOptions['recoverConfigureSession']
   private readonly readModelCatalog: AcpCliDriverOptions['readModelCatalog']
@@ -193,6 +204,7 @@ export class AcpCliDriver implements CodingNsCliDriver {
     this.runtimeModelSelection = options.runtimeModelSelection ?? true
     this.createPromptFollowup = options.createPromptFollowup
     this.authenticate = options.authenticate
+    this.recoverAuthentication = options.recoverAuthentication
     this.configureSession = options.configureSession
     this.recoverConfigureSession = options.recoverConfigureSession
     this.readModelCatalog = options.readModelCatalog
@@ -478,12 +490,22 @@ export class AcpCliDriver implements CodingNsCliDriver {
   /** 在一个已经拿到进程的会话上确保存在 ACP 会话 ID（session/new 或 session/load）。 */
   private async openAcpSession(session: AcpSession, input: CodingNsCliTurnInput): Promise<unknown> {
     if (session.acpSessionId !== '') return undefined
-    const created = input.providerSessionId === undefined
-      ? await session.rpc.request('session/new', {
+    const open = (): Promise<unknown> => input.providerSessionId === undefined
+      ? session.rpc.request('session/new', {
         cwd: input.cwd ?? process.cwd(),
         mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),
       }, { signal: input.signal, killOnAbort: false })
-      : await this.loadWithReplayGuard(session, input)
+      : this.loadWithReplayGuard(session, input)
+    let created: unknown
+    try {
+      created = await open()
+    } catch (error) {
+      // Provider 记住的上一次登录方式可能与本轮不符（例如被其他路径改成 API Key）：
+      // 静默登录失败时只补一次显式认证，再重试一次，其他错误原样抛出。
+      if (this.recoverAuthentication === undefined || input.signal?.aborted === true || !isAcpAuthenticationRequired(error)) throw error
+      if (!(await this.recoverAuthentication({ rpc: session.rpc, input, error }))) throw error
+      created = await open()
+    }
     session.acpSessionId = readSessionId(created) ?? input.providerSessionId ?? input.sessionId
     return created
   }
@@ -638,6 +660,11 @@ export class AcpCliDriver implements CodingNsCliDriver {
       mcpServers: acpBridgeMcpServers(input.sessionId, this.descriptor.id),
     }, { signal: input.signal, killOnAbort: false })
   }
+}
+
+/** ACP 标准的 auth_required（-32000）；各 Provider 的文案不同，所以按消息识别。 */
+export function isAcpAuthenticationRequired(error: unknown): boolean {
+  return error instanceof JsonRpcRequestError && /authentication required|auth_required/iu.test(error.message)
 }
 
 /** 读取 `session/update` 通知里的工具调用 ID；不是工具通知时返回 undefined。 */

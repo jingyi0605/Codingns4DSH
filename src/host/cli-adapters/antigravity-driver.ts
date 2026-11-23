@@ -20,11 +20,22 @@ import { readAntigravityRequestSamples, type AntigravityRequestSamples } from '.
 
 const ANTIGRAVITY_MODEL_DISCOVERY_TIMEOUT_MS = 30_000
 
+/**
+ * 原生（非 Magpie）ACP 回合的重新认证方式。agy 会把最近一次 `authenticate` 的方式记在自己的缓存里，
+ * 下次不带 `authenticate` 启动时按它静默登录；Magpie 回合发送的 `gemini-api-key` 会覆盖它，
+ * 让随后没有 API Key 的原生回合报 `Authentication required`。此时复用本机已有的 Google 登录。
+ */
+const ANTIGRAVITY_NATIVE_AUTH_METHOD = 'oauth-personal'
+/** 复用已有登录几百毫秒即可完成；超时说明 agy 在等浏览器登录，不能让回合一直挂着。 */
+const ANTIGRAVITY_NATIVE_AUTH_TIMEOUT_MS = 20_000
+
 /** 进程内保留的会话级累计用量基线数量上限，避免长驻 Host 无限增长。 */
 const ANTIGRAVITY_CUMULATIVE_LIMIT = 256
 
 /** 仅在本轮 Host 调用内传递，不进入共享协议或持久化会话。 */
 interface AntigravityTurnInput extends CodingNsCliTurnInput {
+  /** 本回合由 Magpie 接管凭据与网关；这种回合的认证失败是真实错误，不能换成原生登录。 */
+  readonly magpieRoute?: true
   readonly magpieSettings?: string
   /** 为代理的 Gemini 模型建立 ACP 会话时使用的内置模型 ID。 */
   readonly magpieAcpModel?: string
@@ -204,6 +215,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
           await rpc.request('authenticate', { methodId: 'gemini-api-key' }, { signal: input.signal, killOnAbort: false })
         }
       },
+      recoverAuthentication: ({ rpc, input }) => this.recoverNativeAuthentication(rpc, input as AntigravityTurnInput),
       configureSession: (rpc, sessionId, input, openedSession) => this.configureAcpSession(rpc, sessionId, input, openedSession),
       capabilities: ['stream', 'resume', 'interrupt', 'tool-events', 'permission', 'questions'],
       permissionOptions: 'once',
@@ -278,6 +290,7 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       const prepared: AntigravityTurnInput = magpie === null ? { ...input, signal } : {
         ...input,
         signal,
+        magpieRoute: true as const,
         ...(modelId === undefined ? {} : { modelId }),
         // 映射与 API Key 必须成对传给 AGY，避免继承的网关或凭据把请求送错地方。
         runtimeEnv: mapping !== undefined && proxy !== null
@@ -393,6 +406,24 @@ export class AntigravityDriver extends StandardStreamDriver implements CodingNsC
       // Agy ACP 进程带完整 Language Server，只为这一回合借用，不留常驻进程。
       this.acp.closeSession(input.sessionId)
     }
+  }
+
+  /**
+   * 原生 ACP 回合静默登录被拒（记录的登录方式被 Magpie 回合改成了 API Key）时，用本机 Google 登录重新认证。
+   * Magpie 回合不走这里：它的凭据与网关已经显式传入，失败就该原样报出。
+   */
+  private async recoverNativeAuthentication(rpc: JsonRpcProcess, input: AntigravityTurnInput): Promise<boolean> {
+    if (input.magpieRoute === true) return false
+    const timeout = AbortSignal.timeout(ANTIGRAVITY_NATIVE_AUTH_TIMEOUT_MS)
+    const signal = input.signal === undefined ? timeout : AbortSignal.any([input.signal, timeout])
+    try {
+      await rpc.request('authenticate', { methodId: ANTIGRAVITY_NATIVE_AUTH_METHOD }, { signal, killOnAbort: false })
+    } catch (error) {
+      if (input.signal?.aborted === true) throw error
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error(`Antigravity 登录已失效，请在终端运行 agy 重新登录 Google 账号后再试。（${reason}）`, { cause: error })
+    }
+    return true
   }
 
   private buildAcpArgs(input: AntigravityTurnInput): readonly string[] {
