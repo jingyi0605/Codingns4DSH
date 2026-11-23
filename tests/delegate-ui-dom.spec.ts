@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { Context } from '@deepseek-ai/cordis'
+import { registerDelegateCommand } from '../data/build/dist/client/delegate-command.js'
 import {
   DELEGATE_MENU_PROXY_ATTRIBUTE,
   DELEGATE_MENU_ROW_ATTRIBUTE,
   DELEGATE_CHIP_LOGO_ATTRIBUTE,
-  DELEGATE_PLACEHOLDER_MARK_ATTRIBUTE,
   DELEGATE_POPUP_LOGO_ATTRIBUTE,
   DELEGATE_TIMELINE_CARD_ATTRIBUTE,
   DELEGATE_UI_STYLE_ID,
@@ -13,6 +14,7 @@ import {
   setDelegatePopupOptions,
   startDelegateUiDom,
 } from '../data/build/dist/client/delegate-ui-dom.js'
+import { createPresentationSlots } from './fixtures/presentation-slots.ts'
 
 /**
  * `/委派` 界面增强的 DOM 测试。
@@ -366,35 +368,41 @@ test('委派菜单行被搬进「添加」分类，真实行隐藏且不被移�
   }
 })
 
-test('新建会话和已有会话输入框统一显示委派占位文本', async () => {
+test('委派使用原生输入提示插槽并保留 DSH 管理的节点', async (testContext) => {
+  const placeholderSlot = 'conversation.input.placeholder'
   const dom = new FakeDocument()
-  const heroGrow = element(dom, 'div')
-  const heroPlaceholder = element(dom, 'div', { 'data-composer-placeholder': 'true' })
-  heroPlaceholder.textContent = '描述你想要构建的内容, / 调用指令, @ 文件或对话'
-  heroGrow.appendChild(heroPlaceholder)
-  dom.body.appendChild(heroGrow)
-  const activeGrow = element(dom, 'div')
-  const activePlaceholder = element(dom, 'div', { 'data-composer-placeholder': 'true' })
-  activePlaceholder.textContent = '发消息或创建任务'
-  activeGrow.appendChild(activePlaceholder)
-  dom.body.appendChild(activeGrow)
-  const controller = startDelegateUiDom({
-    document: dom as never,
-    MutationObserver: FakeObserver as never,
-    menuLabel: () => '委派',
-    popupPlaceholder: () => '搜索外部 Agent',
-    composerPlaceholder: () => '/调用指令,@文件或对话,#呼出委派菜单',
+  const placeholder = element(dom, 'div', { 'data-composer-placeholder': 'true' })
+  const nativeNode = element(dom, 'span', { 'data-slot': placeholderSlot })
+  nativeNode.textContent = '发消息或创建任务'
+  placeholder.appendChild(nativeNode)
+  dom.body.appendChild(placeholder)
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: dom })
+  testContext.after(() => {
+    if (previousDocument === undefined) Reflect.deleteProperty(globalThis, 'document')
+    else Object.defineProperty(globalThis, 'document', previousDocument)
   })
-  await nextTurn()
+  const ctx = new Context()
+  const slots = createPresentationSlots()
+  ctx.provide('slots', slots)
+  const dispose = registerDelegateCommand(ctx, {
+    rpc: { call: async () => { throw new Error('输入提示不应请求 RPC') } },
+    locale: { bind: () => (key: string) => key } as never,
+  })
   try {
-    assert.equal(heroPlaceholder.textContent, '/调用指令,@文件或对话,#呼出委派菜单')
-    assert.equal(activePlaceholder.textContent, '/调用指令,@文件或对话,#呼出委派菜单')
-    assert.equal(heroPlaceholder.hasAttribute(DELEGATE_PLACEHOLDER_MARK_ATTRIBUTE), true)
+    assert.equal(placeholder.firstChild, nativeNode)
+    assert.equal(slots.entries(placeholderSlot).length, 0)
+    testContext.after(slots.register({ name: 'root', children: {
+      [placeholderSlot]: { kind: 'chain', scope: 'session', inline: true },
+    } }, () => null))
+    await nextTurn()
+    assert.equal(slots.entries(placeholderSlot).length, 1)
   } finally {
-    controller.dispose()
+    dispose()
   }
-  assert.equal(heroPlaceholder.textContent, '描述你想要构建的内容, / 调用指令, @ 文件或对话')
-  assert.equal(activePlaceholder.textContent, '发消息或创建任务')
+  await nextTurn()
+  assert.equal(slots.entries(placeholderSlot).length, 0)
+  assert.equal(placeholder.firstChild, nativeNode)
 })
 
 test('点击「添加」分类里的委派行会转发交互到真实行', async () => {
