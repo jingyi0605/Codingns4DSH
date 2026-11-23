@@ -7,7 +7,7 @@ export const EXTERNAL_SUBAGENT_IDS = [
   // `dsh` 是 DSH 自带的进程内子智能体目标，不对应 cli-adapters Registry 中的外部驱动。
   // 它仍然放在同一份稳定 ID 列表里，保证 agent_subagent schema、委派 carrier 和
   // Host 派发入口使用同一套白名单。
-  'dsh', 'mcode', 'zcode', 'claude-code', 'codex', 'kimi', 'gemini', 'pi', 'opencode', 'grok', 'command-code',
+  'dsh', 'mcode', 'zcode', 'claude-code', 'codex', 'kimi', 'gemini', 'pi', 'opencode', 'grok', 'command-code', 'antigravity',
 ] as const
 
 export function isExternalSubagentId(value: unknown): value is typeof EXTERNAL_SUBAGENT_IDS[number] {
