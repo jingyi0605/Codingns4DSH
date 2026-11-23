@@ -23,6 +23,10 @@ interface FakeOptions {
   readonly failures?: Readonly<Record<string, { readonly code: number; readonly message: string }>>
   /** prompt 期间由服务端主动发给客户端的请求，例如权限或提问。 */
   readonly serverRequests?: readonly Record<string, unknown>[]
+  /** 为 true 时，收到 authenticate 之前 session/new 与 session/load 返回 ACP 的 auth_required，模拟 agy 记住了错误的登录方式。 */
+  readonly authRequired?: boolean
+  /** authenticate 请求本身被拒绝，模拟本机没有可复用的登录。 */
+  readonly authenticateFailure?: { readonly code: number; readonly message: string }
   readonly sessionId?: string
   readonly sessionState?: Record<string, unknown>
   readonly configuredState?: Record<string, unknown>
@@ -61,6 +65,7 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
       exit = () => { stdout.end(); stderr.end() }
       let promptId: number | string = 0
       let promptDelayed = false
+      let authenticated = false
       let pendingServerRequests = [...(options.serverRequests ?? [])]
       const reply = (id: number | string | undefined, result: unknown): void => {
         stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, result })}\n`)
@@ -90,7 +95,11 @@ function acpDriver(options: FakeOptions = {}, driverOptions: Record<string, unkn
             return true
           }
           requests.push(request)
+          if (request.method === 'authenticate' && options.authenticateFailure === undefined) authenticated = true
           const failure = options.failures?.[`${request.method}:${request.params?.configId ?? ''}`]
+            ?? (request.method === 'authenticate' ? options.authenticateFailure : undefined)
+            ?? (options.authRequired === true && !authenticated && (request.method === 'session/new' || request.method === 'session/load')
+              ? { code: -32000, message: 'Authentication required' } : undefined)
           if (failure !== undefined) {
             stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id: request.id, error: failure })}\n`)
           } else if (request.method === 'initialize') reply(request.id, {})
@@ -697,5 +706,85 @@ test('Antigravity ACP 回合结算前把新增模型调用的耗时和上下文�
     }])
     assert.equal(reads[0], 'latest')
     assert.ok(chunks.indexOf(observations[0]) < chunks.findIndex(chunk => chunk.type === 'finish'))
+  } finally { driver.dispose() }
+})
+
+const nativeAuthTurn = (image: string, extra: Record<string, unknown> = {}) => ({
+  modelId: 'gemini-4-hydrogen',
+  permission: { nativeApprovalMode: 'read-only' },
+  attachments: [{ kind: 'image', path: image }],
+  ...extra,
+})
+
+test('Antigravity 原生回合静默登录被拒时，补一次 oauth-personal 认证后重试 session/new', async () => {
+  await withAttachments(async ({ image }) => {
+    const { driver, requests } = acpDriver({ authRequired: true })
+    try {
+      const chunks = await collect(driver, nativeAuthTurn(image))
+      assert.deepEqual(requests.map(({ method }) => method), [
+        'initialize', 'initialized', 'session/new', 'authenticate', 'session/new',
+        'session/set_config_option', 'session/set_mode', 'session/prompt',
+      ])
+      assert.deepEqual(requests.filter(({ method }) => method === 'authenticate').map(({ params }) => params.methodId), ['oauth-personal'])
+      assert.equal(chunks.at(-1)?.reason, 'stop')
+    } finally { driver.dispose() }
+  })
+})
+
+test('Antigravity 原生回合恢复会话时静默登录被拒，同样认证后重试 session/load', async () => {
+  await withAttachments(async ({ image }) => {
+    const { driver, requests } = acpDriver({ authRequired: true, sessionId: 'agy-existing-conversation' })
+    try {
+      const chunks = await collect(driver, nativeAuthTurn(image, { providerSessionId: 'agy-existing-conversation' }))
+      assert.deepEqual(requests.map(({ method }) => method).slice(0, 5), ['initialize', 'initialized', 'session/load', 'authenticate', 'session/load'])
+      assert.equal(requests.filter(({ method }) => method === 'session/new').length, 0)
+      assert.equal(chunks.at(-1)?.reason, 'stop')
+    } finally { driver.dispose() }
+  })
+})
+
+test('Antigravity 原生回合静默登录正常时不发 authenticate，避免改动用户已有的登录方式', async () => {
+  await withAttachments(async ({ image }) => {
+    const { driver, requests } = acpDriver()
+    try {
+      await collect(driver, nativeAuthTurn(image))
+      assert.equal(requests.some(({ method }) => method === 'authenticate'), false)
+    } finally { driver.dispose() }
+  })
+})
+
+test('Antigravity 补发的认证也失败时，提示重新登录且不发送 prompt', async () => {
+  await withAttachments(async ({ image }) => {
+    const { driver, requests } = acpDriver({ authRequired: true, authenticateFailure: { code: -32000, message: 'No stored credentials' } })
+    try {
+      await assert.rejects(collect(driver, nativeAuthTurn(image)), /登录已失效.*agy.*No stored credentials/u)
+      assert.equal(requests.filter(({ method }) => method === 'authenticate').length, 1)
+      assert.equal(requests.filter(({ method }) => method === 'session/new').length, 1)
+      assert.equal(requests.some(({ method }) => method === 'session/prompt'), false)
+    } finally { driver.dispose() }
+  })
+})
+
+test('Antigravity 的非认证错误不触发补认证，原样抛出', async () => {
+  await withAttachments(async ({ image }) => {
+    const { driver, requests } = acpDriver({ failures: { 'session/new:': { code: -32603, message: 'workspace unavailable' } } })
+    try {
+      await assert.rejects(collect(driver, nativeAuthTurn(image)), /workspace unavailable/u)
+      assert.equal(requests.some(({ method }) => method === 'authenticate'), false)
+    } finally { driver.dispose() }
+  })
+})
+
+test('Antigravity 的 Magpie 回合认证被拒时不改用本机 Google 登录', async () => {
+  const modelId = 'magpie/auto/deepseek-v4.1-flash-1017'
+  const stdout = [`model=${modelId}`, 'settings=/tmp/magpie-agy-settings.json', 'GEMINI_API_KEY=fixture', 'GOOGLE_GEMINI_BASE_URL=http://127.0.0.1:1'].join('\n')
+  const { driver, requests } = acpDriver({ authRequired: true }, {
+    magpieCommand: () => 'fixture-magpie',
+    spawnSync: (command: string) => ({ status: 0, stdout: command === 'fixture-magpie' ? stdout : 'agy 1.5.14', stderr: '' }),
+  })
+  try {
+    const permission = resolveNativeApprovalPermission({ adapterId: 'antigravity', nativeApprovalMode: 'manual' }, undefined)
+    await assert.rejects(collect(driver, { modelId, permission }), /Authentication required/u)
+    assert.equal(requests.some(({ method }) => method === 'authenticate'), false)
   } finally { driver.dispose() }
 })
