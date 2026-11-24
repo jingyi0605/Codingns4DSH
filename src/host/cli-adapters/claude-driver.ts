@@ -4,7 +4,10 @@ import { homedir } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
 import type { CodingNsAgentEvent, CodingNsAgentImageArtifact, CodingNsAgentPermissionResponse, CodingNsAgentQuestion, CodingNsAgentQuestionResponse, CodingNsCliModelCatalog, CodingNsCliSkillDescriptor, CodingNsCliSkillListInput, CodingNsCliTurnInput } from '../../shared/contracts/cli-adapter.js'
 import type { CodingNsCliCompactionInput, CodingNsCliCompactionResult, CodingNsCliSessionProbeInput, CodingNsCliSessionProbeResult } from './driver.js'
-import { StandardStreamDriver, emptyCatalog, type StandardStreamDriverOptions } from './standard-stream-driver.js'
+import { StandardStreamDriver, emptyCatalog, type RetainedStreamProcess, type StandardStreamDriverOptions } from './standard-stream-driver.js'
+import type { CodingNsBackgroundTurn } from './background-turn.js'
+import { ClaudeBackgroundSession, applyClaudeTaskEvent, type ClaudeBackgroundTurn } from './claude-background.js'
+import { advanceCodingNsSegment, createCodingNsSegmentState, decorateCodingNsSegmentEvent } from './stream-normalizer.js'
 import { CLAUDE_CATALOG, clearEfforts, isProviderDefaultModel } from './model-catalog.js'
 import { discoverClaudeModelCatalog } from './claude-model-options.js'
 import { spawnClaudeProcess } from './claude-process.js'
@@ -19,6 +22,8 @@ import { usageChunk } from './rpc-driver-utils.js'
 import { ClaudePerformanceTracker } from './claude-performance.js'
 
 const CLAUDE_SESSION_PROBE_MAX_BYTES = 1024 * 1024
+/** 同时保留的、仍有后台任务的 Claude 进程上限；超出时回收最早的一个。 */
+const MAX_BACKGROUND_SESSIONS = 8
 
 export interface ClaudeCodeDriverOptions extends StandardStreamDriverOptions {
   readonly now?: () => number
@@ -116,6 +121,95 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   }
   private readonly interactions = new Map<string, ClaudeInteractionState>()
   private readonly compactions = new Map<string, { compacted: boolean; message?: string }>()
+  /** 回合结束后仍有后台任务、因而保持存活的进程，按 DSH 会话索引。 */
+  private readonly holders = new Map<string, ClaudeBackgroundSession>()
+  /** 前台回合进行中跟踪到的后台任务；进程被接管时把这个集合交给持有者。 */
+  private readonly taskSets = new Map<string, Set<string>>()
+  /** 已缓存的后台回合，按 DSH 会话保存；进程退出后未领取的回合仍可领取。 */
+  private readonly turnStores = new Map<string, Map<string, ClaudeBackgroundTurn>>()
+  private readonly backgroundListeners = new Set<(turn: CodingNsBackgroundTurn) => void>()
+
+  subscribeBackgroundTurns(listener: (turn: CodingNsBackgroundTurn) => void): () => void {
+    this.backgroundListeners.add(listener)
+    return () => { this.backgroundListeners.delete(listener) }
+  }
+
+  private emitBackgroundTurn(turn: CodingNsBackgroundTurn): void {
+    for (const listener of this.backgroundListeners) {
+      try { listener(turn) } catch { /* 没有消费者时输出仍留在队列里，等前台消息或唤醒领取 */ }
+    }
+  }
+
+  /** 启动参数指纹（不含 --resume）。指纹相同才能复用上一轮留下的进程。 */
+  private launchKey(input: CodingNsCliTurnInput): string {
+    const args = [...this.buildArgs(input)]
+    const resume = args.indexOf('--resume')
+    if (resume >= 0) args.splice(resume, 2)
+    return JSON.stringify([input.cwd ?? '', args])
+  }
+
+  private turnStore(sessionId: string): Map<string, ClaudeBackgroundTurn> {
+    let store = this.turnStores.get(sessionId)
+    if (store === undefined) { store = new Map(); this.turnStores.set(sessionId, store) }
+    return store
+  }
+
+  private pendingBackgroundIds(sessionId: string): string[] {
+    return [...(this.turnStores.get(sessionId)?.values() ?? [])].filter((turn) => !turn.claimed).map((turn) => turn.id)
+  }
+
+  private releaseBackgroundTurn(sessionId: string, turnId: string): void {
+    const store = this.turnStores.get(sessionId)
+    store?.delete(turnId)
+    if (store?.size === 0) this.turnStores.delete(sessionId)
+  }
+
+  private dropHolder(sessionId: string): void {
+    const holder = this.holders.get(sessionId)
+    this.holders.delete(sessionId)
+    holder?.retire()
+  }
+
+  protected override takeRetainedProcess(input: CodingNsCliTurnInput): RetainedStreamProcess | undefined {
+    const holder = this.holders.get(input.sessionId)
+    if (holder === undefined) return undefined
+    // 模型、权限、工作目录等启动参数变了，旧进程不能带着新设置继续；放弃它重新启动。
+    if (holder.isStopped || input.signal?.aborted === true || holder.launchKey !== this.launchKey(input)) {
+      this.dropHolder(input.sessionId)
+      return undefined
+    }
+    return { child: holder.child, lines: holder.attachForeground(), closeLines: () => holder.endForeground() }
+  }
+
+  protected override adoptProcess(process: RetainedStreamProcess, input: CodingNsCliTurnInput, providerSessionId: string | undefined): boolean {
+    const sessionId = input.sessionId
+    const existing = this.holders.get(sessionId)
+    if (existing !== undefined && existing.child === process.child) {
+      if (!existing.isStopped && existing.isBusy) return true
+      // 后台任务都结束了：交回基类终止进程，读取器随进程退出自行收尾。
+      this.holders.delete(sessionId)
+      return false
+    }
+    const tasks = this.taskSets.get(sessionId)
+    if (tasks === undefined || tasks.size === 0 || providerSessionId === undefined) return false
+    if (input.signal?.aborted === true || this.compactions.has(sessionId)) return false
+    this.dropHolder(sessionId)
+    while (this.holders.size >= MAX_BACKGROUND_SESSIONS) {
+      const oldest = [...this.holders.values()].sort((a, b) => a.createdAt - b.createdAt)[0]
+      if (oldest === undefined) break
+      this.dropHolder(oldest.sessionId)
+    }
+    const holder = new ClaudeBackgroundSession({
+      sessionId, providerSessionId, child: process.child, lines: process.lines, closeLines: process.closeLines,
+      tasks, turns: this.turnStore(sessionId), launchKey: this.launchKey(input),
+      ready: (turn) => this.emitBackgroundTurn(turn),
+      terminate: (child) => this.releaseProcess(child),
+      released: (released) => { if (this.holders.get(released.sessionId) === released) this.holders.delete(released.sessionId) },
+    })
+    this.holders.set(sessionId, holder)
+    holder.start()
+    return true
+  }
 
   async compact(input: CodingNsCliCompactionInput): Promise<CodingNsCliCompactionResult> {
     input.signal?.throwIfAborted()
@@ -162,14 +256,14 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
     return spawnClaudeProcess(command, args, options, this.runSpawn) as CodingNsChildProcess
   }
 
-  protected writeStdin(child: CodingNsChildProcess, input: CodingNsCliTurnInput): void {
+  protected override writeStdin(child: CodingNsChildProcess, input: CodingNsCliTurnInput, reused = false): void {
     this.performance.set(input.sessionId, new ClaudePerformanceTracker(this.now()))
     const state = this.interactions.get(input.sessionId)
     if (state === undefined || child.stdin === null) return
     state.write = (data) => { child.stdin?.write(data) }
     // Claude Agent SDK 在首条 user 消息前先发公开 initialize control_request；
-    // 保留这个握手，确保 CLI 开启同一条双向权限通道。
-    state.write(`${JSON.stringify({
+    // 保留这个握手，确保 CLI 开启同一条双向权限通道。复用的进程已经握过手。
+    if (!reused) state.write(`${JSON.stringify({
       type: 'control_request',
       request_id: `initialize:${input.sessionId}`,
       request: { subtype: 'initialize' },
@@ -294,33 +388,99 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
    * 同一通路支持 PNG/JPEG/GIF/WebP；文件附件继续开放其原始目录供工具读取。
    */
   override async *executeTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
+    // DSH 被后台任务通知唤醒：输出早已由常驻进程产生，这里只领取并转发，不发送提示词。
+    if (input.externalTurnId !== undefined) {
+      yield* this.executeBackgroundTurn(input, input.externalTurnId)
+      return
+    }
+    // 用户在后台回合还没被领取时发来新消息：先把缓存的后台回合输出消费掉，
+    // 否则它们会被夹进这一轮的回复里。
+    for (const id of this.pendingBackgroundIds(input.sessionId)) {
+      for await (const event of this.executeBackgroundTurn(input, id)) if (event.type !== 'finish') yield event
+      yield { type: 'message-boundary', channel: 'text', messageId: `after-${id}` }
+    }
     const userContent = await buildClaudeUserContent(input.prompt, input.attachments ?? [], input.translationLanguage)
     this.toolInputStates.delete(input.sessionId)
+    this.taskSets.delete(input.sessionId)
     const usageState: ClaudeUsageState = {}
     this.usageStates.set(input.sessionId, usageState)
-    let pendingStepUsage: ClaudeUsageEvent | undefined
     const interaction: ClaudeInteractionState = { write: undefined, pending: new Map(), userContent }
     this.interactions.set(input.sessionId, interaction)
     try {
       // 图片已内联，不能再让文本驱动生成副本或把相同图片作为 @路径发送第二遍。
-      for await (const event of super.executeTurn({ ...input, attachments: (input.attachments ?? []).filter((attachment) => attachment.kind === 'file') })) {
-        if (input.splitToolSteps) {
-          if (event.type === 'usage') pendingStepUsage = event
-          if (event.type === 'tool-event' && (event.status === 'completed' || event.status === 'failed') && pendingStepUsage !== undefined) {
-            // Registry settles this step after the tool result. Its latest usage
-            // must be deducted from the eventual cumulative SDK result exactly once.
-            settleClaudeUsage(usageState, pendingStepUsage)
-            pendingStepUsage = undefined
-          }
-        }
-        yield event
-      }
+      yield* this.settleSplitUsage(input, usageState, super.executeTurn({ ...input, attachments: (input.attachments ?? []).filter((attachment) => attachment.kind === 'file') }))
     } finally {
+      this.toolInputStates.delete(input.sessionId)
+      this.usageStates.delete(input.sessionId)
+      this.performance.delete(input.sessionId)
+      // 进程被接管时，持有者已经拿走这个集合的引用；这里只清掉驱动自己的登记。
+      this.taskSets.delete(input.sessionId)
+      if (this.interactions.get(input.sessionId) === interaction) this.interactions.delete(input.sessionId)
+    }
+  }
+
+  /** Registry 在工具结果后分步时，把已结算的用量从最终累计结果里扣掉一次。 */
+  private async *settleSplitUsage(input: CodingNsCliTurnInput, usageState: ClaudeUsageState, events: AsyncIterable<CodingNsAgentEvent>): AsyncIterable<CodingNsAgentEvent> {
+    let pendingStepUsage: ClaudeUsageEvent | undefined
+    for await (const event of events) {
+      if (input.splitToolSteps) {
+        if (event.type === 'usage') pendingStepUsage = event
+        if (event.type === 'tool-event' && (event.status === 'completed' || event.status === 'failed') && pendingStepUsage !== undefined) {
+          // Registry settles this step after the tool result. Its latest usage
+          // must be deducted from the eventual cumulative SDK result exactly once.
+          settleClaudeUsage(usageState, pendingStepUsage)
+          pendingStepUsage = undefined
+        }
+      }
+      yield event
+    }
+  }
+
+  /** 领取一轮由后台任务触发的回合。缓存的原始行走和前台完全相同的解析路径。 */
+  private async *executeBackgroundTurn(input: CodingNsCliTurnInput, turnId: string): AsyncIterable<CodingNsAgentEvent> {
+    const turn = this.turnStores.get(input.sessionId)?.get(turnId)
+    // DSH 收件箱里的通知可能被重放，或这一轮已被前台消息消费过；空结束即可。
+    if (turn === undefined || turn.claimed) { yield { type: 'finish', reason: 'stop' }; return }
+    turn.claimed = true
+    const holder = turn.owner
+    this.toolInputStates.delete(input.sessionId)
+    const usageState: ClaudeUsageState = {}
+    this.usageStates.set(input.sessionId, usageState)
+    // 后台回合里的权限询问和问题仍然走同一条 stdin 回传通道。
+    const interaction: ClaudeInteractionState = { write: (data) => holder.write(data), pending: new Map(), userContent: [] }
+    this.interactions.set(input.sessionId, interaction)
+    this.performance.set(input.sessionId, new ClaudePerformanceTracker(this.now()))
+    const abort = (): void => { holder.interrupt() }
+    input.signal?.addEventListener('abort', abort, { once: true })
+    if (input.signal?.aborted) abort()
+    try {
+      yield* this.settleSplitUsage(input, usageState, this.backgroundEvents(input, turn.queue))
+    } finally {
+      input.signal?.removeEventListener('abort', abort)
+      this.releaseBackgroundTurn(input.sessionId, turnId)
       this.toolInputStates.delete(input.sessionId)
       this.usageStates.delete(input.sessionId)
       this.performance.delete(input.sessionId)
       if (this.interactions.get(input.sessionId) === interaction) this.interactions.delete(input.sessionId)
     }
+  }
+
+  private async *backgroundEvents(input: CodingNsCliTurnInput, lines: AsyncIterable<string>): AsyncIterable<CodingNsAgentEvent> {
+    const segmentState = createCodingNsSegmentState()
+    for await (const line of lines) {
+      if (input.signal?.aborted) break
+      let parsed: unknown
+      try { parsed = JSON.parse(line) } catch { continue }
+      if (!isRecord(parsed)) continue
+      for (const raw of [...this.observeEvent(parsed, input, this.now()), ...this.parseEvent(parsed, input)]) {
+        const chunk = decorateCodingNsSegmentEvent(raw, input, segmentState, this.descriptor.id)
+        yield chunk
+        if (chunk.type === 'finish') return
+        advanceCodingNsSegment(chunk, segmentState)
+      }
+    }
+    // 队列在 result 之前就结束：被中断，或进程退出。
+    yield { type: 'finish', reason: input.signal?.aborted ? 'cancel' : 'stop' }
   }
 
   protected buildArgs(input: CodingNsCliTurnInput): readonly string[] {
@@ -379,6 +539,10 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   }
 
   override dispose(): void {
+    for (const sessionId of [...this.holders.keys()]) this.dropHolder(sessionId)
+    this.taskSets.clear()
+    this.turnStores.clear()
+    this.backgroundListeners.clear()
     this.effortProbe = undefined
     this.detectedVersion = null
     this.toolInputStates.clear()
@@ -389,6 +553,12 @@ export class ClaudeCodeDriver extends StandardStreamDriver {
   }
 
   protected parseEvent(value: Record<string, unknown>, input: CodingNsCliTurnInput): readonly CodingNsAgentEvent[] {
+    // 进程交给持有者后由它的读取器维护任务集合；这里只负责首个前台回合。
+    if (!this.holders.has(input.sessionId) && value.type === 'system') {
+      let tasks = this.taskSets.get(input.sessionId)
+      if (tasks === undefined) { tasks = new Set(); this.taskSets.set(input.sessionId, tasks) }
+      applyClaudeTaskEvent(tasks, value)
+    }
     const compaction = this.compactions.get(input.sessionId)
     if (compaction !== undefined) {
       if (value.type === 'system' && value.subtype === 'compact_boundary') compaction.compacted = true
