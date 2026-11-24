@@ -47,6 +47,7 @@ import { createDshCapabilityRegistry } from '../dsh-capabilities/index.js'
 import { readContextMenus } from '../dsh-capabilities/client/context-menu-adapter.js'
 import { installFontScale } from './font-scale.js'
 import { installNativeSessionFileLinkRouting } from './session-file-links.js'
+import { installMarkdownFileLinks } from './markdown-file-links.js'
 import { TYPERT_REMOTE } from '../typert.remote-client.js'
 import { createPeerHostScopedClient } from './peer-host-scoped-client.js'
 import { HostRouter } from './host-router.js'
@@ -131,6 +132,8 @@ export function apply(ctx?: Context): void {
   // 版本门禁通过后才修改浏览器全局，避免不兼容 Client 留下半初始化状态。
   ensureCryptoRandomUUID()
   ctx.effect(() => registerCodingNsLocale(ctx), 'codingns4dsh: client dictionaries')
+  ctx.effect(() => installMarkdownFileLinks(ctx.slots as Parameters<typeof installMarkdownFileLinks>[0])
+    ?? (() => undefined), 'codingns4dsh: Markdown file links')
 
   // 文件链接属于通用资源入口；历史消息也需要规范，不能依赖 PeerHost 功能开关。
   ctx.inject(['sidebarRight', 'sessions', 'workspaces'], (scope) => {
