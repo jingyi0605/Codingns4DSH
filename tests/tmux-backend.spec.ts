@@ -605,8 +605,10 @@ test('macOS：服务器未运行时通过 launchd 拉起，且先于直接 start
     assert.match(plist, /<array><string>\/usr\/bin\/osascript<\/string><string>-e<\/string>/u)
     assert.match(plist, /do shell script/u)
     assert.match(plist, / '-D' /u, 'tmux 必须前台运行，osascript 才会一直作为责任进程存活')
-    assert.ok(plist.includes(socket))
-    assert.ok(plist.includes(join(directory, 'tmux.conf')))
+    // AppleScript string literals escape the backslashes in mocked Windows paths.
+    const command = plist.replaceAll('\\\\', '\\')
+    assert.ok(command.includes(socket))
+    assert.ok(command.includes(join(directory, 'tmux.conf')))
     assert.doesNotMatch(plist, /start-server/u)
     assert.doesNotMatch(plist, /AbandonProcessGroup/u)
     assert.doesNotMatch(plist, /KeepAlive/u)

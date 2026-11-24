@@ -1,7 +1,55 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import type { Context } from '@deepseek-ai/cordis'
+import type { DshContextMenuContribution } from '../src/dsh-capabilities/client/context-menu-adapter.js'
+import { registerFileManagementContextMenus } from '../src/client/file-management-context-menu.js'
 import { startFileManagementDom } from '../src/client/file-management-dom.js'
 import { createVirtualSessionId } from '../src/shared/contracts/peer-host.js'
+
+test('文件菜单优先使用原生下载，并保留旧宿主的下载入口', async (t) => {
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: {
+    querySelector: () => null, querySelectorAll: () => [],
+  } })
+  t.after(() => {
+    if (previousDocument !== undefined) Object.defineProperty(globalThis, 'document', previousDocument)
+    else Reflect.deleteProperty(globalThis, 'document')
+  })
+  const providers = new Map<string, DshContextMenuContribution>()
+  let attachNative: (() => void) | undefined
+  let detachNative: (() => void) | undefined
+  const uiContext = {
+    inject(names: string[], attach: (scope: unknown) => void) {
+      assert.ok(names.includes('remote.workspaceFiles'))
+      assert.ok(names.includes('remote.session'))
+      attachNative = () => attach({
+        get: (name: string) => name === 'fileActions' ? { save() {} } : undefined,
+        effect: (bind: () => () => void) => { detachNative = bind() },
+      })
+      return { dispose: () => detachNative?.() }
+    },
+  } as unknown as Context
+  const controller = registerFileManagementContextMenus({ async call() { throw new Error('Opening a menu must not run RPC') } }, {
+    register(provider) {
+      providers.set(provider.target, provider)
+      return () => { providers.delete(provider.target) }
+    },
+    notify() {},
+  }, undefined, uiContext)
+  t.after(controller.dispose)
+  controller.setEnabled(true)
+  const signal = new AbortController().signal
+  for (const sessionId of ['local-session', createVirtualSessionId('peer-a', 'first')]) {
+    const target = { sessionId, path: 'report.md' }
+    const read = async () => await providers.get('file')!.resolve(target, signal)
+    const legacy = await read()
+    assert.equal(legacy.filter(action => action.id === 'download').length, 1)
+    attachNative?.()
+    assert.deepEqual((await read()).map(action => action.id), legacy.filter(action => action.id !== 'download').map(action => action.id))
+    detachNative?.()
+    assert.equal((await read()).filter(action => action.id === 'download').length, 1)
+  }
+})
 
 /** 只回放文件树菜单事件；不打开浏览器，也不执行真实文件操作。 */
 class MenuNode extends EventTarget {
