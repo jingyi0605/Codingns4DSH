@@ -148,6 +148,7 @@ export interface CodingNsNativeUsageSample {
 export type CodingNsNativeCompactionEvent = Extract<CodingNsAgentEvent, { type: 'context-compaction' }> & { readonly sourceCommandId?: string }
 
 export interface CodingNsNativeSessionController extends SessionActivationController {
+  modelCatalog?(): Promise<unknown>
   create?(request: { readonly sessionId?: string; readonly cwd?: string }): Promise<{ readonly sessionId: string }>
   fork?(request: { readonly sessionId: string; readonly atSeq?: number; readonly allowMigration?: boolean }): Promise<{ readonly sessionId: string }>
   list?(request?: unknown, signal?: AbortSignal): Promise<{ readonly items: readonly unknown[] }>
@@ -685,7 +686,10 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     },
     supportsEvents: on !== undefined,
     store,
-    controller,
+    get controller() {
+      const current: unknown = ctx.get('sessionController')
+      return isSessionController(current) ? current : controller
+    },
     ...(workspaceController === undefined ? {} : { workspaceController }),
     get(sessionId) {
       return store?.get(sessionId)

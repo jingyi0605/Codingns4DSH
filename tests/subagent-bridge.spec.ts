@@ -584,6 +584,13 @@ for (const contract of ['nested', 'flat'] as const) {
       ]
       const sessions = {
         available: true,
+        controller: { modelCatalog: async () => ({
+          groups: [
+            { id: 'native-api', models: [{ id: 'test-model' }] },
+            { id: 'native-plan', models: [{ id: 'test-model' }] },
+          ],
+          default: { provider: 'native-plan', model: 'test-model' },
+        }) },
         get: (id: string) => id === childId
           ? { header: { id: childId, origin: 'subagent', parentSession: parentId }, snapshotEvents: () => events }
           : id === parentId ? parent.session : undefined,
@@ -597,6 +604,7 @@ for (const contract of ['nested', 'flat'] as const) {
           assert.equal(request.parent.id, parentId)
           assert.equal(request.parent, parent)
           assert.equal(spec.provider, externalTeamProvider(adapterId))
+          assert.deepEqual(request.agentOptions, adapterId === 'dsh' ? { provider: 'native-plan', model: 'test-model' } : undefined)
           assert.deepEqual(request.prompt, [{ type: 'text', text: 'review the installer' }])
           assert.equal(spec.delivery, 'parent')
           assert.ok(spec.signal instanceof AbortSignal)
