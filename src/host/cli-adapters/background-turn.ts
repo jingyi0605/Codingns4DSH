@@ -3,18 +3,26 @@ import { randomUUID } from 'node:crypto'
 
 /** Host-owned control input. It consumes existing output; it is never a prompt. */
 export const EXTERNAL_TURN_SOURCE = 'codingns-external-turn'
+/** 能在没有前台请求时自己开一轮对话、并由 DSH 收件箱唤醒的适配器。 */
+const BACKGROUND_TURN_ADAPTERS: ReadonlySet<string> = new Set(['zcode', 'claude-code'])
+export function supportsBackgroundTurns(adapterId: string): boolean {
+  return BACKGROUND_TURN_ADAPTERS.has(adapterId)
+}
 export interface CodingNsBackgroundTurn {
   readonly sessionId: string
   readonly providerSessionId: string
   readonly turnId: string
+  /** 显示在 DSH 收件箱通知里的一句话；缺省沿用 ZCode 的「工作流执行结果」。 */
+  readonly summary?: string
 }
 
 export function externalTurnMessage(turn: CodingNsBackgroundTurn) {
+  const summary = turn.summary?.trim() || '工作流执行结果'
   return {
     id: `codingns-external-turn-${randomUUID()}`,
     role: 'user' as const,
-    content: [{ type: 'text' as const, text: '工作流执行结果' }],
-    source: { kind: EXTERNAL_TURN_SOURCE, form: 'notice', summary: '工作流执行结果',
+    content: [{ type: 'text' as const, text: summary }],
+    source: { kind: EXTERNAL_TURN_SOURCE, form: 'notice', summary,
       externalTurnId: turn.turnId, providerSessionId: turn.providerSessionId },
   }
 }

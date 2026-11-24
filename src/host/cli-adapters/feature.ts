@@ -1,6 +1,6 @@
 import { isNativeApprovalMode, resolveNativeApprovalPermission } from '../../shared/native-approval-modes.js'
 import { ZcodeSubagentService } from './zcode-subagent-service.js'
-import { readExternalTurn } from './background-turn.js'
+import { readExternalTurn, supportsBackgroundTurns } from './background-turn.js'
 import { installBackgroundTurnDelivery } from './background-turn-delivery.js'
 import { antigravityContextProjection, zcodeContextProjection } from './provider-context-projection.js'
 import { readAntigravityContextDetails } from './antigravity-session-db.js'
@@ -823,7 +823,7 @@ export function createCliAdaptersFeature(options: {
           const externalTurn = readExternalTurn(messages)
           // Stale durable inbox controls must never become prompts for a newly
           // selected provider, or re-submit the previous human message.
-          if (externalTurn && (config.adapterId !== 'zcode' || config.providerSessionId !== externalTurn.providerSessionId)) {
+          if (externalTurn && (!supportsBackgroundTurns(config.adapterId) || config.providerSessionId !== externalTurn.providerSessionId)) {
             yield { type: 'finish', reason: { kind: 'stop' } }
             return
           }

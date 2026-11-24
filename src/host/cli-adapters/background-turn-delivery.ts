@@ -1,7 +1,7 @@
 import type { CodingNsBackgroundTurn } from './background-turn.js'
 import type { CodingNsCliAdapterRegistry } from './registry.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
-import { externalTurnSyncState } from './background-turn.js'
+import { externalTurnSyncState, supportsBackgroundTurns } from './background-turn.js'
 
 /** 同一条后台回合结果最多重放几次；失败结束不会记成已投递，必须自己设上限。 */
 const MAX_EXTERNAL_TURN_ATTEMPTS = 3
@@ -21,7 +21,7 @@ export function installBackgroundTurnDelivery(registry: CodingNsCliAdapterRegist
       for (const [id, turn] of pending) {
         if (stopped) break
         const binding = registry.getSession(turn.sessionId)
-        if (binding.adapterId !== 'zcode' || binding.providerSessionId !== turn.providerSessionId) { pending.delete(id); continue }
+        if (!supportsBackgroundTurns(binding.adapterId) || binding.providerSessionId !== turn.providerSessionId) { pending.delete(id); continue }
         try {
           if (await native.ensure(turn.sessionId) !== turn.sessionId || stopped) continue
           if (!native.enqueueExternalTurn(turn)) continue
