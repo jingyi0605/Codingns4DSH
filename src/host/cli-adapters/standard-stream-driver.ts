@@ -18,6 +18,14 @@ import { withAttachmentPaths } from './attachment-utils.js'
 
 const WINDOWS = process.platform === 'win32'
 
+/** 回合结束后仍需存活的子进程，以及它的 stdout 行读取器。 */
+export interface RetainedStreamProcess {
+  readonly child: CodingNsChildProcess
+  readonly lines: AsyncIterator<string>
+  /** 关闭行读取器，不终止子进程。 */
+  readonly closeLines: () => void
+}
+
 export interface StandardStreamDriverOptions {
   readonly binaries?: readonly string[]
   /** 仅供会话存在性探测使用；测试和自定义安装可覆盖默认存储根目录。 */
@@ -90,13 +98,15 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
   }
 
   private async *executePreparedTurn(input: CodingNsCliTurnInput): AsyncIterable<CodingNsAgentEvent> {
-    const command = this.cachedBinary ?? (await this.detect()).command
-    if (command === null) throw new Error(`${this.descriptor.name} 未安装`)
+    // 上一轮仍有后台任务的进程由 Provider 保留；有就接着用，不再启动新进程。
+    const reused = this.takeRetainedProcess(input)
+    const command = reused === undefined ? this.cachedBinary ?? (await this.detect()).command : null
+    if (reused === undefined && command === null) throw new Error(`${this.descriptor.name} 未安装`)
     let child: CodingNsChildProcess
     try {
-      child = this.spawnProcess(command, this.buildArgs(input), {
+      child = reused?.child ?? this.spawnProcess(command as string, this.buildArgs(input), {
         cwd: input.cwd ?? process.cwd(),
-        env: { ...(this.cachedEnvironment ?? commandEnvironment(command)), ...(input.runtimeEnv ?? {}) },
+        env: { ...(this.cachedEnvironment ?? commandEnvironment(command as string)), ...(input.runtimeEnv ?? {}) },
         stdio: [this.usesStdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
         windowsHide: true,
         shell: WINDOWS,
@@ -106,20 +116,24 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
       // 不能让异常越过适配器边界把整个 Host 进程带崩。
       throw new Error(`${this.descriptor.name} 执行失败：${toError(error).message}`)
     }
-    this.processes.add(child)
+    if (reused === undefined) this.processes.add(child)
     let emittedFinish = false
     const segmentState = this.supportsToolStepSplitting === true ? createCodingNsSegmentState() : undefined
     let emittedBinding = input.providerSessionId !== undefined
+    let observedProviderSessionId = input.providerSessionId
     let processErrorMessage: string | null = null
     const rememberProcessError = (error: unknown): void => {
       processErrorMessage ??= toError(error).message
     }
     // 子进程和它的三个 stdio 流都必须有 error 监听。否则 AGY 这类快速退出的
     // CLI 在 stdin 写入 EPIPE 或 spawn 失败时，会把异常升级成宿主进程崩溃。
-    addErrorListener(child, rememberProcessError)
-    addErrorListener(child.stdin, rememberProcessError)
-    addErrorListener(child.stdout, rememberProcessError)
-    addErrorListener(child.stderr, rememberProcessError)
+    // 复用的进程在首轮已经挂过监听，不能每轮重复挂。
+    if (reused === undefined) {
+      addErrorListener(child, rememberProcessError)
+      addErrorListener(child.stdin, rememberProcessError)
+      addErrorListener(child.stdout, rememberProcessError)
+      addErrorListener(child.stderr, rememberProcessError)
+    }
     const onAbort = (): void => {
       if (this.usesStdin) closeStdin(child)
       terminateChildProcess(child)
@@ -127,20 +141,38 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     input.signal?.addEventListener('abort', onAbort, { once: true })
     if (input.signal?.aborted) onAbort()
     let stderr = ''
-    child.stderr.on('data', (chunk) => {
-      // 只保留有限长度的 Provider 原始诊断，避免异常输出撑爆 DSH 会话。
-      stderr = `${stderr}${String(chunk)}`.slice(-16_384)
-      this.observeStderr?.(String(chunk), input)
-    })
+    if (reused === undefined) {
+      child.stderr.on('data', (chunk) => {
+        // 只保留有限长度的 Provider 原始诊断，避免异常输出撑爆 DSH 会话。
+        stderr = `${stderr}${String(chunk)}`.slice(-16_384)
+        this.observeStderr?.(String(chunk), input)
+      })
+    }
+    // 为 true 表示进程已交给 Provider 接管（还有后台任务），本轮结束时不能终止它。
+    let retained = false
     try {
-      if (this.usesStdin && !input.signal?.aborted) this.writeStdin(child, input)
-      const lines = readline.createInterface({ input: child.stdout })
+      if (this.usesStdin && !input.signal?.aborted) this.writeStdin(child, input, reused !== undefined)
       const arrivals: number[] = []
       const recordArrival = (): void => { arrivals.push(this.eventTime()) }
-      if (this.observeEvent !== undefined) lines.on('line', recordArrival)
+      let lineIterator: AsyncIterator<string>
+      let closeLines: () => void
+      if (reused === undefined) {
+        const lines = readline.createInterface({ input: child.stdout })
+        if (this.observeEvent !== undefined) lines.on('line', recordArrival)
+        // 手动持有迭代器而不是 for await：接管后读取器要继续存活，不能被 return() 关掉。
+        lineIterator = lines[Symbol.asyncIterator]()
+        closeLines = () => { lines.off('line', recordArrival); lines.close() }
+      } else {
+        lineIterator = reused.lines
+        closeLines = reused.closeLines
+      }
       try {
-        for await (const line of lines) {
-          const receivedAt = arrivals.shift()
+        while (true) {
+          const step = await lineIterator.next()
+          if (step.done) break
+          const line = step.value
+          // 复用进程的行不经过本轮的 readline，没有逐行到达时间，用处理时刻近似。
+          const receivedAt = arrivals.shift() ?? (reused === undefined ? undefined : this.eventTime())
           if (!line.trim()) continue
           const parsed = parseJson(line)
           if (parsed === null) continue
@@ -155,6 +187,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
                   : nestedSessionId(parsed)
           if (providerSessionId !== null && providerSessionId.trim() !== '') {
             this.validateProviderSessionBinding(input, providerSessionId.trim())
+            observedProviderSessionId = providerSessionId.trim()
             if (!emittedBinding) {
               emittedBinding = true
               yield { type: 'session-binding', providerSessionId: providerSessionId.trim() }
@@ -163,7 +196,12 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
           const observations = receivedAt === undefined ? [] : this.observeEvent?.(parsed, input, receivedAt) ?? []
           for (const rawChunk of [...observations, ...this.parseEvent(parsed, input)]) {
             const chunk = segmentState === undefined ? rawChunk : decorateCodingNsSegmentEvent(rawChunk, input, segmentState, this.descriptor.id)
-            if (chunk.type === 'finish') emittedFinish = true
+            if (chunk.type === 'finish') {
+              emittedFinish = true
+              // 正常结束时先问 Provider 是否还要保留进程（例如仍有后台任务）。
+              // 必须在 yield 之前决定：消费方收到 finish 后可能直接关闭迭代器。
+              if (chunk.reason === 'stop') retained = this.adoptProcess({ child, lines: lineIterator, closeLines }, input, observedProviderSessionId)
+            }
             yield chunk
             // SDK-style CLIs keep stdin open after a terminal result. The turn
             // owns this process and must settle without waiting for stdout EOF.
@@ -171,7 +209,7 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
             if (segmentState !== undefined) advanceCodingNsSegment(chunk, segmentState)
           }
         }
-      } finally { lines.off('line', recordArrival); lines.close() }
+      } finally { if (!retained) closeLines() }
       if (!emittedFinish) {
         if (input.signal?.aborted) yield { type: 'finish', reason: 'cancel' }
         else {
@@ -180,11 +218,30 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
         }
       }
     } finally {
-      if (this.usesStdin) closeStdin(child)
       input.signal?.removeEventListener('abort', onAbort)
-      this.processes.delete(child)
-      terminateChildProcess(child)
+      if (!retained) {
+        reused?.closeLines()
+        if (this.usesStdin) closeStdin(child)
+        this.processes.delete(child)
+        terminateChildProcess(child)
+      }
     }
+  }
+
+  /** 取走上一轮留下、仍有后台任务的进程以继续同一会话；默认没有。 */
+  protected takeRetainedProcess(_input: CodingNsCliTurnInput): RetainedStreamProcess | undefined { return undefined }
+
+  /**
+   * 回合正常结束后询问 Provider 是否接管进程。返回 true 时基类不再终止它，
+   * stdout 读取器也交给 Provider；之后由 Provider 通过 releaseProcess 回收。
+   */
+  protected adoptProcess(_process: RetainedStreamProcess, _input: CodingNsCliTurnInput, _providerSessionId: string | undefined): boolean { return false }
+
+  /** 回收被接管的进程：关闭 stdin、终止并移出登记。 */
+  protected releaseProcess(child: CodingNsChildProcess): void {
+    if (this.usesStdin) closeStdin(child)
+    this.processes.delete(child)
+    terminateChildProcess(child)
   }
 
   /** 已探测到的 CLI 路径；供子类在同步的 buildArgs 里做参数能力探测。 */
@@ -208,8 +265,8 @@ export abstract class StandardStreamDriver implements CodingNsCliDriver {
     return this.runSpawn(command, args, options) as CodingNsChildProcess
   }
 
-  /** 向使用 stdin 的 CLI 写入一轮输入；子类负责遵循其线协议。 */
-  protected writeStdin(_child: CodingNsChildProcess, _input: CodingNsCliTurnInput): void {}
+  /** 向使用 stdin 的 CLI 写入一轮输入；子类负责遵循其线协议。`reused` 表示进程是上一轮留下的，握手已经做过。 */
+  protected writeStdin(_child: CodingNsChildProcess, _input: CodingNsCliTurnInput, _reused = false): void {}
 
   /** 续接会话时由需要强一致性的 Provider 校验原生会话 ID。 */
   protected validateProviderSessionBinding(_input: CodingNsCliTurnInput, _providerSessionId: string): void {}
