@@ -3,6 +3,9 @@ import type { CodingNsCliAdapterRegistry } from './registry.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
 import { externalTurnSyncState } from './background-turn.js'
 
+/** 同一条后台回合结果最多重放几次；失败结束不会记成已投递，必须自己设上限。 */
+const MAX_EXTERNAL_TURN_ATTEMPTS = 3
+
 /** Wakes native DSH turns while the driver retains sole ownership of Provider output. */
 export function installBackgroundTurnDelivery(registry: CodingNsCliAdapterRegistry, native?: CodingNsNativeSessionBridge): () => void {
   const pending = new Map<string, CodingNsBackgroundTurn>()
@@ -46,6 +49,10 @@ export function installBackgroundTurnDelivery(registry: CodingNsCliAdapterRegist
       for (const reply of replies) {
         const identity = JSON.stringify([reply.providerSessionId, reply.turnId])
         if (sync.delivered.has(identity) || sync.pending.has(identity) || sync.suppressed.has(identity) || sync.texts.some(t => t.includes(reply.text))) continue
+        // 失败结束的投递既不算 delivered 也不算 suppressed，恢复逻辑会把同一条结果
+        // 反复注入（实测同一会话连续出现两条「工作流执行结果」通知）。这里给重试设上限：
+        // 清掉上限内的重试机会仍然保留，超过就停，避免每次启动都重放旧通知。
+        if ((sync.attempts.get(identity) ?? 0) >= MAX_EXTERNAL_TURN_ATTEMPTS) continue
         // A failed/interrupted delivery may be retried from the native durable
         // response. Never execute the workflow or its model again.
         const k = key(reply)

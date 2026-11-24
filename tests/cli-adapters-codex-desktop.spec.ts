@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import type { spawnSync } from 'node:child_process'
-import { join } from 'node:path'
+import { join, win32 } from 'node:path'
 import test from 'node:test'
 import { CodexAppServerDriver } from '../data/build/dist/host/cli-adapters/codex-driver.js'
 import { codexCliCandidates } from '../data/build/dist/host/cli-adapters/desktop-app-runtime.js'
@@ -36,7 +36,8 @@ test('Codex keeps a working PATH CLI ahead of desktop fallbacks', async () => {
     spawnSync: fakeProbe(new Map([['codex', 'codex-cli 0.170.1']]), calls),
   })
   assert.deepEqual(await driver.detect(), { installed: true, version: '0.170.1', command: 'codex' })
-  assert.deepEqual(calls, ['codex'])
+  assert.deepEqual(calls.map(command => win32.basename(command)),
+    process.platform === 'win32' ? ['powershell.exe', 'codex'] : ['codex'])
 })
 
 test('Codex detects the bundled launcher when PATH has no working CLI', {
@@ -73,5 +74,7 @@ test('Codex respects an explicit binary list even when a desktop fallback is ava
   const result = await driver.detect()
   assert.equal(result.installed, false)
   assert.equal(result.command, null)
-  assert.deepEqual(calls, ['/custom/codex'])
+  assert.equal(calls[0], '/custom/codex')
+  assert.deepEqual(calls.slice(1).map(command => win32.basename(command)),
+    process.platform === 'win32' ? ['where.exe'] : [])
 })

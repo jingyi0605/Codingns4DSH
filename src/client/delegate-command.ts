@@ -508,8 +508,8 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
       const effortsLabel = efforts.length === 0 ? undefined : t('cli.thinkingLevel', { value: efforts.join(t('common.listSeparator')) })
       const details = [model.description, effortsLabel].filter((value): value is string => value !== undefined && value.trim() !== '')
       return {
-        id: model.id,
-        label: model.name || model.id,
+        id: adapter.id === 'dsh' ? `${group.id}/${model.id}` : model.id,
+        label: adapter.id === 'dsh' ? `${model.name || model.id} · ${group.name.trim() || group.id}` : model.name || model.id,
         ...(details.length === 0 ? {} : { detail: details.join(' · ') }),
         ...(model.source === 'magpie' ? { magpie: true } : {}),
         ...(model.magpieProviderId === undefined ? {} : { magpieProviderId: model.magpieProviderId }),
@@ -572,9 +572,8 @@ function registerDelegateHashShortcut(ctx: Context, options: RegisterDelegateCom
     const domToken = domDraft === undefined ? undefined : hashTokenAtCaret(domDraft, caret)
     const token = domToken ?? snapshotToken
     if (token === undefined) { close(); return }
-    popupSessionId = sessionId
-    popupToken = { ...token, end: caret, draftRev: selection?.draftRev ?? snapshot.draftRev ?? 0 }
     const root = ensurePopup(editor, sessionId)
+    popupToken = { ...token, end: caret, draftRev: selection?.draftRev ?? snapshot.draftRev ?? 0 }
     const query = token.query.trim().toLowerCase()
     popupQuery = query
     if (popupMode === 'model' && popupAdapter !== undefined) {

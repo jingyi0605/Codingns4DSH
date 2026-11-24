@@ -1,4 +1,5 @@
 import type { CodingNsCliAdapterDescriptor } from '../shared/contracts/cli-adapter.js'
+import { DELEGATION_TARGET_IDS } from '../shared/delegation-targets.js'
 import { insertDelegationCarrier } from '../shared/delegation-carrier.js'
 export { encodeDelegationCarrier, insertDelegationCarrier, parseDelegationCarriers } from '../shared/delegation-carrier.js'
 
@@ -38,6 +39,7 @@ export function delegateAdapterOptions(
   const options: DelegateAdapterOption[] = []
   for (const adapter of catalog) {
     if (!adapter.installed || !adapter.enabled) continue
+    if (!DELEGATION_TARGET_IDS.some(id => id === adapter.id)) continue
     const detail = adapter.version?.trim()
     options.push({
       id: adapter.id,

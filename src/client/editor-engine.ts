@@ -1,11 +1,13 @@
 import { basicSetup, EditorView } from 'codemirror'
 import { css } from '@codemirror/lang-css'
 import { html } from '@codemirror/lang-html'
-import { javascript } from '@codemirror/lang-javascript'
+import { javascript, javascriptLanguage } from '@codemirror/lang-javascript'
 import { json } from '@codemirror/lang-json'
 import { markdown } from '@codemirror/lang-markdown'
 import { python } from '@codemirror/lang-python'
 import { sql } from '@codemirror/lang-sql'
+
+export const workflowScriptParser: typeof javascriptLanguage.parser = javascriptLanguage.parser.configure({ dialect: 'ts' })
 
 /** 叶子引擎只依赖 CodeMirror；预览控制器在用户点击编辑后才加载本模块。 */
 export function createFileEditor(parent: HTMLElement, content: string, path: string, onChange?: (content: string) => void): EditorView {

@@ -471,7 +471,15 @@ test('agent_subagent keeps adapter IDs separate from model IDs and defaults nati
       return { childId: `child-${String(started.length)}`, messageId: `message-${String(started.length)}` }
     },
   })
-  const tool = createAgentSubagentTool({ nativeSessions: { get: () => undefined, subscribe: () => () => undefined } as never })
+  const tool = createAgentSubagentTool({ nativeSessions: {
+    get: () => undefined, subscribe: () => () => undefined,
+    controller: { async modelCatalog() {
+      return {
+        default: { provider: 'deepseek', model: 'deepseek-default' },
+        groups: [{ id: 'codex-plan', models: [{ id: 'gpt-6.1-sol' }] }, { id: 'deepseek', models: [{ id: 'deepseek-default' }] }],
+      }
+    } },
+  } as never })
   const exec = { agent: { id: 'parent-routing', options: { subagentDepth: 0 }, session: { header: { id: 'parent-routing' } } } }
   try {
     const modelShaped = await (tool.execute as (args: Record<string, unknown>, exec: unknown) => Promise<Record<string, unknown>>)(
@@ -488,8 +496,8 @@ test('agent_subagent keeps adapter IDs separate from model IDs and defaults nati
       provider: spec.provider,
       agentOptions: spec.request.agentOptions,
     })), [
-      { provider: 'spawn', agentOptions: { model: 'gpt-6.1-sol' } },
-      { provider: 'spawn', agentOptions: undefined },
+      { provider: 'spawn', agentOptions: { provider: 'codex-plan', model: 'gpt-6.1-sol' } },
+      { provider: 'spawn', agentOptions: { provider: 'deepseek', model: 'deepseek-default' } },
     ])
   } finally {
     setNativeSubagents(undefined)
@@ -715,8 +723,10 @@ test('原生 Provider 注册可去重并在释放后重新装配', async () => {
   const externalProviderCount = EXTERNAL_SUBAGENT_IDS.filter((id) => id !== 'dsh').length
   try {
     registerNativeTeamSubagentProviders(service as never)
+    const registeredNames = providers.map(({ name }) => name)
     assert.equal(providers.length, externalProviderCount)
-    assert.ok(providers.some((provider) => provider.name === 'codingns-external-antigravity'))
+    assert.equal(new Set(registeredNames).size, registeredNames.length)
+    assert.ok(registeredNames.includes('codingns-external-antigravity'))
     assert.equal(providers.find((provider) => provider.name === 'codingns-external-mcode')?.inheritsParentContext, true)
     assert.equal((await registry.catalog())[0]?.detectionState, 'pending')
     await providers.find((provider) => provider.name === 'codingns-external-mcode')!.prepareContinuable({ sessionId: 'child-2', parent: { id: 'parent-2' }, signal: new AbortController().signal })
@@ -725,6 +735,7 @@ test('原生 Provider 注册可去重并在释放后重新装配', async () => {
     dispose()
     dispose = registerNativeTeamSubagentProviders(service as never)
     assert.equal(providers.length, externalProviderCount * 2)
+    assert.deepEqual(providers.map(({ name }) => name), [...registeredNames, ...registeredNames])
   } finally {
     dispose()
     setAdapterRegistry(undefined)

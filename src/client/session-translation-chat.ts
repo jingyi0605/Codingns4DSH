@@ -20,6 +20,7 @@ import * as messagePrimitives from '@deepseek-ai/dsh-client-ui-primitives'
 import { createDshCapabilityRegistry, type DshCapabilityRuntimeFacts } from '../dsh-capabilities/routes.js'
 import type { MessagePresentation } from '../dsh-capabilities/client/message-presentation-adapter.js'
 import { useDismissOnOutsidePointer } from './popup-dismiss.js'
+import { normalizeMarkdownFileLinks } from './markdown-file-links.js'
 import { dshThemeColor } from './theme.js'
 import { TRANSLATION_GLYPH_PATHS, TRANSLATION_GLYPH_SIZE, TRANSLATION_PENDING_BADGE_STYLE, TRANSLATION_STATUS_BADGE_STYLE } from '../shared/translation-indicator.js'
 import { uiFontSize } from './font-scale.js'
@@ -736,8 +737,9 @@ function AssistantTextContent(props: {
   readonly mentions?: unknown; readonly pathImages: { resolve(value: string): string | undefined }
 }): ReactElement {
   const { record } = useOutputTranslation({ ...props, outputKind: 'assistant', record: props.translationRecord })
+  const text = record?.translated ?? props.text
   return createElement('div', { 'data-codingns-translation-inline': true, style: { minWidth: 0 } },
-    createElement(MarkdownText, { text: record?.translated ?? props.text, streaming: props.streaming, labels: props.markdownLabels, fileMentions: props.mentions as never, pathImages: props.pathImages }),
+    createElement(MarkdownText, { text: props.streaming ? text : normalizeMarkdownFileLinks(text), streaming: props.streaming, labels: props.markdownLabels, fileMentions: props.mentions as never, pathImages: props.pathImages }),
     record === undefined ? null : createElement(TranslationAction, { messageId: props.messageId, sessionId: props.sessionId,
       messageRole: 'assistant', outputKind: 'assistant', services: props.services, translationT: props.translationT,
       record: props.translationRecord, inline: true }),

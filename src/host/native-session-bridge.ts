@@ -9,6 +9,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { debugWarn } from '../shared/debug.js'
 import { readNativeAttachmentStore } from '../dsh-capabilities/host/attachment-store-adapter.js'
 import { readNativeAttachments } from '../shared/attachments.js'
+import { ZCODE_WORKFLOW_APPROVAL_QUESTION_ID } from '../shared/contracts/zcode-workflow.js'
 import type {
   CodingNsAgentEvent,
   CodingNsAgentQuestion,
@@ -80,6 +81,9 @@ export interface CodingNsNativeExternalToolEvent {
 
 export type CodingNsNativeApprovalOutcome = 'allowed-once' | 'rejected' | 'policy-rejected' | 'cancelled' | 'unavailable'
 
+type CreateWorkflowApproval = 'offer-session' | 'session-granted'
+type CreateWorkflowApprovalOutcome = CodingNsNativeApprovalOutcome | 'allowed-for-session'
+
 /** 公共消息投影层交给 DSH 原生权限服务的请求。 */
 export interface CodingNsNativeApprovalRequest {
   readonly requestId: string
@@ -148,6 +152,7 @@ export interface CodingNsNativeUsageSample {
 export type CodingNsNativeCompactionEvent = Extract<CodingNsAgentEvent, { type: 'context-compaction' }> & { readonly sourceCommandId?: string }
 
 export interface CodingNsNativeSessionController extends SessionActivationController {
+  modelCatalog?(): Promise<unknown>
   create?(request: { readonly sessionId?: string; readonly cwd?: string }): Promise<{ readonly sessionId: string }>
   fork?(request: { readonly sessionId: string; readonly atSeq?: number; readonly allowMigration?: boolean }): Promise<{ readonly sessionId: string }>
   list?(request?: unknown, signal?: AbortSignal): Promise<{ readonly items: readonly unknown[] }>
@@ -209,6 +214,8 @@ export interface CodingNsNativeSessionBridge {
   requestApproval?(sessionId: string, request: CodingNsNativeApprovalRequest): Promise<CodingNsNativeApprovalOutcome>
   /** Check whether full-access-confirm can run without retaining a policy override. */
   supportsInteractiveApproval?(sessionId: string): boolean
+  requestCreateWorkflowApproval?(sessionId: string, request: CodingNsNativeApprovalRequest,
+    choice: CreateWorkflowApproval): Promise<CreateWorkflowApprovalOutcome>
   /** 使用 DSH 原生 userQuestions 组件提问；服务不可用或取消时返回 null。 */
   askQuestions?(sessionId: string, request: CodingNsNativeQuestionRequest): Promise<CodingNsAgentQuestionResponse | null>
   /** 将 Host 上的 Provider 图片转成 DSH 持久化附件；失败时返回 null 让投影层降级。 */
@@ -243,8 +250,70 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     return isWorkspaceController(value) ? value : undefined
   }
   const on = typeof (ctx as unknown as { on?: unknown }).on === 'function'
-    ? (ctx as unknown as { on(name: string, listener: (...args: unknown[]) => unknown): () => unknown }).on.bind(ctx)
+    ? (ctx as unknown as { on(name: string, listener: (...args: unknown[]) => unknown,
+      options?: { global: boolean; prepend: boolean }): () => unknown }).on.bind(ctx)
     : undefined
+  const workflowApprovals = new WeakMap<object, { choice: CreateWorkflowApproval; allowForSession: boolean }>()
+  let workflowApprovalHookInstalled = false
+
+  const requestApproval = async (sessionId: string, request: CodingNsNativeApprovalRequest,
+    choice?: CreateWorkflowApproval): Promise<CreateWorkflowApprovalOutcome> => {
+    const agent = nativeAgent(ctx, sessionId)
+    const approval = nativeApproval(ctx)
+    if (agent === null || approval === null) return 'unavailable'
+    const nativeRequest = {
+      agent, toolName: request.toolName,
+      ...(request.callId ? { callId: request.callId } : {}),
+      ...(request.reason ? { reason: request.reason } : {}),
+      ...(request.signal === undefined ? {} : { signal: request.signal }),
+    }
+    const workflow = choice && request.toolName === 'CreateWorkflow' ? { choice, allowForSession: false } : undefined
+    if (request.interactive === true) {
+      const { agent: _agent, ...input } = nativeRequest
+      try {
+        const outcome = await requestInteractiveSessionApproval(ctx, sessionId, input)
+        return isApprovalOutcome(outcome) ? outcome : 'unavailable'
+      } catch {
+        return request.signal?.aborted ? 'cancelled' : 'unavailable'
+      }
+    }
+    let policyBlocksApproval = false
+    if (isRecord(agent) && agent.session !== undefined) {
+      try { policyBlocksApproval = approval.effectivePolicy?.(agent.session) === 'never' } catch { }
+    }
+    try {
+      if (workflow && on) {
+        if (!workflowApprovalHookInstalled) {
+          // DSH checks its policy and records both audit events around this answerer.
+          on('approval/request', async (pending, next) => {
+            if (typeof next !== 'function') return 'unavailable'
+            const scoped = isRecord(pending) ? workflowApprovals.get(pending) : undefined
+            if (scoped === undefined) return next()
+            const { agent, reason, signal } = pending as typeof nativeRequest
+            if (signal?.aborted) return 'cancelled'
+            if (scoped.choice === 'session-granted') return 'allowed-once'
+            const questions = nativeUserQuestions(ctx)
+            if (questions === null) return next()
+            const outcome = await askCreateWorkflowApproval(questions, agent, reason, signal)
+            if (outcome === undefined) return next()
+            scoped.allowForSession = outcome === 'allowed-for-session'
+            return scoped.allowForSession ? 'allowed-once' : outcome
+          }, { global: true, prepend: true })
+          workflowApprovalHookInstalled = true
+        }
+        workflowApprovals.set(nativeRequest, workflow)
+      }
+      const outcome = await approval.request(nativeRequest)
+      if (outcome === 'rejected' && policyBlocksApproval) return 'policy-rejected'
+      if (workflow && request.signal?.aborted) return 'cancelled'
+      if (outcome === 'allowed-once' && workflow?.allowForSession) return 'allowed-for-session'
+      return isApprovalOutcome(outcome) ? outcome : 'unavailable'
+    } catch {
+      return request.signal?.aborted ? 'cancelled' : 'unavailable'
+    } finally {
+      if (workflow) workflowApprovals.delete(nativeRequest)
+    }
+  }
   const externalHandles = new Map<string, CodingNsNativeToolCallHandle>()
   const compactionStates = new Map<string, NativeCompactionState>()
   const confirmedContextWindows = new Map<string, number>()
@@ -685,7 +754,10 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
     },
     supportsEvents: on !== undefined,
     store,
-    controller,
+    get controller() {
+      const current: unknown = ctx.get('sessionController')
+      return isSessionController(current) ? current : controller
+    },
     ...(workspaceController === undefined ? {} : { workspaceController }),
     get(sessionId) {
       return store?.get(sessionId)
@@ -785,28 +857,11 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
       return supportsInteractiveSessionApproval(ctx, sessionId)
     },
     async requestApproval(sessionId, request) {
-      const agent = nativeAgent(ctx, sessionId)
-      const approval = nativeApproval(ctx)
-      if (agent === null || approval === null) return 'unavailable'
-      let policyBlocksApproval = false
-      if (isRecord(agent) && agent.session !== undefined) {
-        try { policyBlocksApproval = approval.effectivePolicy?.(agent.session) === 'never' } catch { }
-      }
-      try {
-        const input = {
-          toolName: request.toolName,
-          ...(request.callId ? { callId: request.callId } : {}),
-          ...(request.reason ? { reason: request.reason } : {}),
-          ...(request.signal === undefined ? {} : { signal: request.signal }),
-        }
-        const outcome = await (request.interactive === true
-          ? requestInteractiveSessionApproval(ctx, sessionId, input)
-          : approval.request({ agent, ...input }))
-        if (outcome === 'rejected' && policyBlocksApproval && request.interactive !== true) return 'policy-rejected'
-        return isApprovalOutcome(outcome) ? outcome : 'unavailable'
-      } catch {
-        return request.signal?.aborted ? 'cancelled' : 'unavailable'
-      }
+      const outcome = await requestApproval(sessionId, request)
+      return outcome === 'allowed-for-session' ? 'allowed-once' : outcome
+    },
+    requestCreateWorkflowApproval(sessionId, request, choice) {
+      return requestApproval(sessionId, request, choice)
     },
     async askQuestions(sessionId, request) {
       const agent = nativeAgent(ctx, sessionId)
@@ -926,6 +981,37 @@ interface NativeApprovalService {
 
 interface NativeUserQuestionService {
   ask(request: Record<string, unknown>): Promise<unknown>
+}
+
+async function askCreateWorkflowApproval(questions: NativeUserQuestionService, agent: unknown,
+  reason: string | undefined, signal: AbortSignal | undefined): Promise<CreateWorkflowApprovalOutcome | undefined> {
+  const id = ZCODE_WORKFLOW_APPROVAL_QUESTION_ID
+  const approve = '允许一次'
+  const always = '本会话内始终允许'
+  const reject = '拒绝'
+  try {
+    const response = await questions.ask({
+      agent, ...(signal === undefined ? {} : { signal }),
+      questions: [{
+        id, question: '允许 ZCode 创建工作流？', detail: reason || 'ZCode 请求创建工作流',
+        options: [{ label: approve }, { label: always, description: '当前 ZCode 会话后续创建工作流时不再确认' }, { label: reject }],
+        intent: { kind: 'approval', approve, reject, always },
+      }],
+    })
+    if (signal?.aborted) return 'cancelled'
+    if (!isQuestionAnswer(response) || response.answers.length !== 1) return 'cancelled'
+    const [answer] = response.answers
+    if (answer?.id !== id || answer.custom || answer.selected.length !== 1) return 'cancelled'
+    if (answer.selected[0] === always) return 'allowed-for-session'
+    if (answer.selected[0] === approve) return 'allowed-once'
+    return answer.selected[0] === reject ? 'rejected' : 'cancelled'
+  } catch (error) {
+    if (signal?.aborted) return 'cancelled'
+    // These errors occur before a question can be answered. Older hosts retain their one-time panel.
+    const code = isRecord(error) ? error.code : undefined
+    if (code === 'NO_PROVIDER' || code === 'BAD_INTENT' || code === 'DELEGATED_CALLER') return undefined
+    return 'unavailable'
+  }
 }
 
 function appendableSession(value: unknown): AppendableSession | null {

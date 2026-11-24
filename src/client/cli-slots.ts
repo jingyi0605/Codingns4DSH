@@ -1,3 +1,4 @@
+import { registerZcodeWorkflowApprovalPresentation } from './zcode-workflow-approval-card.js'
 import { canChangeNativeApproval, nativeApprovalCatalog, nativeApprovalHintKey, nativeApprovalModeForValue, nativeApprovalCurrentValue } from './native-approval-selector.js'
 import { registerAgentPermissionPresentation } from '../dsh-capabilities/client/agent-permission-presentation-adapter.js'
 import { watchAdapterCatalog, subscribeAdapterCatalogChanged } from './adapter-catalog-watch.js'
@@ -307,6 +308,7 @@ export function registerCliConversationSlots(
   settings?: CodingNsClientServices['settings'],
 ): () => void {
   installComposerStyles()
+  const disposeWorkflowApproval = registerZcodeWorkflowApprovalPresentation(slots, locale)
   const t = locale.bind('codingns')
   const disposeAgent = slots.inject('conversation.input.right', () => slots.register({
     name: 'conversation.input.right',
@@ -333,6 +335,7 @@ export function registerCliConversationSlots(
   return () => {
     disposePermission()
     disposeModel()
+    disposeWorkflowApproval()
     disposeAgent()
   }
 }

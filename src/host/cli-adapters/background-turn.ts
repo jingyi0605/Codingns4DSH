@@ -36,6 +36,9 @@ export function readExternalTurn(messages: readonly CodingNsCliMessage[]): { tur
 /** Derive acknowledgements from the same durable native log as the actual replies. */
 export function externalTurnSyncState(events: readonly unknown[]) {
   const delivered = new Set<string>(), pending = new Set<string>(), suppressed = new Set<string>(), texts: string[] = []
+  // 每个身份被投递过几次。失败结束（error）既不算 delivered 也不算 suppressed，
+  // 恢复逻辑会把同一条结果反复注入；调用方用这个计数给重试设上限。
+  const attempts = new Map<string, number>()
   const inbox: Record<string, unknown[]> = { 'next-turn': [], 'next-step': [] }
   let current = '', currentProvider = '', replied = false
   const identity = (source: any) => JSON.stringify([source?.providerSessionId, source?.externalTurnId])
@@ -45,6 +48,7 @@ export function externalTurnSyncState(events: readonly unknown[]) {
     if (e?.type === 'agent/inbox/spliced' && inbox[d?.target]) inbox[d.target]!.splice(d.start, d.removedCount ?? 0, ...(d.inserted ?? []))
     if (e?.type === 'user/message' && d?.source?.kind === EXTERNAL_TURN_SOURCE) {
       current = identity(d.source); currentProvider = d.source.providerSessionId
+      attempts.set(current, (attempts.get(current) ?? 0) + 1)
     }
     if (e?.type === 'assistant/message') {
       const t = (d?.message?.content ?? []).filter((p: any) => p.type === 'text').map((p: any) => p.text ?? '').join('')
@@ -61,5 +65,5 @@ export function externalTurnSyncState(events: readonly unknown[]) {
     const m = raw as any
     if (m?.source?.kind === EXTERNAL_TURN_SOURCE) pending.add(identity(m.source))
   }
-  return { delivered, pending, suppressed, texts }
+  return { delivered, pending, suppressed, texts, attempts }
 }

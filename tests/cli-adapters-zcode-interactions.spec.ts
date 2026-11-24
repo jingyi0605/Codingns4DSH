@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { PassThrough } from 'node:stream'
+import { Context } from '@deepseek-ai/cordis'
+import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import { ZcodeAppServerDriver } from '../data/build/dist/host/cli-adapters/zcode-driver.js'
 import { readZcodeInteraction, zcodePermissionMode } from '../data/build/dist/host/cli-adapters/zcode-interactions.js'
 import { CodingNsDshMessageProjector } from '../data/build/dist/host/cli-adapters/dsh-message-projector.js'
+import { createCodingNsNativeSessionBridge } from '../data/build/dist/host/native-session-bridge.js'
+import type { JsonRpcMessage } from '../data/build/dist/host/cli-adapters/json-rpc-process.js'
 
 // 来自 ZCode 3.14.4 实机请求；保留业务 requestId、RPC id、toolCallId 的区别。
 const questionRequest = {
@@ -23,18 +27,19 @@ const permissionRequest = {
   },
 }
 
-function createReplay(request?: typeof questionRequest | typeof permissionRequest, duplicate: 'before' | 'after' | undefined = undefined, toolEvents = false, workflowPolicy = true) {
+function createReplay(request?: JsonRpcMessage, duplicate: 'before' | 'after' | undefined = undefined, toolEvents = false, workflowPolicy = true) {
   const calls: any[] = []
   const responses: any[] = []
   let notify!: (message: any) => void
   let sendId: unknown
   let stopped = false
-  const driver = new ZcodeAppServerDriver({
+  const driver = new ZcodeAppServerDriver({ desktopRuntime: null,
     binaries: ['fake-zcode'],
     spawnSync: (() => ({ status: 0, stdout: 'zcode 3.14.4', stderr: '' })) as never,
     spawn: (() => {
       const stdout = new PassThrough()
       const stderr = new PassThrough()
+      let responsesThisTurn = 0
       notify = (message) => stdout.write(`${JSON.stringify(message)}\n`)
       const reply = (id: unknown, result = {}) => notify({ id, result })
       const complete = () => {
@@ -51,9 +56,10 @@ function createReplay(request?: typeof questionRequest | typeof permissionReques
         calls.push(value)
         if (value.method === undefined) {
           responses.push(value)
-          if (duplicate === 'after' && responses.length === 1 && !stopped) {
+          responsesThisTurn += 1
+          if (duplicate === 'after' && responsesThisTurn === 1 && !stopped) {
             notify({ ...request, id: 'server-replay' })
-          } else if (!stopped && responses.length === (duplicate ? 2 : 1)) complete()
+          } else if (!stopped && responsesThisTurn === (duplicate ? 2 : 1)) complete()
           return
         }
         if (value.method === 'session/create' || value.method === 'session/resume') {
@@ -68,6 +74,7 @@ function createReplay(request?: typeof questionRequest | typeof permissionReques
         } else if (value.method === 'session/send') {
           sendId = value.id
           stopped = false
+          responsesThisTurn = 0
           notify({ method: 'state.updated', params: { reason: 'prompt_started', patch: { status: 'running' } } })
           // 故意把 send 响应延后到交互应答，验证不会双向死锁。
           if (request === undefined) complete()
@@ -177,19 +184,100 @@ for (const approved of [true, false]) {
   })
 }
 
+for (const mode of ['manual', 'full-access'] as const) {
+  test(`ZCode ${mode} 模式的工作流审批在用户选择后记住当前连接，后续仍受 DSH 审批策略约束`, { timeout: 5_000 }, async () => {
+    const workflowRequest = {
+      ...permissionRequest,
+      params: { ...permissionRequest.params, toolName: 'CreateWorkflow', input: { name: 'probe' } },
+    }
+    const replay = createReplay(workflowRequest)
+    const ctx = new Context()
+    let choice = '允许一次'
+    let rejectByPolicy = false
+    let useOrdinaryApproval = false
+    let questions = 0
+    let ordinary = 0
+    const audits: unknown[] = []
+    const bridge = createCodingNsNativeSessionBridge({
+      on: ctx.on.bind(ctx),
+      get(name: string) {
+        if (name === 'agents') return { get: (id: string) => ({ id }) }
+        if (name === 'approval') return {
+          async request(request: { agent: { id: string } }) {
+            const next = async () => { ordinary += 1; return 'allowed-once' }
+            const outcome = rejectByPolicy ? 'rejected'
+              : await ctx.waterfall(scopeTarget(request.agent, request.agent), 'approval/request', request, next)
+            audits.push(outcome)
+            return outcome
+          },
+        }
+        if (name === 'userQuestions' && !useOrdinaryApproval) return {
+          async ask({ questions: offered }: { questions: Array<{ id: string; options: Array<{ label: string }> }> }) {
+            questions += 1
+            assert.deepEqual(offered[0].options.map(option => option.label), ['允许一次', '本会话内始终允许', '拒绝'])
+            return { answers: [{ id: offered[0].id, selected: [choice] }] }
+          },
+        }
+        return undefined
+      },
+    } as never)
+    async function turn(sessionId: string, nativeApprovalMode: typeof mode | 'auto-review' = mode, cwd = 'D:/fixture') {
+      const projector = new CodingNsDshMessageProjector({
+        adapterId: 'zcode', sessionId, nativeSessions: bridge,
+        respondPermission: response => replay.driver.respondPermission(sessionId, response),
+      })
+      for await (const event of replay.driver.executeTurn({
+        sessionId, cwd, messages: [], prompt: '创建工作流', permission: nativeApprovalMode === 'full-access'
+          ? { sandboxMode: 'danger-full-access', approvalPolicy: 'never', nativeApprovalMode }
+          : { approvalPolicy: 'ask', nativeApprovalMode },
+      })) await projector.push(event)
+      return replay.responses.at(-1).result.decision
+    }
+    try {
+      assert.equal(await turn('dsh-a'), 'allow')
+      assert.equal(questions, 1)
+      choice = '本会话内始终允许'
+      assert.equal(await turn('dsh-a'), 'allow')
+      assert.equal(questions, 2)
+      assert.equal(await turn('dsh-a'), 'allow')
+      assert.equal(questions, 2)
+      // The permission remains a ZCode connection grant. DSH still audits and can reject each call.
+      rejectByPolicy = true
+      assert.equal(await turn('dsh-a'), 'deny')
+      assert.equal(questions, 2)
+      rejectByPolicy = false
+      assert.equal(await turn('dsh-a', 'auto-review'), 'allow')
+      assert.equal(ordinary, 1)
+      choice = '拒绝'
+      assert.equal(await turn('dsh-b'), 'deny')
+      assert.equal(questions, 3)
+      useOrdinaryApproval = true
+      assert.equal(await turn('dsh-b'), 'allow')
+      assert.equal(ordinary, 2)
+      useOrdinaryApproval = false
+      assert.equal(await turn('dsh-a', mode, 'D:/other'), 'deny')
+      assert.equal(questions, 4)
+      assert.deepEqual(audits, ['allowed-once', 'allowed-once', 'allowed-once', 'rejected', 'allowed-once', 'rejected', 'allowed-once', 'rejected'])
+    } finally { replay.driver.dispose() }
+  })
+}
+
 test('ZCode 同一恢复会话逐轮覆盖权限并使用目录默认思考档位', async () => {
   const replay = createReplay()
   try {
     for (const permission of [
       { sandboxMode: 'danger-full-access', approvalPolicy: 'never' },
       { sandboxMode: 'read-only', approvalPolicy: 'ask' },
+      { nativeApprovalMode: 'auto-review' },
+      { nativeApprovalMode: 'manual' },
+      { nativeApprovalMode: 'accept-edits' },
       undefined,
     ] as const) {
-      for await (const _event of replay.driver.executeTurn({ sessionId: 'same-session', messages: [], prompt: '测试', providerSessionId: 'persisted-session',
+      for await (const _event of replay.driver.executeTurn({ sessionId: 'same-session', messages: [], prompt: '测试', providerSessionId: 'sess-probe',
         modelId: 'deepseek/deepseek-flash', permission })) { /* 验证真实下发字段。 */ }
     }
     assert.equal(replay.calls.filter((call) => call.method === 'session/resume').length, 1)
-    assert.deepEqual(replay.calls.filter((call) => call.method === 'session/setMode').map((call) => call.params.mode), ['yolo', 'plan', 'build'])
+    assert.deepEqual(replay.calls.filter((call) => call.method === 'session/setMode').map((call) => call.params.mode), ['yolo', 'plan', 'guarded', 'build', 'edit', 'build'])
     assert.equal(replay.calls.find((call) => call.method === 'session/setModel').params.model.options.reasoningLevel, 'high')
   } finally { replay.driver.dispose() }
 })

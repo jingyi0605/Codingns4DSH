@@ -1,5 +1,6 @@
 import { DEFAULT_SUBAGENT_BRIDGE_SETTINGS } from '../../shared/contracts/config.js'
 import type { CodingNsNativeSessionBridge } from '../native-session-bridge.js'
+import { resolveNativeSubagentModel } from './native-subagent-model.js'
 import { getAdapterRegistry } from './registry-holder.js'
 import { externalTeamProvider, startNativeSubagent, withTeamSubagentSelection, type NativeSubagentService } from './native-team-subagent.js'
 
@@ -466,8 +467,8 @@ export async function dispatchNativeSubagent(
   const select = request.select ?? (<T>(action: () => Promise<T>): Promise<T> =>
     withTeamSubagentSelection(request.parentId, request.adapterId, request.modelId, action))
   try {
-    const agentOptions = request.adapterId === 'dsh' && request.modelId !== undefined && request.modelId !== 'provider-default'
-      ? { model: request.modelId }
+    const agentOptions = request.adapterId === 'dsh'
+      ? await resolveNativeSubagentModel(sessions, request.modelId)
       : undefined
     const started = await select(() => startNativeSubagent(service, {
       provider: externalTeamProvider(request.adapterId),
@@ -484,6 +485,13 @@ export async function dispatchNativeSubagent(
       signal: request.signal ?? fallbackSignal,
     }))
     startedChildId = started.childId
+    if (request.adapterId === 'dsh' && agentOptions !== undefined) {
+      getAdapterRegistry()?.setSession(started.childId, {
+        adapterId: 'dsh', providerId: agentOptions.provider, modelId: agentOptions.model,
+        ...(agentOptions.reasoningEffort === undefined ? {} : { effortId: agentOptions.reasoningEffort }),
+        origin: 'subagent', parentSessionId: request.parentId,
+      }, { rememberPreference: false, inheritSelection: false })
+    }
     const lifecycle: NativeSubagentLifecycle = {
       childSessionId: started.childId,
       parentSessionId: request.parentId,

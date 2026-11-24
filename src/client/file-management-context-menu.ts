@@ -1,9 +1,11 @@
+import type { Context } from '@deepseek-ai/cordis'
 import type { CodingNsRpcClient } from './features/types.js'
 import { callCodingNsRpc } from './settings-bridge.js'
 import { resolveCodingNsTranslator, type CodingNsLocale, type CodingNsTranslator } from './locale.js'
 import { parseVirtualSessionId } from '../shared/contracts/peer-host.js'
 import type { DshContextMenuAdapter, DshContextMenuAction } from '../dsh-capabilities/client/context-menu-adapter.js'
 import { copyResolvedFilePath, resolveFileCopyPaths } from './file-management-dom.js'
+import { readNativeService } from './native-workspace-store.js'
 
 interface FileTarget {
   readonly sessionId: string
@@ -25,12 +27,21 @@ export function registerFileManagementContextMenus(
   rpc: CodingNsRpcClient,
   contextMenus: DshContextMenuAdapter | undefined,
   locale?: CodingNsLocale,
+  uiContext?: Context,
 ): FileManagementContextMenuController {
   if (contextMenus === undefined) return { setEnabled: () => undefined, dispose: () => undefined }
   const menuService = contextMenus
   const t = resolveCodingNsTranslator(locale)
   let enabled = false
+  let nativeFileSaveAvailable = false
   let clipboard: ClipboardState | undefined
+  // Wait for the native file menu's dependencies so partial mounts retain the fallback.
+  const nativeSave = uiContext?.inject(['fileActions', 'slots', 'locale', 'remote', 'remote.workspaceFiles', 'remote.session'], (scope) => {
+    scope.effect(() => {
+      nativeFileSaveAvailable = typeof readNativeService(scope, 'fileActions', 'save') === 'function'
+      return () => { nativeFileSaveAvailable = false }
+    }, 'file management: native file save availability')
+  })
   const disposers = [
     menuService.register({
       id: 'codingns.file-management.file',
@@ -49,6 +60,7 @@ export function registerFileManagementContextMenus(
   return {
     setEnabled(value) { enabled = value },
     dispose() {
+      nativeSave?.dispose()
       for (const dispose of disposers) dispose()
     },
   }
@@ -65,7 +77,9 @@ export function registerFileManagementContextMenus(
     })
     const absoluteAvailable = paths?.absolute !== undefined && paths.absolute !== ''
     return [
-      { id: 'download', label: t('fileMenu.download'), disabled: directory, run: () => directory ? undefined : downloadFile(target) },
+      ...(directory || !nativeFileSaveAvailable
+        ? [{ id: 'download', label: t('fileMenu.download'), disabled: directory, run: () => directory ? undefined : downloadFile(target) }]
+        : []),
       { id: 'newFile', label: t('fileMenu.newFile'), run: () => createEntry(destination, false) },
       { id: 'newDirectory', label: t('fileMenu.newDirectory'), run: () => createEntry(destination, true) },
       { id: 'rename', label: t('fileMenu.rename'), run: () => renameEntry(target) },

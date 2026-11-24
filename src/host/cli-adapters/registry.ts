@@ -1,3 +1,4 @@
+import { hasNativeStepNoticeInput } from './native-step-input.js'
 import { isNativeApprovalMode } from '../../shared/native-approval-modes.js'
 import type { CodingNsBackgroundTurn } from './background-turn.js'
 import type {
@@ -158,10 +159,17 @@ export class CodingNsCliAdapterRegistry {
     readonly adapterId: CodingNsCliAdapterId
     readonly iterator: AsyncIterator<CodingNsAgentEvent> | null
     readonly deferredPeerInput?: CodingNsCliTurnInput
-    /** Permission belongs to the logical provider turn, including its continuations. */
-    readonly permission: CodingNsCliTurnInput['permission']
     /** Runtime state required when a driver-owned segment is resumed later. */
     readonly runtimeEnv?: Readonly<Record<string, string>>
+    /** A DSH step boundary does not start a new user turn or adopt a saved permission change. */
+    readonly permission: CodingNsCliTurnInput['permission']
+    /**
+     * 被切分的那一轮当时发给 Provider 的提示词。
+     *
+     * 续段请求通常带着同一句提示词（DSH 只是又走了一次 llm/stream）；一旦不同，
+     * 说明用户在 Provider 回合进行中插入了新指令，必须走 steer 而不是静默续读。
+     */
+    readonly lastPrompt?: string
   }>()
   private cacheGeneration = 0
   private startupTimer: ReturnType<typeof setTimeout> | undefined
@@ -761,8 +769,13 @@ export class CodingNsCliAdapterRegistry {
         }
       }
       const suspended = this.segmentedTurns.get(input.sessionId)
+      const internalContinuation = !input.peerInput && hasNativeStepNoticeInput(input.messages)
+      const changedPrompt = suspended?.adapterId === input.adapterId && suspended.iterator !== null
+        && !input.peerInput && !internalContinuation && suspended.lastPrompt !== undefined
+        && input.prompt.trim() !== '' && input.prompt !== suspended.lastPrompt
+      if (changedPrompt && input.adapterId === 'zcode') await driver.steer?.(input.sessionId, input.prompt)
       const resumingSegmentedTurn = suspended?.adapterId === input.adapterId
-      if (resumingSegmentedTurn) driverInput = withTurnPermission(driverInput, suspended.permission)
+      if (resumingSegmentedTurn && suspended !== undefined) driverInput = withTurnPermission(driverInput, suspended.permission)
       let deferredPeerInput = resumingSegmentedTurn ? suspended?.deferredPeerInput : undefined
       if (resumingSegmentedTurn && input.peerInput) {
         // ZCode's explicit user steer may stop the current turn. Peer input still waits for it.
@@ -909,6 +922,7 @@ export class CodingNsCliAdapterRegistry {
               adapterId: input.adapterId,
               iterator,
               permission: resumedDriverInput.permission,
+              lastPrompt: input.prompt,
               ...(deferredPeerInput ? { deferredPeerInput } : {}),
               ...(segmentedRuntimeEnv === undefined ? {} : { runtimeEnv: segmentedRuntimeEnv }),
             })
@@ -919,6 +933,7 @@ export class CodingNsCliAdapterRegistry {
               adapterId: input.adapterId,
               iterator: null,
               permission: resumedDriverInput.permission,
+              lastPrompt: input.prompt,
               ...(deferredPeerInput ? { deferredPeerInput } : {}),
               ...(segmentedRuntimeEnv === undefined ? {} : { runtimeEnv: segmentedRuntimeEnv }),
             })
@@ -941,6 +956,7 @@ export class CodingNsCliAdapterRegistry {
             adapterId: input.adapterId,
             iterator,
             permission: resumedDriverInput.permission,
+            lastPrompt: input.prompt,
             ...(deferredPeerInput ? { deferredPeerInput } : {}),
             ...(resumedDriverInput.runtimeEnv === undefined ? {} : { runtimeEnv: resumedDriverInput.runtimeEnv }),
           })
@@ -1325,6 +1341,11 @@ export class CodingNsCliAdapterRegistry {
     this.lifetime.abort()
     this.cacheGeneration += 1
     clearTimeout(this.startupTimer)
+    for (const timer of this.autoCompactionTimers.values()) clearTimeout(timer)
+    this.autoCompactionTimers.clear()
+    this.autoCompactedAt.clear()
+    for (const controller of this.autoCompactions.values()) controller.abort()
+    this.autoCompactions.clear()
     for (const [id, detect] of this.originalDetections) this.drivers.get(id)!.detect = detect
     this.detectionCache.clear()
     this.modelCache.clear()

@@ -353,6 +353,7 @@ export interface CodingNsCliAttachment {
 export interface CodingNsAgentPermissionResponse {
   readonly requestId: string
   readonly approved: boolean
+  readonly allowForSession?: true
   readonly reason?: string
 }
 
@@ -516,6 +517,7 @@ export type CodingNsAgentEvent =
       readonly toolName?: string
       readonly callId?: string
       readonly detail?: string
+      readonly createWorkflowApproval?: 'offer-session' | 'session-granted'
     }
   | {
       readonly type: 'question-request'

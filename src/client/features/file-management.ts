@@ -46,7 +46,9 @@ export const fileManagementFeature: CodingNsClientFeatureModule = {
       }
     }
     const dom = startFileManagementDom(context.services.rpc, readOptions())
-    const contextMenu = registerFileManagementContextMenus(context.services.rpc, context.services.contextMenus, context.services.locale)
+    const contextMenu = registerFileManagementContextMenus(
+      context.services.rpc, context.services.contextMenus, context.services.locale, context.services.uiContext,
+    )
     context.resources.add(startHtmlWorkspaceFiles(context.services.rpc, context.services.locale))
     let disposeSessionView: (() => void) | undefined
     let disposeCopyPathMenu: (() => void) | undefined
