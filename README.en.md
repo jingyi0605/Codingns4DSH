@@ -11,7 +11,7 @@
 
 [简体中文](README.md) · **English**
 
-**Development version `@jingyi0605/codingns4dsh@0.2.3-beta.2` (unpublished)** · DSH minimum **`0.2.2-alpha.2`** (temporary Stage0 tested on `0.2.2-rc.5` and `0.2.3-alpha.2`; newer versions only warn) · Node **`>= 24.9`** · macOS / Linux / Windows
+**Development version `@jingyi0605/codingns4dsh@0.2.3-beta.3` (unpublished)** · DSH minimum **`0.2.2-alpha.2`** (temporary Stage0 tested on `0.2.2-rc.5` and `0.2.3-alpha.2`; newer versions only warn) · Node **`>= 24.9`** · macOS / Linux / Windows
 
 Verification ran in two isolated Stage0 profiles on macOS. The `0.2.3-alpha.2` npm CLI needed Cordis components built from the matching upstream tag. The existing Stage0 was not switched. See the [Stage0 verification notes](docs/开发记录/20261122-DSH-0.2.3临时Stage0验收.md) for scope and limitations.
 
@@ -240,7 +240,7 @@ The `0.2.3-beta.2` install commands below will work once that version is publish
 ### Use the Built-in Web Profile
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.3-beta.2
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.3-beta.3
 dsh web
 ```
 
@@ -250,7 +250,7 @@ Create a separate environment from the built-in Web profile:
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.3-beta.2
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.3-beta.3
 dsh codingns
 ```
 

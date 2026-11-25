@@ -14,7 +14,7 @@ Profile 选择 `dsh-multi-model-provider` 和 `codingns4dsh` Bundle。
 发布后，在 DSH 的 Profile 中安装精确版本的插件 Bundle：
 
 ```bash
-dsh plugin --profile codingns4dsh add @jingyi0605/codingns4dsh@0.2.3-beta.2
+dsh plugin --profile codingns4dsh add @jingyi0605/codingns4dsh@0.2.3-beta.3
 ```
 
 Profile 安装完成后，使用 DSH 官方启动器启动：

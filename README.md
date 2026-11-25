@@ -11,7 +11,7 @@
 
 **简体中文** · [English](README.en.md)
 
-**开发版本 `@jingyi0605/codingns4dsh@0.2.3-beta.2`（未发布）** · DSH 最低版本 **`0.2.2-alpha.2`**（临时 Stage0 已验证 `0.2.2-rc.5` 和 `0.2.3-alpha.2`；更新版本仅告警）· Node **`>= 24.9`** · macOS / Linux / Windows
+**开发版本 `@jingyi0605/codingns4dsh@0.2.3-beta.3`（未发布）** · DSH 最低版本 **`0.2.2-alpha.2`**（临时 Stage0 已验证 `0.2.2-rc.5` 和 `0.2.3-alpha.2`；更新版本仅告警）· Node **`>= 24.9`** · macOS / Linux / Windows
 
 本次验证使用 macOS 上两个隔离的 Stage0 Profile。`0.2.3-alpha.2` 的 npm CLI 需用同一上游 tag 的 Cordis 组件才能启动；正式 Stage0 未切换。范围与限制见 [临时 Stage0 验收记录](docs/开发记录/20261122-DSH-0.2.3临时Stage0验收.md)。
 
@@ -259,7 +259,7 @@ DSH 原生会话的翻译默认关闭，可在会话模型选择菜单中开启�
 ### 使用内置 Web 配置
 
 ```bash
-dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.3-beta.2
+dsh plugin --profile web add @jingyi0605/codingns4dsh@0.2.3-beta.3
 dsh web
 ```
 
@@ -269,7 +269,7 @@ dsh web
 
 ```bash
 dsh codingns --from-default-profile web --dump-config
-dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.3-beta.2
+dsh plugin --profile codingns add @jingyi0605/codingns4dsh@0.2.3-beta.3
 dsh codingns
 ```
 
