@@ -788,6 +788,43 @@ test('原生会话桥接把 Codex 压缩活动写成标准 compaction 生命周�
   assert.deepEqual(events[6]?.data?.source, { kind: 'plugin', plugin: 'compact' })
 })
 
+for (const fixture of [
+  { name: '系统消息隔开压缩范围', initial: [1, 2, 3, 4, 5], current: [1, 2, 3, 4, 5] },
+  { name: '摘要返回前压缩范围发生变化', initial: [1, 2, 3, 5], current: [1, 2, 3, 4, 5] },
+]) {
+  test(`${fixture.name}时只记录失败结束`, () => {
+    const events: Array<{ type: string; seq: number; data?: unknown }> = [
+      { type: 'turn/start', seq: 0, data: { turn: 1 } },
+      { type: 'system/message', seq: 1 },
+      { type: 'assistant/message', seq: 2 },
+      { type: 'assistant/message', seq: 3 },
+      { type: 'system/message', seq: 4 },
+      { type: 'assistant/message', seq: 5 },
+    ]
+    const session = {
+      surface: { nodes: fixture.initial },
+      snapshotEvents() { return [...events] },
+      append(type: string, data: unknown) {
+        const event = { type, seq: events.length, data }
+        events.push(event)
+        return event
+      },
+    }
+    const bridge = createCodingNsNativeSessionBridge({
+      get: (name: string) => name === 'sessions' ? { get: () => session, list: () => [session] } : undefined,
+    } as never)
+    const sessionId = 'native-compaction-span'
+    const activity = { type: 'context-compaction', compactionId: 'span-check' } as const
+
+    assert.equal(bridge.appendCompactionEvent?.(sessionId, { ...activity, phase: 'start' }), true)
+    session.surface.nodes = fixture.current
+    assert.equal(bridge.appendCompactionEvent?.(sessionId, { ...activity, phase: 'summary', summary: '摘要' }), true)
+    assert.equal(bridge.appendCompactionEvent?.(sessionId, { ...activity, phase: 'end' }), true)
+    assert.deepEqual(events.slice(6).map(event => event.type), ['compaction/start', 'compaction/end'])
+    assert.match((events.at(-1)?.data as { error: string }).error, /.+/)
+  })
+}
+
 test('没有 Provider 摘要时，检查点写真实的被压缩规模而不是空白说法', () => {
   const events: Array<Record<string, any>> = [
     { type: 'turn/start', seq: 0, data: { turn: 1 } },

@@ -601,7 +601,7 @@ export function createCodingNsNativeSessionBridge(ctx: Context, dshVersion?: str
       if (event.compactionId !== undefined && event.compactionId !== state.compactionId) return false
       if ((event.phase === 'summary' || event.phase === 'end' && event.summary !== undefined && !event.error) && !state.summaryAppended) {
         const range = state.range
-        if (range !== null) {
+        if (range !== null && matchesCompactionSpan(session.surface?.nodes, range)) {
           const shadowedTokenCount = safeCount(event.shadowedTokenCount)
           const summary = boundCompactionSummary(event.summary, shadowedTokenCount)
           const summaryEvent = session.append('compaction/summary', {
@@ -1140,16 +1140,9 @@ function activeTurn(session: AppendableSession): number | null {
 }
 
 function compactionSurfaceRange(session: AppendableSession, turn: number | null): CompactionSurfaceRange | null {
-  let nodes: readonly number[] = []
   try {
-    if (Array.isArray(session.surface?.nodes)) nodes = session.surface.nodes
-    if (nodes.length === 0) {
-      nodes = session.snapshotEvents().flatMap((candidate) => {
-        if (!isRecord(candidate) || typeof candidate.seq !== 'number' || candidate.type === 'system/message') return []
-        const op = candidate.surfaceOp
-        return op === 'append' ? [candidate.seq] : []
-      })
-    }
+    const nodes = session.surface?.nodes
+    if (nodes === undefined || nodes.length === 0) return null
     const events = session.snapshotEvents()
     let usable = nodes.filter((seq) => {
       const event = session.eventAt?.(seq) ?? events[seq]
@@ -1164,10 +1157,19 @@ function compactionSurfaceRange(session: AppendableSession, turn: number | null)
     if (last !== undefined && isRecord(lastEvent) && lastEvent.type === 'user/message'
       && isRecord(turnStart) && typeof turnStart.seq === 'number' && last > turnStart.seq) usable = usable.slice(0, -1)
     if (usable.length === 0) return null
-    return { start: usable[0]!, end: usable.at(-1)!, seqs: usable }
+    const range = { start: usable[0]!, end: usable.at(-1)!, seqs: usable }
+    return matchesCompactionSpan(nodes, range) ? range : null
   } catch {
     return null
   }
+}
+
+function matchesCompactionSpan(nodes: readonly number[] | undefined, range: CompactionSurfaceRange): boolean {
+  if (nodes === undefined) return false
+  const start = nodes.indexOf(range.start)
+  const end = nodes.indexOf(range.end)
+  return start >= 0 && end - start + 1 === range.seqs.length
+    && range.seqs.every((seq, index) => nodes[start + index] === seq)
 }
 
 /**
