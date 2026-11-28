@@ -61,7 +61,7 @@ export class ProviderSubscriptionService {
     this.qoder = new QoderSubscriptionService({ ...shared, variant: 'qoder', ...options.qoder })
     this.qoderCn = new QoderSubscriptionService({ ...shared, variant: 'qoder-cn', ...options.qoderCn })
     this.codebuddy = new CodeBuddySubscriptionService({ ...shared, ...options.codebuddy })
-    this.antigravity = new AntigravitySubscriptionService({ ...shared, ...options.antigravity })
+    this.antigravity = options.antigravityService ?? new AntigravitySubscriptionService({ ...shared, ...options.antigravity })
   }
 
   read(adapterId: string, providerId?: string, modelId?: string): Promise<CliSubscriptionUsage | null> {
@@ -220,6 +220,8 @@ export interface ProviderSubscriptionOptions {
   readonly qoderCn?: QoderSubscriptionOptions
   readonly codebuddy?: CodeBuddySubscriptionOptions
   readonly antigravity?: AntigravitySubscriptionOptions
+  /** Reuse the Host-owned reader when other subscription readers are rebuilt. */
+  readonly antigravityService?: AntigravitySubscriptionService
   /** 所有读取器共用的网络超时（毫秒）；单项服务显式给出时优先。 */
   readonly timeoutMs?: number
 }

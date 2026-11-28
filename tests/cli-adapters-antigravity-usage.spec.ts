@@ -1,18 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { delimiter, join } from 'node:path'
 import { PassThrough } from 'node:stream'
+import type { ChildProcess, SpawnOptions, spawn } from 'node:child_process'
 import { ProviderSubscriptionService } from '../data/build/dist/host/cli-adapters/provider-subscription.js'
 import {
   AntigravitySubscriptionService,
   antigravityQuotaGroupPrefix,
-  decodeKeyringSecret,
   parseAntigravityUsageOutput,
-  readAccountName,
-  readAntigravityQuotaGroups,
 } from '../data/build/dist/host/cli-adapters/antigravity-subscription.js'
 import {
   antigravityModelIdFromLabel,
@@ -22,7 +20,7 @@ import {
   resolveAntigravityModelId,
 } from '../data/build/dist/host/cli-adapters/model-catalog.js'
 
-/** 与 agy 1.2.17 实测的 `v1internal:retrieveUserQuotaSummary` 响应同形。 */
+/** agy JSON /usage command.data has the same grouped bucket shape as the TUI. */
 const QUOTA_SUMMARY = {
   groups: [
     {
@@ -48,10 +46,6 @@ const QUOTA_SUMMARY = {
   ],
 }
 
-const PARTIAL_QUOTA_SUMMARY = {
-  groups: [QUOTA_SUMMARY.groups[1]],
-}
-
 /** 与 `agy --print /usage` 实测输出同形（制表符分隔）。 */
 const USAGE_TEXT = [
   'Gemini Models\tWeekly Limit Remaining\t99%\t2026-10-07T05:47:33Z',
@@ -62,80 +56,35 @@ const USAGE_TEXT = [
   '',
 ].join('\n')
 
-function fakeIdToken(claims: Record<string, unknown>): string {
-  return `header.${Buffer.from(JSON.stringify(claims), 'utf8').toString('base64url')}.signature`
+const USAGE_JSON = JSON.stringify({ status: 'SUCCESS', command: { name: 'usage', data: QUOTA_SUMMARY } })
+const MINUTE = 60_000
+
+function fakeChild(): ChildProcess & { stdout: PassThrough; stderr: PassThrough; killedByTest: boolean } {
+  const child = new EventEmitter() as ReturnType<typeof fakeChild>
+  child.stdout = new PassThrough()
+  child.stderr = new PassThrough()
+  child.killedByTest = false
+  child.kill = () => { child.killedByTest = true; return true }
+  return child
 }
 
-/** 写一份旧版凭据文件（agy 1.2.17 之前的位置）。 */
-function makeHome(options: { readonly expiry?: string; readonly idToken?: string | null } = {}): string {
-  const home = mkdtempSync(join(tmpdir(), 'codingns-antigravity-'))
-  const directory = join(home, '.gemini', 'antigravity-cli')
-  mkdirSync(directory, { recursive: true })
-  writeFileSync(join(directory, 'antigravity-oauth-token'), JSON.stringify({
-    token: { access_token: 'test-access-token', token_type: 'Bearer', expiry: options.expiry ?? '2099-01-01T00:00:00.000Z' },
-    ...(options.idToken === null ? {} : { id_token: options.idToken ?? fakeIdToken({ email: 'user@example.com', name: 'Test User' }) }),
-  }), 'utf8')
-  return home
-}
-
-function stubFetch(
-  calls: Array<{ url: string; authorization: string | null; userAgent: string | null; body: string | undefined }>,
-  handlers: { readonly quota?: () => Response; readonly tier?: () => Response } = {},
-): typeof fetch {
-  return (async (url: string | URL | Request, init?: RequestInit) => {
-    const headers = new Headers(init?.headers)
-    const target = String(url)
-    calls.push({
-      url: target,
-      authorization: headers.get('authorization'),
-      userAgent: headers.get('user-agent'),
-      body: typeof init?.body === 'string' ? init.body : undefined,
-    })
-    if (target.endsWith('retrieveUserQuotaSummary')) return (handlers.quota ?? (() => Response.json(QUOTA_SUMMARY)))()
-    return (handlers.tier ?? (() => Response.json({
-      currentTier: { id: 'free-tier', name: 'Antigravity' },
-      paidTier: { id: 'g1-pro-tier', name: 'Google AI Pro' },
-    })))()
-  }) as typeof fetch
-}
-
-/** 造一个只回放 `/usage` 文本的 agy 子进程。 */
-function stubUsageSpawn(output: string): typeof import('node:child_process').spawn {
+function stubUsageSpawn(output: string, stderr = '', code = 0): typeof spawn {
   return (() => {
-    const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough; kill(): boolean }
-    child.stdout = new PassThrough()
-    child.stderr = new PassThrough()
-    child.kill = () => true
+    const child = fakeChild()
     queueMicrotask(() => {
       child.stdout.end(output)
-      child.stderr.end()
-      child.emit('close', 0)
+      child.stderr.end(stderr)
+      child.emit('close', code)
     })
     return child
-  }) as never
+  }) as typeof spawn
 }
 
-test('Antigravity CLI 额度兜底和分组补全禁用自动更新', async () => {
-  for (const hasCredentials of [false, true]) {
-    const environments: NodeJS.ProcessEnv[] = []
-    const service = new AntigravitySubscriptionService({
-      homeDirectory: hasCredentials ? makeHome() : mkdtempSync(join(tmpdir(), 'codingns-antigravity-empty-')),
-      platform: 'win32',
-      fetch: stubFetch([], { quota: () => Response.json(PARTIAL_QUOTA_SUMMARY) }),
-      resolveCommand: () => 'fake-agy',
-      spawn: ((command, args, options) => {
-        environments.push(options?.env ?? {})
-        return stubUsageSpawn(USAGE_TEXT)(command, args, options)
-      }) as typeof import('node:child_process').spawn,
-    })
-    const original = process.env.AGY_CLI_DISABLE_AUTO_UPDATE
-    const usage = await service.read()
-    assert.equal(usage?.groups?.length, 3)
-    assert.equal(environments.length, 1)
-    assert.equal(environments[0]?.AGY_CLI_DISABLE_AUTO_UPDATE, 'true')
-    assert.equal(process.env.AGY_CLI_DISABLE_AUTO_UPDATE, original)
-  }
-})
+function reader(options: ConstructorParameters<typeof AntigravitySubscriptionService>[0] = {}): AntigravitySubscriptionService {
+  return new AntigravitySubscriptionService({
+    resolveCommand: () => '/fake/agy', spawn: stubUsageSpawn(USAGE_JSON), ...options,
+  })
+}
 
 test('Antigravity 上下文窗口按模型 id 与 AGY 设置里的展示名解析', () => {
   assert.equal(knownAntigravityContextWindow('gemini-4-argon'), 1_048_576)
@@ -187,246 +136,276 @@ test('Antigravity 只有 Gemini / GPT-OSS 支持 --effort，Claude 系列不支�
   assert.equal(antigravitySupportsEffort(null), true)
 })
 
-test('Antigravity 凭据读取器返回三组额度、套餐档位与账号名', async () => {
-  const calls: Array<{ url: string; authorization: string | null; userAgent: string | null; body: string | undefined }> = []
-  const service = new AntigravitySubscriptionService({ homeDirectory: makeHome(), fetch: stubFetch(calls, {}), platform: 'linux' })
-
-  const usage = await service.read()
-  assert.ok(usage !== null)
-  assert.equal(usage.planType, 'free-tier')
-  assert.equal(usage.paidPlanType, 'Google AI Pro')
-  assert.equal(usage.accountName, 'user@example.com')
-  // All upstream groups are retained, including the Gemini 4 group with only a weekly window.
-  assert.deepEqual(usage.groups?.map((group) => group.id), ['gemini', 'third-party', 'gemini-4'])
-  const gemini = usage.groups?.[0]
-  assert.deepEqual(gemini?.windows.map((entry) => entry.kind), ['weekly', 'five-hour'])
-  assert.equal(gemini?.windows[1]?.window.remainingPercent, 97.9996)
-  assert.equal(usage.groups?.[1]?.windows[1]?.window.remainingPercent, 97.2433)
-  assert.deepEqual(usage.groups?.[2]?.windows.map((entry) => entry.kind), ['weekly'])
-  // 主窗口跟随会话模型：默认按 Gemini 组
-  assert.equal(usage.primary?.remainingPercent, 97.9996)
-  assert.equal(usage.secondary?.remainingPercent, 99.0795)
-  // 窗口单位必须是 Unix 秒：客户端按秒换算倒计时
-  assert.equal(usage.primary?.resetsAt, Date.parse('2026-10-05T19:09:53Z') / 1000)
-  assert.equal(usage.secondary?.resetsAt, Date.parse('2026-10-07T05:47:33Z') / 1000)
-  assert.equal(usage.rateLimitReachedType, null)
-  assert.equal(usage.provider?.capability, 'subscription-window')
-  assert.deepEqual(calls.map((call) => call.url).sort(), [
-    'https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist',
-    'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
-  ])
-  for (const call of calls) {
-    assert.equal(call.authorization, 'Bearer test-access-token')
-    // 缺失或非 Antigravity 的 User-Agent 会被上游 403 拒绝
-    assert.equal(call.userAgent, 'antigravity-cli')
+test('Antigravity uses isolated JSON CLI usage without credential reads and keeps precise quotas', async () => {
+  for (const platform of ['win32', 'darwin', 'linux']) {
+    let directory = ''
+    let calls = 0
+    const originalBrowser = process.env.BROWSER
+    const service = reader({
+      platform,
+      timeoutMs: 12_000,
+      readFile: () => { throw new Error('only explicit models are requested; no files should be read') },
+      spawnSync: (() => { throw new Error('must not read keychain') }) as never,
+      spawn: ((command: string, args: string[], options: SpawnOptions) => {
+        calls += 1
+        assert.equal(command, '/fake/agy')
+        assert.deepEqual(args, ['-p', '/usage', '--output-format', 'json', '--agent', 'codingns-usage', '--print-timeout', '12s'])
+        assert.equal(options.shell, false)
+        assert.equal(options.windowsHide, true)
+        assert.deepEqual(options.stdio, ['ignore', 'pipe', 'pipe'])
+        directory = String(options.cwd)
+        assert.notEqual(directory, process.cwd())
+        const agent = readFileSync(join(directory, '.agents', 'agents', 'codingns-usage', 'agent.md'), 'utf8')
+        assert.match(agent, /tools: \[\]/u)
+        assert.match(agent, /mcpServers: \[\]/u)
+        assert.ok(options.env?.PATH?.startsWith(directory + delimiter))
+        assert.equal(Object.keys(options.env ?? {}).filter(k => /^path$/iu.test(k)).length, 1)
+        const browser = join(directory, platform === 'win32' ? 'open.cmd' : 'open')
+        assert.equal(options.env?.BROWSER, browser)
+        assert.match(readFileSync(browser, 'utf8'), /exit/u)
+        if (platform !== 'win32') assert.ok(existsSync(join(directory, 'xdg-open')))
+        if (platform === 'win32') assert.equal(options.env?.AGY_CLI_DISABLE_AUTO_UPDATE, 'true')
+        return stubUsageSpawn(USAGE_JSON)(command, args, options)
+      }) as typeof spawn,
+    })
+    const usage = await service.read({ modelId: 'gemini-3.8-flash' })
+    assert.equal(calls, 1)
+    assert.equal(existsSync(directory), false)
+    assert.equal(process.env.BROWSER, originalBrowser)
+    assert.equal(usage?.planType, null)
+    assert.equal(usage?.accountName, undefined)
+    assert.equal(usage?.paidPlanType, undefined)
+    assert.deepEqual(usage?.groups?.map(g => g.id), ['gemini', 'third-party', 'gemini-4'])
+    assert.equal(usage?.primary?.remainingPercent, 97.9996)
+    assert.equal(usage?.secondary?.remainingPercent, 99.0795)
+    assert.equal(usage?.primary?.resetsAt, Date.parse('2026-10-05T19:09:53Z') / 1000)
+    assert.equal(usage?.rateLimitReachedType, null)
+    assert.equal(usage?.provider?.capability, 'subscription-window')
+    assert.equal(JSON.stringify(usage).includes('daily-cloudcode'), false)
+    await service.dispose()
   }
 })
 
-test('Antigravity 凭据优先读系统钥匙串（agy 1.2.17 起不再写文件）', async () => {
-  const payload = {
-    token: { access_token: 'keychain-token', token_type: 'Bearer', refresh_token: 'r', expiry: '2099-01-01T00:00:00.000Z' },
-    auth_method: 'consumer',
-    id_token: fakeIdToken({ email: 'keychain@example.com' }),
-  }
-  const secret = `go-keyring-base64:${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')}`
-  const spawnCalls: string[][] = []
-  const keychainCalls: Array<{ url: string; authorization: string | null }> = []
-  const service = new AntigravitySubscriptionService({
-    // 目录里没有旧版凭据文件：只能来自钥匙串
-    homeDirectory: mkdtempSync(join(tmpdir(), 'codingns-antigravity-empty-')),
-    platform: 'darwin',
-    spawnSync: ((command: string, args: string[]) => {
-      spawnCalls.push([command, ...args])
-      return { status: 0, stdout: `${secret}\n`, stderr: '' }
-    }) as never,
-    fetch: (async (url: string | URL | Request, init?: RequestInit) => {
-      const headers = new Headers(init?.headers)
-      keychainCalls.push({ url: String(url), authorization: headers.get('authorization') })
-      if (String(url).endsWith('retrieveUserQuotaSummary')) return Response.json(QUOTA_SUMMARY)
-      return Response.json({ currentTier: { id: 'free-tier' }, paidTier: { name: 'Google AI Pro' } })
-    }) as typeof fetch,
-  })
+test('Antigravity JSON and legacy text parsing only accept measured enabled quota', () => {
+  const parsed = parseAntigravityUsageOutput(USAGE_JSON)
+  assert.equal(parsed[0]?.windows[1]?.remainingFraction, 0.9799962)
+  const text = parseAntigravityUsageOutput(USAGE_TEXT)
+  assert.equal(text[1]?.windows[1]?.remainingFraction, 0.92)
+  assert.equal(text[2]?.windows[0]?.kind, 'weekly')
+  for (const value of ['', 'no output', 'A\tB\tnan%\t2026-01-01', '{}', '{broken',
+    JSON.stringify({ status: 'ERROR', command: { name: 'usage', data: QUOTA_SUMMARY } }),
+    JSON.stringify({ status: 'SUCCESS', command: { name: 'other', data: QUOTA_SUMMARY } }),
+  ]) assert.deepEqual(parseAntigravityUsageOutput(value), [])
 
-  const usage = await service.read()
-  assert.deepEqual(spawnCalls[0], ['security', 'find-generic-password', '-s', 'gemini', '-a', 'antigravity', '-w'])
-  assert.equal(usage?.accountName, 'keychain@example.com')
-  assert.equal(usage?.groups?.length, 3)
-  for (const call of keychainCalls) assert.equal(call.authorization, 'Bearer keychain-token')
-})
-
-test('Antigravity 用量摘要缺少其它分组时从 agy /usage 补齐三组额度', async () => {
-  const usage = await new AntigravitySubscriptionService({
-    homeDirectory: makeHome(),
-    platform: 'linux',
-    fetch: stubFetch([], { quota: () => Response.json(PARTIAL_QUOTA_SUMMARY) }),
-    resolveCommand: () => '/fake/agy',
-    spawn: ((command: string, args: string[]) => stubUsageSpawn(USAGE_TEXT)(command, args, {} as never)) as never,
-  }).read({ modelId: 'claude-sonnet-5-5-medium' })
-
-  assert.deepEqual(usage?.groups?.map((group) => group.id), ['third-party', 'gemini', 'gemini-4'])
-  assert.equal(usage?.groups?.[0]?.windows[1]?.window.remainingPercent, 97.2433)
-  assert.equal(usage?.primary?.remainingPercent, 97.2433)
-})
-
-test('Antigravity 没有凭据时回退到 agy --print /usage，并给出三组额度', async () => {
-  const commands: string[][] = []
-  const service = new AntigravitySubscriptionService({
-    homeDirectory: mkdtempSync(join(tmpdir(), 'codingns-antigravity-empty-')),
-    platform: 'linux',
-    resolveCommand: () => '/fake/agy',
-    spawn: ((command: string, args: string[]) => {
-      commands.push([command, ...args])
-      return stubUsageSpawn(USAGE_TEXT)(command, args, {} as never)
-    }) as never,
-    fetch: (async () => { throw new Error('无凭据时不应发起 API 请求') }) as unknown as typeof fetch,
-  })
-
-  const usage = await service.read()
-  assert.deepEqual(commands[0], ['/fake/agy', '--print', '/usage'])
-  assert.equal(usage?.planType, null)
-  assert.equal(usage?.accountName, undefined)
-  assert.deepEqual(usage?.groups?.map((group) => group.id), ['gemini', 'third-party', 'gemini-4'])
-  // 上游只给整数百分比，读取器按百分数还原成比例
-  assert.equal(usage?.groups?.[0]?.windows[1]?.window.remainingPercent, 98)
-  assert.equal(usage?.groups?.[1]?.windows[1]?.window.remainingPercent, 92)
-  assert.equal(usage?.primary?.remainingPercent, 98)
-  assert.equal(usage?.primary?.resetsAt, Date.parse('2026-10-05T19:09:53Z') / 1000)
-})
-
-test('Antigravity 主窗口跟随会话模型选择对应分组', async () => {
-  const gemini = await new AntigravitySubscriptionService({ homeDirectory: makeHome(), fetch: stubFetch([], {}), platform: 'linux' })
-    .read({ modelId: 'gemini-3.8-flash' })
-  assert.equal(gemini?.primary?.remainingPercent, 97.9996)
-  assert.equal(gemini?.secondary?.remainingPercent, 99.0795)
-
-  const claude = await new AntigravitySubscriptionService({ homeDirectory: makeHome(), fetch: stubFetch([], {}), platform: 'linux' })
-    .read({ modelId: 'claude-sonnet-4-6' })
-  assert.equal(claude?.primary?.remainingPercent, 97.2433)
-  assert.equal(claude?.secondary?.remainingPercent, 98.1216)
-  assert.equal(claude?.primary?.resetsAt, Date.parse('2026-10-05T19:56:40Z') / 1000)
-  // All groups remain in the popover; switching models only changes the compact entry's group.
-  assert.equal(claude?.groups?.length, 3)
-
-  const fromSettings = await new AntigravitySubscriptionService({
-    homeDirectory: makeHome(),
-    fetch: stubFetch([], {}),
-    platform: 'linux',
-    resolveModelId: () => 'claude-opus-4.6',
-  }).read()
-  assert.equal(fromSettings?.primary?.remainingPercent, 97.2433)
-})
-
-test('Antigravity /usage 文本解析与分组 id 归类', () => {
-  const groups = parseAntigravityUsageOutput(USAGE_TEXT)
-  assert.deepEqual(groups.map((group) => group.displayName), ['Gemini Models', 'Claude and GPT models', 'Gemini 4 Argon'])
-  assert.deepEqual(groups[0]?.windows.map((window) => window.kind), ['weekly', 'five-hour'])
-  assert.equal(groups[1]?.windows[1]?.remainingFraction, 0.92)
-  assert.equal(groups[1]?.windows[1]?.resetsAt, Date.parse('2026-10-05T19:56:40Z') / 1000)
-  assert.deepEqual(groups[2]?.windows.map((window) => window.kind), ['weekly'])
-  // 非表格行、缺列、非数字百分比都要忽略
-  assert.deepEqual(parseAntigravityUsageOutput('no output produced'), [])
-  assert.deepEqual(parseAntigravityUsageOutput('A\tB\tnot-a-percent\t2026-01-01T00:00:00Z'), [])
-  assert.deepEqual(parseAntigravityUsageOutput(''), [])
-
+  const report = (buckets: unknown[]) => JSON.stringify({ status: 'SUCCESS', command: { name: 'usage', data: { groups: [{ display_name: 'Gemini Models', buckets }] } } })
+  const buckets = parseAntigravityUsageOutput(report([
+    { window: '5h', remaining: { case: 'remainingFraction', value: 0 }, reset_time: '2026-10-05T19:09:53Z' },
+    { window: 'weekly', remaining_fraction: 0.12345678 },
+    { window: 'unfamiliar', displayName: 'Weekly', remainingFraction: 0.5 },
+    { window: 'weekly', remainingFraction: 0.3, disabled: true },
+    { window: 'weekly', remainingFraction: -1 }, { window: 'weekly', remainingFraction: 2 },
+    { window: 'weekly', remainingFraction: '0.5' }, { window: 'weekly' },
+  ]))[0]?.windows
+  assert.equal(buckets?.length, 3)
+  assert.equal(buckets?.[0]?.remainingFraction, 0)
+  assert.equal(buckets?.[1]?.remainingFraction, 0.12345678)
+  assert.equal(buckets?.[2]?.kind, 'other')
   assert.equal(antigravityQuotaGroupPrefix('claude-sonnet-4-6'), '3p-')
   assert.equal(antigravityQuotaGroupPrefix('GPT-OSS-120B'), '3p-')
-  assert.equal(antigravityQuotaGroupPrefix('gemini-3.8-flash'), 'gemini-')
+  assert.equal(antigravityQuotaGroupPrefix('gemini-4-argon'), 'gemini-4-')
   assert.equal(antigravityQuotaGroupPrefix(null), 'gemini-')
-
-  // API 响应同样解析成窗口草稿
-  const apiGroups = readAntigravityQuotaGroups(QUOTA_SUMMARY)
-  assert.deepEqual(apiGroups.map((group) => group.displayName), ['Gemini Models', 'Claude and GPT models', 'Gemini 4 Argon'])
-  assert.equal(apiGroups[0]?.windows.length, 2)
-  assert.equal(apiGroups[2]?.windows.length, 1)
-  assert.deepEqual(readAntigravityQuotaGroups(null), [])
-  assert.deepEqual(readAntigravityQuotaGroups({ groups: [{ buckets: [{ bucketId: 'x' }] }] }), [])
 })
 
-test('Antigravity Gemini 4 models select the Gemini 4 quota group', async () => {
-  const usage = await new AntigravitySubscriptionService({
-    homeDirectory: makeHome(),
-    fetch: stubFetch([], {}),
-    platform: 'linux',
-  }).read({ modelId: 'gemini-4-argon-medium' })
-
-  assert.equal(usage?.primary, null)
-  assert.equal(usage?.secondary?.remainingPercent, 100)
-  assert.equal(usage?.groups?.find((group) => group.id === 'gemini-4')?.displayName, 'Gemini 4 Argon')
-})
-
-test('Antigravity 钥匙串密文按 go-keyring-base64 解包', () => {
-  const payload = { token: { access_token: 'abc' }, auth_method: 'consumer' }
-  const encoded = `go-keyring-base64:${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64')}`
-  assert.deepEqual(decodeKeyringSecret(encoded), payload)
-  // 普通 JSON 原样解析，损坏内容返回 null
-  assert.deepEqual(decodeKeyringSecret('{"token":{"access_token":"x"}}'), { token: { access_token: 'x' } })
-  assert.equal(decodeKeyringSecret('go-keyring-base64:!!!'), null)
-  assert.equal(decodeKeyringSecret('not json'), null)
-})
-
-test('Antigravity 账号名从 id_token 负载读取，缺失或损坏时返回 null', () => {
-  assert.equal(readAccountName(fakeIdToken({ email: 'user@example.com', name: 'Test User' })), 'user@example.com')
-  assert.equal(readAccountName(fakeIdToken({ name: 'Test User' })), 'Test User')
-  assert.equal(readAccountName('not-a-jwt'), null)
-  assert.equal(readAccountName('a.!!!.c'), null)
-  assert.equal(readAccountName(null), null)
-})
-
-test('Antigravity 无凭据且拿不到 CLI 输出时安静降级', async () => {
-  let requested = 0
-  const missing = new AntigravitySubscriptionService({
-    homeDirectory: mkdtempSync(join(tmpdir(), 'codingns-antigravity-empty-')),
-    platform: 'linux',
-    resolveCommand: () => null,
-    fetch: (async () => { requested += 1; return Response.json(QUOTA_SUMMARY) }) as unknown as typeof fetch,
-  })
-  assert.equal(await missing.read(), null)
-  assert.equal(requested, 0)
-
-  // 令牌过期时不发请求，也不读 CLI
-  let spawned = 0
-  const expired = new AntigravitySubscriptionService({
-    homeDirectory: makeHome({ expiry: '2020-01-01T00:00:00.000Z' }),
-    platform: 'linux',
-    resolveCommand: () => null,
-    spawn: ((...args: unknown[]) => { spawned += 1; return stubUsageSpawn(USAGE_TEXT)(...(args as [never, never, never])) }) as never,
-    fetch: (async () => { requested += 1; return Response.json(QUOTA_SUMMARY) }) as unknown as typeof fetch,
-  })
-  assert.equal(await expired.read(), null)
-  assert.equal(requested, 0)
-  assert.equal(spawned, 0)
-
-  // 上游整体失败时降级为 null
-  const failing = new AntigravitySubscriptionService({
-    homeDirectory: makeHome(),
-    platform: 'linux',
-    resolveCommand: () => null,
-    fetch: (async () => new Response('{"error":{"code":403}}', { status: 403 })) as unknown as typeof fetch,
-  })
-  assert.equal(await failing.read(), null)
-
-  // 凭据接口没有分组时改走 CLI 兜底
-  const fallback = await new AntigravitySubscriptionService({
-    homeDirectory: makeHome(),
-    platform: 'linux',
-    fetch: stubFetch([], { quota: () => Response.json({ groups: [] }) }),
-    resolveCommand: () => '/fake/agy',
-    spawn: ((command: string, args: string[]) => stubUsageSpawn(USAGE_TEXT)(command, args, {} as never)) as never,
-  }).read()
-  assert.equal(fallback?.groups?.length, 3)
-})
-
-test('ProviderSubscriptionService 把 antigravity 路由到官方用量读取器并透传模型', async () => {
-  const service = new ProviderSubscriptionService({
-    antigravity: { homeDirectory: makeHome(), fetch: stubFetch([], {}), platform: 'linux' },
-  })
-  const usage = await service.read('antigravity', undefined, 'gemini-3.8-flash')
-  assert.equal(usage?.provider?.id, 'antigravity')
-  assert.equal(usage?.primary?.remainingPercent, 97.9996)
-  assert.equal(usage?.accountName, 'user@example.com')
-  const claude = await service.read('antigravity', undefined, 'claude-sonnet-4-6')
+test('Antigravity concurrent models share a query and cached groups for 15 minutes', async () => {
+  let now = 1_000_000
+  let calls = 0
+  const service = reader({ now: () => now, spawn: ((...args: Parameters<typeof spawn>) => {
+    calls += 1
+    return stubUsageSpawn(USAGE_JSON)(...args)
+  }) as typeof spawn })
+  const [gemini, claude, argon] = await Promise.all([
+    service.read({ modelId: 'gemini-3.8-flash' }),
+    service.read({ modelId: 'claude-sonnet-4-6' }),
+    service.read({ modelId: 'gemini-4-argon-medium' }),
+  ])
+  assert.equal(calls, 1)
+  assert.equal(gemini?.primary?.remainingPercent, 97.9996)
   assert.equal(claude?.primary?.remainingPercent, 97.2433)
-  // 未支持的适配器仍然返回 null，不影响既有行为
+  assert.equal(argon?.primary, null)
+  assert.equal(argon?.secondary?.remainingPercent, 100)
+  now += 15 * MINUTE - 1
+  const cached = await service.read({ modelId: 'gpt-oss-120b' })
+  assert.equal(cached?.activeGroupId, 'third-party')
+  assert.equal(cached?.capturedAt, gemini?.capturedAt)
+  assert.equal(calls, 1)
+  now += 1
+  const refreshed = await service.read()
+  assert.equal(calls, 2)
+  assert.notEqual(refreshed?.capturedAt, cached?.capturedAt)
+})
+
+test('Antigravity a remaining fraction ending in 403 is quota, not an HTTP refusal', async () => {
+  const service = reader({ spawn: stubUsageSpawn(USAGE_JSON.replace('0.9799962', '0.403')) })
+  assert.equal((await service.read())?.primary?.remainingPercent, 40.3)
+})
+
+test('Antigravity CLI name/id fields retain model groups and zero reset times stay unknown', async () => {
+  const report = {
+    status: 'SUCCESS', command: { name: 'usage', data: { groups: [
+      { name: 'Gemini Models', buckets: [{ id: 'gemini-5h', name: 'Five Hour Limit Remaining', window: '5h', remaining_fraction: 0.91, reset_time: 1795862639 }] },
+      { name: 'Claude and GPT models', buckets: [{ id: '3p-5h', name: 'Five Hour Limit Remaining', window: '5h', remaining_fraction: 1, reset_time: '1970-01-01T00:00:00Z' }] },
+    ] } },
+  }
+  const service = reader({ spawn: stubUsageSpawn(JSON.stringify(report)) })
+  const gemini = await service.read({ modelId: 'gemini-3.8-flash' })
+  const claude = await service.read({ modelId: 'claude-sonnet-4-6' })
+  assert.equal(gemini?.activeGroupId, 'gemini')
+  assert.equal(gemini?.primary?.remainingPercent, 91)
+  assert.equal(gemini?.primary?.resetsAt, 1795862639)
+  assert.equal(claude?.activeGroupId, 'third-party')
+  assert.equal(claude?.primary?.remainingPercent, 100)
+  assert.equal(claude?.primary?.resetsAt, null)
+  assert.equal(claude?.groups?.[1]?.windows[0]?.label, 'Five Hour Limit Remaining')
+})
+
+test('Antigravity normal failures back off exponentially, cap at 6 hours, and reset after success', async () => {
+  let now = 0
+  let calls = 0
+  let succeed = false
+  const service = reader({ now: () => now, spawn: ((...args: Parameters<typeof spawn>) => {
+    calls += 1
+    return stubUsageSpawn(succeed ? USAGE_JSON : 'network error', '', succeed ? 0 : 1)(...args)
+  }) as typeof spawn })
+  for (const minutes of [10, 20, 40, 80, 160, 320, 360]) {
+    assert.equal(await service.read(), null)
+    const before = calls
+    now += minutes * MINUTE - 1
+    assert.equal(await service.read(), null)
+    assert.equal(calls, before)
+    now += 1
+  }
+  succeed = true
+  assert.ok(await service.read())
+  now += 15 * MINUTE
+  succeed = false
+  assert.equal(await service.read(), null)
+  const before = calls
+  now += 10 * MINUTE - 1
+  assert.equal(await service.read(), null)
+  assert.equal(calls, before)
+  now += 1
+  await service.read()
+  assert.equal(calls, before + 1)
+})
+
+test('Antigravity authentication and policy refusals halt retries for 6 hours even with partial quotas', async () => {
+  for (const message of ['HTTP 403', 'Terms of Service', 'TOS_VIOLATION', 'Verification Required',
+    'not logged in', 'authentication required', 'invalid_grant', '未登录']) {
+    let now = 0
+    let calls = 0
+    const service = reader({ now: () => now, spawn: ((...args: Parameters<typeof spawn>) => {
+      calls += 1
+      return stubUsageSpawn(USAGE_JSON, message)(...args)
+    }) as typeof spawn })
+    assert.equal(await service.read(), null)
+    now = 6 * 60 * MINUTE - 1
+    assert.equal(await service.read(), null)
+    assert.equal(calls, 1, message)
+    now += 1
+    await service.read()
+    assert.equal(calls, 2)
+  }
+})
+
+test('Antigravity timeout stops the child, cleans its directory and backs off from one minute', async () => {
+  let now = 0
+  const children: ReturnType<typeof fakeChild>[] = []
+  const directories: string[] = []
+  const service = reader({ timeoutMs: 10, now: () => now, spawn: ((_command: string, _args: string[], options: SpawnOptions) => {
+    const child = fakeChild()
+    children.push(child)
+    directories.push(String(options.cwd))
+    return child
+  }) as typeof spawn })
+  assert.equal(await service.read(), null)
+  assert.equal(children[0]?.killedByTest, true)
+  assert.equal(existsSync(directories[0]!), false)
+  now += MINUTE - 1
+  assert.equal(await service.read(), null)
+  assert.equal(children.length, 1)
+  now += 1
+  assert.equal(await service.read(), null)
+  assert.equal(children.length, 2)
+  now += 2 * MINUTE - 1
+  assert.equal(await service.read(), null)
+  assert.equal(children.length, 2)
+  assert.ok(children.every(child => child.stdout.destroyed && child.stderr.destroyed))
+})
+
+test('Antigravity dispose resolves all waiters, stops the child and cleans temporary files', async () => {
+  let child: ReturnType<typeof fakeChild> | undefined
+  let directory = ''
+  let spawned!: () => void
+  const ready = new Promise<void>(resolve => { spawned = resolve })
+  const service = reader({ spawn: ((_command: string, _args: string[], options: SpawnOptions) => {
+    child = fakeChild()
+    directory = String(options.cwd)
+    spawned()
+    return child
+  }) as typeof spawn })
+  const first = service.read()
+  const second = service.read({ modelId: 'claude-opus-4.6' })
+  await ready
+  await service.dispose()
+  await service.dispose()
+  assert.deepEqual(await Promise.all([first, second]), [null, null])
+  assert.equal(child?.killedByTest, true)
+  assert.equal(existsSync(directory), false)
+  assert.equal(await service.read(), null)
+})
+
+test('Antigravity missing CLI, spawn errors, malformed output and process failures return null and clean up', async () => {
+  const directories: string[] = []
+  assert.equal(await reader({ resolveCommand: () => null, spawn: (() => { assert.fail('must not spawn') }) as never }).read(), null)
+  for (const mode of ['throw', 'error', 'nonzero', 'malformed', 'overflow']) {
+    const service = reader({ spawn: ((_command: string, _args: string[], options: SpawnOptions) => {
+      directories.push(String(options.cwd))
+      if (mode === 'throw') throw new Error('spawn failed')
+      const child = fakeChild()
+      queueMicrotask(() => {
+        if (mode === 'error') { child.emit('error', new Error('spawn error')); return }
+        child.stdout.end(mode === 'nonzero' ? USAGE_JSON : mode === 'overflow' ? 'x'.repeat(1024 * 1024 + 1) : '{malformed')
+        child.stderr.end()
+        child.emit('close', mode === 'nonzero' ? 1 : 0)
+      })
+      return child
+    }) as typeof spawn })
+    assert.equal(await service.read(), null, mode)
+    assert.equal(existsSync(directories.at(-1)!), false, mode)
+  }
+})
+
+test('ProviderSubscriptionService reuses Host-owned Antigravity state across rebuilds and timeout changes', async () => {
+  let now = 0
+  let calls = 0
+  let output = USAGE_JSON
+  const shared = reader({ now: () => now, spawn: ((...args: Parameters<typeof spawn>) => {
+    calls += 1
+    return stubUsageSpawn(output)(...args)
+  }) as typeof spawn })
+  let service = new ProviderSubscriptionService({ antigravityService: shared })
+  assert.equal((await service.read('antigravity', undefined, 'gemini-3.8-flash'))?.primary?.remainingPercent, 97.9996)
+  shared.setTimeoutMs(5_000)
+  service = new ProviderSubscriptionService({ antigravityService: shared })
+  assert.equal((await service.read('antigravity', undefined, 'claude-sonnet-4-6'))?.primary?.remainingPercent, 97.2433)
+  assert.equal(calls, 1)
+  now += 15 * MINUTE
+  output = JSON.stringify({ status: 'ERROR', error: 'invalid_grant' })
+  assert.equal(await service.read('antigravity'), null)
+  service = new ProviderSubscriptionService({ antigravityService: shared })
+  shared.setTimeoutMs(8_000)
+  assert.equal(await service.read('antigravity'), null)
+  assert.equal(calls, 2)
   assert.equal(await service.read('cursor-cli'), null)
 })
 
@@ -472,7 +451,6 @@ test('Antigravity Gemini 4 Hydrogen 不应错配到 Gemini 4 Argon，并保留�
   ].join('\n')
   const service = new AntigravitySubscriptionService({
     platform: 'win32',
-    readFile: () => { throw new Error('no legacy credential') },
     resolveCommand: () => 'fake-agy',
     spawn: stubUsageSpawn(usageText),
   })
@@ -493,7 +471,6 @@ test('Antigravity Gemini 4 Hydrogen 不应错配到 Gemini 4 Argon，并保留�
 
   const withHydrogenPool = await new AntigravitySubscriptionService({
     platform: 'win32',
-    readFile: () => { throw new Error('no legacy credential') },
     resolveCommand: () => 'fake-agy',
     spawn: stubUsageSpawn(usageText + 'Gemini 4 Hydrogen\tGemini 4 Hydrogen Weekly Limit\t64%\t2026-11-25T14:42:28Z\n'),
   }).read({ modelId: 'gemini-4-hydrogen-high' })

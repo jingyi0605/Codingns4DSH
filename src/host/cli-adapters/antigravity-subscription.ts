@@ -1,7 +1,7 @@
-import { readFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { spawn, spawnSync, type SpawnSyncReturns } from 'node:child_process'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { delimiter, join } from 'node:path'
+import { spawn, spawnSync } from 'node:child_process'
 import type {
   CliSubscriptionGroup,
   CliSubscriptionGroupWindow,
@@ -9,68 +9,37 @@ import type {
   CliSubscriptionUsage,
   CliSubscriptionWindow,
 } from '../../shared/contracts/subscription.js'
-import { commandEnvironment, resolveCommandPath, runAsyncCommand } from './process-utils.js'
-import { antigravityCommandEnvironment } from './antigravity-updater.js'
+import { commandEnvironment, resolveCommandPath, terminateChildProcess } from './process-utils.js'
+import { antigravityCommandEnvironment, spawnAntigravity } from './antigravity-updater.js'
 import { resolveAntigravityModelId } from './model-catalog.js'
 
-type FetchLike = typeof fetch
-type SpawnLike = typeof spawn
-type SpawnSyncLike = typeof spawnSync
-
-/** Antigravity（agy）CLI 使用的 Cloud Code 后端；与 CLI 自己的请求地址一致。 */
-const ANTIGRAVITY_API_BASE = 'https://daily-cloudcode-pa.googleapis.com'
-
-/**
- * `fetchAvailableModels`、`retrieveUserQuotaSummary` 会按 User-Agent 做产品校验：
- * 本机实测缺失或非 Antigravity 的 UA 一律返回 403 PERMISSION_DENIED，带产品名的 UA
- * （含版本号与否）返回 200。这里沿用 CLI 自己的产品标识，而不是 Node 默认 UA。
- */
-const ANTIGRAVITY_USER_AGENT = 'antigravity-cli'
-
-/** 上游 `bucket.window` 取值到公共窗口类型的映射。 */
-const WINDOW_KIND_BY_API_NAME: Readonly<Record<string, CliSubscriptionQuotaWindowKind>> = {
-  '5h': 'five-hour',
-  '5hr': 'five-hour',
-  'five-hour': 'five-hour',
-  weekly: 'weekly',
-  monthly: 'monthly',
+const USAGE_CACHE_MS = 15 * 60_000
+const FAILURE_BACKOFF_MS = 10 * 60_000
+const TIMEOUT_BACKOFF_MS = 60_000
+const MAX_BACKOFF_MS = 6 * 60 * 60_000
+const MAX_OUTPUT_BYTES = 1024 * 1024
+const USAGE_AGENT = 'codingns-usage'
+const WINDOW_KINDS: Readonly<Record<string, CliSubscriptionQuotaWindowKind>> = {
+  '5h': 'five-hour', '5hr': 'five-hour', 'five-hour': 'five-hour', weekly: 'weekly', monthly: 'monthly',
 }
 
-const FIVE_HOUR_WINDOW = '5h'
-const WEEKLY_WINDOW = 'weekly'
-
-/**
- * `agy` 1.2.17 起把 OAuth 凭据写进系统钥匙串（go-keyring），旧的
- * `antigravity-oauth-token` 文件会消失；这里仍保留文件候选以兼容旧版本。
- */
-const ANTIGRAVITY_KEYCHAIN_SERVICE = 'gemini'
-const ANTIGRAVITY_KEYCHAIN_ACCOUNT = 'antigravity'
-const KEYRING_BASE64_PREFIX = 'go-keyring-base64:'
-const CREDENTIAL_FILE_NAMES = ['antigravity-oauth-token', 'auth.json', 'credentials.json', 'oauth_token.json'] as const
-
-const ANTIGRAVITY_USAGE_COMMAND_TIMEOUT_MS = 20_000
-
 export interface AntigravitySubscriptionReadOptions {
-  /** The selected model determines which Antigravity quota group supplies the compact entry. */
   readonly modelId?: string | undefined
 }
 
 export interface AntigravitySubscriptionOptions {
+  /** Only used to resolve the default model from AGY settings. */
   readonly homeDirectory?: string
-  readonly fetch?: FetchLike
-  readonly timeoutMs?: number
   readonly readFile?: (path: string) => string
+  readonly timeoutMs?: number
   readonly now?: () => number
   readonly platform?: string
-  readonly spawn?: SpawnLike
-  readonly spawnSync?: SpawnSyncLike
-  /** 覆盖 `agy` 路径探测，测试可注入。 */
+  readonly spawn?: typeof spawn
+  readonly spawnSync?: typeof spawnSync
   readonly resolveCommand?: () => string | null
-  /** 读取器自身可用的模型解析；默认读 AGY 设置文件，测试可注入。 */
   readonly resolveModelId?: (modelId: string | undefined) => string | null
 }
 
-/** API 与 `agy --print /usage` 归一化后的配额窗口。 */
 interface AntigravityQuotaWindowDraft {
   readonly kind: CliSubscriptionQuotaWindowKind
   readonly label: string
@@ -83,46 +52,31 @@ interface AntigravityQuotaGroupDraft {
   readonly windows: readonly AntigravityQuotaWindowDraft[]
 }
 
-interface AntigravityCredentials {
-  readonly accessToken: string
-  readonly accountName: string | null
+interface QuotaSnapshot {
+  readonly groups: readonly AntigravityQuotaGroupDraft[]
+  readonly capturedAt: number
 }
 
-/**
- * Antigravity 官方用量读取器。
- *
- * 两条只读来源：
- *
- * 1. `v1internal:retrieveUserQuotaSummary`（首选）：按配额组返回 5 小时与周两个窗口，
- *    带精确的 `remainingFraction`；`loadCodeAssist` 顺带给出套餐档位，账号名从
- *    CLI 保存的 `id_token`（JWT）读取。凭据来自系统钥匙串或旧版凭据文件，只读、不出 Host。
- * 2. `agy --print /usage`（补全与兜底）：CLI 自己的内置命令，输出制表符分隔的
- *    “分组 / 窗口 / 百分比 / 重置时间”。部分账号的 API 摘要只返回当前模型所属组，
- *    因此 API 返回不完整时也要用它补齐其它组。
- *
- * Quota groups are independent: Gemini, Claude/GPT, and newer Gemini 4 groups can each
- * expose their own windows.
- * 任一来源失败时安静降级，不占用底部栏空间。
- */
+type CommandResult = { readonly stdout: string; readonly stderr: string; readonly code: number | null; readonly timedOut: boolean }
+
+/** Reads only agy's built-in /usage command; never opens OAuth stores or calls Google APIs. */
 export class AntigravitySubscriptionService {
-  private readonly homeDirectory: string
-  private readonly request: FetchLike
-  private readonly timeoutMs: number
-  private readonly readFile: (path: string) => string
+  private timeoutMs: number
   private readonly now: () => number
   private readonly platform: string
-  private readonly runSpawn: SpawnLike
-  private readonly runSpawnSync: SpawnSyncLike
+  private readonly runSpawn: typeof spawn
+  private readonly runSpawnSync: typeof spawnSync
   private readonly resolveCommand: (() => string | null) | undefined
   private readonly resolveModelId: (modelId: string | undefined) => string | null
-  private cachedCommand: string | null | undefined = undefined
+  private readonly lifetime = new AbortController()
+  private cached: QuotaSnapshot | null = null
+  private pending: Promise<QuotaSnapshot | null> | null = null
+  private nextReadAt = 0
+  private failures = 0
 
   constructor(options: AntigravitySubscriptionOptions = {}) {
-    this.homeDirectory = options.homeDirectory ?? homedir()
-    this.request = options.fetch ?? fetch
-    this.timeoutMs = options.timeoutMs ?? 8_000
-    this.readFile = options.readFile ?? ((path: string) => readFileSync(path, 'utf8'))
-    this.now = options.now ?? (() => Date.now())
+    this.timeoutMs = options.timeoutMs ?? 20_000
+    this.now = options.now ?? Date.now
     this.platform = options.platform ?? process.platform
     this.runSpawn = options.spawn ?? spawn
     this.runSpawnSync = options.spawnSync ?? spawnSync
@@ -130,104 +84,146 @@ export class AntigravitySubscriptionService {
     this.resolveModelId = options.resolveModelId ?? ((modelId) => resolveAntigravityModelId(modelId, options))
   }
 
+  /** Settings updates change future deadlines without discarding cache/backoff or in-flight work. */
+  setTimeoutMs(timeoutMs: number): void {
+    this.timeoutMs = timeoutMs
+  }
+
   async read(options: AntigravitySubscriptionReadOptions = {}): Promise<CliSubscriptionUsage | null> {
-    const credentials = await this.readCredentials()
-    if (credentials !== null) {
-      const [tier, summary] = await Promise.all([
-        this.call('loadCodeAssist', credentials.accessToken),
-        this.call('retrieveUserQuotaSummary', credentials.accessToken),
-      ])
-      const groups = readAntigravityQuotaGroups(summary)
-      if (groups.length > 0) {
-        const supplemental = groups.length < 3 ? await this.readQuotaFromCli() : null
-        return this.buildUsage(mergeAntigravityQuotaGroups(groups, supplemental ?? []), tier, credentials.accountName, options.modelId)
-      }
+    if (this.lifetime.signal.aborted) return null
+    if (this.pending !== null) {
+      const snapshot = await this.pending
+      return snapshot === null || this.lifetime.signal.aborted ? null : this.buildUsage(snapshot, options.modelId)
     }
-    // 凭据不可用（钥匙串未授权、旧文件被清理、未登录）时改问 CLI 自己。
-    const groups = await this.readQuotaFromCli()
-    if (groups === null || groups.length === 0) return null
-    return this.buildUsage(groups, null, null, options.modelId)
+    if (this.now() < this.nextReadAt) {
+      return this.cached === null ? null : this.buildUsage(this.cached, options.modelId)
+    }
+    this.pending = this.readQuotaFromCli()
+    try {
+      const snapshot = await this.pending
+      return snapshot === null || this.lifetime.signal.aborted ? null : this.buildUsage(snapshot, options.modelId)
+    } finally {
+      this.pending = null
+    }
   }
 
-  /** 运行 CLI 内置的 `/usage`，它的输出就是 TUI 里那份分组额度。 */
-  private async readQuotaFromCli(): Promise<readonly AntigravityQuotaGroupDraft[] | null> {
-    const command = await this.resolveAgyCommand()
-    if (command === null) return null
-    const stdout = await this.runUsageCommand(command)
-    if (stdout === null) return null
-    const groups = parseAntigravityUsageOutput(stdout)
-    return groups.length === 0 ? null : groups
+  async dispose(): Promise<void> {
+    this.lifetime.abort()
+    this.cached = null
+    await this.pending
   }
 
-  private async resolveAgyCommand(): Promise<string | null> {
-    if (this.cachedCommand !== undefined) return this.cachedCommand
-    if (this.resolveCommand !== undefined) {
-      this.cachedCommand = this.resolveCommand()
-      return this.cachedCommand
-    }
-    for (const candidate of ['agy']) {
-      const resolved = await resolveCommandPath(candidate, this.runSpawnSync)
-      if (resolved !== null) {
-        this.cachedCommand = resolved
-        return resolved
+  private async readQuotaFromCli(): Promise<QuotaSnapshot | null> {
+    let directory: string | undefined
+    try {
+      const command = this.resolveCommand === undefined
+        ? await resolveCommandPath('agy', this.runSpawnSync)
+        : this.resolveCommand()
+      if (this.lifetime.signal.aborted) return null
+      if (command === null) return this.fail()
+      directory = await mkdtemp(join(tmpdir(), 'codingns-agy-usage-'))
+      const agentDirectory = join(directory, '.agents', 'agents', USAGE_AGENT)
+      await mkdir(agentDirectory, { recursive: true })
+      await writeFile(join(agentDirectory, 'agent.md'), [
+        '---', `name: ${USAGE_AGENT}`, 'description: Read CLI usage only',
+        'mainAgent: true', 'subagent: false', 'tools: []', 'mcpServers: []',
+        '---', 'Do not run model prompts or tools.', '',
+      ].join('\n'), { mode: 0o600 })
+      const browser = join(directory, this.platform === 'win32' ? 'open.cmd' : 'open')
+      if (this.platform === 'win32') {
+        await writeFile(browser, '@exit /b 1\r\n')
+      } else {
+        for (const name of ['open', 'xdg-open']) {
+          await writeFile(join(directory, name), '#!/bin/sh\nexit 1\n', { mode: 0o700 })
+        }
       }
+      if (this.lifetime.signal.aborted) return null
+      const env = antigravityCommandEnvironment(commandEnvironment(command), this.platform)
+      const inheritedPath = env.PATH ?? env.Path ?? ''
+      for (const key of Object.keys(env)) {
+        if (/^path$/iu.test(key)) delete env[key]
+      }
+      env.PATH = directory + delimiter + inheritedPath
+      env.BROWSER = browser
+      const result = await this.runUsageCommand(command, directory, env)
+      if (this.lifetime.signal.aborted) return null
+      // Refusals win even if a partial quota table was printed before the error.
+      if (isAntigravityUsageRefusal(result.stdout, result.stderr)) return this.fail(MAX_BACKOFF_MS)
+      if (result.timedOut) return this.fail(TIMEOUT_BACKOFF_MS)
+      if (result.code !== 0) return this.fail()
+      const groups = parseAntigravityUsageOutput(result.stdout)
+      if (groups.length === 0) return this.fail()
+      const capturedAt = this.now()
+      this.failures = 0
+      this.nextReadAt = capturedAt + USAGE_CACHE_MS
+      this.cached = { groups, capturedAt }
+      return this.cached
+    } catch {
+      return this.lifetime.signal.aborted ? null : this.fail()
+    } finally {
+      if (directory !== undefined) await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
     }
-    this.cachedCommand = null
+  }
+
+  private fail(firstDelay = FAILURE_BACKOFF_MS): null {
+    this.cached = null
+    this.failures += 1
+    this.nextReadAt = this.now() + Math.min(firstDelay * 2 ** Math.min(this.failures - 1, 20), MAX_BACKOFF_MS)
     return null
   }
 
-  private async runUsageCommand(command: string): Promise<string | null> {
-    return await new Promise((resolve) => {
-      let child: ReturnType<SpawnLike>
-      try {
-        child = this.runSpawn(command, ['--print', '/usage'], {
-          // 额度查询也会触发 agy 自更新，避免其后台子进程在 Windows 弹窗。
-          env: antigravityCommandEnvironment(commandEnvironment(command), this.platform),
-          windowsHide: true,
-          shell: this.platform === 'win32',
-          stdio: ['ignore', 'pipe', 'pipe'],
-        })
-      } catch {
-        resolve(null)
-        return
-      }
+  private runUsageCommand(command: string, cwd: string, env: NodeJS.ProcessEnv): Promise<CommandResult> {
+    return new Promise((resolve) => {
+      const child = spawnAntigravity(this.runSpawn, command, [
+        '-p', '/usage', '--output-format', 'json', '--agent', USAGE_AGENT,
+        '--print-timeout', `${Math.max(1, Math.ceil(this.timeoutMs / 1000))}s`,
+      ], { cwd, env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
       let stdout = ''
+      let stderr = ''
+      let bytes = 0
       let settled = false
-      const finish = (value: string | null): void => {
+      const finish = (code: number | null, timedOut = false, terminate = false): void => {
         if (settled) return
         settled = true
         clearTimeout(timer)
-        try { child.kill() } catch { /* 进程可能已退出 */ }
-        resolve(value)
+        this.lifetime.signal.removeEventListener('abort', abort)
+        if (terminate) terminateChildProcess(child)
+        child.stdout?.destroy()
+        child.stderr?.destroy()
+        resolve({ stdout, stderr, code, timedOut })
       }
-      const timer = setTimeout(() => finish(null), ANTIGRAVITY_USAGE_COMMAND_TIMEOUT_MS)
+      const abort = (): void => finish(null, false, true)
+      const timer = setTimeout(() => finish(null, true, true), this.timeoutMs)
+      this.lifetime.signal.addEventListener('abort', abort, { once: true })
+      const collect = (stream: 'stdout' | 'stderr') => (chunk: string): void => {
+        if (settled) return
+        bytes += Buffer.byteLength(chunk)
+        if (bytes > MAX_OUTPUT_BYTES) { finish(null, false, true); return }
+        if (stream === 'stdout') stdout += chunk
+        else stderr += chunk
+      }
       child.stdout?.setEncoding('utf8')
-      child.stdout?.on('data', (chunk: string) => { stdout += chunk })
       child.stderr?.setEncoding('utf8')
-      child.stderr?.on('data', () => { /* 诊断信息不进入会话 */ })
-      child.once('error', () => finish(null))
-      child.once('close', () => finish(stdout))
+      child.stdout?.on('data', collect('stdout'))
+      child.stderr?.on('data', collect('stderr'))
+      child.stdout?.on('error', abort)
+      child.stderr?.on('error', abort)
+      child.once('error', abort)
+      child.once('close', (code) => finish(code))
+      if (this.lifetime.signal.aborted) abort()
     })
   }
 
-  private buildUsage(
-    drafts: readonly AntigravityQuotaGroupDraft[],
-    tier: unknown,
-    accountName: string | null,
-    modelId: string | undefined,
-  ): CliSubscriptionUsage | null {
-    const groups = toContractGroups(drafts)
-    if (groups.length === 0) return null
+  private buildUsage(snapshot: QuotaSnapshot, modelId: string | undefined): CliSubscriptionUsage | null {
+    const groups = toContractGroups(snapshot.groups)
     const selected = selectAntigravityQuotaGroupIn(groups, this.effectiveModelId(modelId)) ?? groups[0]!
     const primary = findGroupWindow(selected, 'five-hour')
     const secondary = findGroupWindow(selected, 'weekly')
     if (primary === null && secondary === null) return null
     const rateLimited = groups.some((group) => group.windows.some((entry) => entry.window.remainingPercent <= 0))
-    const paidPlanType = readAntigravityPaidPlanType(tier)
     return {
       authenticated: true,
-      planType: readAntigravityPlanType(tier),
-      ...(paidPlanType === null ? {} : { paidPlanType }),
+      planType: null,
       primary,
       secondary,
       monthly: null,
@@ -235,125 +231,32 @@ export class AntigravitySubscriptionService {
       activeGroupId: selected.id,
       rateLimitReachedType: rateLimited ? 'quota' : null,
       resetCredits: null,
-      capturedAt: new Date(this.now()).toISOString(),
-      ...(accountName === null ? {} : { accountName }),
+      capturedAt: new Date(snapshot.capturedAt).toISOString(),
       provider: {
         id: 'antigravity',
         displayName: 'Antigravity',
-        baseUrl: ANTIGRAVITY_API_BASE,
+        baseUrl: '',
         capability: 'subscription-window',
         logoUrl: 'https://cdn.simpleicons.org/google',
       },
     }
   }
 
-  /** `provider-default` 时按 AGY 自己选中的模型判断配额组。 */
   private effectiveModelId(modelId: string | undefined): string | null {
     const explicit = modelId?.trim()
     if (explicit !== undefined && explicit !== '' && explicit !== 'provider-default') return explicit.toLowerCase()
     return this.resolveModelId(modelId)
   }
-
-  /**
-   * 读取 CLI 的 OAuth 凭据。
-   *
-   * `agy` 1.2.17 起写系统钥匙串（值前缀 `go-keyring-base64:`），旧版本写
-   * `~/.gemini/antigravity-cli/antigravity-oauth-token`。两者结构一致，都带
-   * `token.access_token` 与 `id_token`。
-   */
-  private async readCredentials(): Promise<AntigravityCredentials | null> {
-    const keychain = await this.readKeychainCredentials()
-    if (keychain !== null) return keychain
-    for (const name of CREDENTIAL_FILE_NAMES) {
-      const parsed = this.readCredentialFile(join(this.homeDirectory, '.gemini', 'antigravity-cli', name))
-      if (parsed !== null) return parsed
-    }
-    return null
-  }
-
-  private readCredentialFile(path: string): AntigravityCredentials | null {
-    let raw: string
-    try {
-      raw = this.readFile(path)
-    } catch {
-      return null
-    }
-    let parsed: unknown
-    try {
-      parsed = JSON.parse(raw)
-    } catch {
-      return null
-    }
-    return toCredentials(parsed, this.now())
-  }
-
-  private async readKeychainCredentials(): Promise<AntigravityCredentials | null> {
-    if (this.platform !== 'darwin') return null
-    try {
-      // 钥匙串可能等待系统授权，必须异步并设置超时，不能阻塞 Host。
-      const result: SpawnSyncReturns<string> = await runAsyncCommand(this.runSpawnSync, 'security', [
-        'find-generic-password',
-        '-s', ANTIGRAVITY_KEYCHAIN_SERVICE,
-        '-a', ANTIGRAVITY_KEYCHAIN_ACCOUNT,
-        '-w',
-      ], { encoding: 'utf8', timeout: 3_000, windowsHide: true })
-      if (result.status !== 0 || typeof result.stdout !== 'string') return null
-      return toCredentials(decodeKeyringSecret(result.stdout.trim()), this.now())
-    } catch {
-      return null
-    }
-  }
-
-  private async call(method: string, token: string): Promise<unknown | null> {
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), this.timeoutMs)
-    try {
-      const response = await this.request(`${ANTIGRAVITY_API_BASE}/v1internal:${method}`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-          'User-Agent': ANTIGRAVITY_USER_AGENT,
-        },
-        body: '{}',
-        signal: controller.signal,
-      })
-      if (!response.ok) return null
-      return await response.json()
-    } catch {
-      // 未登录、令牌过期或网络不可用时安静降级，订阅栏不占用底部空间。
-      return null
-    } finally {
-      clearTimeout(timer)
-    }
-  }
 }
 
-function toCredentials(value: unknown, now: number): AntigravityCredentials | null {
-  const root = recordValue(value)
-  const token = recordValue(root?.token)
-  const accessToken = textValue(token?.access_token)
-  if (accessToken === null) return null
-  const expiry = textValue(token?.expiry)
-  if (expiry !== null) {
-    const expiresAt = Date.parse(expiry)
-    // 过期令牌不做刷新（刷新需要 OAuth 客户端），交给 CLI 下次运行处理。
-    if (Number.isFinite(expiresAt) && expiresAt <= now) return null
-  }
-  return { accessToken, accountName: readAccountName(textValue(root?.id_token)) }
-}
-
-/** 解开 go-keyring 的 base64 包装；普通 JSON 原样返回。 */
-export function decodeKeyringSecret(raw: string): unknown {
-  const trimmed = raw.trim()
-  if (!trimmed.startsWith(KEYRING_BASE64_PREFIX)) {
-    try { return JSON.parse(trimmed) } catch { return null }
-  }
+function isAntigravityUsageRefusal(stdout: string, stderr: string): boolean {
+  let diagnostic = stdout
   try {
-    return JSON.parse(Buffer.from(trimmed.slice(KEYRING_BASE64_PREFIX.length), 'base64').toString('utf8'))
-  } catch {
-    return null
-  }
+    const report = recordValue(JSON.parse(stdout))
+    diagnostic = JSON.stringify([report?.error, report?.response])
+  } catch { /* Legacy text includes CLI diagnostics alongside the quota table. */ }
+  const output = `${diagnostic}\n${stderr}`
+  return /\b403\b|terms of service|TOS[_ -]VIOLATION|verification required|verify your account|not (?:logged|signed) in|unauthenticated|authentication required|login required|please (?:log|sign) in|sign in again|invalid_grant|未登录|需要验证/iu.test(output)
 }
 
 /**
@@ -368,6 +271,14 @@ export function decodeKeyringSecret(raw: string): unknown {
  * ```
  */
 export function parseAntigravityUsageOutput(output: string): readonly AntigravityQuotaGroupDraft[] {
+  let report: unknown
+  try { report = JSON.parse(output) } catch { /* Older agy versions print a TSV table. */ }
+  if (report !== undefined) {
+    const root = recordValue(report)
+    const command = recordValue(root?.command)
+    return root?.status === 'SUCCESS' && command?.name === 'usage'
+      ? readAntigravityQuotaGroups(command.data) : []
+  }
   const groups = new Map<string, AntigravityQuotaWindowDraft[]>()
   for (const line of output.split(/\r?\n/u)) {
     const match = line.match(/^([^\t]+)\t([^\t]+)\t(\d{1,3})%\t(\S+)\s*$/u)
@@ -388,30 +299,34 @@ export function parseAntigravityUsageOutput(output: string): readonly Antigravit
   return [...groups.entries()].map(([displayName, windows]) => ({ displayName, windows }))
 }
 
-/** 从 `retrieveUserQuotaSummary` 的响应里提取配额组。 */
+/** Parse the CLI's JSON command report, including protobuf-style remaining values. */
 export function readAntigravityQuotaGroups(value: unknown): readonly AntigravityQuotaGroupDraft[] {
   const groups = recordValue(value)?.groups
   if (!Array.isArray(groups)) return []
   const parsed: AntigravityQuotaGroupDraft[] = []
   for (const entry of groups) {
-    const record = recordValue(entry)
-    if (record === null) continue
+    const group = recordValue(entry)
+    if (group === null) continue
     const windows: AntigravityQuotaWindowDraft[] = []
-    for (const rawBucket of Array.isArray(record.buckets) ? record.buckets : []) {
-      const bucket = recordValue(rawBucket)
-      if (bucket === null) continue
-      const window = textValue(bucket.window)
-      const remaining = numberValue(bucket.remainingFraction)
-      if (window === null || remaining === null) continue
+    for (const raw of Array.isArray(group.buckets) ? group.buckets : []) {
+      const bucket = recordValue(raw)
+      if (bucket === null || bucket.disabled === true) continue
+      const remaining = recordValue(bucket.remaining)
+      const fraction = numberValue(bucket.remainingFraction ?? bucket.remaining_fraction
+        ?? remaining?.remainingFraction ?? remaining?.remaining_fraction
+        ?? (remaining?.case === 'remainingFraction' ? remaining.value : undefined))
+      if (fraction === null || fraction < 0 || fraction > 1) continue
+      const label = textValue(bucket.displayName ?? bucket.display_name) ?? textValue(bucket.name)
+        ?? textValue(bucket.bucketId ?? bucket.bucket_id ?? bucket.id) ?? ''
+      const window = textValue(bucket.window)?.toLowerCase()
       windows.push({
-        kind: WINDOW_KIND_BY_API_NAME[window.toLowerCase()] ?? 'other',
-        label: textValue(bucket.displayName) ?? window,
-        remainingFraction: clampFraction(remaining),
-        resetsAt: timestampSeconds(bucket.resetTime),
+        kind: window === undefined || window === null ? windowKindFromLabel(label) : WINDOW_KINDS[window] ?? 'other',
+        label,
+        remainingFraction: fraction,
+        resetsAt: timestampSeconds(bucket.resetTime ?? bucket.reset_time),
       })
     }
-    if (windows.length === 0) continue
-    parsed.push({ displayName: textValue(record.displayName) ?? '', windows })
+    if (windows.length > 0) parsed.push({ displayName: textValue(group.displayName ?? group.display_name) ?? textValue(group.name) ?? '', windows })
   }
   return parsed
 }
@@ -511,36 +426,6 @@ function toContractGroups(drafts: readonly AntigravityQuotaGroupDraft[]): readon
   })
 }
 
-/** Merge precise API windows with CLI-only groups and windows missing from the API summary. */
-function mergeAntigravityQuotaGroups(
-  primary: readonly AntigravityQuotaGroupDraft[],
-  supplemental: readonly AntigravityQuotaGroupDraft[],
-): readonly AntigravityQuotaGroupDraft[] {
-  const merged = primary.map((group) => ({ ...group, windows: [...group.windows] }))
-  for (const supplementalGroup of supplemental) {
-    const key = quotaGroupMergeKey(supplementalGroup.displayName)
-    const existing = merged.find((group) => quotaGroupMergeKey(group.displayName) === key)
-    if (existing === undefined) {
-      merged.push({ ...supplementalGroup, windows: [...supplementalGroup.windows] })
-      continue
-    }
-    const knownKinds = new Set(existing.windows.map((window) => window.kind))
-    const missingWindows = supplementalGroup.windows.filter((window) => !knownKinds.has(window.kind))
-    if (missingWindows.length > 0) {
-      const index = merged.indexOf(existing)
-      merged[index] = { ...existing, windows: [...existing.windows, ...missingWindows] }
-    }
-  }
-  return merged
-}
-
-function quotaGroupMergeKey(displayName: string): string {
-  if (isThirdPartyGroupName(displayName)) return 'third-party'
-  const slug = slugifyQuotaName(displayName)
-  if (slug === 'gemini' || slug === 'gemini-models') return 'gemini'
-  return slug || 'other'
-}
-
 /** 分组 id 供客户端本地化；未知分组回退到上游展示名。 */
 function quotaGroupId(displayName: string): string {
   if (isThirdPartyGroupName(displayName)) return 'third-party'
@@ -590,43 +475,8 @@ function toWindow(remainingFraction: number, resetsAt: number | null): CliSubscr
   }
 }
 
-/** 套餐档位优先用稳定的 tier id（`free-tier` → “Free Tier”），避免与 Provider 名重复。 */
-export function readAntigravityPlanType(value: unknown): string | null {
-  const tier = recordValue(recordValue(value)?.currentTier)
-  if (tier === null) return null
-  return textValue(tier.id) ?? textValue(tier.name)
-}
-
-/**
- * 账号实际持有的付费档位。
- *
- * `loadCodeAssist` 会同时返回生效档位 `currentTier` 与权益档位 `paidTier`：本机实测
- * 账号持有 Google AI Pro（`g1-pro-tier`）时 `currentTier` 仍是 `free-tier`，即订阅
- * 权益没有映射到 Antigravity 的 Agent 额度上。两个档位都要展示，否则界面会把
- * “生效档位”说成“账号没有订阅”。
- */
-export function readAntigravityPaidPlanType(value: unknown): string | null {
-  const tier = recordValue(recordValue(value)?.paidTier)
-  if (tier === null) return null
-  return textValue(tier.name) ?? textValue(tier.id)
-}
-
-/** 账号名从 CLI 自己保存的 id_token（JWT）负载里读取，不发额外请求。 */
-export function readAccountName(idToken: string | null): string | null {
-  if (idToken === null) return null
-  const segment = idToken.split('.')[1]
-  if (segment === undefined || segment === '') return null
-  try {
-    const payload = Buffer.from(segment.replace(/-/gu, '+').replace(/_/gu, '/'), 'base64').toString('utf8')
-    const claims = recordValue(JSON.parse(payload))
-    return textValue(claims?.email) ?? textValue(claims?.name)
-  } catch {
-    return null
-  }
-}
-
-function recordValue(value: unknown): Record<string, any> | null {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, any> : null
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
 
 function textValue(value: unknown): string | null {
@@ -642,15 +492,11 @@ function timestampSeconds(value: unknown): number | null {
   const text = textValue(value)
   if (text !== null) {
     const parsed = Date.parse(text)
-    return Number.isFinite(parsed) ? Math.round(parsed / 1000) : null
+    return Number.isFinite(parsed) && parsed > 0 ? Math.round(parsed / 1000) : null
   }
   const numeric = numberValue(value)
-  if (numeric === null) return null
+  if (numeric === null || numeric <= 0) return null
   return Math.round(numeric > 10_000_000_000 ? numeric / 1000 : numeric)
-}
-
-function clampFraction(value: number): number {
-  return Math.max(0, Math.min(1, value))
 }
 
 function clampPercent(value: number): number {

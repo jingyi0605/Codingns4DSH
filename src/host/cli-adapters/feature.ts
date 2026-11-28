@@ -21,6 +21,7 @@ import { CursorCliDriver } from './cursor-driver.js'
 import { KiroCliDriver } from './kiro-driver.js'
 import { QoderCliDriver } from './qoder-driver.js'
 import { AntigravityDriver } from './antigravity-driver.js'
+import { AntigravitySubscriptionService } from './antigravity-subscription.js'
 import { DoubaoAppDriver } from './doubao-driver.js'
 import { CodingNsCliAdapterRegistry } from './registry.js'
 import { CliManagementService } from './management.js'
@@ -128,11 +129,13 @@ export function createCliAdaptersFeature(options: {
       const lifetime = new AbortController()
       const magpieSessionRouting = createMagpieSessionRouting()
       context.resources.add(() => magpieSessionRouting.dispose())
-      // 用量查询超时对所有适配器统一生效：同一个 timeoutMs 下发给全部网络读取器，
-      // 设置变更时整体重建，避免旧超时继续生效。
+      const antigravitySubscription = new AntigravitySubscriptionService()
+      context.resources.add(() => antigravitySubscription.dispose())
+      // 用量查询超时统一生效；其他读取器随设置重建，AGY 保留缓存、在途查询和退避。
       const buildSubscriptions = (settings: CodingNsSettings | undefined): ProviderSubscriptionService => {
         const timeoutMs = normalizeSubscriptionUsageSettings(settings?.subscriptionUsage).timeoutSecs * 1000
-        return new ProviderSubscriptionService({ commandCode: new CommandCodeSubscriptionService({ timeoutMs }), timeoutMs })
+        antigravitySubscription.setTimeoutMs(timeoutMs)
+        return new ProviderSubscriptionService({ commandCode: new CommandCodeSubscriptionService({ timeoutMs }), timeoutMs, antigravityService: antigravitySubscription })
       }
       let subscriptions: Pick<ProviderSubscriptionService, 'read' | 'reset'> = options.subscriptions ?? buildSubscriptions(context.services.settings?.get())
       const magpieCommandStore = options.magpieCommandStore ?? new FileMagpieCommandStore()
